@@ -1,0 +1,12 @@
+{
+    "author": "kingpanther13",
+    "gitHubUrl": "https://github.com/kingpanther13",
+    "packages": [
+        {
+            "name": "MCP Rule Server",
+            "category": "Integrations",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json",
+            "description": "Native MCP server for Hubitat with built-in rule engine. Control devices and create automations via Claude AI or other MCP clients."
+        }
+    ]
+}
