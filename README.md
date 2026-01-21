@@ -396,6 +396,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.1.10** - Fixed device label returning null in send_command and get_attribute responses
 - **v0.1.9** - Fixed missing condition type validations (presence, lock, thermostat_mode, thermostat_state, illuminance, power)
 - **v0.1.8** - Fixed duration triggers firing repeatedly (now waits for condition to go false before re-arming)
 - **v0.1.7** - Fixed duration-based `device_event` triggers (now properly waits for condition to stay true)

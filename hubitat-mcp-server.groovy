@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.9 - Added missing condition type validations (presence, lock, thermostat_mode, thermostat_state, illuminance, power)
+ * Version: 0.1.10 - Fixed device label returning null in send_command and get_attribute responses
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -706,9 +706,12 @@ def toolSendCommand(deviceId, command, parameters) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
     }
 
+    // Capture label before command execution to avoid serialization issues
+    def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
+
     def supportedCommands = device.supportedCommands?.collect { it.name }
     if (!supportedCommands?.contains(command)) {
-        throw new IllegalArgumentException("Device ${device.label} does not support command: ${command}. Available: ${supportedCommands}")
+        throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
 
     if (parameters && parameters.size() > 0) {
@@ -725,7 +728,7 @@ def toolSendCommand(deviceId, command, parameters) {
 
     return [
         success: true,
-        device: device.label,
+        device: deviceLabel,
         command: command,
         parameters: parameters
     ]
@@ -761,6 +764,9 @@ def toolGetAttribute(deviceId, attribute) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
     }
 
+    // Capture label before operations to avoid serialization issues
+    def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
+
     def value = device.currentValue(attribute)
     if (value == null) {
         def supportedAttrs = device.supportedAttributes?.collect { it.name }
@@ -768,7 +774,7 @@ def toolGetAttribute(deviceId, attribute) {
     }
 
     return [
-        device: device.label,
+        device: deviceLabel,
         attribute: attribute,
         value: value
     ]
