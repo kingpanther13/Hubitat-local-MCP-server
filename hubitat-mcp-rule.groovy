@@ -1388,7 +1388,71 @@ def handleDeviceEvent(evt) {
     }
 
     if (matchingTrigger) {
-        executeRule("device_event: ${evt.device.label} ${evt.name}")
+        // Check if this trigger has a duration requirement
+        if (matchingTrigger.duration && matchingTrigger.duration > 0) {
+            def triggerKey = "duration_${matchingTrigger.deviceId}_${matchingTrigger.attribute}"
+
+            // Condition is met - start or continue the duration timer
+            if (!state.durationTimers) state.durationTimers = [:]
+
+            if (!state.durationTimers[triggerKey]) {
+                // First time condition met - start the timer
+                log.debug "Duration trigger: condition met, starting ${matchingTrigger.duration}s timer for ${evt.device.label} ${evt.name}"
+                state.durationTimers[triggerKey] = [startTime: now(), trigger: matchingTrigger]
+                runIn(matchingTrigger.duration, "checkDurationTrigger", [data: [triggerKey: triggerKey, deviceLabel: evt.device.label, attribute: evt.name]])
+            }
+            // If timer already running, just let it continue
+        } else {
+            // No duration - trigger immediately
+            executeRule("device_event: ${evt.device.label} ${evt.name}")
+        }
+    } else {
+        // Condition no longer met - cancel any pending duration timer for this device/attribute
+        def triggersForDevice = state.triggers?.findAll { t ->
+            t.type == "device_event" &&
+            t.deviceId == evt.device.id.toString() &&
+            t.attribute == evt.name &&
+            t.duration && t.duration > 0
+        }
+
+        triggersForDevice?.each { t ->
+            def triggerKey = "duration_${t.deviceId}_${t.attribute}"
+            if (state.durationTimers?.get(triggerKey)) {
+                log.debug "Duration trigger: condition no longer met, canceling timer for ${evt.device.label} ${evt.name}"
+                state.durationTimers.remove(triggerKey)
+                unschedule("checkDurationTrigger")
+            }
+        }
+    }
+}
+
+def checkDurationTrigger(data) {
+    def triggerKey = data.triggerKey
+    def timerData = state.durationTimers?.get(triggerKey)
+
+    if (!timerData) {
+        log.debug "Duration trigger: timer was canceled for ${triggerKey}"
+        return
+    }
+
+    // Re-check that the condition is still met
+    def trigger = timerData.trigger
+    def device = parent.findDevice(trigger.deviceId)
+    if (!device) {
+        state.durationTimers.remove(triggerKey)
+        return
+    }
+
+    def currentValue = device.currentValue(trigger.attribute)
+    def stillMet = !trigger.value || evaluateComparison(currentValue, trigger.operator ?: "equals", trigger.value)
+
+    if (stillMet) {
+        log.debug "Duration trigger: condition still met after ${trigger.duration}s, executing rule"
+        state.durationTimers.remove(triggerKey)
+        executeRule("device_event: ${data.deviceLabel} ${data.attribute} (held for ${trigger.duration}s)")
+    } else {
+        log.debug "Duration trigger: condition no longer met at check time"
+        state.durationTimers.remove(triggerKey)
     }
 }
 
