@@ -1290,6 +1290,45 @@ def describeAction(action) {
             def deviceName = device?.label ?: action.sceneDeviceId
             return "Activate scene ${deviceName}"
 
+        case "set_color":
+            def colorDev = parent.findDevice(action.deviceId)
+            def colorDevName = colorDev?.label ?: action.deviceId
+            return "Set ${colorDevName} color to hue:${action.hue}, sat:${action.saturation}, level:${action.level}"
+
+        case "set_color_temperature":
+            def ctDev = parent.findDevice(action.deviceId)
+            def ctDevName = ctDev?.label ?: action.deviceId
+            def ctLevel = action.level ? " at ${action.level}%" : ""
+            return "Set ${ctDevName} color temperature to ${action.temperature}K${ctLevel}"
+
+        case "lock":
+            def lockDev = parent.findDevice(action.deviceId)
+            def lockDevName = lockDev?.label ?: action.deviceId
+            return "Lock ${lockDevName}"
+
+        case "unlock":
+            def unlockDev = parent.findDevice(action.deviceId)
+            def unlockDevName = unlockDev?.label ?: action.deviceId
+            return "Unlock ${unlockDevName}"
+
+        case "capture_state":
+            def captureCount = action.deviceIds?.size() ?: 0
+            def captureId = action.stateId ?: "default"
+            return "Capture state of ${captureCount} device(s) (id: ${captureId})"
+
+        case "restore_state":
+            def restoreId = action.stateId ?: "default"
+            return "Restore state (id: ${restoreId})"
+
+        case "send_notification":
+            def notifyDev = parent.findDevice(action.deviceId)
+            def notifyDevName = notifyDev?.label ?: action.deviceId
+            return "Send notification to ${notifyDevName}: '${action.message}'"
+
+        case "repeat":
+            def repeatActions = action.actions?.size() ?: 0
+            return "Repeat ${repeatActions} action(s) ${action.count ?: 1} time(s)"
+
         default:
             return "Unknown action: ${action.type}"
     }
@@ -1662,6 +1701,107 @@ def executeAction(action, actionIndex = null) {
             def sceneDevice = parent.findDevice(action.sceneDeviceId)
             if (sceneDevice) {
                 sceneDevice.on()
+            }
+            break
+
+        case "set_color":
+            def colorDevice = parent.findDevice(action.deviceId)
+            if (colorDevice) {
+                def colorMap = [:]
+                if (action.hue != null) colorMap.hue = action.hue
+                if (action.saturation != null) colorMap.saturation = action.saturation
+                if (action.level != null) colorMap.level = action.level
+                colorDevice.setColor(colorMap)
+            }
+            break
+
+        case "set_color_temperature":
+            def ctDevice = parent.findDevice(action.deviceId)
+            if (ctDevice) {
+                if (action.level != null) {
+                    ctDevice.setColorTemperature(action.temperature, action.level)
+                } else {
+                    ctDevice.setColorTemperature(action.temperature)
+                }
+            }
+            break
+
+        case "lock":
+            def lockDevice = parent.findDevice(action.deviceId)
+            if (lockDevice) {
+                lockDevice.lock()
+            }
+            break
+
+        case "unlock":
+            def unlockDevice = parent.findDevice(action.deviceId)
+            if (unlockDevice) {
+                unlockDevice.unlock()
+            }
+            break
+
+        case "capture_state":
+            def captureDevices = action.deviceIds?.collect { parent.findDevice(it) }?.findAll { it != null }
+            if (captureDevices) {
+                def capturedStates = [:]
+                captureDevices.each { dev ->
+                    def devState = [:]
+                    if (dev.hasCapability("Switch")) devState.switch = dev.currentValue("switch")
+                    if (dev.hasCapability("SwitchLevel")) devState.level = dev.currentValue("level")
+                    if (dev.hasCapability("ColorControl")) {
+                        devState.hue = dev.currentValue("hue")
+                        devState.saturation = dev.currentValue("saturation")
+                    }
+                    if (dev.hasCapability("ColorTemperature")) devState.colorTemperature = dev.currentValue("colorTemperature")
+                    capturedStates[dev.id.toString()] = devState
+                }
+                def stateKey = action.stateId ?: "default"
+                if (!state.capturedStates) state.capturedStates = [:]
+                state.capturedStates[stateKey] = capturedStates
+                log.debug "Captured states for ${captureDevices.size()} devices (stateId: ${stateKey})"
+            }
+            break
+
+        case "restore_state":
+            def stateKey = action.stateId ?: "default"
+            def savedStates = state.capturedStates?.get(stateKey)
+            if (savedStates) {
+                savedStates.each { deviceId, devState ->
+                    def dev = parent.findDevice(deviceId)
+                    if (dev) {
+                        if (devState.hue != null && devState.saturation != null) {
+                            dev.setColor([hue: devState.hue, saturation: devState.saturation, level: devState.level ?: 100])
+                        } else if (devState.colorTemperature != null) {
+                            dev.setColorTemperature(devState.colorTemperature)
+                        }
+                        if (devState.level != null && !devState.hue) {
+                            dev.setLevel(devState.level)
+                        }
+                        if (devState.switch == "on") {
+                            dev.on()
+                        } else if (devState.switch == "off") {
+                            dev.off()
+                        }
+                    }
+                }
+                log.debug "Restored states for ${savedStates.size()} devices (stateId: ${stateKey})"
+            }
+            break
+
+        case "send_notification":
+            def notifyDevice = parent.findDevice(action.deviceId)
+            if (notifyDevice) {
+                notifyDevice.deviceNotification(action.message)
+            }
+            break
+
+        case "repeat":
+            def repeatCount = action.count ?: 1
+            for (int r = 0; r < repeatCount; r++) {
+                action.actions?.each { repeatAction ->
+                    def result = executeAction(repeatAction)
+                    if (result == false) return false
+                }
             }
             break
 

@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.1 - Added pagination for list_devices
+ * Version: 0.1.4 - All documented actions now implemented
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
