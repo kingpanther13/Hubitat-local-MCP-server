@@ -1068,6 +1068,18 @@ def setRuleVariable(name, value) {
     state.ruleVariables[name] = value
 }
 
+// Helper method for child apps to save captured device states (for capture_state action)
+def saveCapturedState(stateId, capturedStates) {
+    if (!state.capturedDeviceStates) state.capturedDeviceStates = [:]
+    state.capturedDeviceStates[stateId] = capturedStates
+    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices"
+}
+
+// Helper method for child apps to retrieve captured device states (for restore_state action)
+def getCapturedState(stateId) {
+    return state.capturedDeviceStates?.get(stateId)
+}
+
 def toolGetHsmStatus() {
     def hsmStatus = location.hsmStatus
     def hsmAlerts = location.hsmAlert

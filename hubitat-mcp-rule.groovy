@@ -1756,15 +1756,16 @@ def executeAction(action, actionIndex = null) {
                     capturedStates[dev.id.toString()] = devState
                 }
                 def stateKey = action.stateId ?: "default"
-                if (!state.capturedStates) state.capturedStates = [:]
-                state.capturedStates[stateKey] = capturedStates
+                // Store in parent app so other rules can access it
+                parent.saveCapturedState(stateKey, capturedStates)
                 log.debug "Captured states for ${captureDevices.size()} devices (stateId: ${stateKey})"
             }
             break
 
         case "restore_state":
             def stateKey = action.stateId ?: "default"
-            def savedStates = state.capturedStates?.get(stateKey)
+            // Get from parent app so any rule can restore states captured by any other rule
+            def savedStates = parent.getCapturedState(stateKey)
             if (savedStates) {
                 savedStates.each { deviceId, devState ->
                     def dev = parent.findDevice(deviceId)
@@ -1785,6 +1786,8 @@ def executeAction(action, actionIndex = null) {
                     }
                 }
                 log.debug "Restored states for ${savedStates.size()} devices (stateId: ${stateKey})"
+            } else {
+                log.warn "No captured state found for stateId: ${stateKey}"
             }
             break
 
