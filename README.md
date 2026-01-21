@@ -396,6 +396,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.1.9** - Fixed missing condition type validations (presence, lock, thermostat_mode, thermostat_state, illuminance, power)
 - **v0.1.8** - Fixed duration triggers firing repeatedly (now waits for condition to go false before re-arming)
 - **v0.1.7** - Fixed duration-based `device_event` triggers (now properly waits for condition to stay true)
 - **v0.1.6** - Fixed `repeat` action parameter name (`times` now works correctly)
@@ -409,6 +410,45 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - **v0.0.5** - Bug fixes for device and variable tools, UI improvements
 - **v0.0.4** - Added full Rule Engine UI
 - **v0.0.3** - Initial release
+
+## Manual Testing Checklist
+
+The following features require manual testing through the Hubitat web UI:
+
+### UI Rule Management
+- [ ] Create a new rule via Hubitat Apps → MCP Rule Server → Add Rule
+- [ ] Edit existing rule triggers through the UI
+- [ ] Edit existing rule conditions through the UI
+- [ ] Edit existing rule actions through the UI
+- [ ] Enable/disable rules via the UI toggle
+- [ ] Delete a rule with confirmation dialog
+- [ ] Use "Test Rule" button (dry run) to verify rule logic
+- [ ] Verify rule list displays correctly with status and last triggered time
+
+### Trigger Configuration UI
+- [ ] Add device_event trigger and select device/attribute
+- [ ] Add button_event trigger with button number selection
+- [ ] Add time trigger with time picker
+- [ ] Add sunrise/sunset trigger with offset input
+- [ ] Add periodic trigger with interval configuration
+- [ ] Add mode_change trigger with mode selection
+- [ ] Add hsm_change trigger with status selection
+
+### Condition Configuration UI
+- [ ] Add device_state condition with operator selection
+- [ ] Add time_range condition with start/end time pickers
+- [ ] Add mode condition with multi-mode selection
+- [ ] Add days_of_week condition with day checkboxes
+- [ ] Add variable condition with variable name input
+- [ ] Test conditionLogic toggle between "all" and "any"
+
+### Action Configuration UI
+- [ ] Add device_command action with command dropdown
+- [ ] Add delay action with seconds input
+- [ ] Add set_level action with level slider
+- [ ] Add if_then_else action with nested action configuration
+- [ ] Add set_variable action with scope selection
+- [ ] Verify action reordering works correctly
 
 ## Contributing
 

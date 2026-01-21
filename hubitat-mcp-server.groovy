@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.8 - Fixed duration triggers not re-arming properly
+ * Version: 0.1.9 - Added missing condition type validations (presence, lock, thermostat_mode, thermostat_state, illuminance, power)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -1175,6 +1175,30 @@ def validateCondition(condition) {
             break
         case "hsm_status":
             if (!condition.status) throw new IllegalArgumentException("hsm_status condition requires status")
+            break
+        case "presence":
+            if (!condition.deviceId) throw new IllegalArgumentException("presence condition requires deviceId")
+            if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            break
+        case "lock":
+            if (!condition.deviceId) throw new IllegalArgumentException("lock condition requires deviceId")
+            if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            break
+        case "thermostat_mode":
+            if (!condition.deviceId) throw new IllegalArgumentException("thermostat_mode condition requires deviceId")
+            if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            break
+        case "thermostat_state":
+            if (!condition.deviceId) throw new IllegalArgumentException("thermostat_state condition requires deviceId")
+            if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            break
+        case "illuminance":
+            if (!condition.deviceId) throw new IllegalArgumentException("illuminance condition requires deviceId")
+            if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            break
+        case "power":
+            if (!condition.deviceId) throw new IllegalArgumentException("power condition requires deviceId")
+            if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
             break
         case "expression":
             if (!condition.expression) throw new IllegalArgumentException("expression condition requires expression")
