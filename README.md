@@ -396,6 +396,11 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.1.6** - Fixed `repeat` action parameter name (`times` now works correctly)
+- **v0.1.5** - Fixed `capture_state`/`restore_state` to work across different rules
+- **v0.1.4** - Added all remaining documented actions: `set_color`, `set_color_temperature`, `lock`/`unlock`, `capture_state`/`restore_state`, `send_notification`, `repeat`
+- **v0.1.3** - Major rule engine fixes: `delay` now uses `runIn()`, added `variable` condition, `device_was` condition, and more condition types
+- **v0.1.2** - Fixed missing action types: `if_then_else`, `cancel_delayed`, `set_local_variable`, `activate_scene`
 - **v0.1.1** - Added pagination for `list_devices` (fixes cloud 128KB limit issue)
 - **v0.1.0** - Parent/Child architecture (rules are now child apps with isolated settings)
 - **v0.0.6** - Fixed trigger/condition/action save flow
