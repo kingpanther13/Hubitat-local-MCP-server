@@ -99,6 +99,12 @@ def initialize() {
     if (!state.ruleVariables) {
         state.ruleVariables = [:]
     }
+    if (!state.pendingDurationTriggers) {
+        state.pendingDurationTriggers = [:]
+    }
+    if (!state.delayedActionGroups) {
+        state.delayedActionGroups = [:]
+    }
 
     // Refresh subscriptions for enabled rules
     if (settings.enableRuleEngine != false) {
@@ -205,16 +211,19 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "1.0.0"
+            version: "2.0.0"
         ],
         instructions: """Hubitat MCP Server with Rule Engine.
 
-Available tool categories:
-- Device Management: list_devices, get_device, send_command, get_device_events
-- Rule Management: list_rules, get_rule, create_rule, update_rule, delete_rule, enable_rule, disable_rule, test_rule
-- System: get_hub_info, get_modes, set_mode, list_variables, get_variable, set_variable
+Available tools:
+- Device: list_devices, get_device, get_attribute, send_command, get_device_events
+- Rules: list_rules, get_rule, create_rule, update_rule, delete_rule, enable_rule, disable_rule, test_rule
+- System: get_hub_info, get_modes, set_mode, get_hsm_status, set_hsm, list_variables, get_variable, set_variable
 
-Rules support triggers (device_event, time, mode_change), conditions (device_state, time_range, mode), and actions (device_command, set_variable, set_mode, delay, if_then_else)."""
+Rule Engine supports:
+TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), mode_change, hsm_change
+CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
+ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log"""
     ])
 }
 
@@ -332,11 +341,39 @@ def getAllToolDefinitions() {
   "triggers": [{"type": "device_event", "deviceId": "123", "attribute": "switch", "value": "on"}],
   "conditions": [{"type": "device_state", "deviceId": "456", "attribute": "switch", "operator": "equals", "value": "off"}],
   "conditionLogic": "all",
-  "actions": [{"type": "device_command", "deviceId": "789", "command": "on"}]
+  "actions": [{"type": "device_command", "deviceId": "789", "command": "on"}],
+  "localVariables": {"myVar": "initialValue"}
 }
-Trigger types: device_event, time, mode_change
-Condition types: device_state, time_range, mode, variable
-Action types: device_command, set_variable, set_mode, delay, if_then_else, cancel_delayed""",
+
+TRIGGER TYPES:
+- device_event: {deviceId, attribute, value?, operator?, duration?} - duration in seconds for debouncing (e.g., "temp > 78 for 300s")
+- button_event: {deviceId, buttonNumber?, action: "pushed"|"held"|"doubleTapped"|"released"}
+- time: {time: "HH:mm"} or {sunrise: true, offset?: -30} or {sunset: true, offset?: 30}
+- mode_change: {toMode?, fromMode?}
+- hsm_change: {status: "armedAway"|"armedHome"|"armedNight"|"disarmed"|"intrusion"}
+
+CONDITION TYPES:
+- device_state: {deviceId, attribute, operator, value}
+- time_range: {startTime, endTime} - supports "sunrise"/"sunset" keywords
+- mode: {modes: ["Home", "Away"], operator?: "in"|"not_in"}
+- variable: {variableName, operator, value}
+- days_of_week: {days: ["Monday", "Tuesday"]}
+- device_was: {deviceId, attribute, value, forSeconds} - "device has been X for Y seconds"
+- sun_position: {position: "up"|"down"} - is it day or night
+
+ACTION TYPES:
+- device_command: {deviceId, command, parameters?}
+- toggle_device: {deviceId, attribute?: "switch"} - toggle on/off
+- activate_scene: {sceneDeviceId} - activate a scene device
+- set_variable: {variableName, value, scope?: "rule"|"global"}
+- set_local_variable: {variableName, value} - rule-scoped variable
+- set_mode: {mode}
+- delay: {seconds, delayId?} - optional delayId for targeted cancellation
+- if_then_else: {condition, thenActions, elseActions?}
+- cancel_delayed: {delayId?: "all"} - cancel specific delay or all
+- repeat: {times, actions, delayBetween?} - repeat actions N times
+- stop: {} - stop rule execution
+- log: {message, level?: "info"|"warn"|"debug"}""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -346,6 +383,7 @@ Action types: device_command, set_variable, set_mode, delay, if_then_else, cance
                     conditions: [type: "array", description: "Array of condition objects"],
                     conditionLogic: [type: "string", enum: ["all", "any"], default: "all"],
                     actions: [type: "array", description: "Array of action objects"],
+                    localVariables: [type: "object", description: "Initial values for rule-local variables"],
                     enabled: [type: "boolean", default: true]
                 ],
                 required: ["name", "triggers", "actions"]
@@ -472,6 +510,37 @@ Action types: device_command, set_variable, set_mode, delay, if_then_else, cance
                 ],
                 required: ["name", "value"]
             ]
+        ],
+        [
+            name: "get_hsm_status",
+            description: "Get current HSM (Home Security Monitor) status and available arm modes",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "set_hsm",
+            description: "Set HSM arm mode (armedAway, armedHome, armedNight, disarm, armAll, disarmAll)",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    mode: [type: "string", description: "HSM mode: armedAway, armedHome, armedNight, disarm, armAll, disarmAll"]
+                ],
+                required: ["mode"]
+            ]
+        ],
+        [
+            name: "get_attribute",
+            description: "Get a specific attribute value from a device",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "Device ID"],
+                    attribute: [type: "string", description: "Attribute name"]
+                ],
+                required: ["deviceId", "attribute"]
+            ]
         ]
     ]
 }
@@ -503,6 +572,9 @@ def executeTool(toolName, args) {
         case "list_variables": return toolListVariables()
         case "get_variable": return toolGetVariable(args.name)
         case "set_variable": return toolSetVariable(args.name, args.value)
+        case "get_hsm_status": return toolGetHsmStatus()
+        case "set_hsm": return toolSetHsm(args.mode)
+        case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -705,6 +777,7 @@ def toolCreateRule(args) {
         conditions: args.conditions ?: [],
         conditionLogic: args.conditionLogic ?: "all",
         actions: args.actions,
+        localVariables: args.localVariables ?: [:],
         createdAt: now,
         updatedAt: now,
         executionCount: 0
@@ -941,6 +1014,64 @@ def toolSetVariable(name, value) {
     }
 }
 
+def toolGetHsmStatus() {
+    def hsmStatus = location.hsmStatus
+    def hsmAlerts = location.hsmAlert
+
+    return [
+        status: hsmStatus ?: "unconfigured",
+        alerts: hsmAlerts,
+        availableModes: ["armedAway", "armedHome", "armedNight", "disarmed"],
+        armCommands: ["armAway", "armHome", "armNight", "disarm", "armAll", "disarmAll", "cancelAlerts"]
+    ]
+}
+
+def toolSetHsm(mode) {
+    def validModes = ["armAway", "armHome", "armNight", "disarm", "armAll", "disarmAll", "cancelAlerts",
+                      "armedAway", "armedHome", "armedNight", "disarmed"]
+
+    if (!validModes.contains(mode)) {
+        throw new IllegalArgumentException("Invalid HSM mode: ${mode}. Valid: ${validModes}")
+    }
+
+    // Convert status names to command names if needed
+    def command = mode
+    if (mode == "armedAway") command = "armAway"
+    if (mode == "armedHome") command = "armHome"
+    if (mode == "armedNight") command = "armNight"
+    if (mode == "disarmed") command = "disarm"
+
+    sendLocationEvent(name: "hsmSetArm", value: command)
+
+    return [
+        success: true,
+        command: command,
+        message: "HSM command '${command}' sent"
+    ]
+}
+
+def toolGetAttribute(deviceId, attribute) {
+    def device = findDevice(deviceId)
+    if (!device) {
+        throw new IllegalArgumentException("Device not found: ${deviceId}")
+    }
+
+    def value = device.currentValue(attribute)
+    def supportedAttrs = device.supportedAttributes?.collect { it.name }
+
+    if (!supportedAttrs?.contains(attribute)) {
+        throw new IllegalArgumentException("Attribute '${attribute}' not found on device. Available: ${supportedAttrs}")
+    }
+
+    return [
+        device: device.label,
+        deviceId: device.id.toString(),
+        attribute: attribute,
+        value: value,
+        dataType: device.supportedAttributes?.find { it.name == attribute }?.dataType
+    ]
+}
+
 // ==================== RULE ENGINE ====================
 
 def refreshAllSubscriptions() {
@@ -966,19 +1097,44 @@ def subscribeToRuleTriggers(ruleId, rule) {
             case "device_event":
                 def device = findDevice(trigger.deviceId)
                 if (device) {
-                    subscribe(device, trigger.attribute, "handleDeviceEvent", [filterEvents: false])
+                    subscribe(device, trigger.attribute, "handleDeviceEvent")
                     logDebug("Subscribed to ${device.label} ${trigger.attribute} for rule ${rule.name}")
+                }
+                break
+            case "button_event":
+                def device = findDevice(trigger.deviceId)
+                if (device) {
+                    def buttonAction = trigger.action ?: "pushed"
+                    subscribe(device, buttonAction, "handleButtonEvent")
+                    logDebug("Subscribed to ${device.label} ${buttonAction} for rule ${rule.name}")
                 }
                 break
             case "time":
                 if (trigger.time) {
                     schedule(trigger.time, "handleTimeTrigger", [data: [ruleId: ruleId]])
                     logDebug("Scheduled time trigger at ${trigger.time} for rule ${rule.name}")
+                } else if (trigger.sunrise) {
+                    def offset = trigger.offset ?: 0
+                    def sunriseTime = getSunriseAndSunset().sunrise
+                    def triggerTime = new Date(sunriseTime.time + (offset * 60 * 1000))
+                    schedule(triggerTime, "handleTimeTrigger", [data: [ruleId: ruleId, type: "sunrise"]])
+                    logDebug("Scheduled sunrise trigger (offset ${offset}min) for rule ${rule.name}")
+                } else if (trigger.sunset) {
+                    def offset = trigger.offset ?: 0
+                    def sunsetTime = getSunriseAndSunset().sunset
+                    def triggerTime = new Date(sunsetTime.time + (offset * 60 * 1000))
+                    schedule(triggerTime, "handleTimeTrigger", [data: [ruleId: ruleId, type: "sunset"]])
+                    logDebug("Scheduled sunset trigger (offset ${offset}min) for rule ${rule.name}")
                 }
                 break
             case "mode_change":
                 subscribe(location, "mode", "handleModeChange")
                 logDebug("Subscribed to mode changes for rule ${rule.name}")
+                break
+            case "hsm_change":
+                subscribe(location, "hsmStatus", "handleHsmChange")
+                subscribe(location, "hsmAlert", "handleHsmAlert")
+                logDebug("Subscribed to HSM changes for rule ${rule.name}")
                 break
         }
     }
@@ -1000,11 +1156,150 @@ def handleDeviceEvent(evt) {
                     evaluateOperator(evt.value, trigger.operator ?: "equals", trigger.value)
 
                 if (valueMatches) {
-                    logDebug("Trigger matched for rule: ${rule.name}")
+                    // Check for duration requirement (debouncing)
+                    if (trigger.duration && trigger.duration > 0) {
+                        handleDurationTrigger(ruleId, rule, trigger, evt)
+                    } else {
+                        logDebug("Trigger matched for rule: ${rule.name}")
+                        evaluateAndExecuteRule(ruleId, rule, evt)
+                    }
+                } else {
+                    // Value didn't match - cancel any pending duration trigger
+                    cancelDurationTrigger(ruleId, trigger)
+                }
+            }
+        }
+    }
+}
+
+def handleButtonEvent(evt) {
+    logDebug("Button event: ${evt.device.label} ${evt.name} = ${evt.value}")
+
+    state.rules?.each { ruleId, rule ->
+        if (!rule.enabled) return
+
+        rule.triggers?.each { trigger ->
+            if (trigger.type == "button_event" &&
+                trigger.deviceId?.toString() == evt.device.id.toString() &&
+                trigger.action == evt.name) {
+
+                // Check button number if specified
+                def buttonMatches = !trigger.buttonNumber ||
+                    trigger.buttonNumber.toString() == evt.value?.toString()
+
+                if (buttonMatches) {
+                    logDebug("Button trigger matched for rule: ${rule.name}")
                     evaluateAndExecuteRule(ruleId, rule, evt)
                 }
             }
         }
+    }
+}
+
+def handleHsmChange(evt) {
+    logDebug("HSM status changed: ${evt.value}")
+
+    state.rules?.each { ruleId, rule ->
+        if (!rule.enabled) return
+
+        rule.triggers?.each { trigger ->
+            if (trigger.type == "hsm_change") {
+                def matches = !trigger.status || trigger.status == evt.value
+                if (matches) {
+                    logDebug("HSM trigger matched for rule: ${rule.name}")
+                    evaluateAndExecuteRule(ruleId, rule, evt)
+                }
+            }
+        }
+    }
+}
+
+def handleHsmAlert(evt) {
+    logDebug("HSM alert: ${evt.value}")
+
+    state.rules?.each { ruleId, rule ->
+        if (!rule.enabled) return
+
+        rule.triggers?.each { trigger ->
+            if (trigger.type == "hsm_change" && trigger.status == "intrusion") {
+                if (evt.value == "intrusion") {
+                    logDebug("HSM intrusion trigger matched for rule: ${rule.name}")
+                    evaluateAndExecuteRule(ruleId, rule, evt)
+                }
+            }
+        }
+    }
+}
+
+// Duration trigger handling (debouncing)
+def handleDurationTrigger(ruleId, rule, trigger, evt) {
+    def triggerId = "${ruleId}-${trigger.deviceId}-${trigger.attribute}"
+
+    // Check if we already have a pending trigger
+    if (state.pendingDurationTriggers?.containsKey(triggerId)) {
+        logDebug("Duration trigger already pending for ${rule.name}, waiting...")
+        return
+    }
+
+    // Start the duration timer
+    if (!state.pendingDurationTriggers) state.pendingDurationTriggers = [:]
+    state.pendingDurationTriggers[triggerId] = [
+        ruleId: ruleId,
+        startTime: now(),
+        requiredValue: trigger.value,
+        attribute: trigger.attribute,
+        deviceId: trigger.deviceId
+    ]
+
+    logDebug("Starting ${trigger.duration}s duration timer for rule: ${rule.name}")
+    runIn(trigger.duration, "checkDurationTrigger", [data: [triggerId: triggerId, ruleId: ruleId]])
+}
+
+def cancelDurationTrigger(ruleId, trigger) {
+    def triggerId = "${ruleId}-${trigger.deviceId}-${trigger.attribute}"
+    if (state.pendingDurationTriggers?.containsKey(triggerId)) {
+        state.pendingDurationTriggers.remove(triggerId)
+        logDebug("Cancelled duration trigger ${triggerId} - condition no longer met")
+    }
+}
+
+def checkDurationTrigger(data) {
+    def triggerId = data.triggerId
+    def ruleId = data.ruleId
+
+    def pending = state.pendingDurationTriggers?.get(triggerId)
+    if (!pending) {
+        logDebug("Duration trigger ${triggerId} was cancelled")
+        return
+    }
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule?.enabled) {
+        state.pendingDurationTriggers.remove(triggerId)
+        return
+    }
+
+    // Verify the condition is still met
+    def device = findDevice(pending.deviceId)
+    if (!device) {
+        state.pendingDurationTriggers.remove(triggerId)
+        return
+    }
+
+    def currentValue = device.currentValue(pending.attribute)
+    def trigger = rule.triggers?.find {
+        it.type == "device_event" &&
+        it.deviceId?.toString() == pending.deviceId?.toString() &&
+        it.attribute == pending.attribute
+    }
+
+    if (trigger && evaluateOperator(currentValue, trigger.operator ?: "equals", trigger.value)) {
+        logDebug("Duration condition still met after ${trigger.duration}s - executing rule: ${rule.name}")
+        state.pendingDurationTriggers.remove(triggerId)
+        evaluateAndExecuteRule(ruleId, rule, null)
+    } else {
+        logDebug("Duration condition no longer met for rule: ${rule.name}")
+        state.pendingDurationTriggers.remove(triggerId)
     }
 }
 
@@ -1072,7 +1367,7 @@ def evaluateConditions(rule) {
     return rule.conditionLogic == "any" ? results.any { it } : results.every { it }
 }
 
-def evaluateCondition(condition) {
+def evaluateCondition(condition, ruleId = null) {
     try {
         switch (condition.type) {
             case "device_state":
@@ -1092,12 +1387,54 @@ def evaluateCondition(condition) {
                 return condition.modes?.contains(currentMode)
 
             case "variable":
-                def varValue = toolGetVariable(condition.variableName)?.value
+                def varValue
+                // Check rule-local variable first if ruleId provided
+                if (ruleId && state.rules?.get(ruleId)?.localVariables?.containsKey(condition.variableName)) {
+                    varValue = state.rules.get(ruleId).localVariables.get(condition.variableName)
+                } else {
+                    varValue = toolGetVariable(condition.variableName)?.value
+                }
                 return evaluateOperator(varValue, condition.operator ?: "equals", condition.value)
 
             case "days_of_week":
                 def today = new Date().format("EEEE")
                 return condition.days?.contains(today)
+
+            case "device_was":
+                // Check if device has been in a state for a certain time
+                def device = findDevice(condition.deviceId)
+                if (!device) return false
+                def currentValue = device.currentValue(condition.attribute)
+
+                // First check current state matches
+                if (!evaluateOperator(currentValue, condition.operator ?: "equals", condition.value)) {
+                    return false
+                }
+
+                // Then check how long it's been in this state
+                def events = device.events(max: 10)?.findAll { it.name == condition.attribute }
+                if (events && events.size() > 0) {
+                    def lastChange = events.find { it.value?.toString() != condition.value?.toString() }
+                    if (lastChange) {
+                        def secondsSinceChange = (now() - lastChange.date.time) / 1000
+                        return secondsSinceChange >= (condition.forSeconds ?: 0)
+                    }
+                }
+                // If no contrary event found, assume it's been in this state long enough
+                return true
+
+            case "sun_position":
+                def sunTimes = getSunriseAndSunset()
+                def nowTime = now()
+                def isDay = nowTime >= sunTimes.sunrise.time && nowTime < sunTimes.sunset.time
+                return condition.position == "up" ? isDay : !isDay
+
+            case "hsm_status":
+                def hsmStatus = location.hsmStatus
+                if (condition.operator == "not_equals" || condition.operator == "!=") {
+                    return hsmStatus != condition.status
+                }
+                return hsmStatus == condition.status
 
             default:
                 logDebug("Unknown condition type: ${condition.type}")
@@ -1109,8 +1446,12 @@ def evaluateCondition(condition) {
     }
 }
 
-def executeActions(ruleId, actions, evt) {
+def executeActions(ruleId, actions, evt, executionContext = [:]) {
+    def shouldStop = false
+
     actions?.eachWithIndex { action, index ->
+        if (shouldStop) return
+
         try {
             switch (action.type) {
                 case "device_command":
@@ -1126,9 +1467,47 @@ def executeActions(ruleId, actions, evt) {
                     }
                     break
 
+                case "toggle_device":
+                    def device = findDevice(action.deviceId)
+                    if (device) {
+                        def attr = action.attribute ?: "switch"
+                        def currentState = device.currentValue(attr)
+                        if (currentState == "on") {
+                            device.off()
+                            logDebug("Toggled ${device.label} OFF")
+                        } else {
+                            device.on()
+                            logDebug("Toggled ${device.label} ON")
+                        }
+                    }
+                    break
+
+                case "activate_scene":
+                    def sceneDevice = findDevice(action.sceneDeviceId)
+                    if (sceneDevice) {
+                        if (sceneDevice.hasCommand("on")) {
+                            sceneDevice.on()
+                        } else if (sceneDevice.hasCommand("push")) {
+                            sceneDevice.push()
+                        } else if (sceneDevice.hasCommand("activate")) {
+                            sceneDevice.activate()
+                        }
+                        logDebug("Activated scene ${sceneDevice.label}")
+                    }
+                    break
+
                 case "set_variable":
-                    toolSetVariable(action.variableName, action.value)
+                    if (action.scope == "rule" || action.scope == "local") {
+                        setRuleLocalVariable(ruleId, action.variableName, action.value)
+                    } else {
+                        toolSetVariable(action.variableName, action.value)
+                    }
                     logDebug("Set variable ${action.variableName} = ${action.value}")
+                    break
+
+                case "set_local_variable":
+                    setRuleLocalVariable(ruleId, action.variableName, action.value)
+                    logDebug("Set local variable ${action.variableName} = ${action.value}")
                     break
 
                 case "set_mode":
@@ -1139,24 +1518,88 @@ def executeActions(ruleId, actions, evt) {
                 case "delay":
                     def remainingActions = actions.drop(index + 1)
                     if (remainingActions.size() > 0) {
+                        def delayId = action.delayId ?: "default-${ruleId}-${now()}"
+
+                        // Store delay info for potential cancellation
+                        if (!state.delayedActionGroups) state.delayedActionGroups = [:]
+                        state.delayedActionGroups[delayId] = [
+                            ruleId: ruleId,
+                            scheduledAt: now()
+                        ]
+
                         runIn(action.seconds ?: 1, "executeDelayedActions",
-                              [data: [ruleId: ruleId, actions: remainingActions]])
-                        logDebug("Scheduled ${remainingActions.size()} actions after ${action.seconds}s delay")
+                              [data: [ruleId: ruleId, actions: remainingActions, delayId: delayId]])
+                        logDebug("Scheduled ${remainingActions.size()} actions after ${action.seconds}s delay (id: ${delayId})")
                     }
                     return // Exit loop, remaining actions are scheduled
 
                 case "if_then_else":
-                    def conditionMet = evaluateCondition(action.condition)
+                    def conditionMet = evaluateCondition(action.condition, ruleId)
                     if (conditionMet && action.thenActions) {
-                        executeActions(ruleId, action.thenActions, evt)
+                        executeActions(ruleId, action.thenActions, evt, executionContext)
                     } else if (!conditionMet && action.elseActions) {
-                        executeActions(ruleId, action.elseActions, evt)
+                        executeActions(ruleId, action.elseActions, evt, executionContext)
                     }
                     break
 
                 case "cancel_delayed":
-                    unschedule("executeDelayedActions")
-                    logDebug("Cancelled all delayed actions")
+                    if (action.delayId && action.delayId != "all") {
+                        // Cancel specific delay
+                        state.delayedActionGroups?.remove(action.delayId)
+                        logDebug("Cancelled delayed action group: ${action.delayId}")
+                    } else {
+                        // Cancel all delays for this rule
+                        state.delayedActionGroups?.keySet()?.findAll {
+                            it.startsWith("default-${ruleId}") || state.delayedActionGroups[it]?.ruleId == ruleId
+                        }?.each { state.delayedActionGroups.remove(it) }
+                        unschedule("executeDelayedActions")
+                        logDebug("Cancelled all delayed actions")
+                    }
+                    break
+
+                case "repeat":
+                    def times = action.times ?: 1
+                    def delayBetween = action.delayBetween ?: 0
+
+                    if (delayBetween > 0) {
+                        // Schedule repeated executions
+                        (1..times).each { iteration ->
+                            def delaySeconds = delayBetween * (iteration - 1)
+                            if (delaySeconds == 0) {
+                                executeActions(ruleId, action.actions, evt, executionContext)
+                            } else {
+                                runIn(delaySeconds, "executeDelayedActions",
+                                      [data: [ruleId: ruleId, actions: action.actions, delayId: "repeat-${ruleId}-${iteration}"]])
+                            }
+                        }
+                    } else {
+                        // Execute immediately
+                        (1..times).each {
+                            executeActions(ruleId, action.actions, evt, executionContext)
+                        }
+                    }
+                    logDebug("Repeated actions ${times} times")
+                    break
+
+                case "stop":
+                    logDebug("Stopping rule execution")
+                    shouldStop = true
+                    return
+
+                case "log":
+                    def level = action.level ?: "info"
+                    def message = action.message ?: "Rule ${ruleId} log"
+                    switch (level) {
+                        case "debug": log.debug message; break
+                        case "warn": log.warn message; break
+                        case "error": log.error message; break
+                        default: log.info message
+                    }
+                    break
+
+                case "set_hsm":
+                    sendLocationEvent(name: "hsmSetArm", value: action.status)
+                    logDebug("Set HSM to ${action.status}")
                     break
 
                 default:
@@ -1166,6 +1609,19 @@ def executeActions(ruleId, actions, evt) {
             log.error "Error executing action: ${e.message}"
         }
     }
+}
+
+def setRuleLocalVariable(ruleId, varName, value) {
+    def rule = state.rules?.get(ruleId)
+    if (rule) {
+        if (!rule.localVariables) rule.localVariables = [:]
+        rule.localVariables[varName] = value
+        state.rules[ruleId] = rule
+    }
+}
+
+def getRuleLocalVariable(ruleId, varName) {
+    return state.rules?.get(ruleId)?.localVariables?.get(varName)
 }
 
 def executeDelayedActions(data) {
@@ -1196,14 +1652,37 @@ def validateTrigger(trigger) {
             if (!findDevice(trigger.deviceId)) {
                 throw new IllegalArgumentException("Device not found or not authorized: ${trigger.deviceId}")
             }
+            if (trigger.duration && trigger.duration < 0) {
+                throw new IllegalArgumentException("Duration must be positive")
+            }
+            break
+        case "button_event":
+            if (!trigger.deviceId) {
+                throw new IllegalArgumentException("Device ID is required for button_event trigger")
+            }
+            if (!findDevice(trigger.deviceId)) {
+                throw new IllegalArgumentException("Device not found or not authorized: ${trigger.deviceId}")
+            }
+            if (!trigger.action) {
+                throw new IllegalArgumentException("Action is required for button_event (pushed, held, doubleTapped, released)")
+            }
+            if (!["pushed", "held", "doubleTapped", "released"].contains(trigger.action)) {
+                throw new IllegalArgumentException("Invalid button action: ${trigger.action}")
+            }
             break
         case "time":
-            if (!trigger.time) {
-                throw new IllegalArgumentException("Time is required for time trigger (HH:mm format)")
+            if (!trigger.time && !trigger.sunrise && !trigger.sunset) {
+                throw new IllegalArgumentException("Time, sunrise, or sunset is required for time trigger")
             }
             break
         case "mode_change":
             // No additional validation needed
+            break
+        case "hsm_change":
+            // Optional status filter
+            if (trigger.status && !["armedAway", "armedHome", "armedNight", "disarmed", "intrusion", "allDisarmed"].contains(trigger.status)) {
+                throw new IllegalArgumentException("Invalid HSM status: ${trigger.status}")
+            }
             break
         default:
             throw new IllegalArgumentException("Unknown trigger type: ${trigger.type}")
@@ -1221,6 +1700,14 @@ def validateCondition(condition) {
                 throw new IllegalArgumentException("Device ID and attribute required for device_state condition")
             }
             break
+        case "device_was":
+            if (!condition.deviceId || !condition.attribute) {
+                throw new IllegalArgumentException("Device ID and attribute required for device_was condition")
+            }
+            if (!condition.forSeconds || condition.forSeconds <= 0) {
+                throw new IllegalArgumentException("forSeconds (positive integer) required for device_was condition")
+            }
+            break
         case "time_range":
             if (!condition.startTime || !condition.endTime) {
                 throw new IllegalArgumentException("Start and end time required for time_range condition")
@@ -1234,6 +1721,21 @@ def validateCondition(condition) {
         case "variable":
             if (!condition.variableName) {
                 throw new IllegalArgumentException("Variable name required for variable condition")
+            }
+            break
+        case "days_of_week":
+            if (!condition.days || condition.days.size() == 0) {
+                throw new IllegalArgumentException("Days array required for days_of_week condition")
+            }
+            break
+        case "sun_position":
+            if (!condition.position || !["up", "down"].contains(condition.position)) {
+                throw new IllegalArgumentException("Position ('up' or 'down') required for sun_position condition")
+            }
+            break
+        case "hsm_status":
+            if (!condition.status) {
+                throw new IllegalArgumentException("Status required for hsm_status condition")
             }
             break
     }
@@ -1253,7 +1755,24 @@ def validateAction(action) {
                 throw new IllegalArgumentException("Device not found or not authorized: ${action.deviceId}")
             }
             break
+        case "toggle_device":
+            if (!action.deviceId) {
+                throw new IllegalArgumentException("Device ID required for toggle_device action")
+            }
+            if (!findDevice(action.deviceId)) {
+                throw new IllegalArgumentException("Device not found or not authorized: ${action.deviceId}")
+            }
+            break
+        case "activate_scene":
+            if (!action.sceneDeviceId) {
+                throw new IllegalArgumentException("Scene device ID required for activate_scene action")
+            }
+            if (!findDevice(action.sceneDeviceId)) {
+                throw new IllegalArgumentException("Scene device not found or not authorized: ${action.sceneDeviceId}")
+            }
+            break
         case "set_variable":
+        case "set_local_variable":
             if (!action.variableName) {
                 throw new IllegalArgumentException("Variable name required for set_variable action")
             }
@@ -1273,6 +1792,33 @@ def validateAction(action) {
                 throw new IllegalArgumentException("Condition required for if_then_else action")
             }
             validateCondition(action.condition)
+            if (action.thenActions) {
+                action.thenActions.each { validateAction(it) }
+            }
+            if (action.elseActions) {
+                action.elseActions.each { validateAction(it) }
+            }
+            break
+        case "cancel_delayed":
+            // Optional delayId
+            break
+        case "repeat":
+            if (!action.times || action.times < 1) {
+                throw new IllegalArgumentException("times (positive integer) required for repeat action")
+            }
+            if (!action.actions || action.actions.size() == 0) {
+                throw new IllegalArgumentException("actions array required for repeat action")
+            }
+            action.actions.each { validateAction(it) }
+            break
+        case "stop":
+        case "log":
+            // No additional validation
+            break
+        case "set_hsm":
+            if (!action.status) {
+                throw new IllegalArgumentException("Status required for set_hsm action")
+            }
             break
     }
 }
@@ -1345,29 +1891,49 @@ def convertParameter(param) {
 
 def isTimeInRange(startTime, endTime) {
     try {
-        def now = new Date()
-        def start = Date.parse("HH:mm", startTime)
-        def end = Date.parse("HH:mm", endTime)
+        def nowDate = new Date()
+        def sunTimes = getSunriseAndSunset()
 
-        // Set to today's date
-        def cal = Calendar.getInstance()
-        cal.setTime(now)
-        def today = cal.get(Calendar.DAY_OF_YEAR)
+        // Parse start time (supports "sunrise", "sunset", or "HH:mm")
+        def start
+        if (startTime?.toLowerCase() == "sunrise") {
+            start = sunTimes.sunrise
+        } else if (startTime?.toLowerCase() == "sunset") {
+            start = sunTimes.sunset
+        } else {
+            start = Date.parse("HH:mm", startTime)
+            def cal = Calendar.getInstance()
+            cal.setTime(nowDate)
+            def today = cal.get(Calendar.DAY_OF_YEAR)
+            cal.setTime(start)
+            cal.set(Calendar.DAY_OF_YEAR, today)
+            cal.set(Calendar.YEAR, Calendar.getInstance().get(Calendar.YEAR))
+            start = cal.getTime()
+        }
 
-        cal.setTime(start)
-        cal.set(Calendar.DAY_OF_YEAR, today)
-        start = cal.getTime()
-
-        cal.setTime(end)
-        cal.set(Calendar.DAY_OF_YEAR, today)
-        end = cal.getTime()
+        // Parse end time (supports "sunrise", "sunset", or "HH:mm")
+        def end
+        if (endTime?.toLowerCase() == "sunrise") {
+            end = sunTimes.sunrise
+        } else if (endTime?.toLowerCase() == "sunset") {
+            end = sunTimes.sunset
+        } else {
+            end = Date.parse("HH:mm", endTime)
+            def cal = Calendar.getInstance()
+            cal.setTime(nowDate)
+            def today = cal.get(Calendar.DAY_OF_YEAR)
+            cal.setTime(end)
+            cal.set(Calendar.DAY_OF_YEAR, today)
+            cal.set(Calendar.YEAR, Calendar.getInstance().get(Calendar.YEAR))
+            end = cal.getTime()
+        }
 
         // Handle overnight ranges
         if (end.before(start)) {
-            return now.after(start) || now.before(end)
+            return nowDate.after(start) || nowDate.before(end)
         }
 
-        return now.after(start) && now.before(end)
+        return nowDate.after(start) && nowDate.before(end)
     } catch (Exception e) {
         log.warn "Error parsing time range: ${e.message}"
         return true
@@ -1379,12 +1945,21 @@ def describeCondition(condition) {
         case "device_state":
             def device = findDevice(condition.deviceId)
             return "Device '${device?.label ?: condition.deviceId}' ${condition.attribute} ${condition.operator ?: 'equals'} '${condition.value}'"
+        case "device_was":
+            def device = findDevice(condition.deviceId)
+            return "Device '${device?.label ?: condition.deviceId}' ${condition.attribute} has been '${condition.value}' for ${condition.forSeconds}s"
         case "time_range":
             return "Time between ${condition.startTime} and ${condition.endTime}"
         case "mode":
             return "Mode ${condition.operator == 'not_in' ? 'not in' : 'in'} [${condition.modes?.join(', ')}]"
         case "variable":
             return "Variable '${condition.variableName}' ${condition.operator ?: 'equals'} '${condition.value}'"
+        case "days_of_week":
+            return "Day is in [${condition.days?.join(', ')}]"
+        case "sun_position":
+            return "Sun is ${condition.position}"
+        case "hsm_status":
+            return "HSM status ${condition.operator ?: 'equals'} '${condition.status}'"
         default:
             return "Unknown condition: ${condition.type}"
     }
@@ -1396,16 +1971,34 @@ def describeAction(action) {
             def device = findDevice(action.deviceId)
             def params = action.parameters ? "(${action.parameters.join(', ')})" : ""
             return "Send '${action.command}${params}' to '${device?.label ?: action.deviceId}'"
+        case "toggle_device":
+            def device = findDevice(action.deviceId)
+            return "Toggle '${device?.label ?: action.deviceId}'"
+        case "activate_scene":
+            def scene = findDevice(action.sceneDeviceId)
+            return "Activate scene '${scene?.label ?: action.sceneDeviceId}'"
         case "set_variable":
-            return "Set variable '${action.variableName}' to '${action.value}'"
+            def scope = action.scope == "rule" || action.scope == "local" ? " (local)" : ""
+            return "Set variable '${action.variableName}'${scope} to '${action.value}'"
+        case "set_local_variable":
+            return "Set local variable '${action.variableName}' to '${action.value}'"
         case "set_mode":
             return "Set mode to '${action.mode}'"
         case "delay":
-            return "Wait ${action.seconds} seconds"
+            def idInfo = action.delayId ? " (id: ${action.delayId})" : ""
+            return "Wait ${action.seconds} seconds${idInfo}"
         case "if_then_else":
             return "IF ${describeCondition(action.condition)} THEN (${action.thenActions?.size() ?: 0} actions) ELSE (${action.elseActions?.size() ?: 0} actions)"
         case "cancel_delayed":
-            return "Cancel all delayed actions"
+            return action.delayId ? "Cancel delayed action '${action.delayId}'" : "Cancel all delayed actions"
+        case "repeat":
+            return "Repeat ${action.times} times: (${action.actions?.size() ?: 0} actions)"
+        case "stop":
+            return "Stop rule execution"
+        case "log":
+            return "Log [${action.level ?: 'info'}]: '${action.message}'"
+        case "set_hsm":
+            return "Set HSM to '${action.status}'"
         default:
             return "Unknown action: ${action.type}"
     }
