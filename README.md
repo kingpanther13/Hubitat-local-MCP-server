@@ -396,6 +396,8 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.1.8** - Fixed duration triggers firing repeatedly (now waits for condition to go false before re-arming)
+- **v0.1.7** - Fixed duration-based `device_event` triggers (now properly waits for condition to stay true)
 - **v0.1.6** - Fixed `repeat` action parameter name (`times` now works correctly)
 - **v0.1.5** - Fixed `capture_state`/`restore_state` to work across different rules
 - **v0.1.4** - Added all remaining documented actions: `set_color`, `set_color_temperature`, `lock`/`unlock`, `capture_state`/`restore_state`, `send_notification`, `repeat`
