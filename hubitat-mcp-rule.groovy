@@ -1459,6 +1459,61 @@ def evaluateCondition(condition) {
         case "hsm_status":
             return location.hsmStatus == condition.status
 
+        case "variable":
+            // Check local variables first, then global
+            def varValue = state.localVariables?."${condition.variableName}"
+            if (varValue == null) {
+                // Try global variable from parent
+                varValue = parent.getVariableValue(condition.variableName)
+            }
+            return evaluateComparison(varValue, condition.operator, condition.value)
+
+        case "device_was":
+            def device = parent.findDevice(condition.deviceId)
+            if (!device) return false
+            def currentValue = device.currentValue(condition.attribute)
+            if (currentValue?.toString() != condition.value?.toString()) return false
+            // Check how long it's been in this state
+            def events = device.eventsSince(new Date(now() - (condition.forSeconds * 1000)), [max: 10])
+            def recentChange = events?.find { it.name == condition.attribute && it.value?.toString() != condition.value?.toString() }
+            return recentChange == null
+
+        case "presence":
+            def device = parent.findDevice(condition.deviceId)
+            if (!device) return false
+            def currentPresence = device.currentValue("presence")
+            return currentPresence == condition.status
+
+        case "lock":
+            def device = parent.findDevice(condition.deviceId)
+            if (!device) return false
+            def currentLock = device.currentValue("lock")
+            return currentLock == condition.status
+
+        case "thermostat_mode":
+            def device = parent.findDevice(condition.deviceId)
+            if (!device) return false
+            def currentMode = device.currentValue("thermostatMode")
+            return currentMode == condition.mode
+
+        case "thermostat_state":
+            def device = parent.findDevice(condition.deviceId)
+            if (!device) return false
+            def currentState = device.currentValue("thermostatOperatingState")
+            return currentState == condition.state
+
+        case "illuminance":
+            def device = parent.findDevice(condition.deviceId)
+            if (!device) return false
+            def currentLux = device.currentValue("illuminance")
+            return evaluateComparison(currentLux, condition.operator, condition.value)
+
+        case "power":
+            def device = parent.findDevice(condition.deviceId)
+            if (!device) return false
+            def currentPower = device.currentValue("power")
+            return evaluateComparison(currentPower, condition.operator, condition.value)
+
         default:
             return true
     }
@@ -1488,14 +1543,28 @@ def evaluateComparison(current, operator, target) {
 }
 
 def executeActions() {
-    for (action in state.actions) {
-        if (!executeAction(action)) {
+    executeActionsFromIndex(0)
+}
+
+def executeActionsFromIndex(startIndex) {
+    def actions = state.actions ?: []
+    for (int i = startIndex; i < actions.size(); i++) {
+        def action = actions[i]
+        def result = executeAction(action, i)
+        if (result == false) {
             break // Stop if action returns false (e.g., stop action)
+        } else if (result == "delayed") {
+            break // Delay scheduled, will resume later
         }
     }
 }
 
-def executeAction(action) {
+def resumeDelayedActions(data) {
+    log.debug "Resuming actions from index ${data.nextIndex} (delayId: ${data.delayId})"
+    executeActionsFromIndex(data.nextIndex)
+}
+
+def executeAction(action, actionIndex = null) {
     log.debug "Executing action: ${describeAction(action)}"
 
     switch (action.type) {
@@ -1545,7 +1614,13 @@ def executeAction(action) {
             break
 
         case "delay":
-            pauseExecution(action.seconds * 1000)
+            if (actionIndex != null) {
+                def delayId = action.delayId ?: "delay_${now()}"
+                def handlerName = "resumeDelayedActions"
+                log.debug "Scheduling delayed continuation in ${action.seconds} seconds (delayId: ${delayId})"
+                runIn(action.seconds, handlerName, [data: [nextIndex: actionIndex + 1, delayId: delayId]])
+                return "delayed" // Signal to stop current execution, will resume via scheduled handler
+            }
             break
 
         case "log":
@@ -1654,6 +1729,7 @@ def getRuleData() {
         conditions: state.conditions ?: [],
         conditionLogic: state.conditionLogic ?: "all",
         actions: state.actions ?: [],
+        localVariables: state.localVariables ?: [:],
         createdAt: state.createdAt,
         updatedAt: state.updatedAt,
         lastTriggered: state.lastTriggered,
@@ -1669,6 +1745,7 @@ def updateRuleFromParent(data) {
     if (data.conditions != null) state.conditions = data.conditions
     if (data.conditionLogic != null) state.conditionLogic = data.conditionLogic
     if (data.actions != null) state.actions = data.actions
+    if (data.localVariables != null) state.localVariables = data.localVariables
     state.updatedAt = now()
 
     unsubscribe()

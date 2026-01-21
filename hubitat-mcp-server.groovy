@@ -845,7 +845,8 @@ def toolCreateRule(args) {
         triggers: args.triggers,
         conditions: args.conditions ?: [],
         conditionLogic: args.conditionLogic ?: "all",
-        actions: args.actions
+        actions: args.actions,
+        localVariables: args.localVariables ?: [:]
     ])
 
     return [
@@ -885,6 +886,7 @@ def toolUpdateRule(ruleId, args) {
     if (args.conditions != null) updateData.conditions = args.conditions
     if (args.conditionLogic != null) updateData.conditionLogic = args.conditionLogic
     if (args.actions != null) updateData.actions = args.actions
+    if (args.localVariables != null) updateData.localVariables = args.localVariables
 
     childApp.updateRuleFromParent(updateData)
 
@@ -1047,6 +1049,23 @@ def toolSetVariable(name, value) {
         state.ruleVariables[name] = value
         return [success: true, name: name, value: value, source: "rule_engine"]
     }
+}
+
+// Helper method for child apps to get variable values
+def getVariableValue(name) {
+    try {
+        def hubVar = getGlobalConnectorVariable(name)
+        if (hubVar != null) return hubVar
+    } catch (Exception e) {
+        // Hub connector variable not found
+    }
+    return state.ruleVariables?.get(name)
+}
+
+// Helper method for child apps to set rule-scoped variables
+def setRuleVariable(name, value) {
+    if (!state.ruleVariables) state.ruleVariables = [:]
+    state.ruleVariables[name] = value
 }
 
 def toolGetHsmStatus() {
