@@ -457,6 +457,29 @@ def editTriggersPage(params) {
         }
     }
 
+    // Auto-save any pending trigger when entering this page (unless cancelled)
+    if (settings.triggerType && params?.cancel != true) {
+        def trigger = buildTriggerFromSettings()
+        if (trigger) {
+            if (!rule.triggers) rule.triggers = []
+            if (state.editingTriggerIndex != null && state.editingTriggerIndex < rule.triggers.size()) {
+                rule.triggers[state.editingTriggerIndex] = trigger
+                log.info "Updated trigger ${state.editingTriggerIndex + 1} in rule '${rule.name}'"
+            } else {
+                rule.triggers.add(trigger)
+                log.info "Added new trigger to rule '${rule.name}'"
+            }
+            rule.updatedAt = new Date().time
+            state.rules[ruleId] = rule
+            refreshAllSubscriptions()
+        }
+    }
+    // Always clear settings when returning to this page
+    clearTriggerSettings()
+    state.remove("editingTriggerIndex")
+    state.remove("triggerSettingsLoaded")
+    state.remove("loadedTriggerIndex")
+
     dynamicPage(name: "editTriggersPage", title: "Edit Triggers: ${rule.name}") {
         section("Current Triggers") {
             if (rule.triggers && rule.triggers.size() > 0) {
@@ -518,11 +541,15 @@ def addTriggerPage(params) {
 
         section {
             if (settings.triggerType) {
-                input "saveTriggerBtn", "button", title: "Save Trigger"
+                href name: "saveTrigger", page: "editTriggersPage",
+                     title: "Save Trigger",
+                     description: "Save and return to triggers list",
+                     params: [ruleId: ruleId]
             }
             href name: "cancelTrigger", page: "editTriggersPage",
                  title: "Cancel",
-                 params: [ruleId: ruleId]
+                 description: "Discard changes",
+                 params: [ruleId: ruleId, cancel: true]
         }
     }
 }
@@ -570,10 +597,14 @@ def editTriggerPage(params) {
         renderTriggerFields(settings.triggerType ?: trigger.type)
 
         section {
-            input "saveTriggerBtn", "button", title: "Save Changes"
+            href name: "saveTriggerEdit", page: "editTriggersPage",
+                 title: "Save Changes",
+                 description: "Save and return to triggers list",
+                 params: [ruleId: ruleId]
             input "deleteTrigger_${triggerIndex}", "button", title: "Delete Trigger"
             href name: "cancelTriggerEdit", page: "editTriggersPage",
                  title: "Cancel",
+                 description: "Discard changes",
                  params: [ruleId: ruleId]
         }
     }
@@ -883,6 +914,28 @@ def editConditionsPage(params) {
         }
     }
 
+    // Auto-save any pending condition when entering this page (unless cancelled)
+    if (settings.conditionType && params?.cancel != true) {
+        def condition = buildConditionFromSettings()
+        if (condition) {
+            if (!rule.conditions) rule.conditions = []
+            if (state.editingConditionIndex != null && state.editingConditionIndex < rule.conditions.size()) {
+                rule.conditions[state.editingConditionIndex] = condition
+                log.info "Updated condition ${state.editingConditionIndex + 1} in rule '${rule.name}'"
+            } else {
+                rule.conditions.add(condition)
+                log.info "Added new condition to rule '${rule.name}'"
+            }
+            rule.updatedAt = new Date().time
+            state.rules[ruleId] = rule
+        }
+    }
+    // Always clear settings when returning to this page
+    clearConditionSettings()
+    state.remove("editingConditionIndex")
+    state.remove("conditionSettingsLoaded")
+    state.remove("loadedConditionIndex")
+
     dynamicPage(name: "editConditionsPage", title: "Edit Conditions: ${rule.name}") {
         section("Condition Logic") {
             input "conditionLogic", "enum", title: "How should conditions be evaluated?",
@@ -966,11 +1019,15 @@ def addConditionPage(params) {
 
         section {
             if (settings.conditionType) {
-                input "saveConditionBtn", "button", title: "Save Condition"
+                href name: "saveCondition", page: "editConditionsPage",
+                     title: "Save Condition",
+                     description: "Save and return to conditions list",
+                     params: [ruleId: ruleId]
             }
             href name: "cancelCondition", page: "editConditionsPage",
                  title: "Cancel",
-                 params: [ruleId: ruleId]
+                 description: "Discard changes",
+                 params: [ruleId: ruleId, cancel: true]
         }
     }
 }
@@ -1026,11 +1083,15 @@ def editConditionPage(params) {
         renderConditionFields(settings.conditionType ?: condition.type)
 
         section {
-            input "saveConditionBtn", "button", title: "Save Changes"
+            href name: "saveConditionEdit", page: "editConditionsPage",
+                 title: "Save Changes",
+                 description: "Save and return to conditions list",
+                 params: [ruleId: ruleId]
             input "deleteCondition_${conditionIndex}", "button", title: "Delete Condition"
             href name: "cancelConditionEdit", page: "editConditionsPage",
                  title: "Cancel",
-                 params: [ruleId: ruleId]
+                 description: "Discard changes",
+                 params: [ruleId: ruleId, cancel: true]
         }
     }
 }
@@ -1468,6 +1529,28 @@ def editActionsPage(params) {
         }
     }
 
+    // Auto-save any pending action when entering this page (unless cancelled)
+    if (settings.actionType && params?.cancel != true) {
+        def action = buildActionFromSettings()
+        if (action) {
+            if (!rule.actions) rule.actions = []
+            if (state.editingActionIndex != null && state.editingActionIndex < rule.actions.size()) {
+                rule.actions[state.editingActionIndex] = action
+                log.info "Updated action ${state.editingActionIndex + 1} in rule '${rule.name}'"
+            } else {
+                rule.actions.add(action)
+                log.info "Added new action to rule '${rule.name}'"
+            }
+            rule.updatedAt = new Date().time
+            state.rules[ruleId] = rule
+        }
+    }
+    // Always clear settings when returning to this page
+    clearActionSettings()
+    state.remove("editingActionIndex")
+    state.remove("actionSettingsLoaded")
+    state.remove("loadedActionIndex")
+
     dynamicPage(name: "editActionsPage", title: "Edit Actions: ${rule.name}") {
         section("Actions (executed in order)") {
             if (rule.actions && rule.actions.size() > 0) {
@@ -1547,11 +1630,15 @@ def addActionPage(params) {
 
         section {
             if (settings.actionType) {
-                input "saveActionBtn", "button", title: "Save Action"
+                href name: "saveAction", page: "editActionsPage",
+                     title: "Save Action",
+                     description: "Save and return to actions list",
+                     params: [ruleId: ruleId]
             }
             href name: "cancelAction", page: "editActionsPage",
                  title: "Cancel",
-                 params: [ruleId: ruleId]
+                 description: "Discard changes",
+                 params: [ruleId: ruleId, cancel: true]
         }
     }
 }
@@ -1592,11 +1679,15 @@ def editActionPage(params) {
         renderActionFields(settings.actionType ?: action.type)
 
         section {
-            input "saveActionBtn", "button", title: "Save Changes"
+            href name: "saveActionEdit", page: "editActionsPage",
+                 title: "Save Changes",
+                 description: "Save and return to actions list",
+                 params: [ruleId: ruleId]
             input "deleteAction_${actionIndex}", "button", title: "Delete Action"
             href name: "cancelActionEdit", page: "editActionsPage",
                  title: "Cancel",
-                 params: [ruleId: ruleId]
+                 description: "Discard changes",
+                 params: [ruleId: ruleId, cancel: true]
         }
     }
 }
@@ -2235,7 +2326,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.0.5"
+            version: "0.0.6"
         ],
         instructions: """Hubitat MCP Server with Rule Engine.
 
