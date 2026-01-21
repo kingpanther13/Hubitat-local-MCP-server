@@ -377,14 +377,26 @@ Make sure the device is selected in the app's "Select Devices for MCP Access" se
 ### Rules from v0.0.x not showing
 Version 0.1.0 uses a new parent/child architecture. Old rules stored in `state.rules` are not migrated automatically. You'll need to recreate rules either through the UI or via MCP.
 
+### list_devices(detailed=true) fails over Hubitat Cloud
+Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). With many devices, `detailed=true` can exceed this. Use pagination:
+
+```
+list_devices(detailed=true, limit=25, offset=0)   // First 25 devices
+list_devices(detailed=true, limit=25, offset=25)  // Next 25 devices
+```
+
+The response includes `total`, `hasMore`, and `nextOffset` to help with pagination.
+
 ## Limitations
 
+- **Hubitat Cloud 128KB limit** - Large responses fail over cloud; use pagination for `list_devices(detailed=true)`
 - No real-time event streaming (MCP responses only, no push notifications)
 - Time triggers use Hubitat's `schedule()` which has some limitations
 - Sunrise/sunset times are recalculated daily
 
 ## Version History
 
+- **v0.1.1** - Added pagination for `list_devices` (fixes cloud 128KB limit issue)
 - **v0.1.0** - Parent/Child architecture (rules are now child apps with isolated settings)
 - **v0.0.6** - Fixed trigger/condition/action save flow
 - **v0.0.5** - Bug fixes for device and variable tools, UI improvements

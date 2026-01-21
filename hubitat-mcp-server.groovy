@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.0 - Parent/Child Architecture
+ * Version: 0.1.1 - Added pagination for list_devices
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.1.0"
+                paragraph "<b>Version:</b> 0.1.1"
             }
         }
 
@@ -198,7 +198,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.0"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.1"}')
 }
 
 def handleMcpGet() {
@@ -271,7 +271,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.0"
+            version: "0.1.1"
         ]
     ])
 }
@@ -304,11 +304,13 @@ def getToolDefinitions() {
         // Device Tools
         [
             name: "list_devices",
-            description: "List all devices available to MCP with their current states",
+            description: "List all devices available to MCP with their current states. Use pagination (offset/limit) with detailed=true to avoid response size limits on cloud connections.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details"]
+                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). Use with limit for cloud access."],
+                    offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
+                    limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true over cloud.", default: 0]
                 ]
             ]
         ],
@@ -544,7 +546,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
 def executeTool(toolName, args) {
     switch (toolName) {
         // Device Tools
-        case "list_devices": return toolListDevices(args.detailed)
+        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0)
         case "get_device": return toolGetDevice(args.deviceId)
         case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
         case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit ?: 10)
@@ -577,12 +579,35 @@ def executeTool(toolName, args) {
 
 // ==================== DEVICE TOOLS ====================
 
-def toolListDevices(detailed) {
+def toolListDevices(detailed, offset, limit) {
     if (!selectedDevices) {
-        return [devices: [], message: "No devices selected for MCP access"]
+        return [devices: [], message: "No devices selected for MCP access", total: 0]
     }
 
-    def devices = selectedDevices.collect { device ->
+    def allDevices = selectedDevices.toList()
+    def totalCount = allDevices.size()
+
+    // Apply pagination
+    def startIndex = offset ?: 0
+    def endIndex = totalCount
+    if (limit && limit > 0) {
+        endIndex = Math.min(startIndex + limit, totalCount)
+    }
+
+    // Validate offset
+    if (startIndex >= totalCount) {
+        return [
+            devices: [],
+            total: totalCount,
+            offset: startIndex,
+            limit: limit ?: 0,
+            message: "Offset ${startIndex} exceeds total device count ${totalCount}"
+        ]
+    }
+
+    def pagedDevices = allDevices.subList(startIndex, endIndex)
+
+    def devices = pagedDevices.collect { device ->
         def info = [
             id: device.id.toString(),
             name: device.name,
@@ -607,7 +632,23 @@ def toolListDevices(detailed) {
         return info
     }
 
-    return [devices: devices, count: devices.size()]
+    def result = [
+        devices: devices,
+        count: devices.size(),
+        total: totalCount
+    ]
+
+    // Include pagination info if pagination was used
+    if (limit && limit > 0) {
+        result.offset = startIndex
+        result.limit = limit
+        result.hasMore = endIndex < totalCount
+        if (endIndex < totalCount) {
+            result.nextOffset = endIndex
+        }
+    }
+
+    return result
 }
 
 def toolGetDevice(deviceId) {
