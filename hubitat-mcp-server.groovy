@@ -211,7 +211,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "2.0.0"
+            version: "0.0.3"
         ],
         instructions: """Hubitat MCP Server with Rule Engine.
 
@@ -349,6 +349,7 @@ TRIGGER TYPES:
 - device_event: {deviceId, attribute, value?, operator?, duration?} - duration in seconds for debouncing (e.g., "temp > 78 for 300s")
 - button_event: {deviceId, buttonNumber?, action: "pushed"|"held"|"doubleTapped"|"released"}
 - time: {time: "HH:mm"} or {sunrise: true, offset?: -30} or {sunset: true, offset?: 30}
+- periodic: {interval: minutes, unit?: "minutes"|"hours"|"days"} - recurring schedule
 - mode_change: {toMode?, fromMode?}
 - hsm_change: {status: "armedAway"|"armedHome"|"armedNight"|"disarmed"|"intrusion"}
 
@@ -360,11 +361,25 @@ CONDITION TYPES:
 - days_of_week: {days: ["Monday", "Tuesday"]}
 - device_was: {deviceId, attribute, value, forSeconds} - "device has been X for Y seconds"
 - sun_position: {position: "up"|"down"} - is it day or night
+- presence: {deviceId, status: "present"|"not present"} - presence sensor check
+- lock: {deviceId, status: "locked"|"unlocked"} - lock status check
+- thermostat_mode: {deviceId, mode: "heat"|"cool"|"auto"|"off"} - HVAC mode
+- thermostat_state: {deviceId, state: "heating"|"cooling"|"idle"} - HVAC operating state
+- illuminance: {deviceId, operator, value} - light level check
+- power: {deviceId, operator, value} - power meter check
 
 ACTION TYPES:
 - device_command: {deviceId, command, parameters?}
 - toggle_device: {deviceId, attribute?: "switch"} - toggle on/off
 - activate_scene: {sceneDeviceId} - activate a scene device
+- set_level: {deviceId, level, duration?} - set dimmer level with optional fade time
+- set_color: {deviceId, hue, saturation, level?} - set color bulb
+- set_color_temperature: {deviceId, colorTemperature, level?} - set CT bulb
+- lock: {deviceId} - lock a lock device
+- unlock: {deviceId} - unlock a lock device
+- capture_state: {devices: [deviceIds], stateId} - save current state of devices
+- restore_state: {stateId} - restore previously captured state
+- send_notification: {message, title?} - send push notification via hub
 - set_variable: {variableName, value, scope?: "rule"|"global"}
 - set_local_variable: {variableName, value} - rule-scoped variable
 - set_mode: {mode}
@@ -1136,7 +1151,37 @@ def subscribeToRuleTriggers(ruleId, rule) {
                 subscribe(location, "hsmAlert", "handleHsmAlert")
                 logDebug("Subscribed to HSM changes for rule ${rule.name}")
                 break
+            case "periodic":
+                def interval = trigger.interval ?: 60
+                def unit = trigger.unit ?: "minutes"
+                def cronExpr
+                switch (unit) {
+                    case "minutes":
+                        cronExpr = "0 0/${interval} * ? * *"
+                        break
+                    case "hours":
+                        cronExpr = "0 0 0/${interval} ? * *"
+                        break
+                    case "days":
+                        cronExpr = "0 0 0 1/${interval} * ?"
+                        break
+                    default:
+                        cronExpr = "0 0/${interval} * ? * *"
+                }
+                schedule(cronExpr, "handlePeriodicTrigger", [data: [ruleId: ruleId]])
+                logDebug("Scheduled periodic trigger every ${interval} ${unit} for rule ${rule.name}")
+                break
         }
+    }
+}
+
+def handlePeriodicTrigger(data) {
+    def ruleId = data.ruleId
+    def rule = state.rules?.get(ruleId)
+
+    if (rule?.enabled) {
+        logDebug("Periodic trigger fired for rule: ${rule.name}")
+        evaluateAndExecuteRule(ruleId, rule, null)
     }
 }
 
@@ -1436,6 +1481,42 @@ def evaluateCondition(condition, ruleId = null) {
                 }
                 return hsmStatus == condition.status
 
+            case "presence":
+                def device = findDevice(condition.deviceId)
+                if (!device) return false
+                def presenceVal = device.currentValue("presence")
+                return presenceVal == condition.status
+
+            case "lock":
+                def device = findDevice(condition.deviceId)
+                if (!device) return false
+                def lockVal = device.currentValue("lock")
+                return lockVal == condition.status
+
+            case "thermostat_mode":
+                def device = findDevice(condition.deviceId)
+                if (!device) return false
+                def modeVal = device.currentValue("thermostatMode")
+                return modeVal == condition.mode
+
+            case "thermostat_state":
+                def device = findDevice(condition.deviceId)
+                if (!device) return false
+                def stateVal = device.currentValue("thermostatOperatingState")
+                return stateVal == condition.state
+
+            case "illuminance":
+                def device = findDevice(condition.deviceId)
+                if (!device) return false
+                def luxVal = device.currentValue("illuminance")
+                return evaluateOperator(luxVal, condition.operator ?: "equals", condition.value)
+
+            case "power":
+                def device = findDevice(condition.deviceId)
+                if (!device) return false
+                def powerVal = device.currentValue("power")
+                return evaluateOperator(powerVal, condition.operator ?: "equals", condition.value)
+
             default:
                 logDebug("Unknown condition type: ${condition.type}")
                 return true
@@ -1494,6 +1575,100 @@ def executeActions(ruleId, actions, evt, executionContext = [:]) {
                         }
                         logDebug("Activated scene ${sceneDevice.label}")
                     }
+                    break
+
+                case "set_level":
+                    def device = findDevice(action.deviceId)
+                    if (device) {
+                        def level = action.level instanceof Number ? action.level : action.level?.toInteger() ?: 100
+                        if (action.duration && device.hasCommand("setLevel")) {
+                            device.setLevel(level, action.duration)
+                        } else {
+                            device.setLevel(level)
+                        }
+                        logDebug("Set ${device.label} level to ${level}")
+                    }
+                    break
+
+                case "set_color":
+                    def device = findDevice(action.deviceId)
+                    if (device && device.hasCommand("setColor")) {
+                        def colorMap = [hue: action.hue, saturation: action.saturation]
+                        if (action.level) colorMap.level = action.level
+                        device.setColor(colorMap)
+                        logDebug("Set ${device.label} color to H:${action.hue} S:${action.saturation}")
+                    }
+                    break
+
+                case "set_color_temperature":
+                    def device = findDevice(action.deviceId)
+                    if (device && device.hasCommand("setColorTemperature")) {
+                        device.setColorTemperature(action.colorTemperature)
+                        if (action.level && device.hasCommand("setLevel")) {
+                            device.setLevel(action.level)
+                        }
+                        logDebug("Set ${device.label} CT to ${action.colorTemperature}K")
+                    }
+                    break
+
+                case "lock":
+                    def device = findDevice(action.deviceId)
+                    if (device && device.hasCommand("lock")) {
+                        device.lock()
+                        logDebug("Locked ${device.label}")
+                    }
+                    break
+
+                case "unlock":
+                    def device = findDevice(action.deviceId)
+                    if (device && device.hasCommand("unlock")) {
+                        device.unlock()
+                        logDebug("Unlocked ${device.label}")
+                    }
+                    break
+
+                case "capture_state":
+                    def stateId = action.stateId ?: "default"
+                    def devices = action.devices?.collect { findDevice(it) }?.findAll { it != null }
+                    if (devices) {
+                        if (!state.capturedStates) state.capturedStates = [:]
+                        state.capturedStates[stateId] = devices.collect { dev ->
+                            [
+                                deviceId: dev.id.toString(),
+                                switch: dev.currentValue("switch"),
+                                level: dev.currentValue("level")
+                            ]
+                        }
+                        logDebug("Captured state of ${devices.size()} devices as '${stateId}'")
+                    }
+                    break
+
+                case "restore_state":
+                    def stateId = action.stateId ?: "default"
+                    def captured = state.capturedStates?.get(stateId)
+                    if (captured) {
+                        captured.each { cap ->
+                            def device = findDevice(cap.deviceId)
+                            if (device) {
+                                if (cap.switch == "on") {
+                                    device.on()
+                                    if (cap.level && device.hasCommand("setLevel")) {
+                                        device.setLevel(cap.level)
+                                    }
+                                } else {
+                                    device.off()
+                                }
+                            }
+                        }
+                        logDebug("Restored state '${stateId}' for ${captured.size()} devices")
+                    }
+                    break
+
+                case "send_notification":
+                    def msg = action.message ?: "Notification from MCP Rule"
+                    def title = action.title ?: "MCP Rule"
+                    sendPush("${title}: ${msg}")
+                    logDebug("Sent notification: ${msg}")
                     break
 
                 case "set_variable":
@@ -1684,6 +1859,14 @@ def validateTrigger(trigger) {
                 throw new IllegalArgumentException("Invalid HSM status: ${trigger.status}")
             }
             break
+        case "periodic":
+            if (!trigger.interval || trigger.interval < 1) {
+                throw new IllegalArgumentException("Interval (positive integer) required for periodic trigger")
+            }
+            if (trigger.unit && !["minutes", "hours", "days"].contains(trigger.unit)) {
+                throw new IllegalArgumentException("Invalid unit for periodic trigger: ${trigger.unit}")
+            }
+            break
         default:
             throw new IllegalArgumentException("Unknown trigger type: ${trigger.type}")
     }
@@ -1736,6 +1919,38 @@ def validateCondition(condition) {
         case "hsm_status":
             if (!condition.status) {
                 throw new IllegalArgumentException("Status required for hsm_status condition")
+            }
+            break
+        case "presence":
+            if (!condition.deviceId) {
+                throw new IllegalArgumentException("Device ID required for presence condition")
+            }
+            if (!condition.status || !["present", "not present"].contains(condition.status)) {
+                throw new IllegalArgumentException("Status ('present' or 'not present') required for presence condition")
+            }
+            break
+        case "lock":
+            if (!condition.deviceId) {
+                throw new IllegalArgumentException("Device ID required for lock condition")
+            }
+            if (!condition.status || !["locked", "unlocked"].contains(condition.status)) {
+                throw new IllegalArgumentException("Status ('locked' or 'unlocked') required for lock condition")
+            }
+            break
+        case "thermostat_mode":
+            if (!condition.deviceId || !condition.mode) {
+                throw new IllegalArgumentException("Device ID and mode required for thermostat_mode condition")
+            }
+            break
+        case "thermostat_state":
+            if (!condition.deviceId || !condition.state) {
+                throw new IllegalArgumentException("Device ID and state required for thermostat_state condition")
+            }
+            break
+        case "illuminance":
+        case "power":
+            if (!condition.deviceId) {
+                throw new IllegalArgumentException("Device ID required for ${condition.type} condition")
             }
             break
     }
@@ -1818,6 +2033,46 @@ def validateAction(action) {
         case "set_hsm":
             if (!action.status) {
                 throw new IllegalArgumentException("Status required for set_hsm action")
+            }
+            break
+        case "set_level":
+            if (!action.deviceId) {
+                throw new IllegalArgumentException("Device ID required for set_level action")
+            }
+            if (action.level == null) {
+                throw new IllegalArgumentException("Level required for set_level action")
+            }
+            break
+        case "set_color":
+            if (!action.deviceId) {
+                throw new IllegalArgumentException("Device ID required for set_color action")
+            }
+            if (action.hue == null || action.saturation == null) {
+                throw new IllegalArgumentException("Hue and saturation required for set_color action")
+            }
+            break
+        case "set_color_temperature":
+            if (!action.deviceId || !action.colorTemperature) {
+                throw new IllegalArgumentException("Device ID and colorTemperature required for set_color_temperature action")
+            }
+            break
+        case "lock":
+        case "unlock":
+            if (!action.deviceId) {
+                throw new IllegalArgumentException("Device ID required for ${action.type} action")
+            }
+            break
+        case "capture_state":
+            if (!action.devices || action.devices.size() == 0) {
+                throw new IllegalArgumentException("Devices array required for capture_state action")
+            }
+            break
+        case "restore_state":
+            // stateId is optional, defaults to "default"
+            break
+        case "send_notification":
+            if (!action.message) {
+                throw new IllegalArgumentException("Message required for send_notification action")
             }
             break
     }
@@ -1960,6 +2215,24 @@ def describeCondition(condition) {
             return "Sun is ${condition.position}"
         case "hsm_status":
             return "HSM status ${condition.operator ?: 'equals'} '${condition.status}'"
+        case "presence":
+            def device = findDevice(condition.deviceId)
+            return "Presence '${device?.label ?: condition.deviceId}' is '${condition.status}'"
+        case "lock":
+            def device = findDevice(condition.deviceId)
+            return "Lock '${device?.label ?: condition.deviceId}' is '${condition.status}'"
+        case "thermostat_mode":
+            def device = findDevice(condition.deviceId)
+            return "Thermostat '${device?.label ?: condition.deviceId}' mode is '${condition.mode}'"
+        case "thermostat_state":
+            def device = findDevice(condition.deviceId)
+            return "Thermostat '${device?.label ?: condition.deviceId}' is '${condition.state}'"
+        case "illuminance":
+            def device = findDevice(condition.deviceId)
+            return "Illuminance '${device?.label ?: condition.deviceId}' ${condition.operator ?: 'equals'} ${condition.value} lux"
+        case "power":
+            def device = findDevice(condition.deviceId)
+            return "Power '${device?.label ?: condition.deviceId}' ${condition.operator ?: 'equals'} ${condition.value} W"
         default:
             return "Unknown condition: ${condition.type}"
     }
@@ -1999,6 +2272,31 @@ def describeAction(action) {
             return "Log [${action.level ?: 'info'}]: '${action.message}'"
         case "set_hsm":
             return "Set HSM to '${action.status}'"
+        case "set_level":
+            def device = findDevice(action.deviceId)
+            def duration = action.duration ? " over ${action.duration}s" : ""
+            return "Set '${device?.label ?: action.deviceId}' level to ${action.level}%${duration}"
+        case "set_color":
+            def device = findDevice(action.deviceId)
+            return "Set '${device?.label ?: action.deviceId}' color to hue:${action.hue}, sat:${action.saturation}, level:${action.level}"
+        case "set_color_temperature":
+            def device = findDevice(action.deviceId)
+            def level = action.level ? " at ${action.level}%" : ""
+            return "Set '${device?.label ?: action.deviceId}' color temp to ${action.temperature}K${level}"
+        case "lock":
+            def device = findDevice(action.deviceId)
+            return "Lock '${device?.label ?: action.deviceId}'"
+        case "unlock":
+            def device = findDevice(action.deviceId)
+            return "Unlock '${device?.label ?: action.deviceId}'"
+        case "capture_state":
+            def devices = action.deviceIds?.collect { id -> findDevice(id)?.label ?: id }?.join(", ") ?: "none"
+            return "Capture state of: ${devices}"
+        case "restore_state":
+            return "Restore previously captured state"
+        case "send_notification":
+            def target = action.deviceId ? "device ${findDevice(action.deviceId)?.label ?: action.deviceId}" : "all notification devices"
+            return "Send notification to ${target}: '${action.message}'"
         default:
             return "Unknown action: ${action.type}"
     }

@@ -31,6 +31,7 @@ Create automations via natural language through Claude:
 - `device_event` - When a device attribute changes (with optional duration for debouncing, e.g., "temp > 78 for 5 minutes")
 - `button_event` - Button pressed, held, double-tapped, or released
 - `time` - At a specific time (HH:mm), or relative to sunrise/sunset with offset
+- `periodic` - Repeat at intervals (minutes, hours, or days)
 - `mode_change` - When hub mode changes
 - `hsm_change` - When HSM (Home Security Monitor) status changes
 
@@ -43,11 +44,21 @@ Create automations via natural language through Claude:
 - `days_of_week` - Check day of week
 - `sun_position` - Check if sun is up or down
 - `hsm_status` - Check HSM arm status
+- `presence` - Check presence sensor status (present/not present)
+- `lock` - Check lock status (locked/unlocked)
+- `thermostat_mode` - Check thermostat operating mode
+- `thermostat_state` - Check thermostat operating state (idle/heating/cooling)
+- `illuminance` - Check light level (lux) with comparison operators
+- `power` - Check power consumption (watts) with comparison operators
 
 **Supported Actions:**
 - `device_command` - Send command to device
 - `toggle_device` - Toggle device on/off
 - `activate_scene` - Activate a scene device
+- `set_level` - Set dimmer level with optional duration
+- `set_color` - Set color (hue, saturation, level) on RGB devices
+- `set_color_temperature` - Set color temperature on CT bulbs
+- `lock` / `unlock` - Lock or unlock a lock device
 - `set_variable` - Set a global or rule-local variable
 - `set_local_variable` - Set a rule-scoped variable
 - `set_mode` - Change hub mode
@@ -58,6 +69,8 @@ Create automations via natural language through Claude:
 - `repeat` - Repeat actions N times
 - `stop` - Stop rule execution
 - `log` - Write to Hubitat logs
+- `capture_state` / `restore_state` - Save and restore device states
+- `send_notification` - Send push notification to notification devices
 
 ## Requirements
 
