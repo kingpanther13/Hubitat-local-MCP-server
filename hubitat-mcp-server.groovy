@@ -126,15 +126,31 @@ def viewRulePage(params) {
     }
 
     dynamicPage(name: "viewRulePage", title: rule.name) {
+        section("Rule Settings") {
+            input "editRuleName_${ruleId}", "text", title: "Rule Name", defaultValue: rule.name, submitOnChange: true
+            input "editRuleDescription_${ruleId}", "text", title: "Description", defaultValue: rule.description ?: "", submitOnChange: true
+
+            // Auto-save name/description changes
+            def newName = settings["editRuleName_${ruleId}"]
+            def newDesc = settings["editRuleDescription_${ruleId}"]
+            if (newName && newName != rule.name) {
+                rule.name = newName
+                rule.updatedAt = new Date().time
+                state.rules[ruleId] = rule
+            }
+            if (newDesc != null && newDesc != rule.description) {
+                rule.description = newDesc
+                rule.updatedAt = new Date().time
+                state.rules[ruleId] = rule
+            }
+        }
+
         section("Status") {
-            def statusText = rule.enabled ? "Enabled" : "Disabled"
+            def statusText = rule.enabled ? "✓ Enabled" : "○ Disabled"
             def lastRun = rule.lastTriggered ? formatTimestamp(rule.lastTriggered) : "Never"
             paragraph "<b>Status:</b> ${statusText}"
             paragraph "<b>Last Triggered:</b> ${lastRun}"
             paragraph "<b>Execution Count:</b> ${rule.executionCount ?: 0}"
-            if (rule.description) {
-                paragraph "<b>Description:</b> ${rule.description}"
-            }
         }
 
         section("Triggers (${rule.triggers?.size() ?: 0})") {
@@ -199,6 +215,33 @@ def addRulePage(params) {
     state.remove("editingTrigger")
     state.remove("editingCondition")
     state.remove("editingAction")
+
+    // Check if a rule was just created (state.justCreatedRuleId is set by createRuleFromUI)
+    def justCreatedId = state.justCreatedRuleId
+    def justCreatedRule = justCreatedId ? state.rules?.get(justCreatedId) : null
+
+    if (justCreatedRule) {
+        // Rule was just created - show success and link to configure it
+        state.remove("justCreatedRuleId")
+
+        return dynamicPage(name: "addRulePage", title: "Rule Created!") {
+            section {
+                paragraph "<b>✓ Rule '${justCreatedRule.name}' created successfully!</b>"
+                paragraph "Your new rule is currently disabled and has no triggers or actions yet."
+            }
+
+            section {
+                href name: "configureNewRule", page: "viewRulePage",
+                     title: "→ Configure This Rule",
+                     description: "Add triggers, conditions, and actions",
+                     params: [ruleId: justCreatedId]
+                href name: "createAnother", page: "addRulePage",
+                     title: "+ Create Another Rule"
+                href name: "backToMain", page: "mainPage",
+                     title: "← Back to Rules List"
+            }
+        }
+    }
 
     dynamicPage(name: "addRulePage", title: "Create New Rule") {
         section("Rule Details") {
@@ -355,7 +398,8 @@ def createRuleFromUI() {
     app.removeSetting("newRuleName")
     app.removeSetting("newRuleDescription")
 
-    // Navigate to the new rule
+    // Set flag so addRulePage shows success message and link
+    state.justCreatedRuleId = ruleId
     state.currentRuleId = ruleId
 
     log.info "Created new rule: ${ruleName} (${ruleId})"
@@ -2191,7 +2235,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.0.4"
+            version: "0.0.5"
         ],
         instructions: """Hubitat MCP Server with Rule Engine.
 
@@ -2618,18 +2662,49 @@ def toolGetDevice(deviceId) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
     }
 
+    // Safely collect attributes
+    def attributes = []
+    try {
+        attributes = device.supportedAttributes?.collect { attr ->
+            [name: attr.name, dataType: attr.dataType?.toString(), value: device.currentValue(attr.name)]
+        } ?: []
+    } catch (Exception e) {
+        logDebug("Error getting attributes for device ${deviceId}: ${e.message}")
+    }
+
+    // Safely collect commands - some devices have unusual argument structures
+    def commands = []
+    try {
+        commands = device.supportedCommands?.collect { cmd ->
+            def args = null
+            try {
+                args = cmd.arguments?.collect { arg ->
+                    // Handle different argument formats
+                    if (arg instanceof Map) {
+                        [name: arg.name ?: "arg", type: arg.type ?: "unknown"]
+                    } else if (arg.respondsTo("getName")) {
+                        [name: arg.getName() ?: "arg", type: arg.getType()?.toString() ?: "unknown"]
+                    } else {
+                        [name: arg.toString(), type: "unknown"]
+                    }
+                }
+            } catch (Exception e) {
+                args = null // If we can't parse arguments, just skip them
+            }
+            [name: cmd.name, arguments: args]
+        } ?: []
+    } catch (Exception e) {
+        logDebug("Error getting commands for device ${deviceId}: ${e.message}")
+    }
+
     return [
         id: device.id.toString(),
         name: device.name,
         label: device.label ?: device.name,
         room: device.roomName,
-        capabilities: device.capabilities?.collect { it.name },
-        attributes: device.supportedAttributes?.collect { attr ->
-            [name: attr.name, dataType: attr.dataType, value: device.currentValue(attr.name)]
-        },
-        commands: device.supportedCommands?.collect { cmd ->
-            [name: cmd.name, arguments: cmd.arguments?.collect { [name: it.name, type: it.type] }]
-        }
+        capabilities: device.capabilities?.collect { it.name } ?: [],
+        attributes: attributes,
+        commands: commands
     ]
 }
 
@@ -2923,19 +2998,24 @@ def toolTestRule(ruleId) {
 // ==================== SYSTEM TOOLS ====================
 
 def toolGetHubInfo() {
-    return [
-        name: location.hub.name,
-        model: location.hub.hardwareID,
-        firmwareVersion: location.hub.firmwareVersionString,
-        localIP: location.hub.localIP,
-        uptime: location.hub.uptime,
-        zigbeeChannel: location.hub.zigbeeChannel,
-        zwaveVersion: location.hub.zwaveVersion,
+    def hub = location.hub
+    def info = [
+        name: hub?.name,
+        localIP: hub?.localIP,
         timeZone: location.timeZone?.ID,
         temperatureScale: location.temperatureScale,
         latitude: location.latitude,
         longitude: location.longitude
     ]
+
+    // These properties may not be available on all hub models
+    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = null }
+    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = null }
+    try { info.uptime = hub?.uptime } catch (Exception e) { info.uptime = null }
+    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = null }
+    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = null }
+
+    return info
 }
 
 def toolGetModes() {
@@ -2963,10 +3043,18 @@ def toolSetMode(modeName) {
 }
 
 def toolListVariables() {
-    // Get hub connector variables
-    def hubVariables = getAllGlobalConnectorVariables()?.collect { name, var ->
-        [name: name, value: var.value, type: var.type, source: "hub"]
-    } ?: []
+    // Get hub connector variables (may not be available on all setups)
+    def hubVariables = []
+    try {
+        def allVars = getAllGlobalConnectorVariables()
+        if (allVars) {
+            hubVariables = allVars.collect { name, var ->
+                [name: name, value: var?.value, type: var?.type, source: "hub"]
+            }
+        }
+    } catch (Exception e) {
+        logDebug("Hub connector variables not available: ${e.message}")
+    }
 
     // Get rule engine variables
     def ruleVariables = state.ruleVariables?.collect { name, value ->
@@ -2982,9 +3070,13 @@ def toolListVariables() {
 
 def toolGetVariable(name) {
     // Check hub connector variables first
-    def hubVar = getGlobalConnectorVariable(name)
-    if (hubVar != null) {
-        return [name: name, value: hubVar, source: "hub"]
+    try {
+        def hubVar = getGlobalConnectorVariable(name)
+        if (hubVar != null) {
+            return [name: name, value: hubVar, source: "hub"]
+        }
+    } catch (Exception e) {
+        logDebug("Hub connector variable '${name}' not found or not accessible: ${e.message}")
     }
 
     // Check rule engine variables

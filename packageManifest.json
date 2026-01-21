@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.0.4",
+    "version": "0.0.5",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2025-01-21",
+    "dateReleased": "2026-01-21",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.0.4 - Added full Rule Engine UI for creating, viewing, editing, and deleting automation rules directly in Hubitat's web interface. Users can now manage triggers, conditions, and actions without needing to use MCP/Claude.\n\nv0.0.3 - Initial release with MCP server and rule engine functionality.",
+    "releaseNotes": "v0.0.5 - Bug fixes and UI improvements:\n- Fixed get_device failing for Matter RGBW and Ecobee devices\n- Fixed get_hub_info, list_variables, get_variable error handling\n- Added rule rename/description editing in UI\n- Improved create rule flow with success message and direct link to configure\n\nv0.0.4 - Added full Rule Engine UI for creating, viewing, editing, and deleting automation rules directly in Hubitat's web interface.\n\nv0.0.3 - Initial release with MCP server and rule engine functionality.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
