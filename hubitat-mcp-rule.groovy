@@ -1327,7 +1327,7 @@ def describeAction(action) {
 
         case "repeat":
             def repeatActions = action.actions?.size() ?: 0
-            return "Repeat ${repeatActions} action(s) ${action.count ?: 1} time(s)"
+            return "Repeat ${repeatActions} action(s) ${action.times ?: action.count ?: 1} time(s)"
 
         default:
             return "Unknown action: ${action.type}"
@@ -1799,7 +1799,7 @@ def executeAction(action, actionIndex = null) {
             break
 
         case "repeat":
-            def repeatCount = action.count ?: 1
+            def repeatCount = action.times ?: action.count ?: 1
             for (int r = 0; r < repeatCount; r++) {
                 action.actions?.each { repeatAction ->
                     def result = executeAction(repeatAction)

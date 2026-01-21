@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.5 - Fixed capture_state/restore_state cross-rule support
+ * Version: 0.1.6 - Fixed repeat action parameter name
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
