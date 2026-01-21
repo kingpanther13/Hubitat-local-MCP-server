@@ -27,6 +27,18 @@ definition(
 
 preferences {
     page(name: "mainPage")
+    page(name: "viewRulePage")
+    page(name: "addRulePage")
+    page(name: "confirmDeletePage")
+    page(name: "editTriggersPage")
+    page(name: "addTriggerPage")
+    page(name: "editTriggerPage")
+    page(name: "editConditionsPage")
+    page(name: "addConditionPage")
+    page(name: "editConditionPage")
+    page(name: "editActionsPage")
+    page(name: "addActionPage")
+    page(name: "editActionPage")
 }
 
 def mainPage() {
@@ -49,16 +61,1984 @@ def mainPage() {
                 paragraph "Selected ${selectedDevices.size()} devices"
             }
         }
-        section("Rule Engine") {
+
+        // Rule List Section
+        section("Automation Rules") {
             def ruleCount = state.rules?.size() ?: 0
             def enabledCount = state.rules?.values()?.count { it.enabled } ?: 0
-            paragraph "Rules: ${ruleCount} total, ${enabledCount} enabled"
-            input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
+            paragraph "<b>${ruleCount}</b> rules total, <b>${enabledCount}</b> enabled"
+
+            if (state.rules && state.rules.size() > 0) {
+                state.rules.each { ruleId, rule ->
+                    def statusIcon = rule.enabled ? "✓" : "○"
+                    def statusText = rule.enabled ? "Enabled" : "Disabled"
+                    def lastRun = rule.lastTriggered ? formatTimestamp(rule.lastTriggered) : "Never"
+                    def triggerCount = rule.triggers?.size() ?: 0
+                    def actionCount = rule.actions?.size() ?: 0
+
+                    href name: "viewRule_${ruleId}", page: "viewRulePage",
+                         title: "${statusIcon} ${rule.name}",
+                         description: "${statusText} | ${triggerCount} triggers, ${actionCount} actions | Last: ${lastRun}",
+                         params: [ruleId: ruleId]
+                }
+            } else {
+                paragraph "<i>No rules created yet. Add a rule to get started.</i>"
+            }
+
+            href name: "addNewRule", page: "addRulePage",
+                 title: "+ Add New Rule",
+                 description: "Create a new automation rule"
         }
-        section("Debug") {
+
+        section("Settings") {
+            input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
             input "debugLogging", "bool", title: "Enable Debug Logging", defaultValue: false
         }
     }
+}
+
+def formatTimestamp(timestamp) {
+    try {
+        if (timestamp instanceof String) {
+            def date = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", timestamp)
+            return date.format("MM/dd HH:mm")
+        }
+        return "Unknown"
+    } catch (Exception e) {
+        return timestamp?.toString()?.take(16) ?: "Unknown"
+    }
+}
+
+// ==================== RULE UI PAGES ====================
+
+def viewRulePage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    state.currentRuleId = ruleId
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        return dynamicPage(name: "viewRulePage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    dynamicPage(name: "viewRulePage", title: rule.name) {
+        section("Status") {
+            def statusText = rule.enabled ? "Enabled" : "Disabled"
+            def lastRun = rule.lastTriggered ? formatTimestamp(rule.lastTriggered) : "Never"
+            paragraph "<b>Status:</b> ${statusText}"
+            paragraph "<b>Last Triggered:</b> ${lastRun}"
+            paragraph "<b>Execution Count:</b> ${rule.executionCount ?: 0}"
+            if (rule.description) {
+                paragraph "<b>Description:</b> ${rule.description}"
+            }
+        }
+
+        section("Triggers (${rule.triggers?.size() ?: 0})") {
+            if (rule.triggers && rule.triggers.size() > 0) {
+                rule.triggers.eachWithIndex { trigger, idx ->
+                    paragraph "${idx + 1}. ${describeTrigger(trigger)}"
+                }
+            } else {
+                paragraph "<i>No triggers defined</i>"
+            }
+            href name: "editTriggers", page: "editTriggersPage",
+                 title: "Edit Triggers",
+                 params: [ruleId: ruleId]
+        }
+
+        section("Conditions (${rule.conditions?.size() ?: 0})") {
+            if (rule.conditions && rule.conditions.size() > 0) {
+                def logic = rule.conditionLogic == "any" ? "ANY" : "ALL"
+                paragraph "<i>Logic: ${logic} conditions must be true</i>"
+                rule.conditions.eachWithIndex { condition, idx ->
+                    paragraph "${idx + 1}. ${describeCondition(condition)}"
+                }
+            } else {
+                paragraph "<i>No conditions (rule always executes when triggered)</i>"
+            }
+            href name: "editConditions", page: "editConditionsPage",
+                 title: "Edit Conditions",
+                 params: [ruleId: ruleId]
+        }
+
+        section("Actions (${rule.actions?.size() ?: 0})") {
+            if (rule.actions && rule.actions.size() > 0) {
+                rule.actions.eachWithIndex { action, idx ->
+                    paragraph "${idx + 1}. ${describeAction(action)}"
+                }
+            } else {
+                paragraph "<i>No actions defined</i>"
+            }
+            href name: "editActions", page: "editActionsPage",
+                 title: "Edit Actions",
+                 params: [ruleId: ruleId]
+        }
+
+        section("Rule Actions") {
+            input "toggleRuleEnabled_${ruleId}", "button",
+                  title: rule.enabled ? "Disable Rule" : "Enable Rule"
+            input "testRule_${ruleId}", "button", title: "Test Rule (Dry Run)"
+            href name: "deleteRule", page: "confirmDeletePage",
+                 title: "Delete Rule",
+                 description: "Permanently delete this rule",
+                 params: [ruleId: ruleId]
+        }
+
+        section {
+            href name: "backToMain", page: "mainPage", title: "← Back to Rules"
+        }
+    }
+}
+
+def addRulePage(params) {
+    // Clear any previous editing state
+    state.remove("editingTrigger")
+    state.remove("editingCondition")
+    state.remove("editingAction")
+
+    dynamicPage(name: "addRulePage", title: "Create New Rule") {
+        section("Rule Details") {
+            input "newRuleName", "text", title: "Rule Name", required: true, submitOnChange: true
+            input "newRuleDescription", "text", title: "Description (optional)", required: false
+        }
+
+        section {
+            if (settings.newRuleName?.trim()) {
+                input "createRuleBtn", "button", title: "Create Rule"
+            } else {
+                paragraph "<i>Enter a rule name to continue</i>"
+            }
+            href name: "cancelAdd", page: "mainPage", title: "Cancel"
+        }
+    }
+}
+
+def confirmDeletePage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+
+    if (!rule) {
+        return dynamicPage(name: "confirmDeletePage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    state.ruleToDelete = ruleId
+
+    dynamicPage(name: "confirmDeletePage", title: "Delete Rule?") {
+        section {
+            paragraph "<b>Are you sure you want to delete this rule?</b>"
+            paragraph "Rule: <b>${rule.name}</b>"
+            paragraph "This action cannot be undone."
+        }
+
+        section {
+            input "confirmDeleteBtn", "button", title: "Yes, Delete Rule"
+            href name: "cancelDelete", page: "viewRulePage",
+                 title: "Cancel",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def describeTrigger(trigger) {
+    switch (trigger.type) {
+        case "device_event":
+            def device = findDevice(trigger.deviceId)
+            def deviceName = device?.label ?: trigger.deviceId
+            def valueMatch = trigger.value ? " ${trigger.operator ?: '=='} '${trigger.value}'" : ""
+            def duration = trigger.duration ? " for ${trigger.duration}s" : ""
+            return "When ${deviceName} ${trigger.attribute}${valueMatch}${duration}"
+        case "button_event":
+            def device = findDevice(trigger.deviceId)
+            def deviceName = device?.label ?: trigger.deviceId
+            def btn = trigger.buttonNumber ? "button ${trigger.buttonNumber}" : "any button"
+            return "When ${deviceName} ${btn} is ${trigger.action}"
+        case "time":
+            if (trigger.time) {
+                return "At ${trigger.time}"
+            } else if (trigger.sunrise) {
+                def offset = trigger.offset ? " (${trigger.offset > 0 ? '+' : ''}${trigger.offset} min)" : ""
+                return "At sunrise${offset}"
+            } else if (trigger.sunset) {
+                def offset = trigger.offset ? " (${trigger.offset > 0 ? '+' : ''}${trigger.offset} min)" : ""
+                return "At sunset${offset}"
+            }
+            return "Time trigger (unknown)"
+        case "periodic":
+            return "Every ${trigger.interval} ${trigger.unit ?: 'minutes'}"
+        case "mode_change":
+            def from = trigger.fromMode ? "from ${trigger.fromMode}" : ""
+            def to = trigger.toMode ? "to ${trigger.toMode}" : ""
+            return "When mode changes ${from} ${to}".trim()
+        case "hsm_change":
+            def status = trigger.status ? "to ${trigger.status}" : ""
+            return "When HSM changes ${status}".trim()
+        default:
+            return "Unknown trigger: ${trigger.type}"
+    }
+}
+
+// Button handlers
+def appButtonHandler(btn) {
+    logDebug("Button pressed: ${btn}")
+
+    if (btn == "createRuleBtn") {
+        createRuleFromUI()
+    } else if (btn == "confirmDeleteBtn") {
+        deleteRuleFromUI()
+    } else if (btn.startsWith("toggleRuleEnabled_")) {
+        def ruleId = btn.replace("toggleRuleEnabled_", "")
+        toggleRuleEnabledFromUI(ruleId)
+    } else if (btn.startsWith("testRule_")) {
+        def ruleId = btn.replace("testRule_", "")
+        testRuleFromUI(ruleId)
+    } else if (btn == "saveTriggerBtn") {
+        saveTriggerFromUI()
+    } else if (btn.startsWith("deleteTrigger_")) {
+        def index = btn.replace("deleteTrigger_", "").toInteger()
+        deleteTriggerFromUI(index)
+    } else if (btn == "saveConditionBtn") {
+        saveConditionFromUI()
+    } else if (btn.startsWith("deleteCondition_")) {
+        def index = btn.replace("deleteCondition_", "").toInteger()
+        deleteConditionFromUI(index)
+    } else if (btn == "saveActionBtn") {
+        saveActionFromUI()
+    } else if (btn.startsWith("deleteAction_")) {
+        def index = btn.replace("deleteAction_", "").toInteger()
+        deleteActionFromUI(index)
+    } else if (btn.startsWith("moveActionUp_")) {
+        def index = btn.replace("moveActionUp_", "").toInteger()
+        moveActionFromUI(index, -1)
+    } else if (btn.startsWith("moveActionDown_")) {
+        def index = btn.replace("moveActionDown_", "").toInteger()
+        moveActionFromUI(index, 1)
+    }
+}
+
+def createRuleFromUI() {
+    def ruleName = settings.newRuleName?.trim()
+    if (!ruleName) {
+        log.warn "Cannot create rule: name is required"
+        return
+    }
+
+    def ruleId = "rule-${UUID.randomUUID().toString().substring(0, 8)}"
+    def now = new Date().time
+
+    def rule = [
+        name: ruleName,
+        description: settings.newRuleDescription ?: "",
+        enabled: false, // Start disabled until triggers/actions added
+        triggers: [],
+        conditions: [],
+        conditionLogic: "all",
+        actions: [],
+        localVariables: [:],
+        createdAt: now,
+        updatedAt: now,
+        executionCount: 0
+    ]
+
+    if (!state.rules) state.rules = [:]
+    state.rules[ruleId] = rule
+
+    // Clear the input
+    app.removeSetting("newRuleName")
+    app.removeSetting("newRuleDescription")
+
+    // Navigate to the new rule
+    state.currentRuleId = ruleId
+
+    log.info "Created new rule: ${ruleName} (${ruleId})"
+}
+
+def deleteRuleFromUI() {
+    def ruleId = state.ruleToDelete
+    if (!ruleId || !state.rules?.containsKey(ruleId)) {
+        log.warn "Cannot delete rule: not found"
+        return
+    }
+
+    def ruleName = state.rules[ruleId].name
+    state.rules.remove(ruleId)
+    state.remove("ruleToDelete")
+    state.remove("currentRuleId")
+
+    refreshAllSubscriptions()
+    log.info "Deleted rule: ${ruleName}"
+}
+
+def toggleRuleEnabledFromUI(ruleId) {
+    def rule = state.rules?.get(ruleId)
+    if (!rule) return
+
+    rule.enabled = !rule.enabled
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    refreshAllSubscriptions()
+    log.info "Rule '${rule.name}' ${rule.enabled ? 'enabled' : 'disabled'}"
+}
+
+def testRuleFromUI(ruleId) {
+    def rule = state.rules?.get(ruleId)
+    if (!rule) return
+
+    def result = toolTestRule(ruleId)
+    log.info "Test rule '${rule.name}': ${result.message}"
+}
+
+// ==================== TRIGGER MANAGEMENT PAGES ====================
+
+def editTriggersPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    state.currentRuleId = ruleId
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        return dynamicPage(name: "editTriggersPage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    dynamicPage(name: "editTriggersPage", title: "Edit Triggers: ${rule.name}") {
+        section("Current Triggers") {
+            if (rule.triggers && rule.triggers.size() > 0) {
+                rule.triggers.eachWithIndex { trigger, idx ->
+                    href name: "editTrigger_${idx}", page: "editTriggerPage",
+                         title: "${idx + 1}. ${describeTrigger(trigger)}",
+                         description: "Tap to edit",
+                         params: [ruleId: ruleId, triggerIndex: idx]
+                }
+            } else {
+                paragraph "<i>No triggers defined. Add a trigger to make this rule responsive.</i>"
+            }
+        }
+
+        section {
+            href name: "addTrigger", page: "addTriggerPage",
+                 title: "+ Add Trigger",
+                 params: [ruleId: ruleId]
+        }
+
+        section {
+            href name: "backToRule", page: "viewRulePage",
+                 title: "← Done",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def addTriggerPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    state.currentRuleId = ruleId
+    state.editingTriggerIndex = null // Adding new trigger
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        return dynamicPage(name: "addTriggerPage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    dynamicPage(name: "addTriggerPage", title: "Add Trigger") {
+        section("Trigger Type") {
+            input "triggerType", "enum", title: "When should this rule trigger?",
+                  options: [
+                      "device_event": "Device Event (attribute changes)",
+                      "button_event": "Button Press",
+                      "time": "Specific Time",
+                      "periodic": "Periodic Schedule",
+                      "mode_change": "Mode Change",
+                      "hsm_change": "HSM Status Change"
+                  ],
+                  required: true, submitOnChange: true
+        }
+
+        renderTriggerFields(settings.triggerType)
+
+        section {
+            if (settings.triggerType) {
+                input "saveTriggerBtn", "button", title: "Save Trigger"
+            }
+            href name: "cancelTrigger", page: "editTriggersPage",
+                 title: "Cancel",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def editTriggerPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    def triggerIndex = params?.triggerIndex != null ? params.triggerIndex.toInteger() : state.editingTriggerIndex
+    state.currentRuleId = ruleId
+    state.editingTriggerIndex = triggerIndex
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule || triggerIndex == null || triggerIndex >= (rule.triggers?.size() ?: 0)) {
+        return dynamicPage(name: "editTriggerPage", title: "Trigger Not Found") {
+            section {
+                paragraph "The requested trigger could not be found."
+                href name: "backToTriggers", page: "editTriggersPage", title: "Back to Triggers"
+            }
+        }
+    }
+
+    def trigger = rule.triggers[triggerIndex]
+
+    // Pre-populate settings from existing trigger
+    if (!state.triggerSettingsLoaded || state.loadedTriggerIndex != triggerIndex) {
+        loadTriggerSettings(trigger)
+        state.triggerSettingsLoaded = true
+        state.loadedTriggerIndex = triggerIndex
+    }
+
+    dynamicPage(name: "editTriggerPage", title: "Edit Trigger ${triggerIndex + 1}") {
+        section("Trigger Type") {
+            input "triggerType", "enum", title: "When should this rule trigger?",
+                  options: [
+                      "device_event": "Device Event (attribute changes)",
+                      "button_event": "Button Press",
+                      "time": "Specific Time",
+                      "periodic": "Periodic Schedule",
+                      "mode_change": "Mode Change",
+                      "hsm_change": "HSM Status Change"
+                  ],
+                  required: true, submitOnChange: true,
+                  defaultValue: trigger.type
+        }
+
+        renderTriggerFields(settings.triggerType ?: trigger.type)
+
+        section {
+            input "saveTriggerBtn", "button", title: "Save Changes"
+            input "deleteTrigger_${triggerIndex}", "button", title: "Delete Trigger"
+            href name: "cancelTriggerEdit", page: "editTriggersPage",
+                 title: "Cancel",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def renderTriggerFields(triggerType) {
+    switch (triggerType) {
+        case "device_event":
+            section("Device Event Settings") {
+                input "triggerDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                if (settings.triggerDevice) {
+                    def device = settings.triggerDevice
+                    def attrs = device.supportedAttributes?.collect { it.name }?.sort()
+                    input "triggerAttribute", "enum", title: "Attribute",
+                          options: attrs, required: true, submitOnChange: true
+                }
+                input "triggerOperator", "enum", title: "Comparison",
+                      options: [
+                          "equals": "Equals",
+                          "not_equals": "Not Equals",
+                          ">": "Greater Than",
+                          "<": "Less Than",
+                          ">=": "Greater or Equal",
+                          "<=": "Less or Equal",
+                          "contains": "Contains"
+                      ],
+                      defaultValue: "equals", required: false
+                input "triggerValue", "text", title: "Value (leave empty for any change)", required: false
+                input "triggerDuration", "number", title: "Duration (seconds, optional)",
+                      description: "Trigger only if condition persists for this duration",
+                      required: false, range: "0..86400"
+            }
+            break
+
+        case "button_event":
+            section("Button Event Settings") {
+                input "triggerDevice", "capability.pushableButton", title: "Button Device", required: true
+                input "triggerButtonNumber", "number", title: "Button Number (leave empty for any)",
+                      required: false, range: "1..20"
+                input "triggerButtonAction", "enum", title: "Button Action",
+                      options: ["pushed": "Pushed", "held": "Held", "doubleTapped": "Double Tapped", "released": "Released"],
+                      required: true, defaultValue: "pushed"
+            }
+            break
+
+        case "time":
+            section("Time Settings") {
+                input "triggerTimeType", "enum", title: "Time Type",
+                      options: ["specific": "Specific Time", "sunrise": "Sunrise", "sunset": "Sunset"],
+                      required: true, submitOnChange: true, defaultValue: "specific"
+
+                if (settings.triggerTimeType == "specific") {
+                    input "triggerTime", "time", title: "Time", required: true
+                } else if (settings.triggerTimeType in ["sunrise", "sunset"]) {
+                    input "triggerOffset", "number", title: "Offset (minutes)",
+                          description: "Negative = before, Positive = after",
+                          required: false, range: "-180..180", defaultValue: 0
+                }
+            }
+            break
+
+        case "periodic":
+            section("Periodic Schedule") {
+                input "triggerInterval", "number", title: "Every", required: true, range: "1..999"
+                input "triggerUnit", "enum", title: "Unit",
+                      options: ["minutes": "Minutes", "hours": "Hours", "days": "Days"],
+                      required: true, defaultValue: "minutes"
+            }
+            break
+
+        case "mode_change":
+            section("Mode Change Settings") {
+                def modes = location.modes?.collect { it.name }
+                input "triggerFromMode", "enum", title: "From Mode (optional)",
+                      options: modes, required: false
+                input "triggerToMode", "enum", title: "To Mode (optional)",
+                      options: modes, required: false
+                paragraph "<i>Leave both empty to trigger on any mode change</i>"
+            }
+            break
+
+        case "hsm_change":
+            section("HSM Change Settings") {
+                input "triggerHsmStatus", "enum", title: "HSM Status (optional)",
+                      options: [
+                          "armedAway": "Armed Away",
+                          "armedHome": "Armed Home",
+                          "armedNight": "Armed Night",
+                          "disarmed": "Disarmed",
+                          "intrusion": "Intrusion Alert"
+                      ],
+                      required: false
+                paragraph "<i>Leave empty to trigger on any HSM change</i>"
+            }
+            break
+    }
+}
+
+def loadTriggerSettings(trigger) {
+    app.updateSetting("triggerType", trigger.type)
+
+    switch (trigger.type) {
+        case "device_event":
+            if (trigger.deviceId) {
+                def device = findDevice(trigger.deviceId)
+                if (device) app.updateSetting("triggerDevice", [type: "capability.*", value: device.id])
+            }
+            if (trigger.attribute) app.updateSetting("triggerAttribute", trigger.attribute)
+            if (trigger.operator) app.updateSetting("triggerOperator", trigger.operator)
+            if (trigger.value) app.updateSetting("triggerValue", trigger.value)
+            if (trigger.duration) app.updateSetting("triggerDuration", trigger.duration)
+            break
+
+        case "button_event":
+            if (trigger.deviceId) {
+                def device = findDevice(trigger.deviceId)
+                if (device) app.updateSetting("triggerDevice", [type: "capability.pushableButton", value: device.id])
+            }
+            if (trigger.buttonNumber) app.updateSetting("triggerButtonNumber", trigger.buttonNumber)
+            if (trigger.action) app.updateSetting("triggerButtonAction", trigger.action)
+            break
+
+        case "time":
+            if (trigger.time) {
+                app.updateSetting("triggerTimeType", "specific")
+                app.updateSetting("triggerTime", trigger.time)
+            } else if (trigger.sunrise) {
+                app.updateSetting("triggerTimeType", "sunrise")
+                app.updateSetting("triggerOffset", trigger.offset ?: 0)
+            } else if (trigger.sunset) {
+                app.updateSetting("triggerTimeType", "sunset")
+                app.updateSetting("triggerOffset", trigger.offset ?: 0)
+            }
+            break
+
+        case "periodic":
+            if (trigger.interval) app.updateSetting("triggerInterval", trigger.interval)
+            if (trigger.unit) app.updateSetting("triggerUnit", trigger.unit)
+            break
+
+        case "mode_change":
+            if (trigger.fromMode) app.updateSetting("triggerFromMode", trigger.fromMode)
+            if (trigger.toMode) app.updateSetting("triggerToMode", trigger.toMode)
+            break
+
+        case "hsm_change":
+            if (trigger.status) app.updateSetting("triggerHsmStatus", trigger.status)
+            break
+    }
+}
+
+def saveTriggerFromUI() {
+    def ruleId = state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        log.warn "Cannot save trigger: rule not found"
+        return
+    }
+
+    def trigger = buildTriggerFromSettings()
+    if (!trigger) {
+        log.warn "Cannot save trigger: invalid settings"
+        return
+    }
+
+    if (!rule.triggers) rule.triggers = []
+
+    if (state.editingTriggerIndex != null && state.editingTriggerIndex < rule.triggers.size()) {
+        // Editing existing trigger
+        rule.triggers[state.editingTriggerIndex] = trigger
+        log.info "Updated trigger ${state.editingTriggerIndex + 1} in rule '${rule.name}'"
+    } else {
+        // Adding new trigger
+        rule.triggers.add(trigger)
+        log.info "Added new trigger to rule '${rule.name}'"
+    }
+
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    // Clear trigger settings
+    clearTriggerSettings()
+    state.remove("editingTriggerIndex")
+    state.remove("triggerSettingsLoaded")
+    state.remove("loadedTriggerIndex")
+
+    refreshAllSubscriptions()
+}
+
+def buildTriggerFromSettings() {
+    def trigger = [type: settings.triggerType]
+
+    switch (settings.triggerType) {
+        case "device_event":
+            if (!settings.triggerDevice || !settings.triggerAttribute) return null
+            trigger.deviceId = settings.triggerDevice.id.toString()
+            trigger.attribute = settings.triggerAttribute
+            if (settings.triggerOperator) trigger.operator = settings.triggerOperator
+            if (settings.triggerValue) trigger.value = settings.triggerValue
+            if (settings.triggerDuration) trigger.duration = settings.triggerDuration
+            break
+
+        case "button_event":
+            if (!settings.triggerDevice) return null
+            trigger.deviceId = settings.triggerDevice.id.toString()
+            trigger.action = settings.triggerButtonAction ?: "pushed"
+            if (settings.triggerButtonNumber) trigger.buttonNumber = settings.triggerButtonNumber
+            break
+
+        case "time":
+            if (settings.triggerTimeType == "specific") {
+                if (!settings.triggerTime) return null
+                // Convert time input to HH:mm format
+                trigger.time = formatTimeInput(settings.triggerTime)
+            } else if (settings.triggerTimeType == "sunrise") {
+                trigger.sunrise = true
+                if (settings.triggerOffset) trigger.offset = settings.triggerOffset
+            } else if (settings.triggerTimeType == "sunset") {
+                trigger.sunset = true
+                if (settings.triggerOffset) trigger.offset = settings.triggerOffset
+            } else {
+                return null
+            }
+            break
+
+        case "periodic":
+            if (!settings.triggerInterval) return null
+            trigger.interval = settings.triggerInterval
+            trigger.unit = settings.triggerUnit ?: "minutes"
+            break
+
+        case "mode_change":
+            if (settings.triggerFromMode) trigger.fromMode = settings.triggerFromMode
+            if (settings.triggerToMode) trigger.toMode = settings.triggerToMode
+            break
+
+        case "hsm_change":
+            if (settings.triggerHsmStatus) trigger.status = settings.triggerHsmStatus
+            break
+
+        default:
+            return null
+    }
+
+    return trigger
+}
+
+def formatTimeInput(timeInput) {
+    try {
+        if (timeInput instanceof Date) {
+            return timeInput.format("HH:mm")
+        } else if (timeInput instanceof String) {
+            // Handle various time string formats
+            if (timeInput.contains("T")) {
+                def date = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", timeInput)
+                return date.format("HH:mm")
+            }
+            return timeInput
+        }
+        return timeInput.toString()
+    } catch (Exception e) {
+        return timeInput.toString()
+    }
+}
+
+def clearTriggerSettings() {
+    ["triggerType", "triggerDevice", "triggerAttribute", "triggerOperator", "triggerValue",
+     "triggerDuration", "triggerButtonNumber", "triggerButtonAction", "triggerTimeType",
+     "triggerTime", "triggerOffset", "triggerInterval", "triggerUnit", "triggerFromMode",
+     "triggerToMode", "triggerHsmStatus"].each { app.removeSetting(it) }
+}
+
+def deleteTriggerFromUI(index) {
+    def ruleId = state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+    if (!rule || !rule.triggers || index >= rule.triggers.size()) {
+        log.warn "Cannot delete trigger: not found"
+        return
+    }
+
+    rule.triggers.remove(index)
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    clearTriggerSettings()
+    state.remove("editingTriggerIndex")
+    state.remove("triggerSettingsLoaded")
+    state.remove("loadedTriggerIndex")
+
+    refreshAllSubscriptions()
+    log.info "Deleted trigger ${index + 1} from rule '${rule.name}'"
+}
+
+// ==================== CONDITION MANAGEMENT PAGES ====================
+
+def editConditionsPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    state.currentRuleId = ruleId
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        return dynamicPage(name: "editConditionsPage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    dynamicPage(name: "editConditionsPage", title: "Edit Conditions: ${rule.name}") {
+        section("Condition Logic") {
+            input "conditionLogic", "enum", title: "How should conditions be evaluated?",
+                  options: ["all": "ALL conditions must be true", "any": "ANY condition must be true"],
+                  defaultValue: rule.conditionLogic ?: "all",
+                  submitOnChange: true
+
+            // Update rule if logic changed
+            if (settings.conditionLogic && settings.conditionLogic != rule.conditionLogic) {
+                rule.conditionLogic = settings.conditionLogic
+                rule.updatedAt = new Date().time
+                state.rules[ruleId] = rule
+            }
+        }
+
+        section("Current Conditions") {
+            if (rule.conditions && rule.conditions.size() > 0) {
+                rule.conditions.eachWithIndex { condition, idx ->
+                    href name: "editCondition_${idx}", page: "editConditionPage",
+                         title: "${idx + 1}. ${describeCondition(condition)}",
+                         description: "Tap to edit",
+                         params: [ruleId: ruleId, conditionIndex: idx]
+                }
+            } else {
+                paragraph "<i>No conditions defined. Rule will execute whenever triggered.</i>"
+            }
+        }
+
+        section {
+            href name: "addCondition", page: "addConditionPage",
+                 title: "+ Add Condition",
+                 params: [ruleId: ruleId]
+        }
+
+        section {
+            href name: "backToRule", page: "viewRulePage",
+                 title: "← Done",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def addConditionPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    state.currentRuleId = ruleId
+    state.editingConditionIndex = null // Adding new condition
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        return dynamicPage(name: "addConditionPage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    dynamicPage(name: "addConditionPage", title: "Add Condition") {
+        section("Condition Type") {
+            input "conditionType", "enum", title: "What should be checked?",
+                  options: [
+                      "device_state": "Device State",
+                      "device_was": "Device Was (for duration)",
+                      "time_range": "Time Range",
+                      "mode": "Hub Mode",
+                      "variable": "Variable Value",
+                      "days_of_week": "Days of Week",
+                      "sun_position": "Sun Position (day/night)",
+                      "hsm_status": "HSM Status",
+                      "presence": "Presence Sensor",
+                      "lock": "Lock Status",
+                      "thermostat_mode": "Thermostat Mode",
+                      "thermostat_state": "Thermostat State",
+                      "illuminance": "Illuminance Level",
+                      "power": "Power Level"
+                  ],
+                  required: true, submitOnChange: true
+        }
+
+        renderConditionFields(settings.conditionType)
+
+        section {
+            if (settings.conditionType) {
+                input "saveConditionBtn", "button", title: "Save Condition"
+            }
+            href name: "cancelCondition", page: "editConditionsPage",
+                 title: "Cancel",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def editConditionPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    def conditionIndex = params?.conditionIndex != null ? params.conditionIndex.toInteger() : state.editingConditionIndex
+    state.currentRuleId = ruleId
+    state.editingConditionIndex = conditionIndex
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule || conditionIndex == null || conditionIndex >= (rule.conditions?.size() ?: 0)) {
+        return dynamicPage(name: "editConditionPage", title: "Condition Not Found") {
+            section {
+                paragraph "The requested condition could not be found."
+                href name: "backToConditions", page: "editConditionsPage", title: "Back to Conditions"
+            }
+        }
+    }
+
+    def condition = rule.conditions[conditionIndex]
+
+    // Pre-populate settings from existing condition
+    if (!state.conditionSettingsLoaded || state.loadedConditionIndex != conditionIndex) {
+        loadConditionSettings(condition)
+        state.conditionSettingsLoaded = true
+        state.loadedConditionIndex = conditionIndex
+    }
+
+    dynamicPage(name: "editConditionPage", title: "Edit Condition ${conditionIndex + 1}") {
+        section("Condition Type") {
+            input "conditionType", "enum", title: "What should be checked?",
+                  options: [
+                      "device_state": "Device State",
+                      "device_was": "Device Was (for duration)",
+                      "time_range": "Time Range",
+                      "mode": "Hub Mode",
+                      "variable": "Variable Value",
+                      "days_of_week": "Days of Week",
+                      "sun_position": "Sun Position (day/night)",
+                      "hsm_status": "HSM Status",
+                      "presence": "Presence Sensor",
+                      "lock": "Lock Status",
+                      "thermostat_mode": "Thermostat Mode",
+                      "thermostat_state": "Thermostat State",
+                      "illuminance": "Illuminance Level",
+                      "power": "Power Level"
+                  ],
+                  required: true, submitOnChange: true,
+                  defaultValue: condition.type
+        }
+
+        renderConditionFields(settings.conditionType ?: condition.type)
+
+        section {
+            input "saveConditionBtn", "button", title: "Save Changes"
+            input "deleteCondition_${conditionIndex}", "button", title: "Delete Condition"
+            href name: "cancelConditionEdit", page: "editConditionsPage",
+                 title: "Cancel",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def renderConditionFields(conditionType) {
+    switch (conditionType) {
+        case "device_state":
+            section("Device State Settings") {
+                input "conditionDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                if (settings.conditionDevice) {
+                    def device = settings.conditionDevice
+                    def attrs = device.supportedAttributes?.collect { it.name }?.sort()
+                    input "conditionAttribute", "enum", title: "Attribute",
+                          options: attrs, required: true
+                }
+                input "conditionOperator", "enum", title: "Comparison",
+                      options: getOperatorOptions(), required: true, defaultValue: "equals"
+                input "conditionValue", "text", title: "Value", required: true
+            }
+            break
+
+        case "device_was":
+            section("Device Was Settings") {
+                input "conditionDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                if (settings.conditionDevice) {
+                    def device = settings.conditionDevice
+                    def attrs = device.supportedAttributes?.collect { it.name }?.sort()
+                    input "conditionAttribute", "enum", title: "Attribute",
+                          options: attrs, required: true
+                }
+                input "conditionOperator", "enum", title: "Comparison",
+                      options: getOperatorOptions(), required: true, defaultValue: "equals"
+                input "conditionValue", "text", title: "Value", required: true
+                input "conditionForSeconds", "number", title: "For how many seconds?",
+                      required: true, range: "1..86400"
+            }
+            break
+
+        case "time_range":
+            section("Time Range Settings") {
+                paragraph "<i>Use HH:mm format or 'sunrise'/'sunset'</i>"
+                input "conditionStartTime", "text", title: "Start Time", required: true,
+                      description: "e.g., 08:00 or sunrise"
+                input "conditionEndTime", "text", title: "End Time", required: true,
+                      description: "e.g., 22:00 or sunset"
+            }
+            break
+
+        case "mode":
+            section("Mode Settings") {
+                def modes = location.modes?.collect { it.name }
+                input "conditionModes", "enum", title: "Modes",
+                      options: modes, required: true, multiple: true
+                input "conditionModeOperator", "enum", title: "Logic",
+                      options: ["in": "Mode IS one of these", "not_in": "Mode is NOT one of these"],
+                      required: true, defaultValue: "in"
+            }
+            break
+
+        case "variable":
+            section("Variable Settings") {
+                input "conditionVariableName", "text", title: "Variable Name", required: true
+                input "conditionOperator", "enum", title: "Comparison",
+                      options: getOperatorOptions(), required: true, defaultValue: "equals"
+                input "conditionValue", "text", title: "Value", required: true
+            }
+            break
+
+        case "days_of_week":
+            section("Days of Week Settings") {
+                input "conditionDays", "enum", title: "Days",
+                      options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+                      required: true, multiple: true
+            }
+            break
+
+        case "sun_position":
+            section("Sun Position Settings") {
+                input "conditionSunPosition", "enum", title: "Sun Position",
+                      options: ["up": "Sun is Up (daytime)", "down": "Sun is Down (nighttime)"],
+                      required: true
+            }
+            break
+
+        case "hsm_status":
+            section("HSM Status Settings") {
+                input "conditionHsmStatus", "enum", title: "HSM Status",
+                      options: [
+                          "armedAway": "Armed Away",
+                          "armedHome": "Armed Home",
+                          "armedNight": "Armed Night",
+                          "disarmed": "Disarmed"
+                      ],
+                      required: true
+                input "conditionHsmOperator", "enum", title: "Logic",
+                      options: ["equals": "Equals", "not_equals": "Not Equals"],
+                      required: true, defaultValue: "equals"
+            }
+            break
+
+        case "presence":
+            section("Presence Settings") {
+                input "conditionDevice", "capability.presenceSensor", title: "Presence Sensor", required: true
+                input "conditionPresenceStatus", "enum", title: "Status",
+                      options: ["present": "Present", "not present": "Not Present"],
+                      required: true
+            }
+            break
+
+        case "lock":
+            section("Lock Settings") {
+                input "conditionDevice", "capability.lock", title: "Lock Device", required: true
+                input "conditionLockStatus", "enum", title: "Status",
+                      options: ["locked": "Locked", "unlocked": "Unlocked"],
+                      required: true
+            }
+            break
+
+        case "thermostat_mode":
+            section("Thermostat Mode Settings") {
+                input "conditionDevice", "capability.thermostat", title: "Thermostat", required: true
+                input "conditionThermostatMode", "enum", title: "Mode",
+                      options: ["heat": "Heat", "cool": "Cool", "auto": "Auto", "off": "Off", "emergency heat": "Emergency Heat"],
+                      required: true
+            }
+            break
+
+        case "thermostat_state":
+            section("Thermostat State Settings") {
+                input "conditionDevice", "capability.thermostat", title: "Thermostat", required: true
+                input "conditionThermostatState", "enum", title: "Operating State",
+                      options: ["heating": "Heating", "cooling": "Cooling", "idle": "Idle", "fan only": "Fan Only"],
+                      required: true
+            }
+            break
+
+        case "illuminance":
+            section("Illuminance Settings") {
+                input "conditionDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: true
+                input "conditionOperator", "enum", title: "Comparison",
+                      options: getOperatorOptions(), required: true, defaultValue: "<"
+                input "conditionValue", "number", title: "Lux Value", required: true
+            }
+            break
+
+        case "power":
+            section("Power Settings") {
+                input "conditionDevice", "capability.powerMeter", title: "Power Meter", required: true
+                input "conditionOperator", "enum", title: "Comparison",
+                      options: getOperatorOptions(), required: true, defaultValue: ">"
+                input "conditionValue", "number", title: "Watts", required: true
+            }
+            break
+    }
+}
+
+def getOperatorOptions() {
+    return [
+        "equals": "Equals",
+        "not_equals": "Not Equals",
+        ">": "Greater Than",
+        "<": "Less Than",
+        ">=": "Greater or Equal",
+        "<=": "Less or Equal",
+        "contains": "Contains"
+    ]
+}
+
+def loadConditionSettings(condition) {
+    app.updateSetting("conditionType", condition.type)
+
+    switch (condition.type) {
+        case "device_state":
+        case "device_was":
+            if (condition.deviceId) {
+                def device = findDevice(condition.deviceId)
+                if (device) app.updateSetting("conditionDevice", [type: "capability.*", value: device.id])
+            }
+            if (condition.attribute) app.updateSetting("conditionAttribute", condition.attribute)
+            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
+            if (condition.value) app.updateSetting("conditionValue", condition.value)
+            if (condition.forSeconds) app.updateSetting("conditionForSeconds", condition.forSeconds)
+            break
+
+        case "time_range":
+            if (condition.startTime) app.updateSetting("conditionStartTime", condition.startTime)
+            if (condition.endTime) app.updateSetting("conditionEndTime", condition.endTime)
+            break
+
+        case "mode":
+            if (condition.modes) app.updateSetting("conditionModes", condition.modes)
+            if (condition.operator) app.updateSetting("conditionModeOperator", condition.operator)
+            break
+
+        case "variable":
+            if (condition.variableName) app.updateSetting("conditionVariableName", condition.variableName)
+            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
+            if (condition.value) app.updateSetting("conditionValue", condition.value)
+            break
+
+        case "days_of_week":
+            if (condition.days) app.updateSetting("conditionDays", condition.days)
+            break
+
+        case "sun_position":
+            if (condition.position) app.updateSetting("conditionSunPosition", condition.position)
+            break
+
+        case "hsm_status":
+            if (condition.status) app.updateSetting("conditionHsmStatus", condition.status)
+            if (condition.operator) app.updateSetting("conditionHsmOperator", condition.operator)
+            break
+
+        case "presence":
+            if (condition.deviceId) {
+                def device = findDevice(condition.deviceId)
+                if (device) app.updateSetting("conditionDevice", [type: "capability.presenceSensor", value: device.id])
+            }
+            if (condition.status) app.updateSetting("conditionPresenceStatus", condition.status)
+            break
+
+        case "lock":
+            if (condition.deviceId) {
+                def device = findDevice(condition.deviceId)
+                if (device) app.updateSetting("conditionDevice", [type: "capability.lock", value: device.id])
+            }
+            if (condition.status) app.updateSetting("conditionLockStatus", condition.status)
+            break
+
+        case "thermostat_mode":
+            if (condition.deviceId) {
+                def device = findDevice(condition.deviceId)
+                if (device) app.updateSetting("conditionDevice", [type: "capability.thermostat", value: device.id])
+            }
+            if (condition.mode) app.updateSetting("conditionThermostatMode", condition.mode)
+            break
+
+        case "thermostat_state":
+            if (condition.deviceId) {
+                def device = findDevice(condition.deviceId)
+                if (device) app.updateSetting("conditionDevice", [type: "capability.thermostat", value: device.id])
+            }
+            if (condition.state) app.updateSetting("conditionThermostatState", condition.state)
+            break
+
+        case "illuminance":
+            if (condition.deviceId) {
+                def device = findDevice(condition.deviceId)
+                if (device) app.updateSetting("conditionDevice", [type: "capability.illuminanceMeasurement", value: device.id])
+            }
+            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
+            if (condition.value) app.updateSetting("conditionValue", condition.value)
+            break
+
+        case "power":
+            if (condition.deviceId) {
+                def device = findDevice(condition.deviceId)
+                if (device) app.updateSetting("conditionDevice", [type: "capability.powerMeter", value: device.id])
+            }
+            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
+            if (condition.value) app.updateSetting("conditionValue", condition.value)
+            break
+    }
+}
+
+def saveConditionFromUI() {
+    def ruleId = state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        log.warn "Cannot save condition: rule not found"
+        return
+    }
+
+    def condition = buildConditionFromSettings()
+    if (!condition) {
+        log.warn "Cannot save condition: invalid settings"
+        return
+    }
+
+    if (!rule.conditions) rule.conditions = []
+
+    if (state.editingConditionIndex != null && state.editingConditionIndex < rule.conditions.size()) {
+        rule.conditions[state.editingConditionIndex] = condition
+        log.info "Updated condition ${state.editingConditionIndex + 1} in rule '${rule.name}'"
+    } else {
+        rule.conditions.add(condition)
+        log.info "Added new condition to rule '${rule.name}'"
+    }
+
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    clearConditionSettings()
+    state.remove("editingConditionIndex")
+    state.remove("conditionSettingsLoaded")
+    state.remove("loadedConditionIndex")
+}
+
+def buildConditionFromSettings() {
+    def condition = [type: settings.conditionType]
+
+    switch (settings.conditionType) {
+        case "device_state":
+            if (!settings.conditionDevice || !settings.conditionAttribute) return null
+            condition.deviceId = settings.conditionDevice.id.toString()
+            condition.attribute = settings.conditionAttribute
+            condition.operator = settings.conditionOperator ?: "equals"
+            condition.value = settings.conditionValue
+            break
+
+        case "device_was":
+            if (!settings.conditionDevice || !settings.conditionAttribute || !settings.conditionForSeconds) return null
+            condition.deviceId = settings.conditionDevice.id.toString()
+            condition.attribute = settings.conditionAttribute
+            condition.operator = settings.conditionOperator ?: "equals"
+            condition.value = settings.conditionValue
+            condition.forSeconds = settings.conditionForSeconds
+            break
+
+        case "time_range":
+            if (!settings.conditionStartTime || !settings.conditionEndTime) return null
+            condition.startTime = settings.conditionStartTime
+            condition.endTime = settings.conditionEndTime
+            break
+
+        case "mode":
+            if (!settings.conditionModes) return null
+            condition.modes = settings.conditionModes
+            condition.operator = settings.conditionModeOperator ?: "in"
+            break
+
+        case "variable":
+            if (!settings.conditionVariableName) return null
+            condition.variableName = settings.conditionVariableName
+            condition.operator = settings.conditionOperator ?: "equals"
+            condition.value = settings.conditionValue
+            break
+
+        case "days_of_week":
+            if (!settings.conditionDays) return null
+            condition.days = settings.conditionDays
+            break
+
+        case "sun_position":
+            if (!settings.conditionSunPosition) return null
+            condition.position = settings.conditionSunPosition
+            break
+
+        case "hsm_status":
+            if (!settings.conditionHsmStatus) return null
+            condition.status = settings.conditionHsmStatus
+            condition.operator = settings.conditionHsmOperator ?: "equals"
+            break
+
+        case "presence":
+            if (!settings.conditionDevice || !settings.conditionPresenceStatus) return null
+            condition.deviceId = settings.conditionDevice.id.toString()
+            condition.status = settings.conditionPresenceStatus
+            break
+
+        case "lock":
+            if (!settings.conditionDevice || !settings.conditionLockStatus) return null
+            condition.deviceId = settings.conditionDevice.id.toString()
+            condition.status = settings.conditionLockStatus
+            break
+
+        case "thermostat_mode":
+            if (!settings.conditionDevice || !settings.conditionThermostatMode) return null
+            condition.deviceId = settings.conditionDevice.id.toString()
+            condition.mode = settings.conditionThermostatMode
+            break
+
+        case "thermostat_state":
+            if (!settings.conditionDevice || !settings.conditionThermostatState) return null
+            condition.deviceId = settings.conditionDevice.id.toString()
+            condition.state = settings.conditionThermostatState
+            break
+
+        case "illuminance":
+        case "power":
+            if (!settings.conditionDevice) return null
+            condition.deviceId = settings.conditionDevice.id.toString()
+            condition.operator = settings.conditionOperator ?: "equals"
+            condition.value = settings.conditionValue
+            break
+
+        default:
+            return null
+    }
+
+    return condition
+}
+
+def clearConditionSettings() {
+    ["conditionType", "conditionDevice", "conditionAttribute", "conditionOperator", "conditionValue",
+     "conditionForSeconds", "conditionStartTime", "conditionEndTime", "conditionModes",
+     "conditionModeOperator", "conditionVariableName", "conditionDays", "conditionSunPosition",
+     "conditionHsmStatus", "conditionHsmOperator", "conditionPresenceStatus", "conditionLockStatus",
+     "conditionThermostatMode", "conditionThermostatState", "conditionLogic"].each { app.removeSetting(it) }
+}
+
+def deleteConditionFromUI(index) {
+    def ruleId = state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+    if (!rule || !rule.conditions || index >= rule.conditions.size()) {
+        log.warn "Cannot delete condition: not found"
+        return
+    }
+
+    rule.conditions.remove(index)
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    clearConditionSettings()
+    state.remove("editingConditionIndex")
+    state.remove("conditionSettingsLoaded")
+    state.remove("loadedConditionIndex")
+
+    log.info "Deleted condition ${index + 1} from rule '${rule.name}'"
+}
+
+// ==================== ACTION MANAGEMENT PAGES ====================
+
+def editActionsPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    state.currentRuleId = ruleId
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        return dynamicPage(name: "editActionsPage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    dynamicPage(name: "editActionsPage", title: "Edit Actions: ${rule.name}") {
+        section("Actions (executed in order)") {
+            if (rule.actions && rule.actions.size() > 0) {
+                rule.actions.eachWithIndex { action, idx ->
+                    def canMoveUp = idx > 0
+                    def canMoveDown = idx < rule.actions.size() - 1
+
+                    href name: "editAction_${idx}", page: "editActionPage",
+                         title: "${idx + 1}. ${describeAction(action)}",
+                         description: "Tap to edit",
+                         params: [ruleId: ruleId, actionIndex: idx]
+
+                    // Reorder buttons
+                    if (canMoveUp || canMoveDown) {
+                        def moveButtons = []
+                        if (canMoveUp) moveButtons << "moveActionUp_${idx}"
+                        if (canMoveDown) moveButtons << "moveActionDown_${idx}"
+                    }
+                }
+            } else {
+                paragraph "<i>No actions defined. Add an action for this rule to do something.</i>"
+            }
+        }
+
+        if (rule.actions && rule.actions.size() > 1) {
+            section("Reorder Actions") {
+                paragraph "<i>Tap up/down buttons below to reorder:</i>"
+                rule.actions.eachWithIndex { action, idx ->
+                    def label = "${idx + 1}. ${describeAction(action).take(30)}..."
+                    if (idx > 0) {
+                        input "moveActionUp_${idx}", "button", title: "↑ Move ${idx + 1} Up"
+                    }
+                    if (idx < rule.actions.size() - 1) {
+                        input "moveActionDown_${idx}", "button", title: "↓ Move ${idx + 1} Down"
+                    }
+                }
+            }
+        }
+
+        section {
+            href name: "addAction", page: "addActionPage",
+                 title: "+ Add Action",
+                 params: [ruleId: ruleId]
+        }
+
+        section {
+            href name: "backToRule", page: "viewRulePage",
+                 title: "← Done",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def addActionPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    state.currentRuleId = ruleId
+    state.editingActionIndex = null // Adding new action
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        return dynamicPage(name: "addActionPage", title: "Rule Not Found") {
+            section {
+                paragraph "The requested rule could not be found."
+                href name: "backToMain", page: "mainPage", title: "Back to Rules"
+            }
+        }
+    }
+
+    dynamicPage(name: "addActionPage", title: "Add Action") {
+        section("Action Type") {
+            input "actionType", "enum", title: "What should happen?",
+                  options: getActionTypeOptions(),
+                  required: true, submitOnChange: true
+        }
+
+        renderActionFields(settings.actionType)
+
+        section {
+            if (settings.actionType) {
+                input "saveActionBtn", "button", title: "Save Action"
+            }
+            href name: "cancelAction", page: "editActionsPage",
+                 title: "Cancel",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def editActionPage(params) {
+    def ruleId = params?.ruleId ?: state.currentRuleId
+    def actionIndex = params?.actionIndex != null ? params.actionIndex.toInteger() : state.editingActionIndex
+    state.currentRuleId = ruleId
+    state.editingActionIndex = actionIndex
+
+    def rule = state.rules?.get(ruleId)
+    if (!rule || actionIndex == null || actionIndex >= (rule.actions?.size() ?: 0)) {
+        return dynamicPage(name: "editActionPage", title: "Action Not Found") {
+            section {
+                paragraph "The requested action could not be found."
+                href name: "backToActions", page: "editActionsPage", title: "Back to Actions"
+            }
+        }
+    }
+
+    def action = rule.actions[actionIndex]
+
+    // Pre-populate settings from existing action
+    if (!state.actionSettingsLoaded || state.loadedActionIndex != actionIndex) {
+        loadActionSettings(action)
+        state.actionSettingsLoaded = true
+        state.loadedActionIndex = actionIndex
+    }
+
+    dynamicPage(name: "editActionPage", title: "Edit Action ${actionIndex + 1}") {
+        section("Action Type") {
+            input "actionType", "enum", title: "What should happen?",
+                  options: getActionTypeOptions(),
+                  required: true, submitOnChange: true,
+                  defaultValue: action.type
+        }
+
+        renderActionFields(settings.actionType ?: action.type)
+
+        section {
+            input "saveActionBtn", "button", title: "Save Changes"
+            input "deleteAction_${actionIndex}", "button", title: "Delete Action"
+            href name: "cancelActionEdit", page: "editActionsPage",
+                 title: "Cancel",
+                 params: [ruleId: ruleId]
+        }
+    }
+}
+
+def getActionTypeOptions() {
+    return [
+        "device_command": "Device Command",
+        "toggle_device": "Toggle Device On/Off",
+        "set_level": "Set Dimmer Level",
+        "set_color": "Set Light Color",
+        "set_color_temperature": "Set Color Temperature",
+        "lock": "Lock",
+        "unlock": "Unlock",
+        "activate_scene": "Activate Scene",
+        "set_mode": "Set Hub Mode",
+        "set_hsm": "Set HSM Status",
+        "set_variable": "Set Variable",
+        "delay": "Delay",
+        "cancel_delayed": "Cancel Delayed Actions",
+        "log": "Log Message",
+        "send_notification": "Send Notification",
+        "capture_state": "Capture Device State",
+        "restore_state": "Restore Device State",
+        "stop": "Stop Rule Execution"
+    ]
+}
+
+def renderActionFields(actionType) {
+    switch (actionType) {
+        case "device_command":
+            section("Device Command Settings") {
+                input "actionDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                if (settings.actionDevice) {
+                    def device = settings.actionDevice
+                    def cmds = device.supportedCommands?.collect { it.name }?.sort()
+                    input "actionCommand", "enum", title: "Command",
+                          options: cmds, required: true, submitOnChange: true
+
+                    if (settings.actionCommand) {
+                        def cmd = device.supportedCommands?.find { it.name == settings.actionCommand }
+                        if (cmd?.arguments?.size() > 0) {
+                            paragraph "<i>Command parameters (comma-separated):</i>"
+                            input "actionParameters", "text", title: "Parameters",
+                                  description: "e.g., 50 for setLevel", required: false
+                        }
+                    }
+                }
+            }
+            break
+
+        case "toggle_device":
+            section("Toggle Device Settings") {
+                input "actionDevice", "capability.switch", title: "Switch Device", required: true
+            }
+            break
+
+        case "set_level":
+            section("Set Level Settings") {
+                input "actionDevice", "capability.switchLevel", title: "Dimmer Device", required: true
+                input "actionLevel", "number", title: "Level (%)", required: true, range: "0..100"
+                input "actionDuration", "number", title: "Fade Duration (seconds, optional)",
+                      required: false, range: "0..3600"
+            }
+            break
+
+        case "set_color":
+            section("Set Color Settings") {
+                input "actionDevice", "capability.colorControl", title: "Color Light", required: true
+                input "actionHue", "number", title: "Hue (0-100)", required: true, range: "0..100"
+                input "actionSaturation", "number", title: "Saturation (0-100)", required: true, range: "0..100"
+                input "actionLevel", "number", title: "Level (%, optional)", required: false, range: "0..100"
+            }
+            break
+
+        case "set_color_temperature":
+            section("Set Color Temperature Settings") {
+                input "actionDevice", "capability.colorTemperature", title: "CT Light", required: true
+                input "actionColorTemp", "number", title: "Color Temperature (K)",
+                      required: true, range: "2000..6500"
+                input "actionLevel", "number", title: "Level (%, optional)", required: false, range: "0..100"
+            }
+            break
+
+        case "lock":
+        case "unlock":
+            section("Lock Settings") {
+                input "actionDevice", "capability.lock", title: "Lock Device", required: true
+            }
+            break
+
+        case "activate_scene":
+            section("Scene Settings") {
+                input "actionSceneDevice", "capability.*", title: "Scene Device", required: true
+            }
+            break
+
+        case "set_mode":
+            section("Mode Settings") {
+                def modes = location.modes?.collect { it.name }
+                input "actionMode", "enum", title: "Mode", options: modes, required: true
+            }
+            break
+
+        case "set_hsm":
+            section("HSM Settings") {
+                input "actionHsmStatus", "enum", title: "HSM Status",
+                      options: [
+                          "armAway": "Arm Away",
+                          "armHome": "Arm Home",
+                          "armNight": "Arm Night",
+                          "disarm": "Disarm"
+                      ],
+                      required: true
+            }
+            break
+
+        case "set_variable":
+            section("Variable Settings") {
+                input "actionVariableName", "text", title: "Variable Name", required: true
+                input "actionVariableValue", "text", title: "Value", required: true
+                input "actionVariableScope", "enum", title: "Scope",
+                      options: ["global": "Global (hub/rule engine)", "rule": "Rule Local"],
+                      required: true, defaultValue: "global"
+            }
+            break
+
+        case "delay":
+            section("Delay Settings") {
+                input "actionDelaySeconds", "number", title: "Delay (seconds)",
+                      required: true, range: "1..86400"
+                input "actionDelayId", "text", title: "Delay ID (optional)",
+                      description: "For cancelling specific delays", required: false
+            }
+            break
+
+        case "cancel_delayed":
+            section("Cancel Delayed Settings") {
+                input "actionCancelDelayId", "text", title: "Delay ID to Cancel",
+                      description: "Leave empty to cancel all delays for this rule", required: false
+            }
+            break
+
+        case "log":
+            section("Log Settings") {
+                input "actionLogMessage", "text", title: "Message", required: true
+                input "actionLogLevel", "enum", title: "Level",
+                      options: ["debug": "Debug", "info": "Info", "warn": "Warning", "error": "Error"],
+                      required: true, defaultValue: "info"
+            }
+            break
+
+        case "send_notification":
+            section("Notification Settings") {
+                input "actionNotificationMessage", "text", title: "Message", required: true
+                input "actionNotificationTitle", "text", title: "Title (optional)", required: false
+            }
+            break
+
+        case "capture_state":
+            section("Capture State Settings") {
+                input "actionCaptureDevices", "capability.*", title: "Devices to Capture",
+                      required: true, multiple: true
+                input "actionStateId", "text", title: "State ID",
+                      description: "Identifier for this saved state", required: false, defaultValue: "default"
+            }
+            break
+
+        case "restore_state":
+            section("Restore State Settings") {
+                input "actionStateId", "text", title: "State ID to Restore",
+                      description: "Leave empty for 'default'", required: false, defaultValue: "default"
+            }
+            break
+
+        case "stop":
+            section {
+                paragraph "<i>This action stops rule execution. No further actions will run.</i>"
+            }
+            break
+    }
+}
+
+def loadActionSettings(action) {
+    app.updateSetting("actionType", action.type)
+
+    switch (action.type) {
+        case "device_command":
+            if (action.deviceId) {
+                def device = findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.*", value: device.id])
+            }
+            if (action.command) app.updateSetting("actionCommand", action.command)
+            if (action.parameters) app.updateSetting("actionParameters", action.parameters.join(","))
+            break
+
+        case "toggle_device":
+            if (action.deviceId) {
+                def device = findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.switch", value: device.id])
+            }
+            break
+
+        case "set_level":
+            if (action.deviceId) {
+                def device = findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.switchLevel", value: device.id])
+            }
+            if (action.level != null) app.updateSetting("actionLevel", action.level)
+            if (action.duration) app.updateSetting("actionDuration", action.duration)
+            break
+
+        case "set_color":
+            if (action.deviceId) {
+                def device = findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.colorControl", value: device.id])
+            }
+            if (action.hue != null) app.updateSetting("actionHue", action.hue)
+            if (action.saturation != null) app.updateSetting("actionSaturation", action.saturation)
+            if (action.level != null) app.updateSetting("actionLevel", action.level)
+            break
+
+        case "set_color_temperature":
+            if (action.deviceId) {
+                def device = findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.colorTemperature", value: device.id])
+            }
+            if (action.colorTemperature) app.updateSetting("actionColorTemp", action.colorTemperature)
+            if (action.level != null) app.updateSetting("actionLevel", action.level)
+            break
+
+        case "lock":
+        case "unlock":
+            if (action.deviceId) {
+                def device = findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.lock", value: device.id])
+            }
+            break
+
+        case "activate_scene":
+            if (action.sceneDeviceId) {
+                def device = findDevice(action.sceneDeviceId)
+                if (device) app.updateSetting("actionSceneDevice", [type: "capability.*", value: device.id])
+            }
+            break
+
+        case "set_mode":
+            if (action.mode) app.updateSetting("actionMode", action.mode)
+            break
+
+        case "set_hsm":
+            if (action.status) app.updateSetting("actionHsmStatus", action.status)
+            break
+
+        case "set_variable":
+            if (action.variableName) app.updateSetting("actionVariableName", action.variableName)
+            if (action.value) app.updateSetting("actionVariableValue", action.value)
+            if (action.scope) app.updateSetting("actionVariableScope", action.scope)
+            break
+
+        case "delay":
+            if (action.seconds) app.updateSetting("actionDelaySeconds", action.seconds)
+            if (action.delayId) app.updateSetting("actionDelayId", action.delayId)
+            break
+
+        case "cancel_delayed":
+            if (action.delayId) app.updateSetting("actionCancelDelayId", action.delayId)
+            break
+
+        case "log":
+            if (action.message) app.updateSetting("actionLogMessage", action.message)
+            if (action.level) app.updateSetting("actionLogLevel", action.level)
+            break
+
+        case "send_notification":
+            if (action.message) app.updateSetting("actionNotificationMessage", action.message)
+            if (action.title) app.updateSetting("actionNotificationTitle", action.title)
+            break
+
+        case "capture_state":
+            if (action.devices) {
+                def devices = action.devices.collect { id -> findDevice(id) }.findAll { it != null }
+                if (devices) app.updateSetting("actionCaptureDevices", [type: "capability.*", value: devices*.id])
+            }
+            if (action.stateId) app.updateSetting("actionStateId", action.stateId)
+            break
+
+        case "restore_state":
+            if (action.stateId) app.updateSetting("actionStateId", action.stateId)
+            break
+    }
+}
+
+def saveActionFromUI() {
+    def ruleId = state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+    if (!rule) {
+        log.warn "Cannot save action: rule not found"
+        return
+    }
+
+    def action = buildActionFromSettings()
+    if (!action) {
+        log.warn "Cannot save action: invalid settings"
+        return
+    }
+
+    if (!rule.actions) rule.actions = []
+
+    if (state.editingActionIndex != null && state.editingActionIndex < rule.actions.size()) {
+        rule.actions[state.editingActionIndex] = action
+        log.info "Updated action ${state.editingActionIndex + 1} in rule '${rule.name}'"
+    } else {
+        rule.actions.add(action)
+        log.info "Added new action to rule '${rule.name}'"
+    }
+
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    clearActionSettings()
+    state.remove("editingActionIndex")
+    state.remove("actionSettingsLoaded")
+    state.remove("loadedActionIndex")
+}
+
+def buildActionFromSettings() {
+    def action = [type: settings.actionType]
+
+    switch (settings.actionType) {
+        case "device_command":
+            if (!settings.actionDevice || !settings.actionCommand) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            action.command = settings.actionCommand
+            if (settings.actionParameters?.trim()) {
+                action.parameters = settings.actionParameters.split(",")*.trim()
+            }
+            break
+
+        case "toggle_device":
+            if (!settings.actionDevice) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            break
+
+        case "set_level":
+            if (!settings.actionDevice || settings.actionLevel == null) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            action.level = settings.actionLevel
+            if (settings.actionDuration) action.duration = settings.actionDuration
+            break
+
+        case "set_color":
+            if (!settings.actionDevice || settings.actionHue == null || settings.actionSaturation == null) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            action.hue = settings.actionHue
+            action.saturation = settings.actionSaturation
+            if (settings.actionLevel != null) action.level = settings.actionLevel
+            break
+
+        case "set_color_temperature":
+            if (!settings.actionDevice || !settings.actionColorTemp) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            action.colorTemperature = settings.actionColorTemp
+            if (settings.actionLevel != null) action.level = settings.actionLevel
+            break
+
+        case "lock":
+        case "unlock":
+            if (!settings.actionDevice) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            break
+
+        case "activate_scene":
+            if (!settings.actionSceneDevice) return null
+            action.sceneDeviceId = settings.actionSceneDevice.id.toString()
+            break
+
+        case "set_mode":
+            if (!settings.actionMode) return null
+            action.mode = settings.actionMode
+            break
+
+        case "set_hsm":
+            if (!settings.actionHsmStatus) return null
+            action.status = settings.actionHsmStatus
+            break
+
+        case "set_variable":
+            if (!settings.actionVariableName) return null
+            action.variableName = settings.actionVariableName
+            action.value = settings.actionVariableValue ?: ""
+            action.scope = settings.actionVariableScope ?: "global"
+            break
+
+        case "delay":
+            if (!settings.actionDelaySeconds) return null
+            action.seconds = settings.actionDelaySeconds
+            if (settings.actionDelayId?.trim()) action.delayId = settings.actionDelayId
+            break
+
+        case "cancel_delayed":
+            if (settings.actionCancelDelayId?.trim()) {
+                action.delayId = settings.actionCancelDelayId
+            } else {
+                action.delayId = "all"
+            }
+            break
+
+        case "log":
+            if (!settings.actionLogMessage) return null
+            action.message = settings.actionLogMessage
+            action.level = settings.actionLogLevel ?: "info"
+            break
+
+        case "send_notification":
+            if (!settings.actionNotificationMessage) return null
+            action.message = settings.actionNotificationMessage
+            if (settings.actionNotificationTitle) action.title = settings.actionNotificationTitle
+            break
+
+        case "capture_state":
+            if (!settings.actionCaptureDevices) return null
+            action.devices = settings.actionCaptureDevices.collect { it.id.toString() }
+            action.stateId = settings.actionStateId ?: "default"
+            break
+
+        case "restore_state":
+            action.stateId = settings.actionStateId ?: "default"
+            break
+
+        case "stop":
+            // No additional fields
+            break
+
+        default:
+            return null
+    }
+
+    return action
+}
+
+def clearActionSettings() {
+    ["actionType", "actionDevice", "actionCommand", "actionParameters", "actionLevel",
+     "actionDuration", "actionHue", "actionSaturation", "actionColorTemp", "actionSceneDevice",
+     "actionMode", "actionHsmStatus", "actionVariableName", "actionVariableValue",
+     "actionVariableScope", "actionDelaySeconds", "actionDelayId", "actionCancelDelayId",
+     "actionLogMessage", "actionLogLevel", "actionNotificationMessage", "actionNotificationTitle",
+     "actionCaptureDevices", "actionStateId"].each { app.removeSetting(it) }
+}
+
+def deleteActionFromUI(index) {
+    def ruleId = state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+    if (!rule || !rule.actions || index >= rule.actions.size()) {
+        log.warn "Cannot delete action: not found"
+        return
+    }
+
+    rule.actions.remove(index)
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    clearActionSettings()
+    state.remove("editingActionIndex")
+    state.remove("actionSettingsLoaded")
+    state.remove("loadedActionIndex")
+
+    log.info "Deleted action ${index + 1} from rule '${rule.name}'"
+}
+
+def moveActionFromUI(index, direction) {
+    def ruleId = state.currentRuleId
+    def rule = state.rules?.get(ruleId)
+    if (!rule || !rule.actions) return
+
+    def newIndex = index + direction
+    if (newIndex < 0 || newIndex >= rule.actions.size()) return
+
+    // Swap actions
+    def temp = rule.actions[index]
+    rule.actions[index] = rule.actions[newIndex]
+    rule.actions[newIndex] = temp
+
+    rule.updatedAt = new Date().time
+    state.rules[ruleId] = rule
+
+    log.info "Moved action from position ${index + 1} to ${newIndex + 1} in rule '${rule.name}'"
 }
 
 // ==================== HTTP MAPPINGS ====================
@@ -211,7 +2191,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.0.3"
+            version: "0.0.4"
         ],
         instructions: """Hubitat MCP Server with Rule Engine.
 

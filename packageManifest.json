@@ -1,0 +1,22 @@
+{
+    "packageName": "MCP Rule Server",
+    "author": "kingpanther13",
+    "version": "0.0.4",
+    "minimumHEVersion": "2.3.0",
+    "dateReleased": "2025-01-21",
+    "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
+    "communityLink": "",
+    "releaseNotes": "v0.0.4 - Added full Rule Engine UI for creating, viewing, editing, and deleting automation rules directly in Hubitat's web interface. Users can now manage triggers, conditions, and actions without needing to use MCP/Claude.\n\nv0.0.3 - Initial release with MCP server and rule engine functionality.",
+    "apps": [
+        {
+            "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "name": "MCP Rule Server",
+            "namespace": "mcp",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy",
+            "required": true,
+            "oauth": true,
+            "primary": true
+        }
+    ],
+    "drivers": []
+}
