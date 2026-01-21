@@ -11,9 +11,25 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Create automations** - Build rules with triggers, conditions, and actions
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 
+**New in v0.0.4:** Full Rule Engine UI! You can now create, view, edit, and delete automation rules directly in Hubitat's web interface - no Claude required.
+
 Instead of running a separate Node.js MCP server on another machine, this runs natively on the Hubitat hub itself.
 
 ## Features
+
+### Rule Engine UI (New in v0.0.4!)
+
+Manage your automation rules directly in the Hubitat web interface:
+
+- **View all rules** with status (enabled/disabled) and last triggered time
+- **Create new rules** with a guided form interface
+- **Edit triggers** - Device events, button presses, time schedules, mode changes, and more
+- **Edit conditions** - Device state, time range, mode, variables, presence, and 14 condition types total
+- **Edit actions** - Device commands, scenes, delays, notifications, and 18 action types total
+- **Reorder actions** with up/down buttons
+- **Enable/disable rules** with a single tap
+- **Test rules** (dry run) to see what would happen without executing
+- **Delete rules** with confirmation
 
 ### MCP Tools (19 total)
 
@@ -77,23 +93,39 @@ Create automations via natural language through Claude:
 - Hubitat Elevation C-7, C-8, or C-8 Pro
 - Hubitat firmware with OAuth support (any recent version)
 
-## Quick Start
+## Installation
 
-### 1. Install the App
+### Option A: Hubitat Package Manager (Recommended)
+
+If you have [Hubitat Package Manager (HPM)](https://hubitatpackagemanager.hubitatcommunity.com/) installed:
+
+1. Open HPM → **Install** → **Search by Keywords**
+2. Search for "MCP Rule Server" or add this repo as a custom repository:
+   ```
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json
+   ```
+3. Select **MCP Rule Server** and install
+4. HPM will notify you when updates are available
+
+### Option B: Manual Installation
 
 1. Go to Hubitat web UI → **Apps Code** → **+ New App**
 2. Copy contents of [`hubitat-mcp-server.groovy`](hubitat-mcp-server.groovy)
 3. Paste and click **Save**
 4. Click **OAuth** → **Enable OAuth in App** → **Save**
 
-### 2. Add the App
+## Quick Start
+
+### 1. Add the App
 
 1. Go to **Apps** → **+ Add User App** → **MCP Rule Server**
 2. Select devices you want accessible via MCP
 3. Click **Done**
-4. Open the app to see your endpoint URL
+4. Open the app to see your endpoint URL and manage rules
 
-### 3. Configure Your MCP Client
+### 2. Configure Your MCP Client (Optional)
+
+If you want to use Claude or another AI to control your devices:
 
 Your endpoint URL will look like:
 ```
