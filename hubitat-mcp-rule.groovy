@@ -1273,6 +1273,23 @@ def describeAction(action) {
         case "stop":
             return "Stop rule execution"
 
+        case "if_then_else":
+            def condDesc = action.condition ? describeCondition(action.condition) : "condition"
+            def thenCount = action.thenActions?.size() ?: 0
+            def elseCount = action.elseActions?.size() ?: 0
+            return "If ${condDesc}: then ${thenCount} action(s)${elseCount > 0 ? ', else ' + elseCount + ' action(s)' : ''}"
+
+        case "cancel_delayed":
+            return action.delayId == "all" ? "Cancel all delayed actions" : "Cancel delayed '${action.delayId}'"
+
+        case "set_local_variable":
+            return "Set local variable '${action.variableName}' to '${action.value}'"
+
+        case "activate_scene":
+            def device = parent.findDevice(action.sceneDeviceId)
+            def deviceName = device?.label ?: action.sceneDeviceId
+            return "Activate scene ${deviceName}"
+
         default:
             return "Unknown action: ${action.type}"
     }
@@ -1536,6 +1553,40 @@ def executeAction(action) {
                 case "warn": log.warn action.message; break
                 case "debug": log.debug action.message; break
                 default: log.info action.message
+            }
+            break
+
+        case "if_then_else":
+            def conditionResult = evaluateCondition(action.condition)
+            log.debug "if_then_else condition result: ${conditionResult}"
+            if (conditionResult) {
+                action.thenActions?.each { thenAction ->
+                    if (!executeAction(thenAction)) return false
+                }
+            } else if (action.elseActions) {
+                action.elseActions?.each { elseAction ->
+                    if (!executeAction(elseAction)) return false
+                }
+            }
+            break
+
+        case "cancel_delayed":
+            if (action.delayId == "all") {
+                unschedule()
+            } else if (action.delayId) {
+                unschedule("delayedAction_${action.delayId}")
+            }
+            break
+
+        case "set_local_variable":
+            if (!state.localVariables) state.localVariables = [:]
+            state.localVariables[action.variableName] = action.value
+            break
+
+        case "activate_scene":
+            def sceneDevice = parent.findDevice(action.sceneDeviceId)
+            if (sceneDevice) {
+                sceneDevice.on()
             }
             break
 
