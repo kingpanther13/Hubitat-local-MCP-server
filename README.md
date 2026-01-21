@@ -11,22 +11,21 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Create automations** - Build rules with triggers, conditions, and actions
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 
-**New in v0.0.4:** Full Rule Engine UI! You can now create, view, edit, and delete automation rules directly in Hubitat's web interface - no Claude required.
+**New in v0.1.0:** Parent/Child architecture! Rules are now separate child apps with isolated settings, just like Hubitat's native Rule Machine. This fixes settings cross-contamination between rules.
 
 Instead of running a separate Node.js MCP server on another machine, this runs natively on the Hubitat hub itself.
 
 ## Features
 
-### Rule Engine UI (New in v0.0.4!)
+### Rule Engine UI
 
 Manage your automation rules directly in the Hubitat web interface:
 
 - **View all rules** with status (enabled/disabled) and last triggered time
-- **Create new rules** with a guided form interface
+- **Create new rules** as child apps (like Rule Machine)
 - **Edit triggers** - Device events, button presses, time schedules, mode changes, and more
 - **Edit conditions** - Device state, time range, mode, variables, presence, and 14 condition types total
 - **Edit actions** - Device commands, scenes, delays, notifications, and 18 action types total
-- **Reorder actions** with up/down buttons
 - **Enable/disable rules** with a single tap
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
@@ -102,17 +101,33 @@ If you have [Hubitat Package Manager (HPM)](https://hubitatpackagemanager.hubita
 1. Open HPM → **Install** → **Search by Keywords**
 2. Search for "MCP Rule Server" or add this repo as a custom repository:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/repository.json
    ```
 3. Select **MCP Rule Server** and install
-4. HPM will notify you when updates are available
+4. HPM will install both the parent app and child app automatically
+5. HPM will notify you when updates are available
 
 ### Option B: Manual Installation
 
+You need to install **two** app files:
+
+**1. Install the Parent App (MCP Rule Server):**
 1. Go to Hubitat web UI → **Apps Code** → **+ New App**
-2. Copy contents of [`hubitat-mcp-server.groovy`](hubitat-mcp-server.groovy)
-3. Paste and click **Save**
+2. Click **Import** and paste this URL:
+   ```
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy
+   ```
+3. Click **Import** → **OK** → **Save**
 4. Click **OAuth** → **Enable OAuth in App** → **Save**
+
+**2. Install the Child App (MCP Rule):**
+1. Go to **Apps Code** → **+ New App**
+2. Click **Import** and paste this URL:
+   ```
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-rule.groovy
+   ```
+3. Click **Import** → **OK** → **Save**
+4. (No OAuth needed for the child app)
 
 ## Quick Start
 
@@ -121,45 +136,105 @@ If you have [Hubitat Package Manager (HPM)](https://hubitatpackagemanager.hubita
 1. Go to **Apps** → **+ Add User App** → **MCP Rule Server**
 2. Select devices you want accessible via MCP
 3. Click **Done**
-4. Open the app to see your endpoint URL and manage rules
+4. Open the app to see your endpoint URLs and manage rules
 
-### 2. Configure Your MCP Client (Optional)
+### 2. Get Your Endpoint URL
 
-If you want to use Claude or another AI to control your devices:
+The app shows two endpoint URLs:
 
-Your endpoint URL will look like:
-```
-http://YOUR_HUB_IP/apps/api/123/mcp?access_token=YOUR_TOKEN
-```
+- **Local Endpoint** - For use on your local network:
+  ```
+  http://192.168.1.100/apps/api/123/mcp?access_token=YOUR_TOKEN
+  ```
 
-Add to your MCP client configuration (e.g., Claude Desktop):
+- **Cloud Endpoint** - For remote access (requires Hubitat Cloud subscription):
+  ```
+  https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN
+  ```
+
+## MCP Client Setup
+
+### Claude Code (CLI)
+
+Add to your Claude Code MCP settings file (`~/.claude/claude_desktop_config.json` on Mac/Linux or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+**For Local Network:**
 ```json
 {
   "mcpServers": {
     "hubitat": {
       "type": "url",
-      "url": "http://192.168.1.100/apps/api/123/mcp?access_token=abc123..."
+      "url": "http://192.168.1.100/apps/api/123/mcp?access_token=YOUR_TOKEN"
     }
   }
 }
 ```
 
-## Remote Access (Optional)
-
-For remote access, you can expose the endpoint via [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/):
-
-```yaml
-# cloudflared config.yml
-ingress:
-  - hostname: hubitat-mcp.yourdomain.com
-    service: http://YOUR_HUB_IP:80
-  - service: http_status:404
+**For Remote Access (Hubitat Cloud):**
+```json
+{
+  "mcpServers": {
+    "hubitat": {
+      "type": "url",
+      "url": "https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN"
+    }
+  }
+}
 ```
 
-Then use:
+### Claude Desktop
+
+Same configuration as above. Add to your Claude Desktop config file:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "hubitat": {
+      "type": "url",
+      "url": "http://YOUR_HUB_IP/apps/api/123/mcp?access_token=YOUR_TOKEN"
+    }
+  }
+}
 ```
-https://hubitat-mcp.yourdomain.com/apps/api/123/mcp?access_token=YOUR_TOKEN
-```
+
+### Claude.ai and Other AI Services
+
+If your AI service supports custom MCP servers via HTTP URL, you can use either:
+
+- **Hubitat Cloud URL** (recommended for remote) - No additional setup needed if you have a Hubitat Cloud subscription
+- **Cloudflare Tunnel** - For self-hosted remote access (see below)
+
+> **Note**: Check your AI service's documentation for MCP server configuration. The cloud URL works with any MCP client that supports HTTP URL-based servers.
+
+## Remote Access Options
+
+### Option 1: Hubitat Cloud (Easiest)
+
+If you have a [Hubitat Cloud](https://hubitat.com/pages/remote-admin) subscription:
+
+1. The cloud endpoint URL is shown directly in the app
+2. Use that URL in your MCP client configuration
+3. No additional setup required!
+
+### Option 2: Cloudflare Tunnel (Free, Self-Hosted)
+
+For free remote access without a Hubitat Cloud subscription:
+
+1. Install [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+2. Create a tunnel:
+   ```yaml
+   # cloudflared config.yml
+   ingress:
+     - hostname: hubitat-mcp.yourdomain.com
+       service: http://YOUR_HUB_IP:80
+     - service: http_status:404
+   ```
+3. Use your tunnel URL:
+   ```
+   https://hubitat-mcp.yourdomain.com/apps/api/123/mcp?access_token=YOUR_TOKEN
+   ```
 
 ## Example Usage
 
@@ -282,12 +357,22 @@ Make sure the device is selected in the app's "Select Devices for MCP Access" se
 - Make sure you're using `button_event` trigger type (not `device_event`)
 - Verify the button action type: `pushed`, `held`, `doubleTapped`, or `released`
 
+### Rules from v0.0.x not showing
+Version 0.1.0 uses a new parent/child architecture. Old rules stored in `state.rules` are not migrated automatically. You'll need to recreate rules either through the UI or via MCP.
+
 ## Limitations
 
-- Rules are stored in app state (~1MB limit), so very large numbers of complex rules may hit storage limits
 - No real-time event streaming (MCP responses only, no push notifications)
 - Time triggers use Hubitat's `schedule()` which has some limitations
 - Sunrise/sunset times are recalculated daily
+
+## Version History
+
+- **v0.1.0** - Parent/Child architecture (rules are now child apps with isolated settings)
+- **v0.0.6** - Fixed trigger/condition/action save flow
+- **v0.0.5** - Bug fixes for device and variable tools, UI improvements
+- **v0.0.4** - Added full Rule Engine UI
+- **v0.0.3** - Initial release
 
 ## Contributing
 
