@@ -339,7 +339,7 @@ def getToolDefinitions() {
         ],
         [
             name: "send_command",
-            description: "Send a command to a device",
+            description: "Send a command to a device. Always verify state changed after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -397,7 +397,9 @@ def getToolDefinitions() {
 
 TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), mode_change, hsm_change
 CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
-ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log""",
+ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log
+
+Always verify rule created correctly after.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -414,7 +416,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
         ],
         [
             name: "update_rule",
-            description: "Update an existing rule",
+            description: "Update an existing rule. Always verify changes after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -432,7 +434,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
         ],
         [
             name: "delete_rule",
-            description: "Delete a rule",
+            description: "Delete a rule. Always verify deletion after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -443,7 +445,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
         ],
         [
             name: "enable_rule",
-            description: "Enable a rule",
+            description: "Enable a rule. Always verify enabled after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -454,7 +456,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
         ],
         [
             name: "disable_rule",
-            description: "Disable a rule",
+            description: "Disable a rule. Always verify disabled after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -487,7 +489,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
         ],
         [
             name: "set_mode",
-            description: "Set the location mode",
+            description: "Set the location mode. Always verify mode changed after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -514,7 +516,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
         ],
         [
             name: "set_variable",
-            description: "Set a variable value (creates if doesn't exist)",
+            description: "Set a variable value (creates if doesn't exist). Always verify value after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -531,7 +533,7 @@ ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_
         ],
         [
             name: "set_hsm",
-            description: "Set HSM mode (armAway, armHome, armNight, disarm)",
+            description: "Set HSM mode (armAway, armHome, armNight, disarm). Always verify HSM changed after.",
             inputSchema: [
                 type: "object",
                 properties: [
