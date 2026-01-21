@@ -1392,8 +1392,15 @@ def handleDeviceEvent(evt) {
         if (matchingTrigger.duration && matchingTrigger.duration > 0) {
             def triggerKey = "duration_${matchingTrigger.deviceId}_${matchingTrigger.attribute}"
 
-            // Condition is met - start or continue the duration timer
+            // Initialize state maps if needed
             if (!state.durationTimers) state.durationTimers = [:]
+            if (!state.durationFired) state.durationFired = [:]
+
+            // Check if this trigger already fired and is waiting for condition to go false
+            if (state.durationFired[triggerKey]) {
+                log.debug "Duration trigger: already fired, waiting for condition to go false before re-arming"
+                return
+            }
 
             if (!state.durationTimers[triggerKey]) {
                 // First time condition met - start the timer
@@ -1407,7 +1414,7 @@ def handleDeviceEvent(evt) {
             executeRule("device_event: ${evt.device.label} ${evt.name}")
         }
     } else {
-        // Condition no longer met - cancel any pending duration timer for this device/attribute
+        // Condition no longer met - cancel any pending duration timer and reset fired state
         def triggersForDevice = state.triggers?.findAll { t ->
             t.type == "device_event" &&
             t.deviceId == evt.device.id.toString() &&
@@ -1421,6 +1428,11 @@ def handleDeviceEvent(evt) {
                 log.debug "Duration trigger: condition no longer met, canceling timer for ${evt.device.label} ${evt.name}"
                 state.durationTimers.remove(triggerKey)
                 unschedule("checkDurationTrigger")
+            }
+            // Reset the fired flag so it can trigger again next time condition is met
+            if (state.durationFired?.get(triggerKey)) {
+                log.debug "Duration trigger: condition false, re-arming trigger for ${evt.device.label} ${evt.name}"
+                state.durationFired.remove(triggerKey)
             }
         }
     }
@@ -1449,6 +1461,9 @@ def checkDurationTrigger(data) {
     if (stillMet) {
         log.debug "Duration trigger: condition still met after ${trigger.duration}s, executing rule"
         state.durationTimers.remove(triggerKey)
+        // Mark as fired - won't fire again until condition goes false
+        if (!state.durationFired) state.durationFired = [:]
+        state.durationFired[triggerKey] = true
         executeRule("device_event: ${data.deviceLabel} ${data.attribute} (held for ${trigger.duration}s)")
     } else {
         log.debug "Duration trigger: condition no longer met at check time"
