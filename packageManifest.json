@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.0.6",
+    "version": "0.1.0",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-01-21",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.0.6 - Fixed trigger/condition/action save flow:\n- Save buttons now properly navigate back and save data\n- Fixed issue where clicking Save would clear form without saving\n- Cancel now properly discards changes\n\nv0.0.5 - Bug fixes and UI improvements:\n- Fixed get_device failing for Matter RGBW and Ecobee devices\n- Fixed get_hub_info, list_variables, get_variable error handling\n- Added rule rename/description editing in UI\n- Improved create rule flow with success message and direct link to configure\n\nv0.0.4 - Added full Rule Engine UI.\n\nv0.0.3 - Initial release.",
+    "releaseNotes": "v0.1.0 - Parent/Child Architecture:\n- BREAKING CHANGE: Rules are now child apps with isolated settings\n- Each rule is a separate app instance under MCP Rule Server\n- Fixed settings cross-contamination between rules\n- Rules now behave like native Rule Machine with sub-apps\n- MCP tools still work to create/modify/delete rules\n- Added version display in app UI\n\nv0.0.6 - Fixed trigger/condition/action save flow.\nv0.0.5 - Bug fixes and UI improvements.\nv0.0.4 - Added full Rule Engine UI.\nv0.0.3 - Initial release.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -16,6 +16,15 @@
             "required": true,
             "oauth": true,
             "primary": true
+        },
+        {
+            "id": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+            "name": "MCP Rule",
+            "namespace": "mcp",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-rule.groovy",
+            "required": true,
+            "oauth": false,
+            "primary": false
         }
     ],
     "drivers": []
