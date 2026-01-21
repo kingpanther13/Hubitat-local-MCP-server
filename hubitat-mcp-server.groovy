@@ -304,7 +304,7 @@ def getToolDefinitions() {
         // Device Tools
         [
             name: "list_devices",
-            description: "List all devices available to MCP with their current states. Use pagination (offset/limit) with detailed=true to avoid response size limits on cloud connections.",
+            description: "List all devices available to MCP with their current states. IMPORTANT: When user requests a device by name, verify it exists in this list by exact label match. Do NOT guess or assume device mappings - if a requested device is not found, report 'device not found' rather than substituting a similar device. Use pagination (offset/limit) with detailed=true to avoid response size limits on cloud connections.",
             inputSchema: [
                 type: "object",
                 properties: [
