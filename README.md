@@ -98,14 +98,23 @@ Create automations via natural language through Claude:
 
 If you have [Hubitat Package Manager (HPM)](https://hubitatpackagemanager.hubitatcommunity.com/) installed:
 
-1. Open HPM → **Install** → **Search by Keywords**
-2. Search for "MCP Rule Server" or add this repo as a custom repository:
+**First, add the custom repository:**
+1. Open HPM → **Package Manager Settings**
+2. Click **Add a custom repository**
+3. Paste this URL:
    ```
    https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/repository.json
    ```
-3. Select **MCP Rule Server** and install
-4. HPM will install both the parent app and child app automatically
-5. HPM will notify you when updates are available
+4. Click **Save**
+
+**Then install the package:**
+1. Go to HPM → **Install** → **Search by Keywords**
+2. Search for "MCP Rule Server"
+3. Select it and install
+
+> **Note**: If it doesn't appear in search, you can also use HPM → **Install** → **From a URL** with the packageManifest.json URL. After initial install, updates will work normally.
+
+HPM will install both the parent app and child app automatically and notify you when updates are available.
 
 ### Option B: Manual Installation
 
@@ -199,14 +208,22 @@ Same configuration as above. Add to your Claude Desktop config file:
 }
 ```
 
-### Claude.ai and Other AI Services
+### Claude.ai (Connectors)
 
-If your AI service supports custom MCP servers via HTTP URL, you can use either:
+Claude.ai supports MCP servers through **Connectors**. You can add this Hubitat MCP server as a connector:
 
-- **Hubitat Cloud URL** (recommended for remote) - No additional setup needed if you have a Hubitat Cloud subscription
+1. Go to [claude.ai](https://claude.ai) → **Settings** → **Connectors**
+2. Add a new connector with your Hubitat endpoint URL
+3. Use the **Cloud Endpoint** URL for remote access (requires Hubitat Cloud subscription), or use a Cloudflare Tunnel URL
+
+With Hubitat Cloud, this means you can control your smart home from claude.ai anywhere - no local setup required!
+
+### Other AI Services
+
+Any AI service that supports MCP servers via HTTP URL can use this server. Use either:
+
+- **Hubitat Cloud URL** - No additional setup needed if you have a Hubitat Cloud subscription
 - **Cloudflare Tunnel** - For self-hosted remote access (see below)
-
-> **Note**: Check your AI service's documentation for MCP server configuration. The cloud URL works with any MCP client that supports HTTP URL-based servers.
 
 ## Remote Access Options
 
