@@ -1120,12 +1120,9 @@ def setRuleVariable(name, value) {
     state.ruleVariables[name] = value
 }
 
-// Default maximum number of captured states to store (user-configurable via settings)
-private static final int DEFAULT_MAX_CAPTURED_STATES = 20
-
-// Get the user-configured max captured states limit (or default)
+// Get the user-configured max captured states limit (default: 20)
 def getMaxCapturedStates() {
-    return settings.maxCapturedStates ?: DEFAULT_MAX_CAPTURED_STATES
+    return settings.maxCapturedStates ?: 20
 }
 
 // Helper method for child apps to save captured device states (for capture_state action)
