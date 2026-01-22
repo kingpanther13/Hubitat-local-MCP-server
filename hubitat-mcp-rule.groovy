@@ -1391,7 +1391,7 @@ def describeAction(action) {
         case "capture_state":
             def captureCount = action.deviceIds?.size() ?: 0
             def captureId = action.stateId ?: "default"
-            return "Capture state of ${captureCount} device(s) (id: ${captureId})"
+            return "Capture state of ${captureCount} device(s) (id: ${captureId}) [max 20 captures]"
 
         case "restore_state":
             def restoreId = action.stateId ?: "default"
@@ -1915,8 +1915,16 @@ def executeAction(action, actionIndex = null) {
                 }
                 def stateKey = action.stateId ?: "default"
                 // Store in parent app so other rules can access it
-                parent.saveCapturedState(stateKey, capturedStates)
-                log.debug "Captured states for ${captureDevices.size()} devices (stateId: ${stateKey})"
+                def saveResult = parent.saveCapturedState(stateKey, capturedStates)
+                log.debug "Captured states for ${captureDevices.size()} devices (stateId: ${stateKey}, total: ${saveResult?.totalStored}/${saveResult?.maxLimit})"
+
+                // Log warnings about capacity
+                if (saveResult?.deletedStates) {
+                    log.warn "Captured state limit reached: Deleted old state(s) '${saveResult.deletedStates.join(', ')}' to make room"
+                }
+                if (saveResult?.nearLimit) {
+                    log.warn "Captured states nearing limit: ${saveResult.totalStored}/${saveResult.maxLimit} slots used"
+                }
             }
             break
 

@@ -559,7 +559,7 @@ Always verify rule created correctly after.""",
         // Captured State Management
         [
             name: "list_captured_states",
-            description: "List all captured device states with metadata (stateId, device count, timestamp). Max 20 states are stored.",
+            description: "List all captured device states with metadata (stateId, device count, timestamp). WARNING: Max 20 states can be stored. When limit is reached, new captures automatically delete the oldest entry. Check the 'warning' field in response when approaching capacity. Use delete_captured_state or clear_captured_states to free up slots.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -1121,6 +1121,7 @@ def setRuleVariable(name, value) {
 private static final int MAX_CAPTURED_STATES = 20
 
 // Helper method for child apps to save captured device states (for capture_state action)
+// Returns info about the save operation including any deleted states
 def saveCapturedState(stateId, capturedStates) {
     if (!state.capturedDeviceStates) state.capturedDeviceStates = [:]
 
@@ -1130,6 +1131,8 @@ def saveCapturedState(stateId, capturedStates) {
         timestamp: now(),
         deviceCount: capturedStates.size()
     ]
+
+    def deletedStates = []
 
     // Check if we need to remove old entries (only if this is a new stateId)
     if (!state.capturedDeviceStates.containsKey(stateId)) {
@@ -1145,7 +1148,8 @@ def saveCapturedState(stateId, capturedStates) {
                 }
             }
             if (oldestId) {
-                log.debug "Removing oldest captured state '${oldestId}' to make room for new entry"
+                log.warn "Captured states at limit (${MAX_CAPTURED_STATES}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
+                deletedStates << oldestId
                 state.capturedDeviceStates.remove(oldestId)
             } else {
                 break // Safety: avoid infinite loop
@@ -1154,7 +1158,17 @@ def saveCapturedState(stateId, capturedStates) {
     }
 
     state.capturedDeviceStates[stateId] = stateEntry
-    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${state.capturedDeviceStates.size()})"
+    def totalStored = state.capturedDeviceStates.size()
+    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${MAX_CAPTURED_STATES})"
+
+    return [
+        stateId: stateId,
+        deviceCount: capturedStates.size(),
+        totalStored: totalStored,
+        maxLimit: MAX_CAPTURED_STATES,
+        deletedStates: deletedStates,
+        nearLimit: totalStored >= MAX_CAPTURED_STATES - 4
+    ]
 }
 
 // Helper method for child apps to retrieve captured device states (for restore_state action)
@@ -1231,11 +1245,21 @@ def toolSetHsm(mode) {
 
 def toolListCapturedStates() {
     def states = listCapturedStates()
-    return [
+    def count = states.size()
+    def result = [
         capturedStates: states,
-        count: states.size(),
+        count: count,
         maxLimit: MAX_CAPTURED_STATES
     ]
+
+    // Add warnings when approaching or at limit
+    if (count >= MAX_CAPTURED_STATES) {
+        result.warning = "At maximum capacity (${MAX_CAPTURED_STATES}). New captures will delete the oldest entry."
+    } else if (count >= MAX_CAPTURED_STATES - 4) {
+        result.warning = "Approaching limit: ${count}/${MAX_CAPTURED_STATES} slots used. Consider cleaning up unused captures."
+    }
+
+    return result
 }
 
 def toolDeleteCapturedState(stateId) {

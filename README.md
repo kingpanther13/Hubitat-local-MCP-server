@@ -370,7 +370,7 @@ Rules are JSON objects with triggers, conditions, and actions:
   list_devices(detailed=true, limit=25, offset=0)
   ```
 - **Duration triggers** - Maximum of 2 hours (7200 seconds). For longer durations, consider alternative approaches.
-- **Captured states** - Limited to 20 device entries per capture. Plan capture/restore operations accordingly.
+- **Captured states** - Maximum 20 unique state IDs can be stored (e.g., "movie_mode", "guest_mode"). When limit is reached, the oldest capture is automatically deleted. Use `list_captured_states` to monitor usage.
 - **Hubitat Cloud responses** - 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
 
 ## Troubleshooting
