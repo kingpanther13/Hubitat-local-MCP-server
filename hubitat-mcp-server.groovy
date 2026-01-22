@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.18 - Add validation for triggers/conditions (operator, duration, button action, time format)
+ * Version: 0.1.19 - Add validation for triggers/conditions (operator, duration, button action, time format)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.1.18"
+                paragraph "<b>Version:</b> 0.1.19"
             }
         }
 
@@ -201,7 +201,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.18"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.19"}')
 }
 
 def handleMcpGet() {
@@ -274,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.18"
+            version: "0.1.19"
         ]
     ])
 }
@@ -1407,18 +1407,21 @@ def validateCondition(condition) {
             validateDuration(condition.duration, "device_was condition")
             break
         case "time_range":
-            if (!condition.start && !condition.startSunrise && !condition.startSunset) {
+            // Accept both new (start/end) and old (startTime/endTime) field names for compatibility
+            def startVal = condition.start ?: condition.startTime
+            def endVal = condition.end ?: condition.endTime
+            if (!startVal && !condition.startSunrise && !condition.startSunset) {
                 throw new IllegalArgumentException("time_range condition requires start time")
             }
-            if (!condition.end && !condition.endSunrise && !condition.endSunset) {
+            if (!endVal && !condition.endSunrise && !condition.endSunset) {
                 throw new IllegalArgumentException("time_range condition requires end time")
             }
             // Validate time format for start/end if specified (not sunrise/sunset)
-            if (condition.start) {
-                validateTimeFormat(condition.start, "time_range condition start")
+            if (startVal) {
+                validateTimeFormat(startVal, "time_range condition start")
             }
-            if (condition.end) {
-                validateTimeFormat(condition.end, "time_range condition end")
+            if (endVal) {
+                validateTimeFormat(endVal, "time_range condition end")
             }
             break
         case "mode":
