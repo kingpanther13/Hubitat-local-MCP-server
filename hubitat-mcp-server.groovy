@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.10 - Fixed device label returning null in send_command and get_attribute responses
+ * Version: 0.1.11 - Added verification reminders to tool descriptions
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
