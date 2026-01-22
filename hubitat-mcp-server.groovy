@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.16 - Fix duration trigger re-arming and captured states edge cases
+ * Version: 0.1.17 - Add validation for triggers/conditions (operator, duration, button action, time format)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.1.16"
+                paragraph "<b>Version:</b> 0.1.17"
             }
         }
 
@@ -201,7 +201,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.16"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.17"}')
 }
 
 def handleMcpGet() {
@@ -274,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.16"
+            version: "0.1.17"
         ]
     ])
 }
@@ -1282,6 +1282,67 @@ def toolClearCapturedStates() {
 
 // ==================== VALIDATION FUNCTIONS ====================
 
+// Valid comparison operators for triggers and conditions
+def getValidOperators() {
+    return ["==", "!=", ">", "<", ">=", "<="]
+}
+
+// Valid button actions
+def getValidButtonActions() {
+    return ["pushed", "held", "doubleTapped", "released"]
+}
+
+// Maximum duration in seconds (2 hours)
+def getMaxDurationSeconds() {
+    return 7200
+}
+
+// Validate time format HH:mm
+def isValidTimeFormat(timeStr) {
+    if (!timeStr) return false
+    def pattern = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/
+    return timeStr ==~ pattern
+}
+
+// Validate operator field
+def validateOperator(operator, context) {
+    if (operator != null && !getValidOperators().contains(operator)) {
+        throw new IllegalArgumentException("${context}: Invalid operator '${operator}'. Valid operators: ${getValidOperators().join(', ')}")
+    }
+}
+
+// Validate duration field
+def validateDuration(duration, context) {
+    if (duration != null) {
+        def durationValue
+        try {
+            durationValue = duration as Integer
+        } catch (Exception e) {
+            throw new IllegalArgumentException("${context}: Duration must be a valid number")
+        }
+        if (durationValue < 0) {
+            throw new IllegalArgumentException("${context}: Duration cannot be negative")
+        }
+        if (durationValue > getMaxDurationSeconds()) {
+            throw new IllegalArgumentException("${context}: Duration cannot exceed ${getMaxDurationSeconds()} seconds (2 hours). Provided: ${durationValue} seconds")
+        }
+    }
+}
+
+// Validate button action field
+def validateButtonAction(action, context) {
+    if (action != null && !getValidButtonActions().contains(action)) {
+        throw new IllegalArgumentException("${context}: Invalid button action '${action}'. Valid actions: ${getValidButtonActions().join(', ')}")
+    }
+}
+
+// Validate time string format (HH:mm)
+def validateTimeFormat(timeStr, context) {
+    if (timeStr != null && !isValidTimeFormat(timeStr)) {
+        throw new IllegalArgumentException("${context}: Invalid time format '${timeStr}'. Expected format: HH:mm (e.g., 08:30, 23:45)")
+    }
+}
+
 def validateTrigger(trigger) {
     if (!trigger.type) {
         throw new IllegalArgumentException("Trigger type is required")
@@ -1292,14 +1353,24 @@ def validateTrigger(trigger) {
             if (!trigger.deviceId) throw new IllegalArgumentException("device_event trigger requires deviceId")
             if (!trigger.attribute) throw new IllegalArgumentException("device_event trigger requires attribute")
             if (!findDevice(trigger.deviceId)) throw new IllegalArgumentException("Device not found: ${trigger.deviceId}")
+            // Validate operator if present
+            validateOperator(trigger.operator, "device_event trigger")
+            // Validate duration if present (for debouncing)
+            validateDuration(trigger.duration, "device_event trigger")
             break
         case "button_event":
             if (!trigger.deviceId) throw new IllegalArgumentException("button_event trigger requires deviceId")
             if (!findDevice(trigger.deviceId)) throw new IllegalArgumentException("Device not found: ${trigger.deviceId}")
+            // Validate button action if present
+            validateButtonAction(trigger.action, "button_event trigger")
             break
         case "time":
             if (!trigger.time && !trigger.sunrise && !trigger.sunset) {
                 throw new IllegalArgumentException("time trigger requires time (HH:mm), sunrise, or sunset")
+            }
+            // Validate time format if time is specified (not sunrise/sunset)
+            if (trigger.time) {
+                validateTimeFormat(trigger.time, "time trigger")
             }
             break
         case "periodic":
@@ -1320,10 +1391,20 @@ def validateCondition(condition) {
 
     switch (condition.type) {
         case "device_state":
-        case "device_was":
-            if (!condition.deviceId) throw new IllegalArgumentException("${condition.type} condition requires deviceId")
-            if (!condition.attribute) throw new IllegalArgumentException("${condition.type} condition requires attribute")
+            if (!condition.deviceId) throw new IllegalArgumentException("device_state condition requires deviceId")
+            if (!condition.attribute) throw new IllegalArgumentException("device_state condition requires attribute")
             if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            // Validate operator if present
+            validateOperator(condition.operator, "device_state condition")
+            break
+        case "device_was":
+            if (!condition.deviceId) throw new IllegalArgumentException("device_was condition requires deviceId")
+            if (!condition.attribute) throw new IllegalArgumentException("device_was condition requires attribute")
+            if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            // Validate operator if present
+            validateOperator(condition.operator, "device_was condition")
+            // Validate duration if present (for "state for X seconds" checks)
+            validateDuration(condition.duration, "device_was condition")
             break
         case "time_range":
             if (!condition.start && !condition.startSunrise && !condition.startSunset) {
@@ -1331,6 +1412,13 @@ def validateCondition(condition) {
             }
             if (!condition.end && !condition.endSunrise && !condition.endSunset) {
                 throw new IllegalArgumentException("time_range condition requires end time")
+            }
+            // Validate time format for start/end if specified (not sunrise/sunset)
+            if (condition.start) {
+                validateTimeFormat(condition.start, "time_range condition start")
+            }
+            if (condition.end) {
+                validateTimeFormat(condition.end, "time_range condition end")
             }
             break
         case "mode":
@@ -1340,6 +1428,8 @@ def validateCondition(condition) {
             break
         case "variable":
             if (!condition.variableName) throw new IllegalArgumentException("variable condition requires variableName")
+            // Validate operator if present
+            validateOperator(condition.operator, "variable condition")
             break
         case "days_of_week":
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
@@ -1369,10 +1459,14 @@ def validateCondition(condition) {
         case "illuminance":
             if (!condition.deviceId) throw new IllegalArgumentException("illuminance condition requires deviceId")
             if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            // Validate operator if present (for threshold comparisons)
+            validateOperator(condition.operator, "illuminance condition")
             break
         case "power":
             if (!condition.deviceId) throw new IllegalArgumentException("power condition requires deviceId")
             if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
+            // Validate operator if present (for threshold comparisons)
+            validateOperator(condition.operator, "power condition")
             break
         case "expression":
             if (!condition.expression) throw new IllegalArgumentException("expression condition requires expression")
