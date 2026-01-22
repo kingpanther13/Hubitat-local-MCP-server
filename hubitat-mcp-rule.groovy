@@ -2093,6 +2093,7 @@ def updateRuleFromParent(data) {
 
     unsubscribe()
     unschedule()
+    clearDurationState()  // Clear duration state when rule is updated to prevent orphaned triggers
     if (settings.ruleEnabled) {
         subscribeToTriggers()
     }
@@ -2101,6 +2102,7 @@ def updateRuleFromParent(data) {
 def enableRule() {
     app.updateSetting("ruleEnabled", true)
     state.updatedAt = now()
+    clearDurationState()  // Clear orphaned duration state from previous disable
     unsubscribe()
     subscribeToTriggers()
 }
@@ -2108,6 +2110,7 @@ def enableRule() {
 def disableRule() {
     app.updateSetting("ruleEnabled", false)
     state.updatedAt = now()
+    clearDurationState()  // Clear duration state to prevent orphaned durationFired flags
     unsubscribe()
     unschedule()
 }
