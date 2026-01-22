@@ -91,6 +91,9 @@ def mainPage() {
         section("Settings") {
             input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
             input "debugLogging", "bool", title: "Enable Debug Logging", defaultValue: false
+            input "maxCapturedStates", "number", title: "Max Captured States",
+                  description: "Maximum number of unique state captures to store (default: 20)",
+                  defaultValue: 20, range: "1..100", required: false
         }
     }
 }
@@ -198,7 +201,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.1"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.12"}')
 }
 
 def handleMcpGet() {
@@ -271,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.1"
+            version: "0.1.12"
         ]
     ])
 }
@@ -304,13 +307,19 @@ def getToolDefinitions() {
         // Device Tools
         [
             name: "list_devices",
-            description: "List all devices available to MCP with their current states. IMPORTANT: When user requests a device by name, verify it exists in this list by exact label match. Do NOT guess or assume device mappings - if a requested device is not found, report 'device not found' rather than substituting a similar device. Use pagination (offset/limit) with detailed=true to avoid response size limits on cloud connections.",
+            description: """List all devices available to MCP with their current states. IMPORTANT: When user requests a device by name, verify it exists in this list by exact label match. Do NOT guess or assume device mappings - if a requested device is not found, report 'device not found' rather than substituting a similar device.
+
+PERFORMANCE WARNING:
+- Use detailed=false for initial device discovery (returns only common attributes)
+- With detailed=true, use pagination: 20-30 devices per request is recommended
+- Queries with 100+ devices and detailed=true can cause temporary hub slowdown
+- For large device lists, make multiple paginated requests rather than one large request""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). Use with limit for cloud access."],
+                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
-                    limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true over cloud.", default: 0]
+                    limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0]
                 ]
             ]
         ],
@@ -352,12 +361,18 @@ def getToolDefinitions() {
         ],
         [
             name: "get_device_events",
-            description: "Get recent events for a device",
+            description: """Get recent events for a device.
+
+PERFORMANCE WARNING:
+- Default limit is 10 events, which is optimal for most use cases
+- Requesting more than 50 events may slow hub response time
+- Very high limits (100+) can cause significant delays on busy devices
+- For historical analysis, make multiple smaller requests rather than one large request""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID"],
-                    limit: [type: "integer", description: "Max events to return", default: 10]
+                    limit: [type: "integer", description: "Max events to return. Recommended: 10-50 for best performance. Higher values may slow hub.", default: 10]
                 ],
                 required: ["deviceId"]
             ]
@@ -365,7 +380,9 @@ def getToolDefinitions() {
         // Rule Management
         [
             name: "list_rules",
-            description: "List all custom automation rules",
+            description: """List all custom automation rules.
+
+PERFORMANCE NOTE: Returns summary information for all rules. For hubs with many rules (50+), response time may be slightly longer. Use get_rule for detailed information about specific rules.""",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -541,6 +558,28 @@ Always verify rule created correctly after.""",
                 ],
                 required: ["mode"]
             ]
+        ],
+        // Captured State Management
+        [
+            name: "list_captured_states",
+            description: "List all captured device states with metadata (stateId, device count, timestamp). The storage limit is configurable in app settings (default: 20). When limit is reached, new captures automatically delete the oldest entry. Check the 'warning' field in response when approaching capacity. Use delete_captured_state or clear_captured_states to free up slots.",
+            inputSchema: [type: "object", properties: [:]]
+        ],
+        [
+            name: "delete_captured_state",
+            description: "Delete a specific captured device state by its stateId.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    stateId: [type: "string", description: "The ID of the captured state to delete"]
+                ],
+                required: ["stateId"]
+            ]
+        ],
+        [
+            name: "clear_captured_states",
+            description: "Clear all captured device states. Use with caution.",
+            inputSchema: [type: "object", properties: [:]]
         ]
     ]
 }
@@ -573,6 +612,11 @@ def executeTool(toolName, args) {
         case "set_variable": return toolSetVariable(args.name, args.value)
         case "get_hsm_status": return toolGetHsmStatus()
         case "set_hsm": return toolSetHsm(args.mode)
+
+        // Captured State Management
+        case "list_captured_states": return toolListCapturedStates()
+        case "delete_captured_state": return toolDeleteCapturedState(args.stateId)
+        case "clear_captured_states": return toolClearCapturedStates()
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -1076,16 +1120,107 @@ def setRuleVariable(name, value) {
     state.ruleVariables[name] = value
 }
 
+// Default maximum number of captured states to store (user-configurable via settings)
+private static final int DEFAULT_MAX_CAPTURED_STATES = 20
+
+// Get the user-configured max captured states limit (or default)
+def getMaxCapturedStates() {
+    return settings.maxCapturedStates ?: DEFAULT_MAX_CAPTURED_STATES
+}
+
 // Helper method for child apps to save captured device states (for capture_state action)
+// Returns info about the save operation including any deleted states
 def saveCapturedState(stateId, capturedStates) {
     if (!state.capturedDeviceStates) state.capturedDeviceStates = [:]
-    state.capturedDeviceStates[stateId] = capturedStates
-    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices"
+
+    // Add timestamp to the captured state
+    def stateEntry = [
+        devices: capturedStates,
+        timestamp: now(),
+        deviceCount: capturedStates.size()
+    ]
+
+    def deletedStates = []
+
+    // Check if we need to remove old entries (only if this is a new stateId)
+    if (!state.capturedDeviceStates.containsKey(stateId)) {
+        while (state.capturedDeviceStates.size() >= getMaxCapturedStates()) {
+            // Find and remove the oldest entry
+            def oldestId = null
+            def oldestTime = Long.MAX_VALUE
+            state.capturedDeviceStates.each { id, entry ->
+                def entryTime = entry.timestamp ?: 0
+                if (entryTime < oldestTime) {
+                    oldestTime = entryTime
+                    oldestId = id
+                }
+            }
+            if (oldestId) {
+                log.warn "Captured states at limit (${getMaxCapturedStates()}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
+                deletedStates << oldestId
+                state.capturedDeviceStates.remove(oldestId)
+            } else {
+                break // Safety: avoid infinite loop
+            }
+        }
+    }
+
+    state.capturedDeviceStates[stateId] = stateEntry
+    def totalStored = state.capturedDeviceStates.size()
+    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${getMaxCapturedStates()})"
+
+    return [
+        stateId: stateId,
+        deviceCount: capturedStates.size(),
+        totalStored: totalStored,
+        maxLimit: getMaxCapturedStates(),
+        deletedStates: deletedStates,
+        nearLimit: totalStored >= getMaxCapturedStates() - 4
+    ]
 }
 
 // Helper method for child apps to retrieve captured device states (for restore_state action)
 def getCapturedState(stateId) {
-    return state.capturedDeviceStates?.get(stateId)
+    def entry = state.capturedDeviceStates?.get(stateId)
+    // Return the devices array for backward compatibility
+    return entry?.devices ?: entry
+}
+
+// Helper method to list all captured states with metadata
+def listCapturedStates() {
+    if (!state.capturedDeviceStates) return []
+
+    return state.capturedDeviceStates.collect { stateId, entry ->
+        [
+            stateId: stateId,
+            deviceCount: entry.deviceCount ?: entry.devices?.size() ?: (entry instanceof List ? entry.size() : 0),
+            timestamp: entry.timestamp ?: null,
+            capturedAt: entry.timestamp ? new Date(entry.timestamp).format("yyyy-MM-dd HH:mm:ss") : "unknown"
+        ]
+    }.sort { a, b -> (b.timestamp ?: 0) <=> (a.timestamp ?: 0) } // Sort newest first
+}
+
+// Helper method to delete a specific captured state
+def deleteCapturedState(stateId) {
+    if (!state.capturedDeviceStates) {
+        return [success: false, message: "No captured states exist"]
+    }
+
+    if (!state.capturedDeviceStates.containsKey(stateId)) {
+        return [success: false, message: "Captured state '${stateId}' not found"]
+    }
+
+    state.capturedDeviceStates.remove(stateId)
+    log.debug "Deleted captured state '${stateId}' (remaining: ${state.capturedDeviceStates.size()})"
+    return [success: true, message: "Captured state '${stateId}' deleted", remaining: state.capturedDeviceStates.size()]
+}
+
+// Helper method to clear all captured states
+def clearAllCapturedStates() {
+    def count = state.capturedDeviceStates?.size() ?: 0
+    state.capturedDeviceStates = [:]
+    log.debug "Cleared all ${count} captured states"
+    return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
 }
 
 def toolGetHsmStatus() {
@@ -1112,6 +1247,38 @@ def toolSetHsm(mode) {
         previousStatus: location.hsmStatus,
         newMode: mode
     ]
+}
+
+// ==================== CAPTURED STATE TOOLS ====================
+
+def toolListCapturedStates() {
+    def states = listCapturedStates()
+    def count = states.size()
+    def result = [
+        capturedStates: states,
+        count: count,
+        maxLimit: getMaxCapturedStates()
+    ]
+
+    // Add warnings when approaching or at limit
+    if (count >= getMaxCapturedStates()) {
+        result.warning = "At maximum capacity (${getMaxCapturedStates()}). New captures will delete the oldest entry."
+    } else if (count >= getMaxCapturedStates() - 4) {
+        result.warning = "Approaching limit: ${count}/${getMaxCapturedStates()} slots used. Consider cleaning up unused captures."
+    }
+
+    return result
+}
+
+def toolDeleteCapturedState(stateId) {
+    if (!stateId) {
+        throw new IllegalArgumentException("stateId is required")
+    }
+    return deleteCapturedState(stateId)
+}
+
+def toolClearCapturedStates() {
+    return clearAllCapturedStates()
 }
 
 // ==================== VALIDATION FUNCTIONS ====================

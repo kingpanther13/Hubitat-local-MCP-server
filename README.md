@@ -353,6 +353,26 @@ Rules are JSON objects with triggers, conditions, and actions:
 }
 ```
 
+## Performance Considerations
+
+### Hub Hardware
+
+| Hub Model | Recommendation |
+|-----------|----------------|
+| **C-7** | Older/slower hardware. Works fine for basic use, but may experience delays with large device lists or complex rules. |
+| **C-8** | Good for most users. Handles moderate device counts well. |
+| **C-8 Pro** | Best option for heavy use, large device counts (100+), or complex automations. |
+
+### Known Limits
+
+- **`list_devices` with `detailed=true`** - Can be slow on 50+ devices. Use pagination:
+  ```
+  list_devices(detailed=true, limit=25, offset=0)
+  ```
+- **Duration triggers** - Maximum of 2 hours (7200 seconds). For longer durations, consider alternative approaches.
+- **Captured states** - Default limit of 20 unique state IDs (configurable in app settings, range 1-100). When limit is reached, the oldest capture is automatically deleted. Use `list_captured_states` to monitor usage.
+- **Hubitat Cloud responses** - 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
+
 ## Troubleshooting
 
 ### Device not found
