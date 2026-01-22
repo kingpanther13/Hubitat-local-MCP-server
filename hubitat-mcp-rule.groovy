@@ -56,8 +56,26 @@ def uninstalled() {
 }
 
 def initialize() {
+    // Clear any stale duration timer state (timers were canceled by unschedule() in updated())
+    clearDurationState()
+
     if (settings.ruleEnabled) {
         subscribeToTriggers()
+    }
+}
+
+/**
+ * Clears all duration-related state to prevent accumulation and stale data.
+ * Should be called during initialization and when rule is disabled.
+ */
+def clearDurationState() {
+    if (state.durationTimers) {
+        log.debug "Clearing ${state.durationTimers.size()} stale duration timer entries"
+        state.remove("durationTimers")
+    }
+    if (state.durationFired) {
+        log.debug "Clearing ${state.durationFired.size()} stale durationFired entries"
+        state.remove("durationFired")
     }
 }
 
@@ -245,8 +263,12 @@ def renderTriggerFields() {
                                ">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
                       required: false, defaultValue: "any"
                 input "triggerValue", "text", title: "Value (if comparing)", required: false
-                input "triggerDuration", "number", title: "For duration (seconds, optional)",
-                      description: "Debounce - only trigger if condition persists", required: false
+                input "triggerDuration", "number", title: "For duration (optional)",
+                      description: "Debounce - only trigger if condition persists", required: false, range: "1..999"
+                input "triggerDurationUnit", "enum", title: "Duration Unit",
+                      options: ["seconds": "Seconds", "minutes": "Minutes", "hours": "Hours"],
+                      required: false, defaultValue: "seconds"
+                paragraph "<small><b>Note:</b> Duration is limited to 2 hours (7200 seconds) max. Hubitat's runIn() scheduler uses seconds internally and longer durations may be unreliable due to hub restarts.</small>"
             }
             break
 
@@ -337,7 +359,28 @@ def buildTriggerFromSettings() {
                 trigger.operator = settings.triggerOperator
             }
             if (settings.triggerValue) trigger.value = settings.triggerValue
-            if (settings.triggerDuration) trigger.duration = settings.triggerDuration
+            if (settings.triggerDuration) {
+                // Convert duration to seconds based on unit
+                def durationSeconds = settings.triggerDuration
+                def unit = settings.triggerDurationUnit ?: "seconds"
+                switch (unit) {
+                    case "minutes":
+                        durationSeconds = settings.triggerDuration * 60
+                        break
+                    case "hours":
+                        durationSeconds = settings.triggerDuration * 3600
+                        break
+                }
+                // Cap at 7200 seconds (2 hours) - runIn() is unreliable for longer durations
+                def maxDuration = 7200
+                if (durationSeconds > maxDuration) {
+                    log.warn "Duration ${durationSeconds}s exceeds max of ${maxDuration}s, capping to ${maxDuration}s"
+                    durationSeconds = maxDuration
+                }
+                trigger.duration = durationSeconds
+                trigger.durationUnit = unit  // Store original unit for display
+                trigger.durationValue = settings.triggerDuration  // Store original value for editing
+            }
             break
 
         case "button_event":
@@ -392,7 +435,17 @@ def loadTriggerSettings(trigger) {
             if (trigger.attribute) app.updateSetting("triggerAttribute", trigger.attribute)
             if (trigger.operator) app.updateSetting("triggerOperator", trigger.operator)
             if (trigger.value) app.updateSetting("triggerValue", trigger.value)
-            if (trigger.duration) app.updateSetting("triggerDuration", trigger.duration)
+            if (trigger.duration) {
+                // Load original value and unit if available, otherwise convert from seconds
+                if (trigger.durationValue && trigger.durationUnit) {
+                    app.updateSetting("triggerDuration", trigger.durationValue)
+                    app.updateSetting("triggerDurationUnit", trigger.durationUnit)
+                } else {
+                    // Legacy: duration was stored in seconds only
+                    app.updateSetting("triggerDuration", trigger.duration)
+                    app.updateSetting("triggerDurationUnit", "seconds")
+                }
+            }
             break
 
         case "button_event":
@@ -435,7 +488,7 @@ def loadTriggerSettings(trigger) {
 
 def clearTriggerSettings() {
     ["triggerType", "triggerDevice", "triggerAttribute", "triggerOperator", "triggerValue",
-     "triggerDuration", "triggerButtonNumber", "triggerButtonAction", "triggerTimeType",
+     "triggerDuration", "triggerDurationUnit", "triggerButtonNumber", "triggerButtonAction", "triggerTimeType",
      "triggerTime", "triggerOffset", "triggerInterval", "triggerUnit", "triggerFromMode",
      "triggerToMode", "triggerHsmStatus"].each { app.removeSetting(it) }
 }
@@ -1169,7 +1222,17 @@ def describeTrigger(trigger) {
             def device = parent.findDevice(trigger.deviceId)
             def deviceName = device?.label ?: trigger.deviceId
             def valueMatch = trigger.value ? " ${trigger.operator ?: '=='} '${trigger.value}'" : ""
-            def duration = trigger.duration ? " for ${trigger.duration}s" : ""
+            def duration = ""
+            if (trigger.duration) {
+                // Use stored original unit/value if available, otherwise format seconds nicely
+                if (trigger.durationValue && trigger.durationUnit) {
+                    def unitLabel = trigger.durationUnit == "seconds" ? "s" : (trigger.durationUnit == "minutes" ? "m" : "h")
+                    duration = " for ${trigger.durationValue}${unitLabel}"
+                } else {
+                    // Legacy: just seconds
+                    duration = " for ${trigger.duration}s"
+                }
+            }
             return "When ${deviceName} ${trigger.attribute} changes${valueMatch}${duration}"
 
         case "button_event":
@@ -1198,6 +1261,20 @@ def describeTrigger(trigger) {
         default:
             return "Unknown trigger: ${trigger.type}"
     }
+}
+
+/**
+ * Formats a duration trigger for display in logs and messages.
+ * Uses original unit/value if available, otherwise displays in seconds.
+ */
+def formatDurationForDisplay(trigger) {
+    if (!trigger?.duration) return ""
+    if (trigger.durationValue && trigger.durationUnit) {
+        def unitLabel = trigger.durationUnit == "seconds" ? "s" : (trigger.durationUnit == "minutes" ? "m" : "h")
+        return "${trigger.durationValue}${unitLabel}"
+    }
+    // Legacy: just seconds
+    return "${trigger.duration}s"
 }
 
 def describeCondition(condition) {
@@ -1404,7 +1481,8 @@ def handleDeviceEvent(evt) {
 
             if (!state.durationTimers[triggerKey]) {
                 // First time condition met - start the timer
-                log.debug "Duration trigger: condition met, starting ${matchingTrigger.duration}s timer for ${evt.device.label} ${evt.name}"
+                def durationDisplay = formatDurationForDisplay(matchingTrigger)
+                log.debug "Duration trigger: condition met, starting ${durationDisplay} timer for ${evt.device.label} ${evt.name}"
                 state.durationTimers[triggerKey] = [startTime: now(), trigger: matchingTrigger]
                 runIn(matchingTrigger.duration, "checkDurationTrigger", [data: [triggerKey: triggerKey, deviceLabel: evt.device.label, attribute: evt.name]])
             }
@@ -1459,12 +1537,13 @@ def checkDurationTrigger(data) {
     def stillMet = !trigger.value || evaluateComparison(currentValue, trigger.operator ?: "equals", trigger.value)
 
     if (stillMet) {
-        log.debug "Duration trigger: condition still met after ${trigger.duration}s, executing rule"
+        def durationDisplay = formatDurationForDisplay(trigger)
+        log.debug "Duration trigger: condition still met after ${durationDisplay}, executing rule"
         state.durationTimers.remove(triggerKey)
         // Mark as fired - won't fire again until condition goes false
         if (!state.durationFired) state.durationFired = [:]
         state.durationFired[triggerKey] = true
-        executeRule("device_event: ${data.deviceLabel} ${data.attribute} (held for ${trigger.duration}s)")
+        executeRule("device_event: ${data.deviceLabel} ${data.attribute} (held for ${durationDisplay})")
     } else {
         log.debug "Duration trigger: condition no longer met at check time"
         state.durationTimers.remove(triggerKey)
