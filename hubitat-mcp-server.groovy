@@ -91,6 +91,9 @@ def mainPage() {
         section("Settings") {
             input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
             input "debugLogging", "bool", title: "Enable Debug Logging", defaultValue: false
+            input "maxCapturedStates", "number", title: "Max Captured States",
+                  description: "Maximum number of unique state captures to store (default: 20)",
+                  defaultValue: 20, range: "1..100", required: false
         }
     }
 }
@@ -559,7 +562,7 @@ Always verify rule created correctly after.""",
         // Captured State Management
         [
             name: "list_captured_states",
-            description: "List all captured device states with metadata (stateId, device count, timestamp). WARNING: Max 20 states can be stored. When limit is reached, new captures automatically delete the oldest entry. Check the 'warning' field in response when approaching capacity. Use delete_captured_state or clear_captured_states to free up slots.",
+            description: "List all captured device states with metadata (stateId, device count, timestamp). The storage limit is configurable in app settings (default: 20). When limit is reached, new captures automatically delete the oldest entry. Check the 'warning' field in response when approaching capacity. Use delete_captured_state or clear_captured_states to free up slots.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -1117,8 +1120,13 @@ def setRuleVariable(name, value) {
     state.ruleVariables[name] = value
 }
 
-// Maximum number of captured states to store
-private static final int MAX_CAPTURED_STATES = 20
+// Default maximum number of captured states to store (user-configurable via settings)
+private static final int DEFAULT_MAX_CAPTURED_STATES = 20
+
+// Get the user-configured max captured states limit (or default)
+def getMaxCapturedStates() {
+    return settings.maxCapturedStates ?: DEFAULT_MAX_CAPTURED_STATES
+}
 
 // Helper method for child apps to save captured device states (for capture_state action)
 // Returns info about the save operation including any deleted states
@@ -1136,7 +1144,7 @@ def saveCapturedState(stateId, capturedStates) {
 
     // Check if we need to remove old entries (only if this is a new stateId)
     if (!state.capturedDeviceStates.containsKey(stateId)) {
-        while (state.capturedDeviceStates.size() >= MAX_CAPTURED_STATES) {
+        while (state.capturedDeviceStates.size() >= getMaxCapturedStates()) {
             // Find and remove the oldest entry
             def oldestId = null
             def oldestTime = Long.MAX_VALUE
@@ -1148,7 +1156,7 @@ def saveCapturedState(stateId, capturedStates) {
                 }
             }
             if (oldestId) {
-                log.warn "Captured states at limit (${MAX_CAPTURED_STATES}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
+                log.warn "Captured states at limit (${getMaxCapturedStates()}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
                 deletedStates << oldestId
                 state.capturedDeviceStates.remove(oldestId)
             } else {
@@ -1159,15 +1167,15 @@ def saveCapturedState(stateId, capturedStates) {
 
     state.capturedDeviceStates[stateId] = stateEntry
     def totalStored = state.capturedDeviceStates.size()
-    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${MAX_CAPTURED_STATES})"
+    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${getMaxCapturedStates()})"
 
     return [
         stateId: stateId,
         deviceCount: capturedStates.size(),
         totalStored: totalStored,
-        maxLimit: MAX_CAPTURED_STATES,
+        maxLimit: getMaxCapturedStates(),
         deletedStates: deletedStates,
-        nearLimit: totalStored >= MAX_CAPTURED_STATES - 4
+        nearLimit: totalStored >= getMaxCapturedStates() - 4
     ]
 }
 
@@ -1249,14 +1257,14 @@ def toolListCapturedStates() {
     def result = [
         capturedStates: states,
         count: count,
-        maxLimit: MAX_CAPTURED_STATES
+        maxLimit: getMaxCapturedStates()
     ]
 
     // Add warnings when approaching or at limit
-    if (count >= MAX_CAPTURED_STATES) {
-        result.warning = "At maximum capacity (${MAX_CAPTURED_STATES}). New captures will delete the oldest entry."
-    } else if (count >= MAX_CAPTURED_STATES - 4) {
-        result.warning = "Approaching limit: ${count}/${MAX_CAPTURED_STATES} slots used. Consider cleaning up unused captures."
+    if (count >= getMaxCapturedStates()) {
+        result.warning = "At maximum capacity (${getMaxCapturedStates()}). New captures will delete the oldest entry."
+    } else if (count >= getMaxCapturedStates() - 4) {
+        result.warning = "Approaching limit: ${count}/${getMaxCapturedStates()} slots used. Consider cleaning up unused captures."
     }
 
     return result
