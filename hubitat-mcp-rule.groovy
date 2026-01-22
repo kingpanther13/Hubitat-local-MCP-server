@@ -662,8 +662,7 @@ def getConditionTypeOptions() {
         "thermostat_mode": "Thermostat Mode",
         "thermostat_state": "Thermostat Operating State",
         "illuminance": "Illuminance Level",
-        "power": "Power Level",
-        "expression": "Custom Expression"
+        "power": "Power Level"
     ]
 }
 
@@ -806,14 +805,6 @@ def renderConditionFields() {
                 input "conditionValue", "number", title: "Power (Watts)", required: true
             }
             break
-
-        case "expression":
-            section("Custom Expression Settings") {
-                input "conditionExpression", "text", title: "Expression", required: true,
-                      description: "Enter a custom expression (e.g., device.temperature > 70)"
-                paragraph "<i>Advanced: Enter a Groovy expression that evaluates to true or false</i>"
-            }
-            break
     }
 }
 
@@ -927,11 +918,6 @@ def buildConditionFromSettings() {
             condition.operator = settings.conditionOperator ?: ">"
             condition.value = settings.conditionValue
             break
-
-        case "expression":
-            if (!settings.conditionExpression) return null
-            condition.expression = settings.conditionExpression
-            break
     }
 
     return condition
@@ -1034,10 +1020,6 @@ def loadConditionSettings(condition) {
             if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
             if (condition.value != null) app.updateSetting("conditionValue", condition.value)
             break
-
-        case "expression":
-            if (condition.expression) app.updateSetting("conditionExpression", condition.expression)
-            break
     }
 }
 
@@ -1045,8 +1027,7 @@ def clearConditionSettings() {
     ["conditionType", "conditionDevice", "conditionAttribute", "conditionOperator", "conditionValue",
      "conditionDuration", "conditionStartTime", "conditionEndTime", "conditionModes", "conditionModeOperator",
      "conditionVariableName", "conditionDays", "conditionSunPosition", "conditionHsmStatus",
-     "conditionPresenceStatus", "conditionLockStatus", "conditionThermostatMode", "conditionThermostatState",
-     "conditionExpression"].each {
+     "conditionPresenceStatus", "conditionLockStatus", "conditionThermostatMode", "conditionThermostatState"].each {
         app.removeSetting(it)
     }
 }
@@ -1987,9 +1968,6 @@ def describeCondition(condition) {
             def powerDeviceName = powerDevice?.label ?: condition.deviceId
             return "${powerDeviceName} power ${condition.operator} ${condition.value}W"
 
-        case "expression":
-            return "Expression: ${condition.expression}"
-
         default:
             return "Unknown condition: ${condition.type}"
     }
@@ -2396,16 +2374,7 @@ def evaluateCondition(condition) {
             def currentPower = device.currentValue("power")
             return evaluateComparison(currentPower, condition.operator, condition.value)
 
-        case "expression":
-            try {
-                // Evaluate the custom expression
-                // The expression can reference variables like: location.mode, state.localVariables.varName, etc.
-                def result = Eval.me(condition.expression)
-                return result ? true : false
-            } catch (Exception e) {
-                log.warn "Expression evaluation failed: ${condition.expression} - ${e.message}"
-                return false
-            }
+        // Note: "expression" condition type removed - Eval.me() not allowed in Hubitat sandbox
 
         default:
             return true
