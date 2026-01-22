@@ -1397,6 +1397,61 @@ def renderIfConditionFields() {
                   options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
                   multiple: true, required: true
             break
+
+        case "device_was":
+            input "actionIfDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+            if (settings.actionIfDevice) {
+                def attrs = settings.actionIfDevice.supportedAttributes?.collect { it.name }?.unique()?.sort()
+                input "actionIfAttribute", "enum", title: "Attribute", options: attrs, required: true
+            }
+            input "actionIfValue", "text", title: "Has Been Value", required: true
+            input "actionIfDuration", "number", title: "For Seconds", required: true, range: "1..86400"
+            break
+
+        case "presence":
+            input "actionIfDevice", "capability.presenceSensor", title: "Presence Sensor", required: true
+            input "actionIfPresenceStatus", "enum", title: "Status",
+                  options: ["present": "Present", "not present": "Not Present"],
+                  required: true
+            break
+
+        case "lock":
+            input "actionIfDevice", "capability.lock", title: "Lock Device", required: true
+            input "actionIfLockStatus", "enum", title: "Status",
+                  options: ["locked": "Locked", "unlocked": "Unlocked"],
+                  required: true
+            break
+
+        case "thermostat_mode":
+            input "actionIfDevice", "capability.thermostat", title: "Thermostat", required: true
+            input "actionIfThermostatMode", "enum", title: "Mode",
+                  options: ["auto": "Auto", "cool": "Cool", "heat": "Heat", "off": "Off", "emergency heat": "Emergency Heat"],
+                  required: true
+            break
+
+        case "thermostat_state":
+            input "actionIfDevice", "capability.thermostat", title: "Thermostat", required: true
+            input "actionIfThermostatState", "enum", title: "Operating State",
+                  options: ["idle": "Idle", "heating": "Heating", "cooling": "Cooling", "fan only": "Fan Only",
+                           "pending heat": "Pending Heat", "pending cool": "Pending Cool"],
+                  required: true
+            break
+
+        case "illuminance":
+            input "actionIfDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: true
+            input "actionIfOperator", "enum", title: "Comparison",
+                  options: ["<": "Less Than", ">": "Greater Than", "<=": "Less/Equal", ">=": "Greater/Equal"],
+                  required: true, defaultValue: "<"
+            input "actionIfValue", "number", title: "Lux Value", required: true
+            break
+
+        case "power":
+            input "actionIfDevice", "capability.powerMeter", title: "Power Meter", required: true
+            input "actionIfOperator", "enum", title: "Comparison",
+                  options: [">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
+                  required: true, defaultValue: ">"
+            input "actionIfValue", "number", title: "Watts", required: true
+            break
     }
 }
 
@@ -1604,6 +1659,52 @@ def buildIfConditionFromSettings() {
             if (!settings.actionIfDays) return null
             condition.days = settings.actionIfDays
             break
+
+        case "device_was":
+            if (!settings.actionIfDevice || !settings.actionIfAttribute) return null
+            condition.deviceId = settings.actionIfDevice.id.toString()
+            condition.attribute = settings.actionIfAttribute
+            condition.value = settings.actionIfValue
+            condition.forSeconds = settings.actionIfDuration
+            break
+
+        case "presence":
+            if (!settings.actionIfDevice) return null
+            condition.deviceId = settings.actionIfDevice.id.toString()
+            condition.status = settings.actionIfPresenceStatus
+            break
+
+        case "lock":
+            if (!settings.actionIfDevice) return null
+            condition.deviceId = settings.actionIfDevice.id.toString()
+            condition.status = settings.actionIfLockStatus
+            break
+
+        case "thermostat_mode":
+            if (!settings.actionIfDevice) return null
+            condition.deviceId = settings.actionIfDevice.id.toString()
+            condition.mode = settings.actionIfThermostatMode
+            break
+
+        case "thermostat_state":
+            if (!settings.actionIfDevice) return null
+            condition.deviceId = settings.actionIfDevice.id.toString()
+            condition.state = settings.actionIfThermostatState
+            break
+
+        case "illuminance":
+            if (!settings.actionIfDevice || settings.actionIfValue == null) return null
+            condition.deviceId = settings.actionIfDevice.id.toString()
+            condition.operator = settings.actionIfOperator ?: "<"
+            condition.value = settings.actionIfValue
+            break
+
+        case "power":
+            if (!settings.actionIfDevice || settings.actionIfValue == null) return null
+            condition.deviceId = settings.actionIfDevice.id.toString()
+            condition.operator = settings.actionIfOperator ?: ">"
+            condition.value = settings.actionIfValue
+            break
     }
 
     return condition
@@ -1781,6 +1882,66 @@ def loadIfConditionSettings(condition) {
         case "days_of_week":
             if (condition.days) app.updateSetting("actionIfDays", condition.days)
             break
+
+        case "device_was":
+            if (condition.deviceId) {
+                def device = parent.findDevice(condition.deviceId)
+                if (device) app.updateSetting("actionIfDevice", [type: "capability.*", value: device.id])
+            }
+            if (condition.attribute) app.updateSetting("actionIfAttribute", condition.attribute)
+            if (condition.value) app.updateSetting("actionIfValue", condition.value)
+            if (condition.forSeconds) app.updateSetting("actionIfDuration", condition.forSeconds)
+            break
+
+        case "presence":
+            if (condition.deviceId) {
+                def device = parent.findDevice(condition.deviceId)
+                if (device) app.updateSetting("actionIfDevice", [type: "capability.presenceSensor", value: device.id])
+            }
+            if (condition.status) app.updateSetting("actionIfPresenceStatus", condition.status)
+            break
+
+        case "lock":
+            if (condition.deviceId) {
+                def device = parent.findDevice(condition.deviceId)
+                if (device) app.updateSetting("actionIfDevice", [type: "capability.lock", value: device.id])
+            }
+            if (condition.status) app.updateSetting("actionIfLockStatus", condition.status)
+            break
+
+        case "thermostat_mode":
+            if (condition.deviceId) {
+                def device = parent.findDevice(condition.deviceId)
+                if (device) app.updateSetting("actionIfDevice", [type: "capability.thermostat", value: device.id])
+            }
+            if (condition.mode) app.updateSetting("actionIfThermostatMode", condition.mode)
+            break
+
+        case "thermostat_state":
+            if (condition.deviceId) {
+                def device = parent.findDevice(condition.deviceId)
+                if (device) app.updateSetting("actionIfDevice", [type: "capability.thermostat", value: device.id])
+            }
+            if (condition.state) app.updateSetting("actionIfThermostatState", condition.state)
+            break
+
+        case "illuminance":
+            if (condition.deviceId) {
+                def device = parent.findDevice(condition.deviceId)
+                if (device) app.updateSetting("actionIfDevice", [type: "capability.illuminanceMeasurement", value: device.id])
+            }
+            if (condition.operator) app.updateSetting("actionIfOperator", condition.operator)
+            if (condition.value != null) app.updateSetting("actionIfValue", condition.value)
+            break
+
+        case "power":
+            if (condition.deviceId) {
+                def device = parent.findDevice(condition.deviceId)
+                if (device) app.updateSetting("actionIfDevice", [type: "capability.powerMeter", value: device.id])
+            }
+            if (condition.operator) app.updateSetting("actionIfOperator", condition.operator)
+            if (condition.value != null) app.updateSetting("actionIfValue", condition.value)
+            break
     }
 }
 
@@ -1797,7 +1958,10 @@ def clearActionSettings() {
      // If-then-else condition settings
      "actionIfConditionType", "actionIfDevice", "actionIfAttribute", "actionIfOperator", "actionIfValue",
      "actionIfModes", "actionIfModeOperator", "actionIfStartTime", "actionIfEndTime",
-     "actionIfVariableName", "actionIfHsmStatus", "actionIfSunPosition", "actionIfDays"].each {
+     "actionIfVariableName", "actionIfHsmStatus", "actionIfSunPosition", "actionIfDays",
+     // Additional if_then_else condition settings for all 14 condition types
+     "actionIfDuration", "actionIfPresenceStatus", "actionIfLockStatus",
+     "actionIfThermostatMode", "actionIfThermostatState"].each {
         app.removeSetting(it)
     }
 }
@@ -2109,7 +2273,37 @@ def subscribeToTriggers() {
             case "hsm_change":
                 subscribe(location, "hsmStatus", "handleHsmEvent")
                 break
+
+            case "periodic":
+                def interval = trigger.interval ?: 1
+                def unit = trigger.unit ?: "minutes"
+                def cronExpr
+                switch (unit) {
+                    case "minutes":
+                        cronExpr = "0 */${interval} * ? * *"
+                        break
+                    case "hours":
+                        cronExpr = "0 0 */${interval} ? * *"
+                        break
+                    case "days":
+                        cronExpr = "0 0 0 */${interval} * ?"
+                        break
+                    default:
+                        cronExpr = "0 */${interval} * ? * *"
+                }
+                schedule(cronExpr, "handlePeriodicEvent")
+                break
         }
+    }
+}
+
+def handlePeriodicEvent() {
+    if (!settings.ruleEnabled) return
+    log.debug "Periodic event triggered"
+
+    def matchingTrigger = state.triggers?.find { t -> t.type == "periodic" }
+    if (matchingTrigger) {
+        evaluateAndExecute()
     }
 }
 
@@ -2422,6 +2616,12 @@ def executeActionsFromIndex(startIndex) {
 }
 
 def resumeDelayedActions(data) {
+    // Check if this specific delay was cancelled
+    if (data.delayId && state.cancelledDelayIds?.containsKey(data.delayId)) {
+        log.debug "Delay '${data.delayId}' was cancelled, skipping execution"
+        state.cancelledDelayIds.remove(data.delayId) // Clean up
+        return
+    }
     log.debug "Resuming actions from index ${data.nextIndex} (delayId: ${data.delayId})"
     executeActionsFromIndex(data.nextIndex)
 }
@@ -2509,9 +2709,15 @@ def executeAction(action, actionIndex = null) {
 
         case "cancel_delayed":
             if (action.delayId == "all") {
-                unschedule()
+                // Cancel all pending delayed actions
+                unschedule("resumeDelayedActions")
+                state.cancelledDelayIds = [:] // Clear cancelled IDs since we cancelled everything
+                log.debug "Cancelled all delayed actions"
             } else if (action.delayId) {
-                unschedule("delayedAction_${action.delayId}")
+                // Mark this specific delay ID as cancelled - will be checked in resumeDelayedActions
+                if (!state.cancelledDelayIds) state.cancelledDelayIds = [:]
+                state.cancelledDelayIds[action.delayId] = true
+                log.debug "Marked delay '${action.delayId}' for cancellation"
             }
             break
 
