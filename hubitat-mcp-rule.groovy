@@ -90,6 +90,10 @@ def clearDurationState() {
 // ==================== MAIN PAGE ====================
 
 def mainPage() {
+    // Clear any orphaned settings from sub-pages to prevent "required fields" validation errors
+    // This ensures that partially-filled trigger/condition/action forms don't block saving
+    clearAllSubPageSettings()
+
     dynamicPage(name: "mainPage", title: "Configure Rule", install: true, uninstall: true) {
         section("Rule Settings") {
             input "ruleName", "text", title: "Rule Name", required: true, submitOnChange: true
@@ -499,6 +503,24 @@ def clearTriggerSettings() {
      "triggerDuration", "triggerDurationUnit", "triggerButtonNumber", "triggerButtonAction", "triggerTimeType",
      "triggerTime", "triggerOffset", "triggerInterval", "triggerUnit", "triggerFromMode",
      "triggerToMode", "triggerHsmStatus"].each { app.removeSetting(it) }
+}
+
+/**
+ * Clears all sub-page settings (triggers, conditions, actions) to prevent
+ * "required fields" validation errors when orphaned settings exist from
+ * partially-completed forms on sub-pages.
+ */
+def clearAllSubPageSettings() {
+    clearTriggerSettings()
+    clearConditionSettings()
+    clearActionSettings()
+    // Clear editing state flags
+    state.remove("editingTriggerIndex")
+    state.remove("loadedTriggerIndex")
+    state.remove("editingConditionIndex")
+    state.remove("loadedConditionIndex")
+    state.remove("editingActionIndex")
+    state.remove("loadedActionIndex")
 }
 
 def formatTimeInput(timeInput) {
