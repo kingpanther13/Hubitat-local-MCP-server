@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.13 - Performance improvements, configurable captured states limit
+ * Version: 0.1.14 - Fix child app label not updating in Hubitat Apps list
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.1.13"
+                paragraph "<b>Version:</b> 0.1.14"
             }
         }
 
@@ -201,7 +201,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.13"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.14"}')
 }
 
 def handleMcpGet() {
@@ -274,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.13"
+            version: "0.1.14"
         ]
     ])
 }

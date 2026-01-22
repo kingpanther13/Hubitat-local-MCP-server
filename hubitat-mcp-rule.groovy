@@ -38,12 +38,20 @@ def installed() {
     state.triggers = []
     state.conditions = []
     state.actions = []
+    // Set the app label to match the rule name (for display in Apps list)
+    if (settings.ruleName) {
+        app.updateLabel(settings.ruleName)
+    }
     initialize()
 }
 
 def updated() {
     log.info "MCP Rule '${settings.ruleName}' updated"
     state.updatedAt = now()
+    // Update the app label to match the rule name (for display in Apps list)
+    if (settings.ruleName) {
+        app.updateLabel(settings.ruleName)
+    }
     unsubscribe()
     unschedule()
     initialize()
@@ -2047,7 +2055,11 @@ def getRuleData() {
 }
 
 def updateRuleFromParent(data) {
-    if (data.name != null) app.updateSetting("ruleName", data.name)
+    if (data.name != null) {
+        app.updateSetting("ruleName", data.name)
+        // Update the app label to match (for display in Apps list)
+        app.updateLabel(data.name)
+    }
     if (data.description != null) app.updateSetting("ruleDescription", data.description)
     if (data.enabled != null) app.updateSetting("ruleEnabled", data.enabled)
     if (data.triggers != null) state.triggers = data.triggers
