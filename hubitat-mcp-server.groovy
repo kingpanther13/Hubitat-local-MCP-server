@@ -99,17 +99,18 @@ def mainPage() {
 }
 
 def formatTimestamp(timestamp) {
+    if (!timestamp) return "Never"
     try {
         if (timestamp instanceof Number) {
             def date = new Date(timestamp)
-            return date.format("MM/dd HH:mm")
+            return date.format("yyyy-MM-dd HH:mm:ss")
         } else if (timestamp instanceof String) {
             def date = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", timestamp)
-            return date.format("MM/dd HH:mm")
+            return date.format("yyyy-MM-dd HH:mm:ss")
         }
         return "Unknown"
     } catch (Exception e) {
-        return timestamp?.toString()?.take(16) ?: "Unknown"
+        return timestamp?.toString()?.take(20) ?: "Unknown"
     }
 }
 
@@ -274,7 +275,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.0"
+            version: "0.2.1"
         ]
     ])
 }
@@ -1960,13 +1961,4 @@ def toolGetLoggingStatus(args) {
         oldestEntry: entries.first() ? formatTimestamp(entries.first().timestamp) : null,
         newestEntry: entries.last() ? formatTimestamp(entries.last().timestamp) : null
     ]
-}
-
-def formatTimestamp(timestamp) {
-    if (!timestamp) return "Never"
-    try {
-        return new Date(timestamp).format("yyyy-MM-dd HH:mm:ss")
-    } catch (Exception e) {
-        return timestamp?.toString() ?: "Unknown"
-    }
 }
