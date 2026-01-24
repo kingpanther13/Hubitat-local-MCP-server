@@ -216,7 +216,7 @@ def addTriggerPage() {
 def editTriggerPage(params) {
     def triggerIndex = params?.triggerIndex != null ? params.triggerIndex.toInteger() : state.editingTriggerIndex
 
-    if (triggerIndex == null || triggerIndex >= (state.triggers?.size() ?: 0)) {
+    if (triggerIndex == null || triggerIndex < 0 || triggerIndex >= (state.triggers?.size() ?: 0)) {
         return dynamicPage(name: "editTriggerPage", title: "Trigger Not Found") {
             section {
                 paragraph "The requested trigger could not be found."
@@ -344,7 +344,7 @@ def savePendingTrigger() {
     def trigger = buildTriggerFromSettings()
     if (trigger) {
         if (!state.triggers) state.triggers = []
-        if (state.editingTriggerIndex != null && state.editingTriggerIndex < state.triggers.size()) {
+        if (state.editingTriggerIndex != null && state.editingTriggerIndex >= 0 && state.editingTriggerIndex < state.triggers.size()) {
             state.triggers[state.editingTriggerIndex] = trigger
             log.info "Updated trigger ${state.editingTriggerIndex + 1}"
         } else {
@@ -568,7 +568,7 @@ def editConditionsPage() {
                          params: [conditionIndex: idx]
                 }
             } else {
-                paragraph "<i>No conditions defined. Rule will execute whenever triggered.</i>"
+                paragraph "<i>No conditions (rule always executes when triggered)</i>"
             }
         }
 
@@ -610,7 +610,7 @@ def addConditionPage() {
 def editConditionPage(params) {
     def conditionIndex = params?.conditionIndex != null ? params.conditionIndex.toInteger() : state.editingConditionIndex
 
-    if (conditionIndex == null || conditionIndex >= (state.conditions?.size() ?: 0)) {
+    if (conditionIndex == null || conditionIndex < 0 || conditionIndex >= (state.conditions?.size() ?: 0)) {
         return dynamicPage(name: "editConditionPage", title: "Condition Not Found") {
             section {
                 paragraph "The requested condition could not be found."
@@ -812,7 +812,7 @@ def savePendingCondition() {
     def condition = buildConditionFromSettings()
     if (condition) {
         if (!state.conditions) state.conditions = []
-        if (state.editingConditionIndex != null && state.editingConditionIndex < state.conditions.size()) {
+        if (state.editingConditionIndex != null && state.editingConditionIndex >= 0 && state.editingConditionIndex < state.conditions.size()) {
             state.conditions[state.editingConditionIndex] = condition
             log.info "Updated condition ${state.editingConditionIndex + 1}"
         } else {
@@ -1105,7 +1105,7 @@ def addActionPage() {
 def editActionPage(params) {
     def actionIndex = params?.actionIndex != null ? params.actionIndex.toInteger() : state.editingActionIndex
 
-    if (actionIndex == null || actionIndex >= (state.actions?.size() ?: 0)) {
+    if (actionIndex == null || actionIndex < 0 || actionIndex >= (state.actions?.size() ?: 0)) {
         return dynamicPage(name: "editActionPage", title: "Action Not Found") {
             section {
                 paragraph "The requested action could not be found."
@@ -1459,7 +1459,7 @@ def savePendingAction() {
     def action = buildActionFromSettings()
     if (action) {
         if (!state.actions) state.actions = []
-        if (state.editingActionIndex != null && state.editingActionIndex < state.actions.size()) {
+        if (state.editingActionIndex != null && state.editingActionIndex >= 0 && state.editingActionIndex < state.actions.size()) {
             state.actions[state.editingActionIndex] = action
             log.info "Updated action ${state.editingActionIndex + 1}"
         } else {
@@ -2088,13 +2088,13 @@ def describeCondition(condition) {
 
         case "mode":
             def op = condition.operator == "not_in" ? "is not" : "is"
-            return "Mode ${op} ${condition.modes.join(' or ')}"
+            return "Mode ${op} ${condition.modes ? condition.modes.join(' or ') : '(none)'}"
 
         case "variable":
             return "Variable '${condition.variableName}' ${condition.operator} '${condition.value}'"
 
         case "days_of_week":
-            return "Day is ${condition.days.join(', ')}"
+            return "Day is ${condition.days ? condition.days.join(', ') : '(none)'}"
 
         case "sun_position":
             return "Sun is ${condition.position}"
@@ -2215,7 +2215,7 @@ def describeAction(action) {
         case "capture_state":
             def captureCount = action.deviceIds?.size() ?: 0
             def captureId = action.stateId ?: "default"
-            return "Capture state of ${captureCount} device(s) (id: ${captureId}) [max 20 captures]"
+            return "Capture state of ${captureCount} device(s) (id: ${captureId})"
 
         case "restore_state":
             def restoreId = action.stateId ?: "default"
@@ -2490,7 +2490,7 @@ def evaluateCondition(condition) {
 
         case "mode":
             def currentMode = location.mode
-            def inModes = condition.modes.contains(currentMode)
+            def inModes = condition.modes ? condition.modes.contains(currentMode) : false
             return condition.operator == "not_in" ? !inModes : inModes
 
         case "time_range":
@@ -2501,7 +2501,7 @@ def evaluateCondition(condition) {
 
         case "days_of_week":
             def today = new Date().format("EEEE")
-            return condition.days.contains(today)
+            return condition.days ? condition.days.contains(today) : false
 
         case "sun_position":
             def sunriseTime = location.sunrise
@@ -2812,7 +2812,7 @@ def executeAction(action, actionIndex = null) {
                         } else if (devState.colorTemperature != null) {
                             dev.setColorTemperature(devState.colorTemperature)
                         }
-                        if (devState.level != null && !devState.hue) {
+                        if (devState.level != null && devState.hue == null) {
                             dev.setLevel(devState.level)
                         }
                         if (devState.switch == "on") {

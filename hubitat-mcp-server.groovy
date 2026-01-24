@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.20 - Add validation for triggers/conditions (operator, duration, button action, time format)
+ * Version: 0.1.21 - Bug fixes and validation improvements from code review
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.1.20"
+                paragraph "<b>Version:</b> 0.1.21"
             }
         }
 
@@ -201,7 +201,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.20"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.21"}')
 }
 
 def handleMcpGet() {
@@ -274,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.20"
+            version: "0.1.21"
         ]
     ])
 }
@@ -1041,11 +1041,13 @@ def toolSetMode(modeName) {
         throw new IllegalArgumentException("Mode '${modeName}' not found. Available: ${available}")
     }
 
+    // Capture current mode BEFORE changing it
+    def previousMode = location.mode
     location.setMode(mode.name)
 
     return [
         success: true,
-        previousMode: location.mode,
+        previousMode: previousMode,
         newMode: mode.name
     ]
 }
@@ -1436,12 +1438,27 @@ def validateCondition(condition) {
             break
         case "days_of_week":
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
+            // Validate day names
+            def validDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            condition.days.each { day ->
+                if (!validDays.contains(day)) {
+                    throw new IllegalArgumentException("days_of_week condition: Invalid day '${day}'. Valid days: ${validDays.join(', ')}")
+                }
+            }
             break
         case "sun_position":
-            if (!condition.position) throw new IllegalArgumentException("sun_position condition requires position (day/night)")
+            if (!condition.position) throw new IllegalArgumentException("sun_position condition requires position (up/down)")
+            def validPositions = ["up", "down"]
+            if (!validPositions.contains(condition.position)) {
+                throw new IllegalArgumentException("sun_position condition: Invalid position '${condition.position}'. Valid positions: ${validPositions.join(', ')}")
+            }
             break
         case "hsm_status":
             if (!condition.status) throw new IllegalArgumentException("hsm_status condition requires status")
+            def validHsmStatuses = ["disarmed", "armedAway", "armedHome", "armedNight", "armingAway", "armingHome", "armingNight"]
+            if (!validHsmStatuses.contains(condition.status)) {
+                throw new IllegalArgumentException("hsm_status condition: Invalid status '${condition.status}'. Valid statuses: ${validHsmStatuses.join(', ')}")
+            }
             break
         case "presence":
             if (!condition.deviceId) throw new IllegalArgumentException("presence condition requires deviceId")
@@ -1515,7 +1532,8 @@ def validateAction(action) {
             if (!action.status) throw new IllegalArgumentException("set_hsm action requires status")
             break
         case "delay":
-            if (!action.seconds && action.seconds != 0) throw new IllegalArgumentException("delay action requires seconds")
+            if (action.seconds == null) throw new IllegalArgumentException("delay action requires seconds")
+            if (action.seconds < 0) throw new IllegalArgumentException("delay action: seconds cannot be negative")
             break
         case "if_then_else":
             if (!action.condition) throw new IllegalArgumentException("if_then_else action requires condition")
