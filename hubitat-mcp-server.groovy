@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.20 - Add validation for triggers/conditions (operator, duration, button action, time format)
+ * Version: 0.1.21 - Bug fixes and validation improvements from code review
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.1.20"
+                paragraph "<b>Version:</b> 0.1.21"
             }
         }
 
@@ -201,7 +201,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.20"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.21"}')
 }
 
 def handleMcpGet() {
@@ -274,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.20"
+            version: "0.1.22"
         ]
     ])
 }
@@ -832,6 +832,7 @@ def toolListRules() {
     def childApps = getChildApps()
     def rules = childApps?.collect { childApp ->
         def ruleData = childApp.getRuleData()
+        if (!ruleData) return null  // Skip rules that return null data
         [
             id: ruleData.id,
             name: ruleData.name,
@@ -843,7 +844,7 @@ def toolListRules() {
             lastTriggered: ruleData.lastTriggered,
             executionCount: ruleData.executionCount ?: 0
         ]
-    } ?: []
+    }?.findAll { it != null } ?: []
 
     return [rules: rules, count: rules.size()]
 }
@@ -1041,11 +1042,13 @@ def toolSetMode(modeName) {
         throw new IllegalArgumentException("Mode '${modeName}' not found. Available: ${available}")
     }
 
+    // Capture current mode BEFORE changing it
+    def previousMode = location.mode
     location.setMode(mode.name)
 
     return [
         success: true,
-        previousMode: location.mode,
+        previousMode: previousMode,
         newMode: mode.name
     ]
 }
@@ -1400,11 +1403,12 @@ def validateCondition(condition) {
         case "device_was":
             if (!condition.deviceId) throw new IllegalArgumentException("device_was condition requires deviceId")
             if (!condition.attribute) throw new IllegalArgumentException("device_was condition requires attribute")
+            if (condition.forSeconds == null) throw new IllegalArgumentException("device_was condition requires forSeconds")
             if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
             // Validate operator if present
             validateOperator(condition.operator, "device_was condition")
-            // Validate duration if present (for "state for X seconds" checks)
-            validateDuration(condition.duration, "device_was condition")
+            // Validate forSeconds duration (for "state for X seconds" checks)
+            validateDuration(condition.forSeconds, "device_was condition")
             break
         case "time_range":
             // Accept both new (start/end) and old (startTime/endTime) field names for compatibility
@@ -1428,6 +1432,10 @@ def validateCondition(condition) {
             if (!condition.mode && !condition.modes) {
                 throw new IllegalArgumentException("mode condition requires mode or modes")
             }
+            // Validate operator if present (mode supports 'in' and 'not_in')
+            if (condition.operator && !["in", "not_in"].contains(condition.operator)) {
+                throw new IllegalArgumentException("mode condition: Invalid operator '${condition.operator}'. Valid operators: in, not_in")
+            }
             break
         case "variable":
             if (!condition.variableName) throw new IllegalArgumentException("variable condition requires variableName")
@@ -1436,12 +1444,27 @@ def validateCondition(condition) {
             break
         case "days_of_week":
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
+            // Validate day names
+            def validDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            condition.days.each { day ->
+                if (!validDays.contains(day)) {
+                    throw new IllegalArgumentException("days_of_week condition: Invalid day '${day}'. Valid days: ${validDays.join(', ')}")
+                }
+            }
             break
         case "sun_position":
-            if (!condition.position) throw new IllegalArgumentException("sun_position condition requires position (day/night)")
+            if (!condition.position) throw new IllegalArgumentException("sun_position condition requires position (up/down)")
+            def validPositions = ["up", "down"]
+            if (!validPositions.contains(condition.position)) {
+                throw new IllegalArgumentException("sun_position condition: Invalid position '${condition.position}'. Valid positions: ${validPositions.join(', ')}")
+            }
             break
         case "hsm_status":
             if (!condition.status) throw new IllegalArgumentException("hsm_status condition requires status")
+            def validHsmStatuses = ["disarmed", "armedAway", "armedHome", "armedNight", "armingAway", "armingHome", "armingNight"]
+            if (!validHsmStatuses.contains(condition.status)) {
+                throw new IllegalArgumentException("hsm_status condition: Invalid status '${condition.status}'. Valid statuses: ${validHsmStatuses.join(', ')}")
+            }
             break
         case "presence":
             if (!condition.deviceId) throw new IllegalArgumentException("presence condition requires deviceId")
@@ -1515,7 +1538,8 @@ def validateAction(action) {
             if (!action.status) throw new IllegalArgumentException("set_hsm action requires status")
             break
         case "delay":
-            if (!action.seconds && action.seconds != 0) throw new IllegalArgumentException("delay action requires seconds")
+            if (action.seconds == null) throw new IllegalArgumentException("delay action requires seconds")
+            if (action.seconds < 0) throw new IllegalArgumentException("delay action: seconds cannot be negative")
             break
         case "if_then_else":
             if (!action.condition) throw new IllegalArgumentException("if_then_else action requires condition")
@@ -1527,7 +1551,8 @@ def validateAction(action) {
         case "cancel_delayed":
             break
         case "repeat":
-            if (!action.times) throw new IllegalArgumentException("repeat action requires times")
+            if (action.times == null) throw new IllegalArgumentException("repeat action requires times")
+            if (action.times < 1) throw new IllegalArgumentException("repeat action: times must be at least 1")
             if (!action.actions) throw new IllegalArgumentException("repeat action requires actions")
             action.actions.each { validateAction(it) }
             break
