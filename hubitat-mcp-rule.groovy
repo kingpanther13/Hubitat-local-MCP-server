@@ -1440,7 +1440,7 @@ def renderIfConditionFields() {
         case "illuminance":
             input "actionIfDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: true
             input "actionIfOperator", "enum", title: "Comparison",
-                  options: ["<": "Less Than", ">": "Greater Than", "<=": "Less/Equal", ">=": "Greater/Equal"],
+                  options: [">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
                   required: true, defaultValue: "<"
             input "actionIfValue", "number", title: "Lux Value", required: true
             break
@@ -2315,7 +2315,7 @@ def handleDeviceEvent(evt) {
         t.type == "device_event" &&
         t.deviceId == evt.device.id.toString() &&
         t.attribute == evt.name &&
-        (!t.value || evaluateComparison(evt.value, t.operator ?: "equals", t.value))
+        (t.value == null || evaluateComparison(evt.value, t.operator ?: "equals", t.value))
     }
 
     if (matchingTrigger) {
@@ -2359,7 +2359,9 @@ def handleDeviceEvent(evt) {
             if (state.durationTimers?.get(triggerKey)) {
                 log.debug "Duration trigger: condition no longer met, canceling timer for ${evt.device.label} ${evt.name}"
                 state.durationTimers.remove(triggerKey)
-                unschedule("checkDurationTrigger")
+                // Note: We don't call unschedule("checkDurationTrigger") here because:
+                // 1. It would cancel ALL duration trigger timers, not just this one
+                // 2. checkDurationTrigger already handles missing timer data gracefully
             }
             // Reset the fired flag so it can trigger again next time condition is met
             if (state.durationFired?.get(triggerKey)) {
@@ -2388,7 +2390,7 @@ def checkDurationTrigger(data) {
     }
 
     def currentValue = device.currentValue(trigger.attribute)
-    def stillMet = !trigger.value || evaluateComparison(currentValue, trigger.operator ?: "equals", trigger.value)
+    def stillMet = trigger.value == null || evaluateComparison(currentValue, trigger.operator ?: "equals", trigger.value)
 
     if (stillMet) {
         def durationDisplay = formatDurationForDisplay(trigger)
@@ -2412,7 +2414,7 @@ def handleButtonEvent(evt) {
         t.type == "button_event" &&
         t.deviceId == evt.device.id.toString() &&
         t.action == evt.name &&
-        (!t.buttonNumber || t.buttonNumber.toString() == evt.value)
+        (t.buttonNumber == null || t.buttonNumber.toString() == evt.value)
     }
 
     if (matchingTrigger) {
@@ -2525,6 +2527,7 @@ def evaluateCondition(condition) {
         case "device_was":
             def device = parent.findDevice(condition.deviceId)
             if (!device) return false
+            if (condition.forSeconds == null) return false
             def currentValue = device.currentValue(condition.attribute)
             if (currentValue?.toString() != condition.value?.toString()) return false
             // Check how long it's been in this state
@@ -2697,12 +2700,14 @@ def executeAction(action, actionIndex = null) {
             def conditionResult = evaluateCondition(action.condition)
             log.debug "if_then_else condition result: ${conditionResult}"
             if (conditionResult) {
-                action.thenActions?.each { thenAction ->
-                    if (!executeAction(thenAction)) return false
+                def thenList = action.thenActions ?: []
+                for (int i = 0; i < thenList.size(); i++) {
+                    if (!executeAction(thenList[i])) return false
                 }
             } else if (action.elseActions) {
-                action.elseActions?.each { elseAction ->
-                    if (!executeAction(elseAction)) return false
+                def elseList = action.elseActions ?: []
+                for (int i = 0; i < elseList.size(); i++) {
+                    if (!executeAction(elseList[i])) return false
                 }
             }
             break
@@ -2837,10 +2842,10 @@ def executeAction(action, actionIndex = null) {
 
         case "repeat":
             def repeatCount = action.times ?: action.count ?: 1
+            def repeatActions = action.actions ?: []
             for (int r = 0; r < repeatCount; r++) {
-                action.actions?.each { repeatAction ->
-                    def result = executeAction(repeatAction)
-                    if (result == false) return false
+                for (int i = 0; i < repeatActions.size(); i++) {
+                    if (!executeAction(repeatActions[i])) return false
                 }
             }
             break
