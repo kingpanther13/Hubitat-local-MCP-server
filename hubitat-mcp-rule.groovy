@@ -38,9 +38,10 @@ def installed() {
     // IMPORTANT: Only initialize arrays if they don't exist yet
     // This prevents overwriting data that may have been set by updateRuleFromParent
     // during rule creation via MCP (race condition fix)
-    if (state.triggers == null) state.triggers = []
-    if (state.conditions == null) state.conditions = []
-    if (state.actions == null) state.actions = []
+    // Using atomicState for immediate persistence - prevents race condition with enabled=true
+    if (atomicState.triggers == null) atomicState.triggers = []
+    if (atomicState.conditions == null) atomicState.conditions = []
+    if (atomicState.actions == null) atomicState.actions = []
     // Set the app label to match the rule name (for display in Apps list)
     if (settings.ruleName) {
         app.updateLabel(settings.ruleName)
@@ -111,9 +112,9 @@ def mainPage() {
             paragraph "<b>Execution Count:</b> ${state.executionCount ?: 0}"
         }
 
-        section("Triggers (${state.triggers?.size() ?: 0})") {
-            if (state.triggers && state.triggers.size() > 0) {
-                state.triggers.eachWithIndex { trigger, idx ->
+        section("Triggers (${atomicState.triggers?.size() ?: 0})") {
+            if (atomicState.triggers && atomicState.triggers.size() > 0) {
+                atomicState.triggers.eachWithIndex { trigger, idx ->
                     paragraph "${idx + 1}. ${describeTrigger(trigger)}"
                 }
             } else {
@@ -122,11 +123,11 @@ def mainPage() {
             href name: "editTriggers", page: "editTriggersPage", title: "Edit Triggers"
         }
 
-        section("Conditions (${state.conditions?.size() ?: 0})") {
-            if (state.conditions && state.conditions.size() > 0) {
+        section("Conditions (${atomicState.conditions?.size() ?: 0})") {
+            if (atomicState.conditions && atomicState.conditions.size() > 0) {
                 def logic = settings.conditionLogic == "any" ? "ANY" : "ALL"
                 paragraph "<i>Logic: ${logic} conditions must be true</i>"
-                state.conditions.eachWithIndex { condition, idx ->
+                atomicState.conditions.eachWithIndex { condition, idx ->
                     paragraph "${idx + 1}. ${describeCondition(condition)}"
                 }
             } else {
@@ -135,9 +136,9 @@ def mainPage() {
             href name: "editConditions", page: "editConditionsPage", title: "Edit Conditions"
         }
 
-        section("Actions (${state.actions?.size() ?: 0})") {
-            if (state.actions && state.actions.size() > 0) {
-                state.actions.eachWithIndex { action, idx ->
+        section("Actions (${atomicState.actions?.size() ?: 0})") {
+            if (atomicState.actions && atomicState.actions.size() > 0) {
+                atomicState.actions.eachWithIndex { action, idx ->
                     paragraph "${idx + 1}. ${describeAction(action)}"
                 }
             } else {
@@ -162,8 +163,8 @@ def editTriggersPage() {
 
     dynamicPage(name: "editTriggersPage", title: "Edit Triggers") {
         section("Current Triggers") {
-            if (state.triggers && state.triggers.size() > 0) {
-                state.triggers.eachWithIndex { trigger, idx ->
+            if (atomicState.triggers && atomicState.triggers.size() > 0) {
+                atomicState.triggers.eachWithIndex { trigger, idx ->
                     href name: "editTrigger_${idx}", page: "editTriggerPage",
                          title: "${idx + 1}. ${describeTrigger(trigger)}",
                          description: "Tap to edit",
@@ -219,7 +220,7 @@ def addTriggerPage() {
 def editTriggerPage(params) {
     def triggerIndex = params?.triggerIndex != null ? params.triggerIndex.toInteger() : state.editingTriggerIndex
 
-    if (triggerIndex == null || triggerIndex < 0 || triggerIndex >= (state.triggers?.size() ?: 0)) {
+    if (triggerIndex == null || triggerIndex < 0 || triggerIndex >= (atomicState.triggers?.size() ?: 0)) {
         return dynamicPage(name: "editTriggerPage", title: "Trigger Not Found") {
             section {
                 paragraph "The requested trigger could not be found."
@@ -229,7 +230,7 @@ def editTriggerPage(params) {
     }
 
     state.editingTriggerIndex = triggerIndex
-    def trigger = state.triggers[triggerIndex]
+    def trigger = atomicState.triggers[triggerIndex]
 
     // Load trigger into settings if not already loaded
     if (state.loadedTriggerIndex != triggerIndex) {
@@ -346,12 +347,12 @@ def renderTriggerFields() {
 def savePendingTrigger() {
     def trigger = buildTriggerFromSettings()
     if (trigger) {
-        if (!state.triggers) state.triggers = []
-        if (state.editingTriggerIndex != null && state.editingTriggerIndex >= 0 && state.editingTriggerIndex < state.triggers.size()) {
-            state.triggers[state.editingTriggerIndex] = trigger
+        if (!atomicState.triggers) atomicState.triggers = []
+        if (state.editingTriggerIndex != null && state.editingTriggerIndex >= 0 && state.editingTriggerIndex < atomicState.triggers.size()) {
+            atomicState.triggers[state.editingTriggerIndex] = trigger
             log.info "Updated trigger ${state.editingTriggerIndex + 1}"
         } else {
-            state.triggers.add(trigger)
+            atomicState.triggers.add(trigger)
             log.info "Added new trigger"
         }
         state.updatedAt = now()
@@ -563,8 +564,8 @@ def editConditionsPage() {
         }
 
         section("Current Conditions") {
-            if (state.conditions && state.conditions.size() > 0) {
-                state.conditions.eachWithIndex { condition, idx ->
+            if (atomicState.conditions && atomicState.conditions.size() > 0) {
+                atomicState.conditions.eachWithIndex { condition, idx ->
                     href name: "editCondition_${idx}", page: "editConditionPage",
                          title: "${idx + 1}. ${describeCondition(condition)}",
                          description: "Tap to edit",
@@ -613,7 +614,7 @@ def addConditionPage() {
 def editConditionPage(params) {
     def conditionIndex = params?.conditionIndex != null ? params.conditionIndex.toInteger() : state.editingConditionIndex
 
-    if (conditionIndex == null || conditionIndex < 0 || conditionIndex >= (state.conditions?.size() ?: 0)) {
+    if (conditionIndex == null || conditionIndex < 0 || conditionIndex >= (atomicState.conditions?.size() ?: 0)) {
         return dynamicPage(name: "editConditionPage", title: "Condition Not Found") {
             section {
                 paragraph "The requested condition could not be found."
@@ -623,7 +624,7 @@ def editConditionPage(params) {
     }
 
     state.editingConditionIndex = conditionIndex
-    def condition = state.conditions[conditionIndex]
+    def condition = atomicState.conditions[conditionIndex]
 
     if (state.loadedConditionIndex != conditionIndex) {
         loadConditionSettings(condition)
@@ -814,12 +815,12 @@ def renderConditionFields() {
 def savePendingCondition() {
     def condition = buildConditionFromSettings()
     if (condition) {
-        if (!state.conditions) state.conditions = []
-        if (state.editingConditionIndex != null && state.editingConditionIndex >= 0 && state.editingConditionIndex < state.conditions.size()) {
-            state.conditions[state.editingConditionIndex] = condition
+        if (!atomicState.conditions) atomicState.conditions = []
+        if (state.editingConditionIndex != null && state.editingConditionIndex >= 0 && state.editingConditionIndex < atomicState.conditions.size()) {
+            atomicState.conditions[state.editingConditionIndex] = condition
             log.info "Updated condition ${state.editingConditionIndex + 1}"
         } else {
-            state.conditions.add(condition)
+            atomicState.conditions.add(condition)
             log.info "Added new condition"
         }
         state.updatedAt = now()
@@ -1045,8 +1046,8 @@ def editActionsPage() {
 
     dynamicPage(name: "editActionsPage", title: "Edit Actions") {
         section("Actions (executed in order)") {
-            if (state.actions && state.actions.size() > 0) {
-                state.actions.eachWithIndex { action, idx ->
+            if (atomicState.actions && atomicState.actions.size() > 0) {
+                atomicState.actions.eachWithIndex { action, idx ->
                     href name: "editAction_${idx}", page: "editActionPage",
                          title: "${idx + 1}. ${describeAction(action)}",
                          description: "Tap to edit",
@@ -1057,13 +1058,13 @@ def editActionsPage() {
             }
         }
 
-        if (state.actions && state.actions.size() > 1) {
+        if (atomicState.actions && atomicState.actions.size() > 1) {
             section("Reorder Actions") {
-                state.actions.eachWithIndex { action, idx ->
+                atomicState.actions.eachWithIndex { action, idx ->
                     if (idx > 0) {
                         input "moveUp_${idx}", "button", title: "↑ Move ${idx + 1} Up"
                     }
-                    if (idx < state.actions.size() - 1) {
+                    if (idx < atomicState.actions.size() - 1) {
                         input "moveDown_${idx}", "button", title: "↓ Move ${idx + 1} Down"
                     }
                 }
@@ -1108,7 +1109,7 @@ def addActionPage() {
 def editActionPage(params) {
     def actionIndex = params?.actionIndex != null ? params.actionIndex.toInteger() : state.editingActionIndex
 
-    if (actionIndex == null || actionIndex < 0 || actionIndex >= (state.actions?.size() ?: 0)) {
+    if (actionIndex == null || actionIndex < 0 || actionIndex >= (atomicState.actions?.size() ?: 0)) {
         return dynamicPage(name: "editActionPage", title: "Action Not Found") {
             section {
                 paragraph "The requested action could not be found."
@@ -1118,7 +1119,7 @@ def editActionPage(params) {
     }
 
     state.editingActionIndex = actionIndex
-    def action = state.actions[actionIndex]
+    def action = atomicState.actions[actionIndex]
 
     if (state.loadedActionIndex != actionIndex) {
         loadActionSettings(action)
@@ -1461,12 +1462,12 @@ def renderIfConditionFields() {
 def savePendingAction() {
     def action = buildActionFromSettings()
     if (action) {
-        if (!state.actions) state.actions = []
-        if (state.editingActionIndex != null && state.editingActionIndex >= 0 && state.editingActionIndex < state.actions.size()) {
-            state.actions[state.editingActionIndex] = action
+        if (!atomicState.actions) atomicState.actions = []
+        if (state.editingActionIndex != null && state.editingActionIndex >= 0 && state.editingActionIndex < atomicState.actions.size()) {
+            atomicState.actions[state.editingActionIndex] = action
             log.info "Updated action ${state.editingActionIndex + 1}"
         } else {
-            state.actions.add(action)
+            atomicState.actions.add(action)
             log.info "Added new action"
         }
         state.updatedAt = now()
@@ -1975,34 +1976,34 @@ def appButtonHandler(btn) {
     if (btn == "testRuleBtn") {
         testRule()
     } else if (btn == "deleteTriggerBtn" && state.editingTriggerIndex != null) {
-        state.triggers.remove(state.editingTriggerIndex)
+        atomicState.triggers.remove(state.editingTriggerIndex)
         state.updatedAt = now()
         clearTriggerSettings()
         state.remove("editingTriggerIndex")
     } else if (btn == "deleteConditionBtn" && state.editingConditionIndex != null) {
-        state.conditions.remove(state.editingConditionIndex)
+        atomicState.conditions.remove(state.editingConditionIndex)
         state.updatedAt = now()
         clearConditionSettings()
         state.remove("editingConditionIndex")
     } else if (btn == "deleteActionBtn" && state.editingActionIndex != null) {
-        state.actions.remove(state.editingActionIndex)
+        atomicState.actions.remove(state.editingActionIndex)
         state.updatedAt = now()
         clearActionSettings()
         state.remove("editingActionIndex")
     } else if (btn.startsWith("moveUp_")) {
         def idx = btn.replace("moveUp_", "").toInteger()
-        if (idx > 0 && idx < state.actions.size()) {
-            def temp = state.actions[idx]
-            state.actions[idx] = state.actions[idx - 1]
-            state.actions[idx - 1] = temp
+        if (idx > 0 && idx < atomicState.actions.size()) {
+            def temp = atomicState.actions[idx]
+            atomicState.actions[idx] = atomicState.actions[idx - 1]
+            atomicState.actions[idx - 1] = temp
             state.updatedAt = now()
         }
     } else if (btn.startsWith("moveDown_")) {
         def idx = btn.replace("moveDown_", "").toInteger()
-        if (idx >= 0 && idx < state.actions.size() - 1) {
-            def temp = state.actions[idx]
-            state.actions[idx] = state.actions[idx + 1]
-            state.actions[idx + 1] = temp
+        if (idx >= 0 && idx < atomicState.actions.size() - 1) {
+            def temp = atomicState.actions[idx]
+            atomicState.actions[idx] = atomicState.actions[idx + 1]
+            atomicState.actions[idx + 1] = temp
             state.updatedAt = now()
         }
     }
@@ -2241,7 +2242,7 @@ def describeAction(action) {
 // ==================== RULE EXECUTION ====================
 
 def subscribeToTriggers() {
-    state.triggers?.each { trigger ->
+    atomicState.triggers?.each { trigger ->
         switch (trigger.type) {
             case "device_event":
                 def device = parent.findDevice(trigger.deviceId)
@@ -2312,7 +2313,7 @@ def handlePeriodicEvent() {
     if (!settings.ruleEnabled) return
     log.debug "Periodic event triggered"
 
-    def matchingTrigger = state.triggers?.find { t -> t.type == "periodic" }
+    def matchingTrigger = atomicState.triggers?.find { t -> t.type == "periodic" }
     if (matchingTrigger) {
         evaluateAndExecute()
     }
@@ -2322,7 +2323,7 @@ def handleDeviceEvent(evt) {
     if (!settings.ruleEnabled) return
     log.debug "Device event: ${evt.device.label} ${evt.name} = ${evt.value}"
 
-    def matchingTrigger = state.triggers?.find { t ->
+    def matchingTrigger = atomicState.triggers?.find { t ->
         t.type == "device_event" &&
         t.deviceId == evt.device.id.toString() &&
         t.attribute == evt.name &&
@@ -2358,7 +2359,7 @@ def handleDeviceEvent(evt) {
         }
     } else {
         // Condition no longer met - cancel any pending duration timer and reset fired state
-        def triggersForDevice = state.triggers?.findAll { t ->
+        def triggersForDevice = atomicState.triggers?.findAll { t ->
             t.type == "device_event" &&
             t.deviceId == evt.device.id.toString() &&
             t.attribute == evt.name &&
@@ -2421,7 +2422,7 @@ def handleButtonEvent(evt) {
     if (!settings.ruleEnabled) return
     log.debug "Button event: ${evt.device.label} ${evt.name} = ${evt.value}"
 
-    def matchingTrigger = state.triggers?.find { t ->
+    def matchingTrigger = atomicState.triggers?.find { t ->
         t.type == "button_event" &&
         t.deviceId == evt.device.id.toString() &&
         t.action == evt.name &&
@@ -2440,7 +2441,7 @@ def handleTimeEvent() {
 
 def handleModeEvent(evt) {
     if (!settings.ruleEnabled) return
-    def matchingTrigger = state.triggers?.find { t ->
+    def matchingTrigger = atomicState.triggers?.find { t ->
         t.type == "mode_change" &&
         (!t.toMode || t.toMode == evt.value) &&
         (!t.fromMode || t.fromMode == state.previousMode)
@@ -2454,7 +2455,7 @@ def handleModeEvent(evt) {
 
 def handleHsmEvent(evt) {
     if (!settings.ruleEnabled) return
-    def matchingTrigger = state.triggers?.find { t ->
+    def matchingTrigger = atomicState.triggers?.find { t ->
         t.type == "hsm_change" &&
         (!t.status || t.status == evt.value)
     }
@@ -2468,7 +2469,7 @@ def executeRule(triggerSource) {
     log.info "Rule '${settings.ruleName}' triggered by ${triggerSource}"
 
     // Check conditions
-    if (state.conditions && state.conditions.size() > 0) {
+    if (atomicState.conditions && atomicState.conditions.size() > 0) {
         def conditionsMet = evaluateConditions()
         if (!conditionsMet) {
             log.info "Rule '${settings.ruleName}' conditions not met, skipping actions"
@@ -2484,7 +2485,7 @@ def executeRule(triggerSource) {
 
 def evaluateConditions() {
     def logic = settings.conditionLogic ?: "all"
-    def results = state.conditions.collect { evaluateCondition(it) }
+    def results = atomicState.conditions.collect { evaluateCondition(it) }
 
     if (logic == "all") {
         return results.every { it }
@@ -2532,7 +2533,7 @@ def evaluateCondition(condition) {
 
         case "variable":
             // Check local variables first, then global
-            def varValue = state.localVariables?."${condition.variableName}"
+            def varValue = atomicState.localVariables?."${condition.variableName}"
             if (varValue == null) {
                 // Try global variable from parent
                 varValue = parent.getVariableValue(condition.variableName)
@@ -2621,7 +2622,7 @@ def executeActions() {
 }
 
 def executeActionsFromIndex(startIndex) {
-    def actions = state.actions ?: []
+    def actions = atomicState.actions ?: []
     for (int i = startIndex; i < actions.size(); i++) {
         def action = actions[i]
         def result = executeAction(action, i)
@@ -2746,8 +2747,8 @@ def executeAction(action, actionIndex = null) {
             break
 
         case "set_local_variable":
-            if (!state.localVariables) state.localVariables = [:]
-            state.localVariables[action.variableName] = action.value
+            if (!atomicState.localVariables) atomicState.localVariables = [:]
+            atomicState.localVariables[action.variableName] = action.value
             break
 
         case "activate_scene":
@@ -2887,8 +2888,8 @@ def testRule() {
         actions: []
     ]
 
-    if (state.conditions && state.conditions.size() > 0) {
-        state.conditions.each { condition ->
+    if (atomicState.conditions && atomicState.conditions.size() > 0) {
+        atomicState.conditions.each { condition ->
             def result = evaluateCondition(condition)
             results.conditionResults << [
                 condition: describeCondition(condition),
@@ -2906,7 +2907,7 @@ def testRule() {
     }
 
     if (results.wouldExecute) {
-        results.actions = state.actions.collect { describeAction(it) }
+        results.actions = atomicState.actions.collect { describeAction(it) }
     }
 
     log.info "Test results: ${results}"
@@ -2929,11 +2930,11 @@ def getRuleData() {
         name: settings.ruleName,
         description: settings.ruleDescription,
         enabled: settings.ruleEnabled ?: false,
-        triggers: state.triggers ?: [],
-        conditions: state.conditions ?: [],
+        triggers: atomicState.triggers ?: [],
+        conditions: atomicState.conditions ?: [],
         conditionLogic: settings.conditionLogic ?: "all",
-        actions: state.actions ?: [],
-        localVariables: state.localVariables ?: [:],
+        actions: atomicState.actions ?: [],
+        localVariables: atomicState.localVariables ?: [:],
         createdAt: state.createdAt,
         updatedAt: state.updatedAt,
         lastTriggered: state.lastTriggered,
@@ -2942,16 +2943,23 @@ def getRuleData() {
 }
 
 def updateRuleFromParent(data) {
-    // CRITICAL FIX: Set ALL state data FIRST before ANY settings updates
-    // updateSetting() can trigger updated() lifecycle method which may reload state
-    // from database. We must ensure state is fully written before that happens.
+    // CRITICAL FIX v0.2.2: Use atomicState for immediate persistence
+    // Regular state is only persisted when app execution ends, but atomicState
+    // persists immediately. When enabled=true, updateSetting triggers lifecycle
+    // methods that may start a new execution context which reads stale state
+    // from database. atomicState ensures data is persisted before any lifecycle
+    // methods can run.
 
-    // Step 1: Store all rule data in state FIRST
-    if (data.triggers != null) state.triggers = data.triggers
-    if (data.conditions != null) state.conditions = data.conditions
-    if (data.actions != null) state.actions = data.actions
-    if (data.localVariables != null) state.localVariables = data.localVariables
+    log.debug "updateRuleFromParent: Received ${data.triggers?.size() ?: 0} triggers, ${data.conditions?.size() ?: 0} conditions, ${data.actions?.size() ?: 0} actions (enabled=${data.enabled})"
+
+    // Step 1: Store all rule data using atomicState (persists immediately to database)
+    if (data.triggers != null) atomicState.triggers = data.triggers
+    if (data.conditions != null) atomicState.conditions = data.conditions
+    if (data.actions != null) atomicState.actions = data.actions
+    if (data.localVariables != null) atomicState.localVariables = data.localVariables
     state.updatedAt = now()
+
+    log.debug "updateRuleFromParent: atomicState now has ${atomicState.triggers?.size() ?: 0} triggers, ${atomicState.actions?.size() ?: 0} actions"
 
     // Step 2: NOW update settings (these may trigger updated() lifecycle)
     if (data.name != null) {
@@ -2997,6 +3005,6 @@ def testRuleFromParent() {
         ruleName: settings.ruleName,
         conditionsMet: true,
         wouldExecute: true,
-        actions: state.actions?.collect { describeAction(it) } ?: []
+        actions: atomicState.actions?.collect { describeAction(it) } ?: []
     ]
 }

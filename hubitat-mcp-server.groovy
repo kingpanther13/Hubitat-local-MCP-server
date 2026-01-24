@@ -275,7 +275,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.1"
+            version: "0.2.2"
         ]
     ])
 }
@@ -967,9 +967,9 @@ def toolCreateRule(args) {
     childApp.updateSetting("ruleName", args.name.trim())
     childApp.updateSetting("ruleDescription", args.description ?: "")
 
-    // Set rule data via the child's API - include enabled status here so it's set
-    // AFTER triggers/conditions/actions are stored in state
-    mcpLog("debug", "server", "Calling updateRuleFromParent with ${args.triggers?.size()} triggers, ${args.actions?.size()} actions", ruleId)
+    // Set rule data via the child's API - child uses atomicState for immediate persistence
+    // This prevents race condition where enabled=true triggers lifecycle before data is saved
+    mcpLog("debug", "server", "Calling updateRuleFromParent with ${args.triggers?.size()} triggers, ${args.actions?.size()} actions (uses atomicState)", ruleId)
     childApp.updateRuleFromParent([
         triggers: args.triggers,
         conditions: args.conditions ?: [],
