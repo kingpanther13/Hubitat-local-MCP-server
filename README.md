@@ -11,7 +11,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Create automations** - Build rules with triggers, conditions, and actions
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 
-**New in v0.1.0:** Parent/Child architecture! Rules are now separate child apps with isolated settings, just like Hubitat's native Rule Machine. This fixes settings cross-contamination between rules.
+**New in v0.2.0:** MCP-accessible debug logging system! Debug rules and troubleshoot issues directly through MCP without needing to access the Hubitat UI. Includes 5 new diagnostic tools.
+
+**v0.1.0:** Parent/Child architecture! Rules are now separate child apps with isolated settings, just like Hubitat's native Rule Machine.
 
 Instead of running a separate Node.js MCP server on another machine, this runs natively on the Hubitat hub itself.
 
@@ -30,13 +32,15 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (19 total)
+### MCP Tools (27 total)
 
 | Category | Tools |
 |----------|-------|
 | **Devices** | `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events` |
 | **Rules** | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule` |
 | **System** | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable` |
+| **State Capture** | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
+| **Debug/Diagnostics** | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status` |
 
 ### Rule Engine
 
@@ -372,6 +376,47 @@ Rules are JSON objects with triggers, conditions, and actions:
 - **Duration triggers** - Maximum of 2 hours (7200 seconds). For longer durations, consider alternative approaches.
 - **Captured states** - Default limit of 20 unique state IDs (configurable in app settings, range 1-100). When limit is reached, the oldest capture is automatically deleted. Use `list_captured_states` to monitor usage.
 - **Hubitat Cloud responses** - 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
+
+## Debug Logging System
+
+**New in v0.2.0:** The MCP server includes a built-in debug logging system that stores logs in app state, making them accessible via MCP tools. Unlike Hubitat's built-in logs (which require UI access), these logs can be retrieved directly through MCP.
+
+### Debug Logging Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_debug_logs` | Retrieve recent log entries with optional filters |
+| `clear_debug_logs` | Clear all stored log entries |
+| `get_rule_diagnostics` | Get comprehensive diagnostic info for a specific rule |
+| `set_log_level` | Set minimum log level (debug/info/warn/error) |
+| `get_logging_status` | View logging system statistics |
+
+### Usage Examples
+
+**Get recent logs:**
+```json
+{"tool": "get_debug_logs", "arguments": {"limit": 50, "level": "error"}}
+```
+
+**Get diagnostics for a problematic rule:**
+```json
+{"tool": "get_rule_diagnostics", "arguments": {"ruleId": "123"}}
+```
+
+**Set log level to debug for detailed troubleshooting:**
+```json
+{"tool": "set_log_level", "arguments": {"level": "debug"}}
+```
+
+### What Gets Logged
+
+- Rule creation with verification of stored triggers/actions
+- Rule execution events
+- Errors with context information
+- Timing data for performance analysis
+- State persistence verification
+
+The logging system stores up to 100 entries in a circular buffer (oldest entries are removed when limit is reached).
 
 ## Troubleshooting
 

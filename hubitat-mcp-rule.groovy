@@ -35,9 +35,12 @@ def installed() {
     state.createdAt = now()
     state.updatedAt = now()
     state.executionCount = 0
-    state.triggers = []
-    state.conditions = []
-    state.actions = []
+    // IMPORTANT: Only initialize arrays if they don't exist yet
+    // This prevents overwriting data that may have been set by updateRuleFromParent
+    // during rule creation via MCP (race condition fix)
+    if (state.triggers == null) state.triggers = []
+    if (state.conditions == null) state.conditions = []
+    if (state.actions == null) state.actions = []
     // Set the app label to match the rule name (for display in Apps list)
     if (settings.ruleName) {
         app.updateLabel(settings.ruleName)
@@ -2939,7 +2942,18 @@ def getRuleData() {
 }
 
 def updateRuleFromParent(data) {
-    // Update name and description first (these don't trigger subscriptions)
+    // CRITICAL FIX: Set ALL state data FIRST before ANY settings updates
+    // updateSetting() can trigger updated() lifecycle method which may reload state
+    // from database. We must ensure state is fully written before that happens.
+
+    // Step 1: Store all rule data in state FIRST
+    if (data.triggers != null) state.triggers = data.triggers
+    if (data.conditions != null) state.conditions = data.conditions
+    if (data.actions != null) state.actions = data.actions
+    if (data.localVariables != null) state.localVariables = data.localVariables
+    state.updatedAt = now()
+
+    // Step 2: NOW update settings (these may trigger updated() lifecycle)
     if (data.name != null) {
         app.updateSetting("ruleName", data.name)
         // Update the app label to match (for display in Apps list)
@@ -2948,15 +2962,7 @@ def updateRuleFromParent(data) {
     if (data.description != null) app.updateSetting("ruleDescription", data.description)
     if (data.conditionLogic != null) app.updateSetting("conditionLogic", data.conditionLogic)
 
-    // CRITICAL: Store all state data BEFORE setting enabled status
-    // Setting ruleEnabled may trigger Hubitat lifecycle methods, so data must be stored first
-    if (data.triggers != null) state.triggers = data.triggers
-    if (data.conditions != null) state.conditions = data.conditions
-    if (data.actions != null) state.actions = data.actions
-    if (data.localVariables != null) state.localVariables = data.localVariables
-    state.updatedAt = now()
-
-    // Now safe to update enabled status - state data is already stored
+    // Step 3: Set enabled status last (this is most likely to trigger subscriptions)
     if (data.enabled != null) app.updateSetting("ruleEnabled", data.enabled)
 
     // Re-subscribe based on current enabled state
