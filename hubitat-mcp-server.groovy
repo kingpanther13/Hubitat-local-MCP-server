@@ -202,7 +202,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.1.21"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.3"}')
 }
 
 def handleMcpGet() {
@@ -275,7 +275,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.2"
+            version: "0.2.3"
         ]
     ])
 }
