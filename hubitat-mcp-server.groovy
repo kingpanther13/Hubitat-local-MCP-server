@@ -274,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.23"
+            version: "0.2.0"
         ]
     ])
 }
@@ -581,6 +581,62 @@ Always verify rule created correctly after.""",
             name: "clear_captured_states",
             description: "Clear all captured device states. Use with caution.",
             inputSchema: [type: "object", properties: [:]]
+        ],
+
+        // Debug Logging Tools
+        [
+            name: "get_debug_logs",
+            description: """Retrieve debug log entries from the MCP server. These logs are stored in app state and accessible via MCP, unlike Hubitat's built-in logs which require UI access.
+
+Use this to debug rule creation issues, execution failures, and timing problems. Logs include timestamps, severity levels, component info, and optional stack traces for errors.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    limit: [type: "integer", description: "Max entries to return (default: 50, max: 200)"],
+                    level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "Filter by log level (default: all)"],
+                    component: [type: "string", description: "Filter by component (e.g., 'server', 'rule')"],
+                    ruleId: [type: "string", description: "Filter by specific rule ID"]
+                ]
+            ]
+        ],
+        [
+            name: "clear_debug_logs",
+            description: "Clear all stored debug log entries. Cannot be undone.",
+            inputSchema: [type: "object", properties: [:]]
+        ],
+        [
+            name: "get_rule_diagnostics",
+            description: """Get comprehensive diagnostic information about a specific rule including:
+- Rule metadata and configuration
+- Execution history and last trigger time
+- Full trigger/condition/action structure
+- Recent log entries for this rule
+- Error history with stack traces
+
+Use this when a rule isn't working as expected to understand its state and recent activity.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "string", description: "Rule ID to diagnose"]
+                ],
+                required: ["ruleId"]
+            ]
+        ],
+        [
+            name: "set_log_level",
+            description: "Set the minimum log level threshold. Logs below this level won't be stored. Levels in order: debug < info < warn < error",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
+                ],
+                required: ["level"]
+            ]
+        ],
+        [
+            name: "get_logging_status",
+            description: "Get status of the debug logging system including current log level, entry counts by severity, and capacity information.",
+            inputSchema: [type: "object", properties: [:]]
         ]
     ]
 }
@@ -618,6 +674,13 @@ def executeTool(toolName, args) {
         case "list_captured_states": return toolListCapturedStates()
         case "delete_captured_state": return toolDeleteCapturedState(args.stateId)
         case "clear_captured_states": return toolClearCapturedStates()
+
+        // Debug Logging Tools
+        case "get_debug_logs": return toolGetDebugLogs(args)
+        case "clear_debug_logs": return toolClearDebugLogs(args)
+        case "get_rule_diagnostics": return toolGetRuleDiagnostics(args)
+        case "set_log_level": return toolSetLogLevel(args)
+        case "get_logging_status": return toolGetLoggingStatus(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -860,6 +923,11 @@ def toolGetRule(ruleId) {
 }
 
 def toolCreateRule(args) {
+    def startTime = now()
+    mcpLog("info", "server", "Creating rule: '${args.name}' (enabled=${args.enabled != false})", null, [
+        details: [triggerCount: args.triggers?.size(), actionCount: args.actions?.size()]
+    ])
+
     // Validate required fields
     if (!args.name?.trim()) {
         throw new IllegalArgumentException("Rule name is required")
@@ -887,7 +955,10 @@ def toolCreateRule(args) {
     }
 
     // Create child app
+    mcpLog("debug", "server", "Creating child app for rule '${args.name}'")
     def childApp = addChildApp("mcp", "MCP Rule", args.name.trim())
+    def ruleId = childApp.id.toString()
+    mcpLog("debug", "server", "Child app created with ID: ${ruleId}", ruleId)
 
     // Configure the child app - set name and description first, but NOT enabled
     // The enabled status must be set AFTER rule data is stored to avoid Hubitat
@@ -897,6 +968,7 @@ def toolCreateRule(args) {
 
     // Set rule data via the child's API - include enabled status here so it's set
     // AFTER triggers/conditions/actions are stored in state
+    mcpLog("debug", "server", "Calling updateRuleFromParent with ${args.triggers?.size()} triggers, ${args.actions?.size()} actions", ruleId)
     childApp.updateRuleFromParent([
         triggers: args.triggers,
         conditions: args.conditions ?: [],
@@ -906,10 +978,40 @@ def toolCreateRule(args) {
         enabled: args.enabled != false  // Set enabled AFTER data is stored
     ])
 
+    // Verify data was stored correctly
+    def verifyData = childApp.getRuleData()
+    def storedTriggers = verifyData.triggers?.size() ?: 0
+    def storedActions = verifyData.actions?.size() ?: 0
+    def duration = now() - startTime
+
+    if (storedTriggers == 0 && args.triggers?.size() > 0) {
+        mcpLog("error", "server", "CRITICAL: Triggers not persisted! Expected ${args.triggers.size()}, got ${storedTriggers}", ruleId)
+    }
+    if (storedActions == 0 && args.actions?.size() > 0) {
+        mcpLog("error", "server", "CRITICAL: Actions not persisted! Expected ${args.actions.size()}, got ${storedActions}", ruleId)
+    }
+
+    mcpLog("info", "server", "Rule created: '${args.name}' (ID: ${ruleId}) - stored ${storedTriggers} triggers, ${storedActions} actions", ruleId, [
+        duration: duration,
+        ruleName: args.name,
+        details: [
+            requestedTriggers: args.triggers?.size(),
+            storedTriggers: storedTriggers,
+            requestedActions: args.actions?.size(),
+            storedActions: storedActions,
+            enabled: args.enabled != false
+        ]
+    ])
+
     return [
         success: true,
-        ruleId: childApp.id.toString(),
-        message: "Rule '${args.name}' created successfully"
+        ruleId: ruleId,
+        message: "Rule '${args.name}' created successfully",
+        diagnostics: [
+            storedTriggers: storedTriggers,
+            storedActions: storedActions,
+            durationMs: duration
+        ]
     ]
 }
 
@@ -1623,5 +1725,248 @@ def jsonRpcError(id, code, message, data = null) {
 def logDebug(msg) {
     if (settings.debugLogging) {
         log.debug msg
+    }
+}
+
+// ==================== MCP DEBUG LOGGING SYSTEM ====================
+
+/**
+ * Initialize the debug logging state structure
+ */
+def initDebugLogs() {
+    if (!state.debugLogs) {
+        state.debugLogs = [
+            entries: [],
+            config: [logLevel: "info", maxEntries: 100]
+        ]
+    }
+    if (!state.debugLogs.entries) state.debugLogs.entries = []
+    if (!state.debugLogs.config) state.debugLogs.config = [logLevel: "info", maxEntries: 100]
+}
+
+/**
+ * Get available log levels in priority order
+ */
+def getLogLevels() {
+    return ["debug", "info", "warn", "error"]
+}
+
+/**
+ * Get configured log level threshold
+ */
+def getConfiguredLogLevel() {
+    return state.debugLogs?.config?.logLevel ?: "info"
+}
+
+/**
+ * Check if a log level should be recorded based on threshold
+ */
+def shouldLog(level) {
+    def levels = getLogLevels()
+    def currentIndex = levels.indexOf(getConfiguredLogLevel())
+    def logIndex = levels.indexOf(level)
+    return logIndex >= currentIndex
+}
+
+/**
+ * Add a log entry to the MCP-accessible debug buffer
+ */
+def mcpLog(String level, String component, String message, String ruleId = null, Map extraData = null) {
+    if (!shouldLog(level)) return
+
+    initDebugLogs()
+
+    def entry = [
+        timestamp: now(),
+        level: level,
+        component: component,
+        message: message
+    ]
+
+    if (ruleId) entry.ruleId = ruleId
+    if (extraData?.duration) entry.duration = extraData.duration
+    if (extraData?.ruleName) entry.ruleName = extraData.ruleName
+    if (extraData?.details) entry.details = extraData.details
+    if (extraData?.stackTrace) entry.stackTrace = extraData.stackTrace
+
+    state.debugLogs.entries << entry
+
+    // Enforce max entries limit (circular buffer)
+    def maxEntries = state.debugLogs.config?.maxEntries ?: 100
+    while (state.debugLogs.entries.size() > maxEntries) {
+        state.debugLogs.entries.remove(0)
+    }
+
+    // Also log to Hubitat logs
+    switch (level) {
+        case "debug": log.debug "[${component}] ${message}"; break
+        case "info": log.info "[${component}] ${message}"; break
+        case "warn": log.warn "[${component}] ${message}"; break
+        case "error": log.error "[${component}] ${message}"; break
+    }
+}
+
+/**
+ * Log an error with optional exception details
+ */
+def mcpLogError(String component, String message, Exception e = null, String ruleId = null) {
+    def extraData = [:]
+    if (e) {
+        extraData.stackTrace = "${e.class.name}: ${e.message}"
+    }
+    mcpLog("error", component, message, ruleId, extraData)
+}
+
+// ==================== DEBUG TOOL IMPLEMENTATIONS ====================
+
+def toolGetDebugLogs(args) {
+    initDebugLogs()
+
+    def limit = Math.min((args.limit as Integer) ?: 50, 200)
+    def level = args.level ?: "all"
+    def component = args.component
+    def ruleId = args.ruleId
+
+    def logs = state.debugLogs.entries ?: []
+
+    // Apply filters
+    if (level && level != "all") {
+        logs = logs.findAll { it.level == level }
+    }
+    if (component) {
+        logs = logs.findAll { it.component?.contains(component) }
+    }
+    if (ruleId) {
+        logs = logs.findAll { it.ruleId == ruleId }
+    }
+
+    // Get most recent entries
+    def count = Math.min(limit, logs.size())
+    logs = logs.drop(Math.max(0, logs.size() - count))
+
+    return [
+        entries: logs.collect { entry ->
+            def result = [
+                timestamp: entry.timestamp,
+                time: formatTimestamp(entry.timestamp),
+                level: entry.level,
+                component: entry.component,
+                message: entry.message
+            ]
+            if (entry.ruleId) result.ruleId = entry.ruleId
+            if (entry.ruleName) result.ruleName = entry.ruleName
+            if (entry.duration) result.durationMs = entry.duration
+            if (entry.stackTrace) result.stackTrace = entry.stackTrace
+            if (entry.details) result.details = entry.details
+            return result
+        },
+        count: logs.size(),
+        totalStored: state.debugLogs.entries?.size() ?: 0,
+        maxEntries: state.debugLogs.config?.maxEntries ?: 100,
+        currentLogLevel: getConfiguredLogLevel()
+    ]
+}
+
+def toolClearDebugLogs(args) {
+    initDebugLogs()
+    def count = state.debugLogs.entries?.size() ?: 0
+    state.debugLogs.entries = []
+    mcpLog("info", "server", "Debug logs cleared (${count} entries removed)")
+    return [success: true, clearedCount: count]
+}
+
+def toolGetRuleDiagnostics(args) {
+    def ruleId = args.ruleId
+    def childApp = getChildAppById(ruleId)
+
+    if (!childApp) {
+        throw new IllegalArgumentException("Rule not found: ${ruleId}")
+    }
+
+    def ruleData = childApp.getRuleData()
+
+    // Get recent logs for this rule
+    initDebugLogs()
+    def ruleLogs = (state.debugLogs.entries ?: []).findAll { it.ruleId == ruleId }
+    def recentLogs = ruleLogs.drop(Math.max(0, ruleLogs.size() - 10))
+    def errorLogs = ruleLogs.findAll { it.level == "error" }
+
+    return [
+        rule: [
+            id: ruleData.id,
+            name: ruleData.name,
+            description: ruleData.description,
+            enabled: ruleData.enabled,
+            createdAt: formatTimestamp(ruleData.createdAt),
+            updatedAt: formatTimestamp(ruleData.updatedAt)
+        ],
+        execution: [
+            count: ruleData.executionCount ?: 0,
+            lastTriggered: formatTimestamp(ruleData.lastTriggered)
+        ],
+        structure: [
+            triggerCount: ruleData.triggers?.size() ?: 0,
+            conditionCount: ruleData.conditions?.size() ?: 0,
+            actionCount: ruleData.actions?.size() ?: 0,
+            triggers: ruleData.triggers,
+            conditions: ruleData.conditions,
+            actions: ruleData.actions,
+            conditionLogic: ruleData.conditionLogic ?: "all"
+        ],
+        state: [
+            localVariables: ruleData.localVariables ?: [:]
+        ],
+        logs: [
+            recentCount: recentLogs.size(),
+            errorCount: errorLogs.size(),
+            recent: recentLogs.collect { [time: formatTimestamp(it.timestamp), level: it.level, message: it.message] },
+            errors: errorLogs.drop(Math.max(0, errorLogs.size() - 5)).collect { [time: formatTimestamp(it.timestamp), message: it.message, stackTrace: it.stackTrace] }
+        ]
+    ]
+}
+
+def toolSetLogLevel(args) {
+    def level = args.level
+    if (!getLogLevels().contains(level)) {
+        throw new IllegalArgumentException("Invalid log level: ${level}. Valid levels: ${getLogLevels().join(', ')}")
+    }
+
+    initDebugLogs()
+    state.debugLogs.config.logLevel = level
+    mcpLog("info", "server", "Log level changed to: ${level}")
+
+    return [
+        success: true,
+        previousLevel: getConfiguredLogLevel(),
+        newLevel: level
+    ]
+}
+
+def toolGetLoggingStatus(args) {
+    initDebugLogs()
+    def entries = state.debugLogs.entries ?: []
+
+    return [
+        currentLogLevel: getConfiguredLogLevel(),
+        availableLevels: getLogLevels(),
+        totalEntries: entries.size(),
+        maxEntries: state.debugLogs.config?.maxEntries ?: 100,
+        entriesByLevel: [
+            debug: entries.count { it.level == "debug" },
+            info: entries.count { it.level == "info" },
+            warn: entries.count { it.level == "warn" },
+            error: entries.count { it.level == "error" }
+        ],
+        oldestEntry: entries.first() ? formatTimestamp(entries.first().timestamp) : null,
+        newestEntry: entries.last() ? formatTimestamp(entries.last().timestamp) : null
+    ]
+}
+
+def formatTimestamp(timestamp) {
+    if (!timestamp) return "Never"
+    try {
+        return new Date(timestamp).format("yyyy-MM-dd HH:mm:ss")
+    } catch (Exception e) {
+        return timestamp?.toString() ?: "Unknown"
     }
 }
