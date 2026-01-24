@@ -274,7 +274,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.1.22"
+            version: "0.1.23"
         ]
     ])
 }
@@ -313,7 +313,8 @@ PERFORMANCE WARNING:
 - Use detailed=false for initial device discovery (returns only common attributes)
 - With detailed=true, use pagination: 20-30 devices per request is recommended
 - Queries with 100+ devices and detailed=true can cause temporary hub slowdown
-- For large device lists, make multiple paginated requests rather than one large request""",
+- For large device lists, make multiple paginated requests rather than one large request
+- IMPORTANT: Make MCP tool calls sequentially, not in parallel - concurrent requests may cause issues""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -888,18 +889,21 @@ def toolCreateRule(args) {
     // Create child app
     def childApp = addChildApp("mcp", "MCP Rule", args.name.trim())
 
-    // Configure the child app
+    // Configure the child app - set name and description first, but NOT enabled
+    // The enabled status must be set AFTER rule data is stored to avoid Hubitat
+    // triggering updated() before data is persisted
     childApp.updateSetting("ruleName", args.name.trim())
     childApp.updateSetting("ruleDescription", args.description ?: "")
-    childApp.updateSetting("ruleEnabled", args.enabled != false)
 
-    // Set rule data via the child's API
+    // Set rule data via the child's API - include enabled status here so it's set
+    // AFTER triggers/conditions/actions are stored in state
     childApp.updateRuleFromParent([
         triggers: args.triggers,
         conditions: args.conditions ?: [],
         conditionLogic: args.conditionLogic ?: "all",
         actions: args.actions,
-        localVariables: args.localVariables ?: [:]
+        localVariables: args.localVariables ?: [:],
+        enabled: args.enabled != false  // Set enabled AFTER data is stored
     ])
 
     return [

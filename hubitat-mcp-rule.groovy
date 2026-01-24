@@ -2258,11 +2258,19 @@ def subscribeToTriggers() {
                 if (trigger.time) {
                     schedule(trigger.time, "handleTimeEvent")
                 } else if (trigger.sunrise) {
-                    def offset = trigger.offset ?: 0
-                    schedule(location.sunrise.time + (offset * 60000), "handleTimeEvent")
+                    if (location.sunrise) {
+                        def offset = trigger.offset ?: 0
+                        schedule(location.sunrise.time + (offset * 60000), "handleTimeEvent")
+                    } else {
+                        log.warn "Cannot schedule sunrise trigger: sunrise time not available for this location"
+                    }
                 } else if (trigger.sunset) {
-                    def offset = trigger.offset ?: 0
-                    schedule(location.sunset.time + (offset * 60000), "handleTimeEvent")
+                    if (location.sunset) {
+                        def offset = trigger.offset ?: 0
+                        schedule(location.sunset.time + (offset * 60000), "handleTimeEvent")
+                    } else {
+                        log.warn "Cannot schedule sunset trigger: sunset time not available for this location"
+                    }
                 }
                 break
 
@@ -2508,6 +2516,10 @@ def evaluateCondition(condition) {
         case "sun_position":
             def sunriseTime = location.sunrise
             def sunsetTime = location.sunset
+            if (!sunriseTime || !sunsetTime) {
+                log.warn "Cannot evaluate sun_position: sunrise/sunset times not available for this location"
+                return false
+            }
             def now = new Date()
             def isSunUp = now.after(sunriseTime) && now.before(sunsetTime)
             return condition.position == "up" ? isSunUp : !isSunUp
@@ -2636,10 +2648,14 @@ def executeAction(action, actionIndex = null) {
         case "device_command":
             def device = parent.findDevice(action.deviceId)
             if (device) {
-                if (action.parameters) {
-                    device."${action.command}"(*action.parameters)
-                } else {
-                    device."${action.command}"()
+                try {
+                    if (action.parameters) {
+                        device."${action.command}"(*action.parameters)
+                    } else {
+                        device."${action.command}"()
+                    }
+                } catch (Exception e) {
+                    log.error "Error executing command '${action.command}' on device ${device.label}: ${e.message}"
                 }
             }
             break
@@ -2923,20 +2939,27 @@ def getRuleData() {
 }
 
 def updateRuleFromParent(data) {
+    // Update name and description first (these don't trigger subscriptions)
     if (data.name != null) {
         app.updateSetting("ruleName", data.name)
         // Update the app label to match (for display in Apps list)
         app.updateLabel(data.name)
     }
     if (data.description != null) app.updateSetting("ruleDescription", data.description)
-    if (data.enabled != null) app.updateSetting("ruleEnabled", data.enabled)
+    if (data.conditionLogic != null) app.updateSetting("conditionLogic", data.conditionLogic)
+
+    // CRITICAL: Store all state data BEFORE setting enabled status
+    // Setting ruleEnabled may trigger Hubitat lifecycle methods, so data must be stored first
     if (data.triggers != null) state.triggers = data.triggers
     if (data.conditions != null) state.conditions = data.conditions
-    if (data.conditionLogic != null) app.updateSetting("conditionLogic", data.conditionLogic)
     if (data.actions != null) state.actions = data.actions
     if (data.localVariables != null) state.localVariables = data.localVariables
     state.updatedAt = now()
 
+    // Now safe to update enabled status - state data is already stored
+    if (data.enabled != null) app.updateSetting("ruleEnabled", data.enabled)
+
+    // Re-subscribe based on current enabled state
     unsubscribe()
     unschedule()
     clearDurationState()  // Clear duration state when rule is updated to prevent orphaned triggers
