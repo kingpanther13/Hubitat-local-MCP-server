@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.1.21"
+                paragraph "<b>Version:</b> 0.2.5"
             }
         }
 
@@ -90,7 +90,12 @@ def mainPage() {
 
         section("Settings") {
             input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
-            input "debugLogging", "bool", title: "Enable Debug Logging", defaultValue: false
+            input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
+                  description: "Controls MCP-accessible debug logs (default: errors only)",
+                  options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
+                  defaultValue: "error", required: false
+            input "debugLogging", "bool", title: "Enable Hubitat Console Logging", defaultValue: false,
+                  description: "Logs to Hubitat's built-in log viewer"
             input "maxCapturedStates", "number", title: "Max Captured States",
                   description: "Maximum number of unique state captures to store (default: 20)",
                   defaultValue: 20, range: "1..100", required: false
@@ -202,7 +207,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.4"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.5"}')
 }
 
 def handleMcpGet() {
@@ -275,7 +280,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.4"
+            version: "0.2.5"
         ]
     ])
 }
@@ -1738,11 +1743,11 @@ def initDebugLogs() {
     if (!state.debugLogs) {
         state.debugLogs = [
             entries: [],
-            config: [logLevel: "info", maxEntries: 100]
+            config: [logLevel: "error", maxEntries: 100]
         ]
     }
     if (!state.debugLogs.entries) state.debugLogs.entries = []
-    if (!state.debugLogs.config) state.debugLogs.config = [logLevel: "info", maxEntries: 100]
+    if (!state.debugLogs.config) state.debugLogs.config = [logLevel: "error", maxEntries: 100]
 }
 
 /**
@@ -1754,9 +1759,13 @@ def getLogLevels() {
 
 /**
  * Get configured log level threshold
+ * Checks settings first (UI), then state (MCP set_log_level), then defaults to "error"
  */
 def getConfiguredLogLevel() {
-    return state.debugLogs?.config?.logLevel ?: "info"
+    // Settings take priority (can be set via UI)
+    if (settings.mcpLogLevel) return settings.mcpLogLevel
+    // Fall back to state (can be set via MCP set_log_level tool)
+    return state.debugLogs?.config?.logLevel ?: "error"
 }
 
 /**
@@ -1932,13 +1941,17 @@ def toolSetLogLevel(args) {
         throw new IllegalArgumentException("Invalid log level: ${level}. Valid levels: ${getLogLevels().join(', ')}")
     }
 
+    def previousLevel = getConfiguredLogLevel()
+
     initDebugLogs()
     state.debugLogs.config.logLevel = level
-    mcpLog("info", "server", "Log level changed to: ${level}")
+    // Also update the setting so UI stays in sync
+    app.updateSetting("mcpLogLevel", level)
+    mcpLog("info", "server", "Log level changed from ${previousLevel} to: ${level}")
 
     return [
         success: true,
-        previousLevel: getConfiguredLogLevel(),
+        previousLevel: previousLevel,
         newLevel: level
     ]
 }
@@ -1948,7 +1961,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
-        version: "0.2.4",
+        version: "0.2.5",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
