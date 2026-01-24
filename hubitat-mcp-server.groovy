@@ -202,7 +202,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.3"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.4"}')
 }
 
 def handleMcpGet() {
@@ -275,7 +275,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.3"
+            version: "0.2.4"
         ]
     ])
 }
@@ -1948,6 +1948,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
+        version: "0.2.4",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
