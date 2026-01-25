@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.2.5"
+                paragraph "<b>Version:</b> 0.2.6"
             }
         }
 
@@ -207,7 +207,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.5"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.6"}')
 }
 
 def handleMcpGet() {
@@ -280,7 +280,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.5"
+            version: "0.2.6"
         ]
     ])
 }
@@ -643,6 +643,35 @@ Use this when a rule isn't working as expected to understand its state and recen
             name: "get_logging_status",
             description: "Get status of the debug logging system including current log level, entry counts by severity, and capacity information.",
             inputSchema: [type: "object", properties: [:]]
+        ],
+        [
+            name: "generate_bug_report",
+            description: """Generate a formatted bug report for submitting issues to the GitHub repository.
+
+This tool gathers diagnostic information and formats it into a complete bug report. Use this when:
+- Something isn't working as expected
+- You encounter an error
+- A rule or device command behaves unexpectedly
+
+The tool will:
+1. Collect system info (version, hub details, log level)
+2. Gather recent error logs
+3. Include the description of what should have happened vs what actually happened
+4. Format everything into a GitHub-ready issue report
+5. Provide a link to submit the issue
+
+After generating, provide the report to the user so they can submit it.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    title: [type: "string", description: "Brief title describing the bug (e.g., 'Rule not triggering when motion detected')"],
+                    expected: [type: "string", description: "What should have happened"],
+                    actual: [type: "string", description: "What actually happened"],
+                    stepsToReproduce: [type: "string", description: "Steps to reproduce the issue (optional)"],
+                    ruleId: [type: "string", description: "If related to a specific rule, provide the rule ID (optional)"]
+                ],
+                required: ["title", "expected", "actual"]
+            ]
         ]
     ]
 }
@@ -687,6 +716,7 @@ def executeTool(toolName, args) {
         case "get_rule_diagnostics": return toolGetRuleDiagnostics(args)
         case "set_log_level": return toolSetLogLevel(args)
         case "get_logging_status": return toolGetLoggingStatus(args)
+        case "generate_bug_report": return toolGenerateBugReport(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -1961,7 +1991,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
-        version: "0.2.5",
+        version: "0.2.6",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -1974,5 +2004,117 @@ def toolGetLoggingStatus(args) {
         ],
         oldestEntry: entries.first() ? formatTimestamp(entries.first().timestamp) : null,
         newestEntry: entries.last() ? formatTimestamp(entries.last().timestamp) : null
+    ]
+}
+
+def toolGenerateBugReport(args) {
+    def version = "0.2.6"
+    def timestamp = formatTimestamp(now())
+
+    // Gather system info
+    def hubInfo = [:]
+    try {
+        hubInfo = [
+            hubModel: location.hub?.firmwareVersionString ?: "Unknown",
+            hubId: location.hub?.id ?: "Unknown",
+            timeZone: location.timeZone?.ID ?: "Unknown",
+            zipCode: location.zipCode ?: "Not set"
+        ]
+    } catch (e) {
+        hubInfo = [error: "Could not retrieve hub info"]
+    }
+
+    // Get recent error logs
+    initDebugLogs()
+    def recentErrors = (state.debugLogs.entries ?: [])
+        .findAll { it.level == "error" || it.level == "warn" }
+        .takeRight(10)
+        .collect { entry ->
+            "[${formatTimestamp(entry.timestamp)}] ${entry.level.toUpperCase()}: ${entry.message}" +
+            (entry.ruleId ? " (Rule: ${entry.ruleId})" : "") +
+            (entry.error ? "\n  Error: ${entry.error}" : "")
+        }
+
+    // Get rule info if provided
+    def ruleInfo = null
+    if (args.ruleId) {
+        try {
+            def childApp = getChildAppById(args.ruleId)
+            if (childApp) {
+                def ruleData = childApp.getRuleData()
+                ruleInfo = [
+                    id: args.ruleId,
+                    name: ruleData.name,
+                    enabled: ruleData.enabled,
+                    triggerCount: ruleData.triggers?.size() ?: 0,
+                    conditionCount: ruleData.conditions?.size() ?: 0,
+                    actionCount: ruleData.actions?.size() ?: 0,
+                    lastTriggered: ruleData.lastTriggered ? formatTimestamp(ruleData.lastTriggered) : "Never",
+                    executionCount: ruleData.executionCount ?: 0
+                ]
+            }
+        } catch (e) {
+            ruleInfo = [error: "Could not retrieve rule info: ${e.message}"]
+        }
+    }
+
+    // Get device count
+    def deviceCount = selectedDevices?.size() ?: 0
+    def ruleCount = getChildApps()?.size() ?: 0
+
+    // Build the formatted report
+    def report = """# Bug Report: ${args.title}
+
+**Generated:** ${timestamp}
+**MCP Server Version:** ${version}
+
+## Environment
+- **Hub Firmware:** ${hubInfo.hubModel ?: 'Unknown'}
+- **Time Zone:** ${hubInfo.timeZone ?: 'Unknown'}
+- **Devices Exposed to MCP:** ${deviceCount}
+- **Total Rules:** ${ruleCount}
+- **Current Log Level:** ${getConfiguredLogLevel()}
+
+## Bug Description
+
+### Expected Behavior
+${args.expected}
+
+### Actual Behavior
+${args.actual}
+
+${args.stepsToReproduce ? """### Steps to Reproduce
+${args.stepsToReproduce}
+""" : ""}
+${ruleInfo ? """## Related Rule Info
+- **Rule ID:** ${ruleInfo.id}
+- **Rule Name:** ${ruleInfo.name ?: 'Unknown'}
+- **Enabled:** ${ruleInfo.enabled}
+- **Triggers:** ${ruleInfo.triggerCount}
+- **Conditions:** ${ruleInfo.conditionCount}
+- **Actions:** ${ruleInfo.actionCount}
+- **Last Triggered:** ${ruleInfo.lastTriggered}
+- **Execution Count:** ${ruleInfo.executionCount}
+""" : ""}
+## Recent Error/Warning Logs
+${recentErrors.size() > 0 ? "```\n" + recentErrors.join("\n") + "\n```" : "_No recent errors logged_"}
+
+## Additional Context
+_Add any other context about the problem here._
+
+---
+**To submit this bug report:**
+1. Go to: https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/new
+2. Copy this entire report into the issue description
+3. Add any additional details or screenshots
+4. Submit the issue
+
+Thank you for helping improve the MCP Rule Server!"""
+
+    return [
+        success: true,
+        report: report,
+        submitUrl: "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/new",
+        instructions: "Copy the 'report' field content and paste it into a new GitHub issue at the submitUrl. Add any additional context or screenshots that might help diagnose the issue."
     ]
 }
