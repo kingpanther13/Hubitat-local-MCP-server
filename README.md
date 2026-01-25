@@ -2,7 +2,12 @@
 
 A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub, with a built-in custom rule engine.
 
-> **DISCLAIMER**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress and may have bugs, edge cases, or issues. Use at your own risk. Contributions and bug reports welcome!
+> **ALPHA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress and may have bugs, edge cases, or issues. Use at your own risk. Contributions and bug reports welcome!
+>
+> **Found a bug?** Please report issues at [GitHub Issues](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues). For easier bug reporting:
+> 1. Set debug log level: Settings → MCP Debug Log Level → "Debug", or ask your AI to `set_log_level` to "debug"
+> 2. Reproduce the issue
+> 3. Ask your AI to use the `generate_bug_report` tool - it will gather diagnostics and format a ready-to-submit report
 
 ## What is this?
 
