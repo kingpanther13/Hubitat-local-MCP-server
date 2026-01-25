@@ -32,7 +32,7 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (27 total)
+### MCP Tools (28 total)
 
 | Category | Tools |
 |----------|-------|
@@ -40,7 +40,7 @@ Manage your automation rules directly in the Hubitat web interface:
 | **Rules** | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule` |
 | **System** | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable` |
 | **State Capture** | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
-| **Debug/Diagnostics** | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status` |
+| **Debug/Diagnostics** | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
 
 ### Rule Engine
 
@@ -461,6 +461,25 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.2.6** - Added `generate_bug_report` tool for easy issue submission, updated README version history
+- **v0.2.5** - Added UI control for MCP debug log level (dropdown in Settings), defaults to "error" for production
+- **v0.2.4** - Added version field to `get_logging_status` for MCP version checking
+- **v0.2.3** - Version bump for HPM release
+- **v0.2.2** - **CRITICAL FIX**: Rules with `enabled=true` now persist correctly (switched to atomicState for immediate persistence)
+- **v0.2.1** - Fixed duplicate `formatTimestamp` method compilation error
+- **v0.2.0** - MCP Debug Logging System with 5 new diagnostic tools (`get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`)
+- **v0.1.23** - Critical fix for rule creation order (enabled status set after data persistence)
+- **v0.1.22** - Major bug fixes: `if_then_else`/`repeat` action returns, `device_was` validation, type coercion, button 0 support
+- **v0.1.21** - Fixed negative index vulnerabilities, hue value coercion, previousMode capture, null safety improvements
+- **v0.1.20** - Added `handlePeriodicEvent()` handler, fixed `cancel_delayed`, added 7 missing condition types to UI
+- **v0.1.19** - Fixed `time_range` field name compatibility (accepts both `start`/`end` and `startTime`/`endTime`)
+- **v0.1.18** - Removed `expression` condition type (not allowed in Hubitat sandbox)
+- **v0.1.17** - UI/MCP parity: added 6 missing condition types and 12 missing action types to UI
+- **v0.1.16** - Fixed duration trigger re-arming, added `clearDurationState()` to lifecycle methods
+- **v0.1.15** - Fixed "required fields" validation error on rule creation
+- **v0.1.14** - Fixed child app label not updating in Hubitat Apps list
+- **v0.1.13** - Fixed Hubitat sandbox compatibility (removed private/static modifiers)
+- **v0.1.12** - Performance improvements, configurable captured states limit (1-100), new state management tools
 - **v0.1.11** - Added verification reminders to tool descriptions (verify state after commands/rules)
 - **v0.1.10** - Fixed device label returning null in send_command and get_attribute responses
 - **v0.1.9** - Fixed missing condition type validations (presence, lock, thermostat_mode, thermostat_state, illuminance, power)
