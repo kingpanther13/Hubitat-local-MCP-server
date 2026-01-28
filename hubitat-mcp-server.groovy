@@ -1735,12 +1735,12 @@ def validateAction(action) {
 
 def findDevice(deviceId) {
     if (!deviceId) return null
-    return selectedDevices?.find { it.id.toString() == deviceId.toString() }
+    return settings.selectedDevices?.find { it.id.toString() == deviceId.toString() }
 }
 
 // Expose devices to child apps
 def getSelectedDevices() {
-    return selectedDevices
+    return settings.selectedDevices
 }
 
 // Allow child apps to find devices
