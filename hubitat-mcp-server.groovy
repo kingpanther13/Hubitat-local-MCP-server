@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.2.7"
+                paragraph "<b>Version:</b> 0.2.8"
             }
         }
 
@@ -207,7 +207,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.7"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.8"}')
 }
 
 def handleMcpGet() {
@@ -280,7 +280,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.7"
+            version: "0.2.8"
         ]
     ])
 }
@@ -1991,7 +1991,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
-        version: "0.2.7",
+        version: "0.2.8",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2002,13 +2002,13 @@ def toolGetLoggingStatus(args) {
             warn: entries.count { it.level == "warn" },
             error: entries.count { it.level == "error" }
         ],
-        oldestEntry: entries.first() ? formatTimestamp(entries.first().timestamp) : null,
-        newestEntry: entries.last() ? formatTimestamp(entries.last().timestamp) : null
+        oldestEntry: entries.size() > 0 ? formatTimestamp(entries.first().timestamp) : null,
+        newestEntry: entries.size() > 0 ? formatTimestamp(entries.last().timestamp) : null
     ]
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.2.6"
+    def version = "0.2.8"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
