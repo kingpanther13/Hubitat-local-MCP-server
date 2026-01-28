@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.1.21 - Bug fixes and validation improvements from code review
+ * Version: 0.2.9 - Critical bug fixes from thorough code review
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.2.8"
+                paragraph "<b>Version:</b> 0.2.9"
             }
         }
 
@@ -133,6 +133,7 @@ def confirmDeletePage(params) {
     }
 
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
+    state.ruleToDelete = ruleId
 
     dynamicPage(name: "confirmDeletePage", title: "Delete Rule?") {
         section {
@@ -146,8 +147,6 @@ def confirmDeletePage(params) {
             href name: "cancelDelete", page: "mainPage", title: "Cancel"
         }
     }
-
-    state.ruleToDelete = ruleId
 }
 
 def appButtonHandler(btn) {
@@ -207,7 +206,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.8"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.9"}')
 }
 
 def handleMcpGet() {
@@ -280,7 +279,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.8"
+            version: "0.2.9"
         ]
     ])
 }
@@ -1834,7 +1833,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     // Enforce max entries limit (circular buffer)
     def maxEntries = state.debugLogs.config?.maxEntries ?: 100
     while (state.debugLogs.entries.size() > maxEntries) {
-        state.debugLogs.entries.remove(0)
+        state.debugLogs.entries.remove((int)0)
     }
 
     // Also log to Hubitat logs
@@ -1991,7 +1990,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
-        version: "0.2.8",
+        version: "0.2.9",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2008,7 +2007,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.2.8"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.2.9"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
