@@ -2623,8 +2623,10 @@ def evaluateComparison(current, operator, target) {
     try {
         switch (operator) {
             case "equals":
+            case "==":
                 return current?.toString() == target?.toString()
             case "not_equals":
+            case "!=":
                 return current?.toString() != target?.toString()
             case ">":
                 return current?.toBigDecimal() > target?.toBigDecimal()

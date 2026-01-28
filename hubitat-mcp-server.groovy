@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.2.9 - Critical bug fixes from thorough code review
+ * Version: 0.2.10 - Critical bug fixes from thorough code review
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.2.9"
+                paragraph "<b>Version:</b> 0.2.10"
             }
         }
 
@@ -206,7 +206,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.9"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.10"}')
 }
 
 def handleMcpGet() {
@@ -279,7 +279,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.9"
+            version: "0.2.10"
         ]
     ])
 }
@@ -989,6 +989,9 @@ def toolCreateRule(args) {
         validateAction(action)
     }
 
+    // Normalize operators (convert "==" to "equals", "!=" to "not_equals")
+    normalizeRuleOperators(args)
+
     // Create child app
     mcpLog("debug", "server", "Creating child app for rule '${args.name}'")
     def childApp = addChildApp("mcp", "MCP Rule", args.name.trim())
@@ -1070,6 +1073,9 @@ def toolUpdateRule(ruleId, args) {
     if (args.actions != null) {
         args.actions.each { validateAction(it) }
     }
+
+    // Normalize operators (convert "==" to "equals", "!=" to "not_equals")
+    normalizeRuleOperators(args)
 
     // Update via child app API
     def updateData = [:]
@@ -1427,8 +1433,46 @@ def toolClearCapturedStates() {
 // ==================== VALIDATION FUNCTIONS ====================
 
 // Valid comparison operators for triggers and conditions
+// Accepts both symbolic ("==","!=") and word ("equals","not_equals") forms
 def getValidOperators() {
-    return ["==", "!=", ">", "<", ">=", "<="]
+    return ["==", "!=", ">", "<", ">=", "<=", "equals", "not_equals"]
+}
+
+// Normalize operator to the word form used by the runtime evaluator
+// Accepts both "==" and "equals" (and "!=" / "not_equals")
+def normalizeOperator(operator) {
+    if (operator == null) return null
+    switch (operator) {
+        case "==": return "equals"
+        case "!=": return "not_equals"
+        default: return operator
+    }
+}
+
+// Normalize all operators in a rule's triggers, conditions, and actions
+// Converts symbolic operators ("==", "!=") to word form ("equals", "not_equals")
+// so they match the evaluateComparison() switch cases in the child app
+def normalizeRuleOperators(args) {
+    args.triggers?.each { trigger ->
+        if (trigger.operator) trigger.operator = normalizeOperator(trigger.operator)
+    }
+    args.conditions?.each { condition ->
+        if (condition.operator) condition.operator = normalizeOperator(condition.operator)
+    }
+    args.actions?.each { action ->
+        normalizeActionOperators(action)
+    }
+}
+
+// Recursively normalize operators in actions (handles nested if_then_else and repeat)
+def normalizeActionOperators(action) {
+    if (action.type == "if_then_else") {
+        if (action.condition?.operator) action.condition.operator = normalizeOperator(action.condition.operator)
+        action.thenActions?.each { normalizeActionOperators(it) }
+        action.elseActions?.each { normalizeActionOperators(it) }
+    } else if (action.type == "repeat") {
+        action.actions?.each { normalizeActionOperators(it) }
+    }
 }
 
 // Valid button actions
@@ -1448,7 +1492,7 @@ def isValidTimeFormat(timeStr) {
     return timeStr ==~ pattern
 }
 
-// Validate operator field
+// Validate and normalize operator field
 def validateOperator(operator, context) {
     if (operator != null && !getValidOperators().contains(operator)) {
         throw new IllegalArgumentException("${context}: Invalid operator '${operator}'. Valid operators: ${getValidOperators().join(', ')}")
@@ -1990,7 +2034,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
-        version: "0.2.9",
+        version: "0.2.10",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2007,7 +2051,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.2.9"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.2.10"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
