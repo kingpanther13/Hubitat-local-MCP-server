@@ -347,12 +347,14 @@ def renderTriggerFields() {
 def savePendingTrigger() {
     def trigger = buildTriggerFromSettings()
     if (trigger) {
-        if (!atomicState.triggers) atomicState.triggers = []
-        if (state.editingTriggerIndex != null && state.editingTriggerIndex >= 0 && state.editingTriggerIndex < atomicState.triggers.size()) {
-            atomicState.triggers[state.editingTriggerIndex] = trigger
+        def list = atomicState.triggers ?: []
+        if (state.editingTriggerIndex != null && state.editingTriggerIndex >= 0 && state.editingTriggerIndex < list.size()) {
+            list[state.editingTriggerIndex] = trigger
+            atomicState.triggers = list
             log.info "Updated trigger ${state.editingTriggerIndex + 1}"
         } else {
-            atomicState.triggers.add(trigger)
+            list.add(trigger)
+            atomicState.triggers = list
             log.info "Added new trigger"
         }
         state.updatedAt = now()
@@ -815,12 +817,14 @@ def renderConditionFields() {
 def savePendingCondition() {
     def condition = buildConditionFromSettings()
     if (condition) {
-        if (!atomicState.conditions) atomicState.conditions = []
-        if (state.editingConditionIndex != null && state.editingConditionIndex >= 0 && state.editingConditionIndex < atomicState.conditions.size()) {
-            atomicState.conditions[state.editingConditionIndex] = condition
+        def list = atomicState.conditions ?: []
+        if (state.editingConditionIndex != null && state.editingConditionIndex >= 0 && state.editingConditionIndex < list.size()) {
+            list[state.editingConditionIndex] = condition
+            atomicState.conditions = list
             log.info "Updated condition ${state.editingConditionIndex + 1}"
         } else {
-            atomicState.conditions.add(condition)
+            list.add(condition)
+            atomicState.conditions = list
             log.info "Added new condition"
         }
         state.updatedAt = now()
@@ -1462,12 +1466,14 @@ def renderIfConditionFields() {
 def savePendingAction() {
     def action = buildActionFromSettings()
     if (action) {
-        if (!atomicState.actions) atomicState.actions = []
-        if (state.editingActionIndex != null && state.editingActionIndex >= 0 && state.editingActionIndex < atomicState.actions.size()) {
-            atomicState.actions[state.editingActionIndex] = action
+        def list = atomicState.actions ?: []
+        if (state.editingActionIndex != null && state.editingActionIndex >= 0 && state.editingActionIndex < list.size()) {
+            list[state.editingActionIndex] = action
+            atomicState.actions = list
             log.info "Updated action ${state.editingActionIndex + 1}"
         } else {
-            atomicState.actions.add(action)
+            list.add(action)
+            atomicState.actions = list
             log.info "Added new action"
         }
         state.updatedAt = now()
@@ -2329,7 +2335,7 @@ def handlePeriodicEvent() {
 
     def matchingTrigger = atomicState.triggers?.find { t -> t.type == "periodic" }
     if (matchingTrigger) {
-        evaluateAndExecute()
+        executeRule("periodic")
     }
 }
 
@@ -2736,6 +2742,10 @@ def executeAction(action, actionIndex = null) {
             break
 
         case "if_then_else":
+            if (!action.condition) {
+                log.warn "if_then_else action has no condition, skipping"
+                break
+            }
             def conditionResult = evaluateCondition(action.condition)
             log.debug "if_then_else condition result: ${conditionResult}"
             if (conditionResult) {
@@ -2766,8 +2776,9 @@ def executeAction(action, actionIndex = null) {
             break
 
         case "set_local_variable":
-            if (!atomicState.localVariables) atomicState.localVariables = [:]
-            atomicState.localVariables[action.variableName] = action.value
+            def vars = atomicState.localVariables ?: [:]
+            vars[action.variableName] = action.value
+            atomicState.localVariables = vars
             break
 
         case "activate_scene":

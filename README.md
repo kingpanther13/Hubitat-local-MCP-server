@@ -37,7 +37,7 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (28 total)
+### MCP Tools (30 total)
 
 | Category | Tools |
 |----------|-------|
@@ -466,6 +466,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.2.9** - Critical bug fixes from second thorough review: infinite loop in debug log buffer cleanup, periodic triggers crashing (missing method), UI-based edits not persisting (atomicState in-place mutations), `set_local_variable` not persisting, `confirmDeletePage` return value, null check for `if_then_else` condition, stale header version, corrected tool count (30 not 28)
 - **v0.2.8** - Thorough code review fixes: `get_logging_status` crash on empty logs, `test_rule` returning hardcoded results, `List.remove()` wrong overload, try-catch for trigger subscriptions and time parsing
 - **v0.2.7** - Fixed StackOverflowError on app install/open (thanks [@ashwinma14](https://github.com/ashwinma14) - [#14](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/14), [#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
 - **v0.2.6** - Added `generate_bug_report` tool for easy issue submission, updated README version history
