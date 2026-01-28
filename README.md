@@ -466,6 +466,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.2.7** - Fixed StackOverflowError on app install/open (thanks [@ashwinma14](https://github.com/ashwinma14) - [#14](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/14), [#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
 - **v0.2.6** - Added `generate_bug_report` tool for easy issue submission, updated README version history
 - **v0.2.5** - Added UI control for MCP debug log level (dropdown in Settings), defaults to "error" for production
 - **v0.2.4** - Added version field to `get_logging_status` for MCP version checking
@@ -564,6 +565,7 @@ MIT License - see [LICENSE](LICENSE)
 - Built with assistance from [Claude](https://claude.ai) (Anthropic)
 - Inspired by the [Model Context Protocol](https://modelcontextprotocol.io/)
 - Thanks to the Hubitat community for documentation and examples
+- [@ashwinma14](https://github.com/ashwinma14) - Fix for StackOverflowError on app install ([#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
 
 ## Disclaimer
 
