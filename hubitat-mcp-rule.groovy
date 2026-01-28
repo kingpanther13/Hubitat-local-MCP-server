@@ -1976,34 +1976,44 @@ def appButtonHandler(btn) {
     if (btn == "testRuleBtn") {
         testRule()
     } else if (btn == "deleteTriggerBtn" && state.editingTriggerIndex != null) {
-        atomicState.triggers.remove(state.editingTriggerIndex)
+        def list = atomicState.triggers ?: []
+        list.remove((int) state.editingTriggerIndex)
+        atomicState.triggers = list
         state.updatedAt = now()
         clearTriggerSettings()
         state.remove("editingTriggerIndex")
     } else if (btn == "deleteConditionBtn" && state.editingConditionIndex != null) {
-        atomicState.conditions.remove(state.editingConditionIndex)
+        def list = atomicState.conditions ?: []
+        list.remove((int) state.editingConditionIndex)
+        atomicState.conditions = list
         state.updatedAt = now()
         clearConditionSettings()
         state.remove("editingConditionIndex")
     } else if (btn == "deleteActionBtn" && state.editingActionIndex != null) {
-        atomicState.actions.remove(state.editingActionIndex)
+        def list = atomicState.actions ?: []
+        list.remove((int) state.editingActionIndex)
+        atomicState.actions = list
         state.updatedAt = now()
         clearActionSettings()
         state.remove("editingActionIndex")
     } else if (btn.startsWith("moveUp_")) {
         def idx = btn.replace("moveUp_", "").toInteger()
-        if (idx > 0 && idx < atomicState.actions.size()) {
-            def temp = atomicState.actions[idx]
-            atomicState.actions[idx] = atomicState.actions[idx - 1]
-            atomicState.actions[idx - 1] = temp
+        def list = atomicState.actions ?: []
+        if (idx > 0 && idx < list.size()) {
+            def temp = list[idx]
+            list[idx] = list[idx - 1]
+            list[idx - 1] = temp
+            atomicState.actions = list
             state.updatedAt = now()
         }
     } else if (btn.startsWith("moveDown_")) {
         def idx = btn.replace("moveDown_", "").toInteger()
-        if (idx >= 0 && idx < atomicState.actions.size() - 1) {
-            def temp = atomicState.actions[idx]
-            atomicState.actions[idx] = atomicState.actions[idx + 1]
-            atomicState.actions[idx + 1] = temp
+        def list = atomicState.actions ?: []
+        if (idx >= 0 && idx < list.size() - 1) {
+            def temp = list[idx]
+            list[idx] = list[idx + 1]
+            list[idx + 1] = temp
+            atomicState.actions = list
             state.updatedAt = now()
         }
     }
@@ -2243,68 +2253,72 @@ def describeAction(action) {
 
 def subscribeToTriggers() {
     atomicState.triggers?.each { trigger ->
-        switch (trigger.type) {
-            case "device_event":
-                def device = parent.findDevice(trigger.deviceId)
-                if (device) {
-                    subscribe(device, trigger.attribute, "handleDeviceEvent")
-                }
-                break
-
-            case "button_event":
-                def device = parent.findDevice(trigger.deviceId)
-                if (device) {
-                    subscribe(device, trigger.action, "handleButtonEvent")
-                }
-                break
-
-            case "time":
-                if (trigger.time) {
-                    schedule(trigger.time, "handleTimeEvent")
-                } else if (trigger.sunrise) {
-                    if (location.sunrise) {
-                        def offset = trigger.offset ?: 0
-                        schedule(location.sunrise.time + (offset * 60000), "handleTimeEvent")
-                    } else {
-                        log.warn "Cannot schedule sunrise trigger: sunrise time not available for this location"
+        try {
+            switch (trigger.type) {
+                case "device_event":
+                    def device = parent.findDevice(trigger.deviceId)
+                    if (device) {
+                        subscribe(device, trigger.attribute, "handleDeviceEvent")
                     }
-                } else if (trigger.sunset) {
-                    if (location.sunset) {
-                        def offset = trigger.offset ?: 0
-                        schedule(location.sunset.time + (offset * 60000), "handleTimeEvent")
-                    } else {
-                        log.warn "Cannot schedule sunset trigger: sunset time not available for this location"
+                    break
+
+                case "button_event":
+                    def device = parent.findDevice(trigger.deviceId)
+                    if (device) {
+                        subscribe(device, trigger.action, "handleButtonEvent")
                     }
-                }
-                break
+                    break
 
-            case "mode_change":
-                subscribe(location, "mode", "handleModeEvent")
-                break
+                case "time":
+                    if (trigger.time) {
+                        schedule(trigger.time, "handleTimeEvent")
+                    } else if (trigger.sunrise) {
+                        if (location.sunrise) {
+                            def offset = trigger.offset ?: 0
+                            schedule(location.sunrise.time + (offset * 60000), "handleTimeEvent")
+                        } else {
+                            log.warn "Cannot schedule sunrise trigger: sunrise time not available for this location"
+                        }
+                    } else if (trigger.sunset) {
+                        if (location.sunset) {
+                            def offset = trigger.offset ?: 0
+                            schedule(location.sunset.time + (offset * 60000), "handleTimeEvent")
+                        } else {
+                            log.warn "Cannot schedule sunset trigger: sunset time not available for this location"
+                        }
+                    }
+                    break
 
-            case "hsm_change":
-                subscribe(location, "hsmStatus", "handleHsmEvent")
-                break
+                case "mode_change":
+                    subscribe(location, "mode", "handleModeEvent")
+                    break
 
-            case "periodic":
-                def interval = trigger.interval ?: 1
-                def unit = trigger.unit ?: "minutes"
-                def cronExpr
-                switch (unit) {
-                    case "minutes":
-                        cronExpr = "0 */${interval} * ? * *"
-                        break
-                    case "hours":
-                        cronExpr = "0 0 */${interval} ? * *"
-                        break
-                    case "days":
-                        cronExpr = "0 0 0 */${interval} * ?"
-                        break
-                    default:
-                        cronExpr = "0 */${interval} * ? * *"
-                }
-                schedule(cronExpr, "handlePeriodicEvent")
-                break
+                case "hsm_change":
+                    subscribe(location, "hsmStatus", "handleHsmEvent")
+                    break
+
+                case "periodic":
+                    def interval = trigger.interval ?: 1
+                    def unit = trigger.unit ?: "minutes"
+                    def cronExpr
+                    switch (unit) {
+                        case "minutes":
+                            cronExpr = "0 */${interval} * ? * *"
+                            break
+                        case "hours":
+                            cronExpr = "0 0 */${interval} ? * *"
+                            break
+                        case "days":
+                            cronExpr = "0 0 0 */${interval} * ?"
+                            break
+                        default:
+                            cronExpr = "0 */${interval} * ? * *"
+                    }
+                    schedule(cronExpr, "handlePeriodicEvent")
+                    break
+            }
+        } catch (Exception e) {
+            log.error "Failed to subscribe to trigger (type=${trigger.type}): ${e.message}"
         }
     }
 }
@@ -2511,7 +2525,12 @@ def evaluateCondition(condition) {
             // Support both 'start'/'end' (MCP format) and 'startTime'/'endTime' (UI format) for backwards compatibility
             def startTime = condition.start ?: condition.startTime
             def endTime = condition.end ?: condition.endTime
-            return timeOfDayIsBetween(toDateTime(startTime), toDateTime(endTime), new Date())
+            try {
+                return timeOfDayIsBetween(toDateTime(startTime), toDateTime(endTime), new Date())
+            } catch (Exception e) {
+                log.warn "time_range condition failed to parse times (start=${startTime}, end=${endTime}): ${e.message}"
+                return false
+            }
 
         case "days_of_week":
             def today = new Date().format("EEEE")
@@ -2907,10 +2926,11 @@ def testRule() {
     }
 
     if (results.wouldExecute) {
-        results.actions = atomicState.actions.collect { describeAction(it) }
+        results.actions = atomicState.actions?.collect { describeAction(it) } ?: []
     }
 
     log.info "Test results: ${results}"
+    return results
 }
 
 def formatTimestamp(timestamp) {
@@ -2999,12 +3019,13 @@ def disableRule() {
 }
 
 def testRuleFromParent() {
-    testRule()
+    def results = testRule()
     return [
         ruleId: app.id.toString(),
         ruleName: settings.ruleName,
-        conditionsMet: true,
-        wouldExecute: true,
-        actions: atomicState.actions?.collect { describeAction(it) } ?: []
+        conditionsMet: results.conditionsMet,
+        wouldExecute: results.wouldExecute,
+        conditionResults: results.conditionResults,
+        actions: results.actions ?: []
     ]
 }

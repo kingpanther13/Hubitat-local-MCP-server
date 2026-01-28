@@ -466,6 +466,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.2.8** - Thorough code review fixes: `get_logging_status` crash on empty logs, `test_rule` returning hardcoded results, `List.remove()` wrong overload, try-catch for trigger subscriptions and time parsing
 - **v0.2.7** - Fixed StackOverflowError on app install/open (thanks [@ashwinma14](https://github.com/ashwinma14) - [#14](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/14), [#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
 - **v0.2.6** - Added `generate_bug_report` tool for easy issue submission, updated README version history
 - **v0.2.5** - Added UI control for MCP debug log level (dropdown in Settings), defaults to "error" for production
