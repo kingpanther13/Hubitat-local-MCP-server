@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.2.11 - Third code review: validation, type safety, integration, and logic fixes
+ * Version: 0.3.0 - Added rule export, import, and clone functionality
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.2.11"
+                paragraph "<b>Version:</b> 0.3.0"
             }
         }
 
@@ -206,7 +206,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.11"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.12"}')
 }
 
 def handleMcpGet() {
@@ -225,7 +225,8 @@ def handleMcpRequest() {
         response = processJsonRpcMessage(requestBody)
     }
 
-    if (response == null) {
+    // Per JSON-RPC 2.0 spec: if no response objects (all notifications), return nothing
+    if (response == null || (response instanceof List && response.isEmpty())) {
         return render(status: 202, contentType: "application/json", data: "")
     }
 
@@ -279,7 +280,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.11"
+            version: "0.2.12"
         ]
     ])
 }
@@ -420,7 +421,7 @@ PERFORMANCE NOTE: Returns summary information for all rules. For hubs with many 
 
 TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), mode_change, hsm_change
 CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
-ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log
+ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log, set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation only)
 
 Always verify rule created correctly after.""",
             inputSchema: [
@@ -671,6 +672,46 @@ After generating, provide the report to the user so they can submit it.""",
                 ],
                 required: ["title", "expected", "actual"]
             ]
+        ],
+        // Rule Export/Import/Clone Tools
+        [
+            name: "export_rule",
+            description: "Export a rule to JSON for backup or sharing. Returns full rule data plus a device manifest listing all referenced devices.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "string", description: "Rule ID to export"]
+                ],
+                required: ["ruleId"]
+            ]
+        ],
+        [
+            name: "import_rule",
+            description: """Import a rule from exported JSON data. Provide the full export object from export_rule.
+
+Optionally provide a deviceMapping to remap old device IDs to new ones (useful when importing to a different hub).
+The deviceMapping is an object where keys are old device IDs and values are new device IDs, e.g. {"123": "456", "789": "101"}.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    exportData: [type: "object", description: "The full export JSON object from export_rule"],
+                    name: [type: "string", description: "Override the rule name (optional)"],
+                    deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
+                ],
+                required: ["exportData"]
+            ]
+        ],
+        [
+            name: "clone_rule",
+            description: "Clone an existing rule. The cloned rule starts disabled to allow review before activation.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "string", description: "Rule ID to clone"],
+                    name: [type: "string", description: "Name for the clone (defaults to 'Copy of <original>')"]
+                ],
+                required: ["ruleId"]
+            ]
         ]
     ]
 }
@@ -717,6 +758,11 @@ def executeTool(toolName, args) {
         case "get_logging_status": return toolGetLoggingStatus(args)
         case "generate_bug_report": return toolGenerateBugReport(args)
 
+        // Rule Export/Import/Clone
+        case "export_rule": return toolExportRule(args)
+        case "import_rule": return toolImportRule(args)
+        case "clone_rule": return toolCloneRule(args)
+
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
     }
@@ -734,6 +780,7 @@ def toolListDevices(detailed, offset, limit) {
 
     // Apply pagination
     def startIndex = offset ?: 0
+    if (startIndex < 0) startIndex = 0
     def endIndex = totalCount
     if (limit && limit > 0) {
         endIndex = Math.min(startIndex + limit, totalCount)
@@ -881,6 +928,7 @@ def toolSendCommand(deviceId, command, parameters) {
 }
 
 def toolGetDeviceEvents(deviceId, limit) {
+    if (limit == null || limit < 1) limit = 10
     def device = findDevice(deviceId)
     if (!device) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -1081,8 +1129,15 @@ def toolUpdateRule(ruleId, args) {
 
     // Update via child app API
     def updateData = [:]
-    if (args.name != null) updateData.name = args.name.trim()
-    if (args.description != null) updateData.description = args.description
+    if (args.name != null) {
+        updateData.name = args.name.trim()
+        childApp.updateSetting("ruleName", args.name.trim())
+        childApp.updateLabel(args.name.trim())
+    }
+    if (args.description != null) {
+        updateData.description = args.description
+        childApp.updateSetting("ruleDescription", args.description)
+    }
     if (args.enabled != null) updateData.enabled = args.enabled
     if (args.triggers != null) updateData.triggers = args.triggers
     if (args.conditions != null) updateData.conditions = args.conditions
@@ -1152,6 +1207,263 @@ def toolTestRule(ruleId) {
     }
 
     return childApp.testRuleFromParent()
+}
+
+// ==================== RULE EXPORT/IMPORT/CLONE TOOLS ====================
+
+def toolExportRule(args) {
+    if (!args.ruleId) {
+        throw new IllegalArgumentException("ruleId is required")
+    }
+
+    def childApp = getChildAppById(args.ruleId)
+    if (!childApp) {
+        throw new IllegalArgumentException("Rule not found: ${args.ruleId}")
+    }
+
+    def ruleData = childApp.getRuleData()
+    if (!ruleData) {
+        throw new IllegalArgumentException("Unable to read rule data for rule: ${args.ruleId}")
+    }
+
+    // Build the portable rule object (exclude runtime state like id, lastTriggered, executionCount)
+    def ruleExport = [
+        name: ruleData.name,
+        description: ruleData.description ?: "",
+        enabled: ruleData.enabled,
+        conditionLogic: ruleData.conditionLogic ?: "all",
+        triggers: ruleData.triggers ?: [],
+        conditions: ruleData.conditions ?: [],
+        actions: ruleData.actions ?: [],
+        localVariables: ruleData.localVariables ?: [:]
+    ]
+
+    // Build device manifest by scanning all rule components
+    def deviceManifest = buildDeviceManifest(ruleData)
+
+    def exportData = [
+        exportVersion: "1.0",
+        exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+        serverVersion: "0.3.0",
+        rule: ruleExport,
+        deviceManifest: deviceManifest
+    ]
+
+    mcpLog("info", "server", "Exported rule '${ruleData.name}' (ID: ${args.ruleId}) with ${deviceManifest.size()} device references", args.ruleId)
+
+    return exportData
+}
+
+def toolImportRule(args) {
+    if (!args.exportData) {
+        throw new IllegalArgumentException("exportData is required")
+    }
+
+    def exportData = args.exportData
+
+    // Validate export data structure
+    if (!exportData.rule) {
+        throw new IllegalArgumentException("Invalid export data: missing 'rule' object")
+    }
+
+    def ruleSource = exportData.rule
+
+    if (!ruleSource.triggers || ruleSource.triggers.size() == 0) {
+        throw new IllegalArgumentException("Invalid export data: rule must have at least one trigger")
+    }
+    if (!ruleSource.actions || ruleSource.actions.size() == 0) {
+        throw new IllegalArgumentException("Invalid export data: rule must have at least one action")
+    }
+
+    // Apply device mapping if provided
+    def deviceMapping = args.deviceMapping
+    def mappedTriggers = ruleSource.triggers
+    def mappedConditions = ruleSource.conditions ?: []
+    def mappedActions = ruleSource.actions
+
+    if (deviceMapping && deviceMapping.size() > 0) {
+        mappedTriggers = applyDeviceMapping(ruleSource.triggers, deviceMapping)
+        mappedConditions = applyDeviceMapping(ruleSource.conditions ?: [], deviceMapping)
+        mappedActions = applyDeviceMapping(ruleSource.actions, deviceMapping)
+    }
+
+    // Determine rule name
+    def ruleName = args.name?.trim() ?: ruleSource.name?.trim()
+    if (!ruleName) {
+        throw new IllegalArgumentException("Rule name is required (either in exportData or as 'name' parameter)")
+    }
+
+    // Use existing toolCreateRule to create the rule
+    def createArgs = [
+        name: ruleName,
+        description: ruleSource.description ?: "",
+        enabled: ruleSource.enabled != false,
+        triggers: mappedTriggers,
+        conditions: mappedConditions,
+        conditionLogic: ruleSource.conditionLogic ?: "all",
+        actions: mappedActions,
+        localVariables: ruleSource.localVariables ?: [:]
+    ]
+
+    def result = toolCreateRule(createArgs)
+
+    // Add import-specific metadata to result
+    result.imported = true
+    result.sourceExportVersion = exportData.exportVersion
+    if (deviceMapping && deviceMapping.size() > 0) {
+        result.devicesMapped = deviceMapping.size()
+    }
+
+    mcpLog("info", "server", "Imported rule '${ruleName}' (new ID: ${result.ruleId})" +
+        (deviceMapping ? " with ${deviceMapping.size()} device mappings" : ""), result.ruleId)
+
+    return result
+}
+
+def toolCloneRule(args) {
+    if (!args.ruleId) {
+        throw new IllegalArgumentException("ruleId is required")
+    }
+
+    // Export the source rule internally
+    def exportData = toolExportRule([ruleId: args.ruleId])
+
+    // Determine clone name
+    def originalName = exportData.rule.name ?: "Unnamed Rule"
+    def cloneName = args.name?.trim() ?: "Copy of ${originalName}"
+
+    // Force the clone to start disabled for safety
+    exportData.rule.enabled = false
+
+    // Import as a new rule
+    def result = toolImportRule([
+        exportData: exportData,
+        name: cloneName
+    ])
+
+    // Add clone-specific metadata
+    result.clonedFrom = args.ruleId
+    result.message = "Rule '${originalName}' cloned as '${cloneName}' (disabled)"
+
+    mcpLog("info", "server", "Cloned rule '${originalName}' (ID: ${args.ruleId}) as '${cloneName}' (new ID: ${result.ruleId})", result.ruleId)
+
+    return result
+}
+
+// ==================== EXPORT/IMPORT HELPERS ====================
+
+/**
+ * Scan rule data for all device ID references and build a manifest.
+ * Looks in triggers, conditions, and actions (including nested if_then_else).
+ */
+def buildDeviceManifest(ruleData) {
+    // Map of deviceId -> set of sections where it's used
+    def deviceUsage = [:]  // deviceId -> [sections]
+
+    // Scan triggers
+    ruleData.triggers?.each { trigger ->
+        collectDeviceIds(trigger, "triggers", deviceUsage)
+    }
+
+    // Scan conditions
+    ruleData.conditions?.each { condition ->
+        collectDeviceIds(condition, "conditions", deviceUsage)
+    }
+
+    // Scan actions
+    ruleData.actions?.each { action ->
+        collectDeviceIds(action, "actions", deviceUsage)
+    }
+
+    // Build manifest entries with device info
+    def manifest = []
+    deviceUsage.each { deviceId, sections ->
+        def entry = [
+            deviceId: deviceId.toString(),
+            usedIn: sections.toList().sort()
+        ]
+
+        // Try to look up device details from selected devices
+        def device = findDevice(deviceId)
+        if (device) {
+            entry.label = device.label ?: device.name ?: "Device ${deviceId}"
+            entry.capabilities = device.capabilities?.collect { it.name } ?: []
+        } else {
+            entry.label = "Unknown device (not in selected devices)"
+            entry.capabilities = []
+        }
+
+        manifest << entry
+    }
+
+    return manifest
+}
+
+/**
+ * Recursively collect device IDs from a rule component (trigger, condition, or action).
+ */
+private void collectDeviceIds(component, String section, Map deviceUsage) {
+    if (!component) return
+
+    // Check for deviceId field
+    if (component.deviceId) {
+        def id = component.deviceId.toString()
+        if (!deviceUsage.containsKey(id)) {
+            deviceUsage[id] = new LinkedHashSet()
+        }
+        deviceUsage[id] << section
+    }
+
+    // Check nested structures in if_then_else actions
+    if (component.type == "if_then_else") {
+        // Scan conditions inside if_then_else
+        component.conditions?.each { cond ->
+            collectDeviceIds(cond, section, deviceUsage)
+        }
+        // Scan then actions
+        component.thenActions?.each { action ->
+            collectDeviceIds(action, section, deviceUsage)
+        }
+        // Scan else actions
+        component.elseActions?.each { action ->
+            collectDeviceIds(action, section, deviceUsage)
+        }
+    }
+
+    // Check nested actions in repeat blocks
+    if (component.type == "repeat") {
+        component.actions?.each { action ->
+            collectDeviceIds(action, section, deviceUsage)
+        }
+    }
+}
+
+/**
+ * Recursively apply device ID mapping to rule data structures.
+ * Returns a deep copy with mapped device IDs.
+ */
+def applyDeviceMapping(data, Map mapping) {
+    if (data == null) return null
+
+    if (data instanceof List) {
+        return data.collect { item -> applyDeviceMapping(item, mapping) }
+    }
+
+    if (data instanceof Map) {
+        def result = [:]
+        data.each { key, value ->
+            if (key == "deviceId" && value != null) {
+                def mappedId = mapping[value.toString()]
+                result[key] = mappedId != null ? mappedId.toString() : value
+            } else {
+                result[key] = applyDeviceMapping(value, mapping)
+            }
+        }
+        return result
+    }
+
+    // Primitive value - return as-is
+    return data
 }
 
 // ==================== SYSTEM TOOLS ====================
@@ -1564,25 +1876,26 @@ def validateTrigger(trigger) {
             }
             break
         case "periodic":
-            if (trigger.interval != null) {
-                def interval = trigger.interval as Integer
-                def unit = trigger.unit ?: "minutes"
-                if (interval < 1) {
-                    throw new IllegalArgumentException("periodic trigger interval must be at least 1")
-                }
-                switch (unit) {
-                    case "minutes":
-                        if (interval > 59) throw new IllegalArgumentException("periodic trigger interval for minutes must be 1-59 (got ${interval}). Use hours for larger intervals.")
-                        break
-                    case "hours":
-                        if (interval > 23) throw new IllegalArgumentException("periodic trigger interval for hours must be 1-23 (got ${interval}). Use days for larger intervals.")
-                        break
-                    case "days":
-                        if (interval > 31) throw new IllegalArgumentException("periodic trigger interval for days must be 1-31 (got ${interval})")
-                        break
-                    default:
-                        throw new IllegalArgumentException("periodic trigger unit must be minutes, hours, or days (got ${unit})")
-                }
+            if (trigger.interval == null) {
+                throw new IllegalArgumentException("periodic trigger requires interval")
+            }
+            def periodicInterval = trigger.interval as Integer
+            def periodicUnit = trigger.unit ?: "minutes"
+            if (periodicInterval < 1) {
+                throw new IllegalArgumentException("periodic trigger interval must be at least 1")
+            }
+            switch (periodicUnit) {
+                case "minutes":
+                    if (periodicInterval > 59) throw new IllegalArgumentException("periodic trigger interval for minutes must be 1-59 (got ${periodicInterval}). Use hours for larger intervals.")
+                    break
+                case "hours":
+                    if (periodicInterval > 23) throw new IllegalArgumentException("periodic trigger interval for hours must be 1-23 (got ${periodicInterval}). Use days for larger intervals.")
+                    break
+                case "days":
+                    if (periodicInterval > 31) throw new IllegalArgumentException("periodic trigger interval for days must be 1-31 (got ${periodicInterval})")
+                    break
+                default:
+                    throw new IllegalArgumentException("periodic trigger unit must be minutes, hours, or days (got ${periodicUnit})")
             }
             break
         case "mode_change":
@@ -1621,10 +1934,14 @@ def validateCondition(condition) {
             // Accept both new (start/end) and old (startTime/endTime) field names for compatibility
             def startVal = condition.start ?: condition.startTime
             def endVal = condition.end ?: condition.endTime
-            if (!startVal && !condition.startSunrise && !condition.startSunset) {
+            // Sunrise/sunset boundaries are not implemented in the rule engine — reject them
+            if (condition.startSunrise || condition.startSunset || condition.endSunrise || condition.endSunset) {
+                throw new IllegalArgumentException("time_range condition does not support sunrise/sunset boundaries. Use fixed HH:mm times for start and end.")
+            }
+            if (!startVal) {
                 throw new IllegalArgumentException("time_range condition requires start time")
             }
-            if (!endVal && !condition.endSunrise && !condition.endSunset) {
+            if (!endVal) {
                 throw new IllegalArgumentException("time_range condition requires end time")
             }
             // Validate time format for start/end if specified (not sunrise/sunset)
@@ -1778,7 +2095,7 @@ def validateAction(action) {
             break
         case "set_color_temperature":
             if (!action.deviceId) throw new IllegalArgumentException("set_color_temperature action requires deviceId")
-            if (!action.temperature) throw new IllegalArgumentException("set_color_temperature action requires temperature")
+            if (action.temperature == null) throw new IllegalArgumentException("set_color_temperature action requires temperature")
             break
         case "lock":
         case "unlock":
@@ -1792,6 +2109,30 @@ def validateAction(action) {
         case "send_notification":
             if (!action.deviceId) throw new IllegalArgumentException("send_notification action requires deviceId")
             if (!action.message) throw new IllegalArgumentException("send_notification action requires message")
+            break
+        case "set_thermostat":
+            if (!action.deviceId) throw new IllegalArgumentException("set_thermostat action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
+            if (action.thermostatMode && !["heat", "cool", "auto", "off", "emergency heat"].contains(action.thermostatMode)) {
+                throw new IllegalArgumentException("set_thermostat: invalid thermostatMode '${action.thermostatMode}'")
+            }
+            if (action.fanMode && !["auto", "on", "circulate"].contains(action.fanMode)) {
+                throw new IllegalArgumentException("set_thermostat: invalid fanMode '${action.fanMode}'")
+            }
+            break
+        case "http_request":
+            if (!action.url) throw new IllegalArgumentException("http_request action requires url")
+            if (action.method && !["GET", "POST"].contains(action.method)) {
+                throw new IllegalArgumentException("http_request: method must be GET or POST")
+            }
+            break
+        case "speak":
+            if (!action.deviceId) throw new IllegalArgumentException("speak action requires deviceId")
+            if (!action.message) throw new IllegalArgumentException("speak action requires message")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
+            break
+        case "comment":
+            if (!action.text) throw new IllegalArgumentException("comment action requires text")
             break
         default:
             throw new IllegalArgumentException("Unknown action type: ${action.type}")
@@ -2056,7 +2397,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
-        version: "0.2.11",
+        version: "0.2.12",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2073,7 +2414,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.2.11"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.2.12"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info

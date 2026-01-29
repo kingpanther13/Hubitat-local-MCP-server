@@ -98,10 +98,6 @@ def clearDurationState() {
 // ==================== MAIN PAGE ====================
 
 def mainPage() {
-    // Clear any orphaned settings from sub-pages to prevent "required fields" validation errors
-    // This ensures that partially-filled trigger/condition/action forms don't block saving
-    clearAllSubPageSettings()
-
     dynamicPage(name: "mainPage", title: "Configure Rule", install: true, uninstall: true) {
         section("Rule Settings") {
             input "ruleName", "text", title: "Rule Name", required: true, submitOnChange: true
@@ -190,8 +186,11 @@ def editTriggersPage() {
 }
 
 def addTriggerPage() {
-    state.editingTriggerIndex = null
-    clearTriggerSettings()
+    // Only clear settings on fresh entry, not on submitOnChange re-renders
+    if (!settings.triggerType) {
+        state.editingTriggerIndex = null
+        clearTriggerSettings()
+    }
 
     dynamicPage(name: "addTriggerPage", title: "Add Trigger") {
         section("Trigger Type") {
@@ -204,7 +203,7 @@ def addTriggerPage() {
                       "mode_change": "Mode Change",
                       "hsm_change": "HSM Status Change"
                   ],
-                  required: true, submitOnChange: true
+                  required: false, submitOnChange: true
         }
 
         renderTriggerFields()
@@ -253,7 +252,7 @@ def editTriggerPage(params) {
                       "mode_change": "Mode Change",
                       "hsm_change": "HSM Status Change"
                   ],
-                  required: true, submitOnChange: true
+                  required: false, submitOnChange: true
         }
 
         renderTriggerFields()
@@ -273,10 +272,10 @@ def renderTriggerFields() {
     switch (settings.triggerType) {
         case "device_event":
             section("Device Event Settings") {
-                input "triggerDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                input "triggerDevice", "capability.*", title: "Device", required: false, submitOnChange: true
                 if (settings.triggerDevice) {
                     def attrs = settings.triggerDevice.supportedAttributes?.collect { it.name }?.unique()?.sort()
-                    input "triggerAttribute", "enum", title: "Attribute", options: attrs, required: true
+                    input "triggerAttribute", "enum", title: "Attribute", options: attrs, required: false
                 }
                 input "triggerOperator", "enum", title: "Comparison (optional)",
                       options: ["any": "Any Change", "equals": "Equals", "not_equals": "Not Equals",
@@ -294,12 +293,12 @@ def renderTriggerFields() {
 
         case "button_event":
             section("Button Event Settings") {
-                input "triggerDevice", "capability.pushableButton", title: "Button Device", required: true
+                input "triggerDevice", "capability.pushableButton", title: "Button Device", required: false
                 input "triggerButtonNumber", "number", title: "Button Number (leave empty for any)",
                       required: false, range: "1..20"
                 input "triggerButtonAction", "enum", title: "Button Action",
                       options: ["pushed": "Pushed", "held": "Held", "doubleTapped": "Double Tapped", "released": "Released"],
-                      required: true, defaultValue: "pushed"
+                      required: false, defaultValue: "pushed"
             }
             break
 
@@ -307,9 +306,9 @@ def renderTriggerFields() {
             section("Time Settings") {
                 input "triggerTimeType", "enum", title: "Time Type",
                       options: ["specific": "Specific Time", "sunrise": "Sunrise", "sunset": "Sunset"],
-                      required: true, submitOnChange: true, defaultValue: "specific"
+                      required: false, submitOnChange: true, defaultValue: "specific"
                 if (settings.triggerTimeType == "specific") {
-                    input "triggerTime", "time", title: "Time", required: true
+                    input "triggerTime", "time", title: "Time", required: false
                 } else if (settings.triggerTimeType in ["sunrise", "sunset"]) {
                     input "triggerOffset", "number", title: "Offset (minutes)",
                           description: "Negative = before, Positive = after",
@@ -320,10 +319,10 @@ def renderTriggerFields() {
 
         case "periodic":
             section("Periodic Schedule") {
-                input "triggerInterval", "number", title: "Every (max: 59 min, 23 hrs, 31 days)", required: true, range: "1..59"
+                input "triggerInterval", "number", title: "Every (max: 59 min, 23 hrs, 31 days)", required: false, range: "1..59"
                 input "triggerUnit", "enum", title: "Unit",
                       options: ["minutes": "Minutes", "hours": "Hours", "days": "Days"],
-                      required: true, defaultValue: "minutes"
+                      required: false, defaultValue: "minutes"
             }
             break
 
@@ -593,14 +592,17 @@ def editConditionsPage() {
 }
 
 def addConditionPage() {
-    state.editingConditionIndex = null
-    clearConditionSettings()
+    // Only clear settings on fresh entry, not on submitOnChange re-renders
+    if (!settings.conditionType) {
+        state.editingConditionIndex = null
+        clearConditionSettings()
+    }
 
     dynamicPage(name: "addConditionPage", title: "Add Condition") {
         section("Condition Type") {
             input "conditionType", "enum", title: "What should be checked?",
                   options: getConditionTypeOptions(),
-                  required: true, submitOnChange: true
+                  required: false, submitOnChange: true
         }
 
         renderConditionFields()
@@ -641,7 +643,7 @@ def editConditionPage(params) {
         section("Condition Type") {
             input "conditionType", "enum", title: "What should be checked?",
                   options: getConditionTypeOptions(),
-                  required: true, submitOnChange: true
+                  required: false, submitOnChange: true
         }
 
         renderConditionFields()
@@ -680,56 +682,56 @@ def renderConditionFields() {
     switch (settings.conditionType) {
         case "device_state":
             section("Device State Settings") {
-                input "conditionDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                input "conditionDevice", "capability.*", title: "Device", required: false, submitOnChange: true
                 if (settings.conditionDevice) {
                     def attrs = settings.conditionDevice.supportedAttributes?.collect { it.name }?.unique()?.sort()
-                    input "conditionAttribute", "enum", title: "Attribute", options: attrs, required: true
+                    input "conditionAttribute", "enum", title: "Attribute", options: attrs, required: false
                 }
                 input "conditionOperator", "enum", title: "Comparison",
                       options: ["equals": "Equals", "not_equals": "Not Equals",
                                ">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
-                      required: true, defaultValue: "equals"
-                input "conditionValue", "text", title: "Value", required: true
+                      required: false, defaultValue: "equals"
+                input "conditionValue", "text", title: "Value", required: false
             }
             break
 
         case "device_was":
             section("Device Was Settings") {
-                input "conditionDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                input "conditionDevice", "capability.*", title: "Device", required: false, submitOnChange: true
                 if (settings.conditionDevice) {
                     def attrs = settings.conditionDevice.supportedAttributes?.collect { it.name }?.unique()?.sort()
-                    input "conditionAttribute", "enum", title: "Attribute", options: attrs, required: true
+                    input "conditionAttribute", "enum", title: "Attribute", options: attrs, required: false
                 }
-                input "conditionValue", "text", title: "Value", required: true
-                input "conditionDuration", "number", title: "For at least (seconds)", required: true, range: "1..86400"
+                input "conditionValue", "text", title: "Value", required: false
+                input "conditionDuration", "number", title: "For at least (seconds)", required: false, range: "1..86400"
             }
             break
 
         case "time_range":
             section("Time Range Settings") {
-                input "conditionStartTime", "time", title: "Start Time", required: true
-                input "conditionEndTime", "time", title: "End Time", required: true
+                input "conditionStartTime", "time", title: "Start Time", required: false
+                input "conditionEndTime", "time", title: "End Time", required: false
             }
             break
 
         case "mode":
             section("Mode Settings") {
                 def modes = location.modes?.collect { it.name }
-                input "conditionModes", "enum", title: "Mode(s)", options: modes, multiple: true, required: true
+                input "conditionModes", "enum", title: "Mode(s)", options: modes, multiple: true, required: false
                 input "conditionModeOperator", "enum", title: "Condition",
                       options: ["in": "Is one of", "not_in": "Is not one of"],
-                      required: true, defaultValue: "in"
+                      required: false, defaultValue: "in"
             }
             break
 
         case "variable":
             section("Variable Settings") {
-                input "conditionVariableName", "text", title: "Variable Name", required: true
+                input "conditionVariableName", "text", title: "Variable Name", required: false
                 input "conditionOperator", "enum", title: "Comparison",
                       options: ["equals": "Equals", "not_equals": "Not Equals",
                                ">": "Greater Than", "<": "Less Than"],
-                      required: true, defaultValue: "equals"
-                input "conditionValue", "text", title: "Value", required: true
+                      required: false, defaultValue: "equals"
+                input "conditionValue", "text", title: "Value", required: false
             }
             break
 
@@ -737,7 +739,7 @@ def renderConditionFields() {
             section("Days of Week Settings") {
                 input "conditionDays", "enum", title: "Days",
                       options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-                      multiple: true, required: true
+                      multiple: true, required: false
             }
             break
 
@@ -745,7 +747,7 @@ def renderConditionFields() {
             section("Sun Position Settings") {
                 input "conditionSunPosition", "enum", title: "Sun is",
                       options: ["up": "Up (daytime)", "down": "Down (nighttime)"],
-                      required: true
+                      required: false
             }
             break
 
@@ -754,65 +756,65 @@ def renderConditionFields() {
                 input "conditionHsmStatus", "enum", title: "HSM Status",
                       options: ["armedAway": "Armed Away", "armedHome": "Armed Home",
                                "armedNight": "Armed Night", "disarmed": "Disarmed"],
-                      required: true
+                      required: false
             }
             break
 
         case "presence":
             section("Presence Sensor Settings") {
-                input "conditionDevice", "capability.presenceSensor", title: "Presence Sensor", required: true
+                input "conditionDevice", "capability.presenceSensor", title: "Presence Sensor", required: false
                 input "conditionPresenceStatus", "enum", title: "Status",
                       options: ["present": "Present", "not present": "Not Present"],
-                      required: true
+                      required: false
             }
             break
 
         case "lock":
             section("Lock Status Settings") {
-                input "conditionDevice", "capability.lock", title: "Lock Device", required: true
+                input "conditionDevice", "capability.lock", title: "Lock Device", required: false
                 input "conditionLockStatus", "enum", title: "Status",
                       options: ["locked": "Locked", "unlocked": "Unlocked"],
-                      required: true
+                      required: false
             }
             break
 
         case "thermostat_mode":
             section("Thermostat Mode Settings") {
-                input "conditionDevice", "capability.thermostat", title: "Thermostat", required: true
+                input "conditionDevice", "capability.thermostat", title: "Thermostat", required: false
                 input "conditionThermostatMode", "enum", title: "Mode",
                       options: ["auto": "Auto", "cool": "Cool", "heat": "Heat", "off": "Off", "emergency heat": "Emergency Heat"],
-                      required: true
+                      required: false
             }
             break
 
         case "thermostat_state":
             section("Thermostat Operating State Settings") {
-                input "conditionDevice", "capability.thermostat", title: "Thermostat", required: true
+                input "conditionDevice", "capability.thermostat", title: "Thermostat", required: false
                 input "conditionThermostatState", "enum", title: "Operating State",
                       options: ["idle": "Idle", "heating": "Heating", "cooling": "Cooling", "fan only": "Fan Only", "pending heat": "Pending Heat", "pending cool": "Pending Cool"],
-                      required: true
+                      required: false
             }
             break
 
         case "illuminance":
             section("Illuminance Level Settings") {
-                input "conditionDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: true
+                input "conditionDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: false
                 input "conditionOperator", "enum", title: "Comparison",
                       options: ["equals": "Equals", "not_equals": "Not Equals",
                                ">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
-                      required: true, defaultValue: "<"
-                input "conditionValue", "number", title: "Lux Value", required: true
+                      required: false, defaultValue: "<"
+                input "conditionValue", "number", title: "Lux Value", required: false
             }
             break
 
         case "power":
             section("Power Level Settings") {
-                input "conditionDevice", "capability.powerMeter", title: "Power Meter Device", required: true
+                input "conditionDevice", "capability.powerMeter", title: "Power Meter Device", required: false
                 input "conditionOperator", "enum", title: "Comparison",
                       options: ["equals": "Equals", "not_equals": "Not Equals",
                                ">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
-                      required: true, defaultValue: ">"
-                input "conditionValue", "number", title: "Power (Watts)", required: true
+                      required: false, defaultValue: ">"
+                input "conditionValue", "number", title: "Power (Watts)", required: false
             }
             break
     }
@@ -1090,14 +1092,17 @@ def editActionsPage() {
 }
 
 def addActionPage() {
-    state.editingActionIndex = null
-    clearActionSettings()
+    // Only clear settings on fresh entry, not on submitOnChange re-renders
+    if (!settings.actionType) {
+        state.editingActionIndex = null
+        clearActionSettings()
+    }
 
     dynamicPage(name: "addActionPage", title: "Add Action") {
         section("Action Type") {
             input "actionType", "enum", title: "What should happen?",
                   options: getActionTypeOptions(),
-                  required: true, submitOnChange: true
+                  required: false, submitOnChange: true
         }
 
         renderActionFields()
@@ -1138,7 +1143,7 @@ def editActionPage(params) {
         section("Action Type") {
             input "actionType", "enum", title: "What should happen?",
                   options: getActionTypeOptions(),
-                  required: true, submitOnChange: true
+                  required: false, submitOnChange: true
         }
 
         renderActionFields()
@@ -1176,7 +1181,12 @@ def getActionTypeOptions() {
         "if_then_else": "If-Then-Else (Conditional)",
         "repeat": "Repeat Actions",
         "log": "Log Message",
-        "stop": "Stop Rule Execution"
+        "stop": "Stop Rule Execution",
+        "set_thermostat": "Set Thermostat",
+        "http_request": "HTTP Request",
+        "speak": "Speak (Text-to-Speech)",
+        "comment": "Comment (Documentation)",
+        "variable_math": "Variable Math Operation"
     ]
 }
 
@@ -1184,10 +1194,10 @@ def renderActionFields() {
     switch (settings.actionType) {
         case "device_command":
             section("Device Command Settings") {
-                input "actionDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+                input "actionDevice", "capability.*", title: "Device", required: false, submitOnChange: true
                 if (settings.actionDevice) {
                     def cmds = settings.actionDevice.supportedCommands?.collect { it.name }?.sort()
-                    input "actionCommand", "enum", title: "Command", options: cmds, required: true
+                    input "actionCommand", "enum", title: "Command", options: cmds, required: false
                 }
                 input "actionParams", "text", title: "Parameters (comma separated, optional)", required: false
             }
@@ -1195,50 +1205,50 @@ def renderActionFields() {
 
         case "toggle_device":
             section("Toggle Device Settings") {
-                input "actionDevice", "capability.switch", title: "Device", required: true
+                input "actionDevice", "capability.switch", title: "Device", required: false
             }
             break
 
         case "set_level":
             section("Set Level Settings") {
-                input "actionDevice", "capability.switchLevel", title: "Device", required: true
-                input "actionLevel", "number", title: "Level (0-100)", required: true, range: "0..100"
+                input "actionDevice", "capability.switchLevel", title: "Device", required: false
+                input "actionLevel", "number", title: "Level (0-100)", required: false, range: "0..100"
                 input "actionDuration", "number", title: "Fade Duration (seconds, optional)", required: false
             }
             break
 
         case "set_color":
             section("Set Color Settings") {
-                input "actionDevice", "capability.colorControl", title: "Device", required: true
-                input "actionHue", "number", title: "Hue (0-100)", required: true, range: "0..100"
-                input "actionSaturation", "number", title: "Saturation (0-100)", required: true, range: "0..100"
+                input "actionDevice", "capability.colorControl", title: "Device", required: false
+                input "actionHue", "number", title: "Hue (0-100)", required: false, range: "0..100"
+                input "actionSaturation", "number", title: "Saturation (0-100)", required: false, range: "0..100"
                 input "actionLevel", "number", title: "Level (0-100)", required: false, range: "0..100"
             }
             break
 
         case "set_color_temperature":
             section("Set Color Temperature Settings") {
-                input "actionDevice", "capability.colorTemperature", title: "Device", required: true
-                input "actionColorTemperature", "number", title: "Color Temperature (Kelvin)", required: true, range: "1000..10000"
+                input "actionDevice", "capability.colorTemperature", title: "Device", required: false
+                input "actionColorTemperature", "number", title: "Color Temperature (Kelvin)", required: false, range: "1000..10000"
                 input "actionLevel", "number", title: "Level (0-100, optional)", required: false, range: "0..100"
             }
             break
 
         case "lock":
             section("Lock Device Settings") {
-                input "actionDevice", "capability.lock", title: "Lock Device", required: true
+                input "actionDevice", "capability.lock", title: "Lock Device", required: false
             }
             break
 
         case "unlock":
             section("Unlock Device Settings") {
-                input "actionDevice", "capability.lock", title: "Lock Device", required: true
+                input "actionDevice", "capability.lock", title: "Lock Device", required: false
             }
             break
 
         case "activate_scene":
             section("Activate Scene Settings") {
-                input "actionSceneDevice", "capability.switch", title: "Scene Device", required: true
+                input "actionSceneDevice", "capability.switch", title: "Scene Device", required: false
                 paragraph "<i>Select a scene activator device. When triggered, this will turn the device on to activate the scene.</i>"
             }
             break
@@ -1246,7 +1256,7 @@ def renderActionFields() {
         case "set_mode":
             section("Set Mode Settings") {
                 def modes = location.modes?.collect { it.name }
-                input "actionMode", "enum", title: "Mode", options: modes, required: true
+                input "actionMode", "enum", title: "Mode", options: modes, required: false
             }
             break
 
@@ -1255,36 +1265,36 @@ def renderActionFields() {
                 input "actionHsmStatus", "enum", title: "HSM Status",
                       options: ["armAway": "Arm Away", "armHome": "Arm Home",
                                "armNight": "Arm Night", "disarm": "Disarm"],
-                      required: true
+                      required: false
             }
             break
 
         case "set_variable":
             section("Set Hub Variable Settings") {
-                input "actionVariableName", "text", title: "Variable Name", required: true
-                input "actionVariableValue", "text", title: "Value", required: true
+                input "actionVariableName", "text", title: "Variable Name", required: false
+                input "actionVariableValue", "text", title: "Value", required: false
                 paragraph "<i>Sets a hub-level variable that persists across rules.</i>"
             }
             break
 
         case "set_local_variable":
             section("Set Local Variable Settings") {
-                input "actionLocalVariableName", "text", title: "Variable Name", required: true
-                input "actionLocalVariableValue", "text", title: "Value", required: true
+                input "actionLocalVariableName", "text", title: "Variable Name", required: false
+                input "actionLocalVariableValue", "text", title: "Value", required: false
                 paragraph "<i>Sets a variable local to this rule only.</i>"
             }
             break
 
         case "send_notification":
             section("Send Notification Settings") {
-                input "actionNotificationDevice", "capability.notification", title: "Notification Device", required: true
-                input "actionNotificationMessage", "text", title: "Message", required: true
+                input "actionNotificationDevice", "capability.notification", title: "Notification Device", required: false
+                input "actionNotificationMessage", "text", title: "Message", required: false
             }
             break
 
         case "capture_state":
             section("Capture Device State Settings") {
-                input "actionCaptureDevices", "capability.*", title: "Devices to Capture", required: true, multiple: true
+                input "actionCaptureDevices", "capability.*", title: "Devices to Capture", required: false, multiple: true
                 input "actionCaptureStateId", "text", title: "State ID (optional)", required: false, defaultValue: "default"
                 paragraph "<i>Captures switch, level, color, and color temperature states. Max 20 captured states stored. Use 'Restore State' to restore later.</i>"
             }
@@ -1299,7 +1309,7 @@ def renderActionFields() {
 
         case "delay":
             section("Delay Settings") {
-                input "actionDelaySeconds", "number", title: "Delay (seconds)", required: true, range: "1..86400"
+                input "actionDelaySeconds", "number", title: "Delay (seconds)", required: false, range: "1..86400"
                 input "actionDelayId", "text", title: "Delay ID (optional)", required: false
                 paragraph "<i>Optional: Give this delay an ID to cancel it later with 'Cancel Delayed Actions'.</i>"
             }
@@ -1309,9 +1319,9 @@ def renderActionFields() {
             section("Cancel Delayed Actions Settings") {
                 input "actionCancelDelayId", "enum", title: "What to Cancel",
                       options: ["all": "Cancel ALL Delayed Actions", "specific": "Cancel Specific Delay ID"],
-                      required: true, submitOnChange: true, defaultValue: "all"
+                      required: false, submitOnChange: true, defaultValue: "all"
                 if (settings.actionCancelDelayId == "specific") {
-                    input "actionCancelSpecificId", "text", title: "Delay ID to Cancel", required: true
+                    input "actionCancelSpecificId", "text", title: "Delay ID to Cancel", required: false
                 }
             }
             break
@@ -1321,7 +1331,7 @@ def renderActionFields() {
                 paragraph "<b>Condition Type:</b>"
                 input "actionIfConditionType", "enum", title: "Condition Type",
                       options: getConditionTypeOptions(),
-                      required: true, submitOnChange: true
+                      required: false, submitOnChange: true
                 renderIfConditionFields()
                 paragraph "<hr><b>Note:</b> This creates a conditional branch. Then/Else actions must be configured via MCP tools or will be empty."
             }
@@ -1329,23 +1339,66 @@ def renderActionFields() {
 
         case "repeat":
             section("Repeat Actions Settings") {
-                input "actionRepeatCount", "number", title: "Number of Times to Repeat", required: true, range: "1..100", defaultValue: 1
+                input "actionRepeatCount", "number", title: "Number of Times to Repeat", required: false, range: "1..100", defaultValue: 1
                 paragraph "<i>Note: The actions to repeat must be configured via MCP tools. This UI creates an empty repeat container.</i>"
             }
             break
 
         case "log":
             section("Log Settings") {
-                input "actionLogMessage", "text", title: "Message", required: true
+                input "actionLogMessage", "text", title: "Message", required: false
                 input "actionLogLevel", "enum", title: "Level",
                       options: ["info": "Info", "warn": "Warning", "debug": "Debug"],
-                      required: true, defaultValue: "info"
+                      required: false, defaultValue: "info"
             }
             break
 
         case "stop":
             section {
                 paragraph "This action will stop rule execution. Any actions after this will not run."
+            }
+            break
+
+        case "set_thermostat":
+            section("Set Thermostat Settings") {
+                input "actionDevice", "capability.thermostat", title: "Thermostat Device", required: false, submitOnChange: true
+                input "actionThermostatMode", "enum", title: "Thermostat Mode (optional)",
+                      options: ["heat": "Heat", "cool": "Cool", "auto": "Auto", "off": "Off", "emergency heat": "Emergency Heat"],
+                      required: false
+                input "actionHeatingSetpoint", "number", title: "Heating Setpoint (optional)", required: false
+                input "actionCoolingSetpoint", "number", title: "Cooling Setpoint (optional)", required: false
+                input "actionFanMode", "enum", title: "Fan Mode (optional)",
+                      options: ["auto": "Auto", "on": "On", "circulate": "Circulate"],
+                      required: false
+            }
+            break
+
+        case "http_request":
+            section("HTTP Request Settings") {
+                input "actionHttpMethod", "enum", title: "Method",
+                      options: ["GET": "GET", "POST": "POST"],
+                      required: false, defaultValue: "GET", submitOnChange: true
+                input "actionHttpUrl", "text", title: "URL", required: false
+                if (settings.actionHttpMethod == "POST") {
+                    input "actionHttpContentType", "text", title: "Content Type (optional)", required: false, defaultValue: "application/json"
+                    input "actionHttpBody", "text", title: "Body (optional)", required: false
+                }
+                paragraph "<i>Uses Hubitat's built-in httpGet/httpPost methods.</i>"
+            }
+            break
+
+        case "speak":
+            section("Speak (Text-to-Speech) Settings") {
+                input "actionDevice", "capability.speechSynthesis", title: "TTS Device", required: false
+                input "actionSpeakMessage", "text", title: "Message", required: false
+                input "actionSpeakVolume", "number", title: "Volume (optional, 0-100)", required: false, range: "0..100"
+            }
+            break
+
+        case "comment":
+            section("Comment Settings") {
+                input "actionCommentText", "text", title: "Comment Text", required: false
+                paragraph "<i>This action just logs the comment text. Useful for documenting action sequences.</i>"
             }
             break
     }
@@ -1357,112 +1410,112 @@ def renderActionFields() {
 def renderIfConditionFields() {
     switch (settings.actionIfConditionType) {
         case "device_state":
-            input "actionIfDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+            input "actionIfDevice", "capability.*", title: "Device", required: false, submitOnChange: true
             if (settings.actionIfDevice) {
                 def attrs = settings.actionIfDevice.supportedAttributes?.collect { it.name }?.unique()?.sort()
-                input "actionIfAttribute", "enum", title: "Attribute", options: attrs, required: true
+                input "actionIfAttribute", "enum", title: "Attribute", options: attrs, required: false
             }
             input "actionIfOperator", "enum", title: "Comparison",
                   options: ["equals": "Equals", "not_equals": "Not Equals",
                            ">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
-                  required: true, defaultValue: "equals"
-            input "actionIfValue", "text", title: "Value", required: true
+                  required: false, defaultValue: "equals"
+            input "actionIfValue", "text", title: "Value", required: false
             break
 
         case "mode":
             def modes = location.modes?.collect { it.name }
-            input "actionIfModes", "enum", title: "Mode(s)", options: modes, multiple: true, required: true
+            input "actionIfModes", "enum", title: "Mode(s)", options: modes, multiple: true, required: false
             input "actionIfModeOperator", "enum", title: "Condition",
                   options: ["in": "Is one of", "not_in": "Is not one of"],
-                  required: true, defaultValue: "in"
+                  required: false, defaultValue: "in"
             break
 
         case "time_range":
-            input "actionIfStartTime", "time", title: "Start Time", required: true
-            input "actionIfEndTime", "time", title: "End Time", required: true
+            input "actionIfStartTime", "time", title: "Start Time", required: false
+            input "actionIfEndTime", "time", title: "End Time", required: false
             break
 
         case "variable":
-            input "actionIfVariableName", "text", title: "Variable Name", required: true
+            input "actionIfVariableName", "text", title: "Variable Name", required: false
             input "actionIfOperator", "enum", title: "Comparison",
                   options: ["equals": "Equals", "not_equals": "Not Equals",
                            ">": "Greater Than", "<": "Less Than"],
-                  required: true, defaultValue: "equals"
-            input "actionIfValue", "text", title: "Value", required: true
+                  required: false, defaultValue: "equals"
+            input "actionIfValue", "text", title: "Value", required: false
             break
 
         case "hsm_status":
             input "actionIfHsmStatus", "enum", title: "HSM Status",
                   options: ["armedAway": "Armed Away", "armedHome": "Armed Home",
                            "armedNight": "Armed Night", "disarmed": "Disarmed"],
-                  required: true
+                  required: false
             break
 
         case "sun_position":
             input "actionIfSunPosition", "enum", title: "Sun is",
                   options: ["up": "Up (daytime)", "down": "Down (nighttime)"],
-                  required: true
+                  required: false
             break
 
         case "days_of_week":
             input "actionIfDays", "enum", title: "Days",
                   options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-                  multiple: true, required: true
+                  multiple: true, required: false
             break
 
         case "device_was":
-            input "actionIfDevice", "capability.*", title: "Device", required: true, submitOnChange: true
+            input "actionIfDevice", "capability.*", title: "Device", required: false, submitOnChange: true
             if (settings.actionIfDevice) {
                 def attrs = settings.actionIfDevice.supportedAttributes?.collect { it.name }?.unique()?.sort()
-                input "actionIfAttribute", "enum", title: "Attribute", options: attrs, required: true
+                input "actionIfAttribute", "enum", title: "Attribute", options: attrs, required: false
             }
-            input "actionIfValue", "text", title: "Has Been Value", required: true
-            input "actionIfDuration", "number", title: "For Seconds", required: true, range: "1..86400"
+            input "actionIfValue", "text", title: "Has Been Value", required: false
+            input "actionIfDuration", "number", title: "For Seconds", required: false, range: "1..86400"
             break
 
         case "presence":
-            input "actionIfDevice", "capability.presenceSensor", title: "Presence Sensor", required: true
+            input "actionIfDevice", "capability.presenceSensor", title: "Presence Sensor", required: false
             input "actionIfPresenceStatus", "enum", title: "Status",
                   options: ["present": "Present", "not present": "Not Present"],
-                  required: true
+                  required: false
             break
 
         case "lock":
-            input "actionIfDevice", "capability.lock", title: "Lock Device", required: true
+            input "actionIfDevice", "capability.lock", title: "Lock Device", required: false
             input "actionIfLockStatus", "enum", title: "Status",
                   options: ["locked": "Locked", "unlocked": "Unlocked"],
-                  required: true
+                  required: false
             break
 
         case "thermostat_mode":
-            input "actionIfDevice", "capability.thermostat", title: "Thermostat", required: true
+            input "actionIfDevice", "capability.thermostat", title: "Thermostat", required: false
             input "actionIfThermostatMode", "enum", title: "Mode",
                   options: ["auto": "Auto", "cool": "Cool", "heat": "Heat", "off": "Off", "emergency heat": "Emergency Heat"],
-                  required: true
+                  required: false
             break
 
         case "thermostat_state":
-            input "actionIfDevice", "capability.thermostat", title: "Thermostat", required: true
+            input "actionIfDevice", "capability.thermostat", title: "Thermostat", required: false
             input "actionIfThermostatState", "enum", title: "Operating State",
                   options: ["idle": "Idle", "heating": "Heating", "cooling": "Cooling", "fan only": "Fan Only",
                            "pending heat": "Pending Heat", "pending cool": "Pending Cool"],
-                  required: true
+                  required: false
             break
 
         case "illuminance":
-            input "actionIfDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: true
+            input "actionIfDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: false
             input "actionIfOperator", "enum", title: "Comparison",
                   options: [">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
-                  required: true, defaultValue: "<"
-            input "actionIfValue", "number", title: "Lux Value", required: true
+                  required: false, defaultValue: "<"
+            input "actionIfValue", "number", title: "Lux Value", required: false
             break
 
         case "power":
-            input "actionIfDevice", "capability.powerMeter", title: "Power Meter", required: true
+            input "actionIfDevice", "capability.powerMeter", title: "Power Meter", required: false
             input "actionIfOperator", "enum", title: "Comparison",
                   options: [">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
-                  required: true, defaultValue: ">"
-            input "actionIfValue", "number", title: "Watts", required: true
+                  required: false, defaultValue: ">"
+            input "actionIfValue", "number", title: "Watts", required: false
             break
     }
 }
@@ -1618,6 +1671,37 @@ def buildActionFromSettings() {
 
         case "stop":
             // No additional fields needed
+            break
+
+        case "set_thermostat":
+            if (!settings.actionDevice) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            if (settings.actionThermostatMode) action.thermostatMode = settings.actionThermostatMode
+            if (settings.actionHeatingSetpoint != null) action.heatingSetpoint = settings.actionHeatingSetpoint
+            if (settings.actionCoolingSetpoint != null) action.coolingSetpoint = settings.actionCoolingSetpoint
+            if (settings.actionFanMode) action.fanMode = settings.actionFanMode
+            break
+
+        case "http_request":
+            if (!settings.actionHttpUrl) return null
+            action.method = settings.actionHttpMethod ?: "GET"
+            action.url = settings.actionHttpUrl
+            if (action.method == "POST") {
+                if (settings.actionHttpContentType) action.contentType = settings.actionHttpContentType
+                if (settings.actionHttpBody) action.body = settings.actionHttpBody
+            }
+            break
+
+        case "speak":
+            if (!settings.actionDevice || !settings.actionSpeakMessage) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            action.message = settings.actionSpeakMessage
+            if (settings.actionSpeakVolume != null) action.volume = settings.actionSpeakVolume
+            break
+
+        case "comment":
+            if (!settings.actionCommentText) return null
+            action.text = settings.actionCommentText
             break
     }
 
@@ -1848,6 +1932,37 @@ def loadActionSettings(action) {
             if (action.message) app.updateSetting("actionLogMessage", action.message)
             if (action.level) app.updateSetting("actionLogLevel", action.level)
             break
+
+        case "set_thermostat":
+            if (action.deviceId) {
+                def device = parent.findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.thermostat", value: device.id])
+            }
+            if (action.thermostatMode) app.updateSetting("actionThermostatMode", action.thermostatMode)
+            if (action.heatingSetpoint != null) app.updateSetting("actionHeatingSetpoint", action.heatingSetpoint)
+            if (action.coolingSetpoint != null) app.updateSetting("actionCoolingSetpoint", action.coolingSetpoint)
+            if (action.fanMode) app.updateSetting("actionFanMode", action.fanMode)
+            break
+
+        case "http_request":
+            if (action.method) app.updateSetting("actionHttpMethod", action.method)
+            if (action.url) app.updateSetting("actionHttpUrl", action.url)
+            if (action.contentType) app.updateSetting("actionHttpContentType", action.contentType)
+            if (action.body) app.updateSetting("actionHttpBody", action.body)
+            break
+
+        case "speak":
+            if (action.deviceId) {
+                def device = parent.findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.speechSynthesis", value: device.id])
+            }
+            if (action.message) app.updateSetting("actionSpeakMessage", action.message)
+            if (action.volume != null) app.updateSetting("actionSpeakVolume", action.volume)
+            break
+
+        case "comment":
+            if (action.text) app.updateSetting("actionCommentText", action.text)
+            break
     }
 }
 
@@ -1975,7 +2090,11 @@ def clearActionSettings() {
      "actionIfVariableName", "actionIfHsmStatus", "actionIfSunPosition", "actionIfDays",
      // Additional if_then_else condition settings for all 14 condition types
      "actionIfDuration", "actionIfPresenceStatus", "actionIfLockStatus",
-     "actionIfThermostatMode", "actionIfThermostatState"].each {
+     "actionIfThermostatMode", "actionIfThermostatState",
+     // set_thermostat, http_request, speak, comment action settings
+     "actionThermostatMode", "actionHeatingSetpoint", "actionCoolingSetpoint", "actionFanMode",
+     "actionHttpMethod", "actionHttpUrl", "actionHttpContentType", "actionHttpBody",
+     "actionSpeakMessage", "actionSpeakVolume", "actionCommentText"].each {
         app.removeSetting(it)
     }
 }
@@ -2254,6 +2373,29 @@ def describeAction(action) {
             def repeatActions = action.actions?.size() ?: 0
             return "Repeat ${repeatActions} action(s) ${action.times ?: action.count ?: 1} time(s)"
 
+        case "set_thermostat":
+            def tstatDev = parent.findDevice(action.deviceId)
+            def tstatDevName = tstatDev?.label ?: action.deviceId
+            def tstatParts = []
+            if (action.thermostatMode) tstatParts << "mode:${action.thermostatMode}"
+            if (action.heatingSetpoint != null) tstatParts << "heat:${action.heatingSetpoint}"
+            if (action.coolingSetpoint != null) tstatParts << "cool:${action.coolingSetpoint}"
+            if (action.fanMode) tstatParts << "fan:${action.fanMode}"
+            return "Set thermostat ${tstatDevName} (${tstatParts.join(', ')})"
+
+        case "http_request":
+            return "${action.method ?: 'GET'} ${action.url}"
+
+        case "speak":
+            def speakDev = parent.findDevice(action.deviceId)
+            def speakDevName = speakDev?.label ?: action.deviceId
+            def volStr = action.volume != null ? " at volume ${action.volume}" : ""
+            return "Speak '${action.message}' on ${speakDevName}${volStr}"
+
+        case "comment":
+            def truncated = action.text?.length() > 50 ? action.text.substring(0, 50) + "..." : action.text
+            return "Comment: ${truncated}"
+
         default:
             return "Unknown action: ${action.type}"
     }
@@ -2262,6 +2404,7 @@ def describeAction(action) {
 // ==================== RULE EXECUTION ====================
 
 def subscribeToTriggers() {
+    def subscribedEvents = [] as Set
     atomicState.triggers?.each { trigger ->
         try {
             switch (trigger.type) {
@@ -2289,20 +2432,26 @@ def subscribeToTriggers() {
                     } else if (trigger.sunrise) {
                         if (location.sunrise) {
                             def offset = trigger.offset ?: 0
-                            // schedule() does not accept Long — convert to Date for runOnce()
-                            // Use runOnce() since sunrise time changes daily
                             def sunriseDate = new Date(location.sunrise.time + (offset * 60000))
-                            runOnce(sunriseDate, "handleTimeEvent", [overwrite: true])
+                            // If sunrise already passed today, schedule for tomorrow
+                            if (sunriseDate.time <= now()) {
+                                sunriseDate = new Date(sunriseDate.time + 86400000)
+                            }
+                            // Use distinct handler name so sunset runOnce doesn't overwrite this
+                            runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
                         } else {
                             log.warn "Cannot schedule sunrise trigger: sunrise time not available for this location"
                         }
                     } else if (trigger.sunset) {
                         if (location.sunset) {
                             def offset = trigger.offset ?: 0
-                            // schedule() does not accept Long — convert to Date for runOnce()
-                            // Use runOnce() since sunset time changes daily
                             def sunsetDate = new Date(location.sunset.time + (offset * 60000))
-                            runOnce(sunsetDate, "handleTimeEvent", [overwrite: true])
+                            // If sunset already passed today, schedule for tomorrow
+                            if (sunsetDate.time <= now()) {
+                                sunsetDate = new Date(sunsetDate.time + 86400000)
+                            }
+                            // Use distinct handler name so sunrise runOnce doesn't overwrite this
+                            runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
                         } else {
                             log.warn "Cannot schedule sunset trigger: sunset time not available for this location"
                         }
@@ -2310,11 +2459,17 @@ def subscribeToTriggers() {
                     break
 
                 case "mode_change":
-                    subscribe(location, "mode", "handleModeEvent")
+                    if (!subscribedEvents.contains("location:mode")) {
+                        subscribe(location, "mode", "handleModeEvent")
+                        subscribedEvents.add("location:mode")
+                    }
                     break
 
                 case "hsm_change":
-                    subscribe(location, "hsmStatus", "handleHsmEvent")
+                    if (!subscribedEvents.contains("location:hsmStatus")) {
+                        subscribe(location, "hsmStatus", "handleHsmEvent")
+                        subscribedEvents.add("location:hsmStatus")
+                    }
                     break
 
                 case "periodic":
@@ -2348,12 +2503,32 @@ def subscribeToTriggers() {
     }
 }
 
+/**
+ * Evaluates a per-trigger condition gate. If the trigger has an inline "condition"
+ * field, it must evaluate to true for the trigger to proceed. Returns true if
+ * there is no condition or if the condition is met; false otherwise.
+ */
+def evaluateTriggerCondition(trigger, triggerSource) {
+    if (!trigger?.condition) return true
+    try {
+        def result = evaluateCondition(trigger.condition)
+        if (!result) {
+            log.info "Rule '${settings.ruleName}' trigger (${triggerSource}) skipped: per-trigger condition not met (${describeCondition(trigger.condition)})"
+        }
+        return result
+    } catch (Exception e) {
+        log.error "Error evaluating per-trigger condition for ${triggerSource}: ${e.message}"
+        return false  // Fail closed
+    }
+}
+
 def handlePeriodicEvent() {
     if (!settings.ruleEnabled) return
     log.debug "Periodic event triggered"
 
     def matchingTrigger = atomicState.triggers?.find { t -> t.type == "periodic" }
     if (matchingTrigger) {
+        if (!evaluateTriggerCondition(matchingTrigger, "periodic")) return
         executeRule("periodic")
     }
 }
@@ -2370,6 +2545,9 @@ def handleDeviceEvent(evt) {
     }
 
     if (matchingTrigger) {
+        // Check per-trigger condition gate before proceeding
+        if (!evaluateTriggerCondition(matchingTrigger, "device_event: ${evt.device.label} ${evt.name}")) return
+
         // Check if this trigger has a duration requirement
         if (matchingTrigger.duration && matchingTrigger.duration > 0) {
             def triggerKey = "duration_${matchingTrigger.deviceId}_${matchingTrigger.attribute}"
@@ -2469,38 +2647,66 @@ def handleButtonEvent(evt) {
     }
 
     if (matchingTrigger) {
+        if (!evaluateTriggerCondition(matchingTrigger, "button_event: ${evt.device.label} ${evt.name}")) return
         executeRule("button_event: ${evt.device.label} ${evt.name}")
     }
 }
 
 def handleTimeEvent() {
     if (!settings.ruleEnabled) return
-    // Re-schedule sunrise/sunset triggers for the next day (runOnce only fires once)
-    rescheduleRunOnceTriggers()
+    def matchingTrigger = atomicState.triggers?.find { t -> t.type == "time" && t.time }
+    if (matchingTrigger && !evaluateTriggerCondition(matchingTrigger, "time trigger")) return
     executeRule("time trigger")
 }
 
-def rescheduleRunOnceTriggers() {
-    atomicState.triggers?.findAll { it.type == "time" && (it.sunrise || it.sunset) }?.each { trigger ->
+def handleSunriseEvent() {
+    if (!settings.ruleEnabled) return
+    // Re-schedule this sunrise trigger for the next day (runOnce only fires once)
+    rescheduleSunriseTrigger()
+    def matchingTrigger = atomicState.triggers?.find { t -> t.type == "time" && t.sunrise }
+    if (matchingTrigger && !evaluateTriggerCondition(matchingTrigger, "sunrise trigger")) return
+    executeRule("sunrise trigger")
+}
+
+def handleSunsetEvent() {
+    if (!settings.ruleEnabled) return
+    // Re-schedule this sunset trigger for the next day (runOnce only fires once)
+    rescheduleSunsetTrigger()
+    def matchingTrigger = atomicState.triggers?.find { t -> t.type == "time" && t.sunset }
+    if (matchingTrigger && !evaluateTriggerCondition(matchingTrigger, "sunset trigger")) return
+    executeRule("sunset trigger")
+}
+
+def rescheduleSunriseTrigger() {
+    atomicState.triggers?.findAll { it.type == "time" && it.sunrise }?.each { trigger ->
         try {
-            if (trigger.sunrise && location.sunrise) {
+            if (location.sunrise) {
                 def offset = trigger.offset ?: 0
                 def sunriseDate = new Date(location.sunrise.time + (offset * 60000))
-                // If today's sunrise already passed, schedule for tomorrow
                 if (sunriseDate.time <= now()) {
                     sunriseDate = new Date(sunriseDate.time + 86400000)
                 }
-                runOnce(sunriseDate, "handleTimeEvent", [overwrite: true])
-            } else if (trigger.sunset && location.sunset) {
+                runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
+            }
+        } catch (Exception e) {
+            log.error "Failed to reschedule sunrise trigger: ${e.message}"
+        }
+    }
+}
+
+def rescheduleSunsetTrigger() {
+    atomicState.triggers?.findAll { it.type == "time" && it.sunset }?.each { trigger ->
+        try {
+            if (location.sunset) {
                 def offset = trigger.offset ?: 0
                 def sunsetDate = new Date(location.sunset.time + (offset * 60000))
                 if (sunsetDate.time <= now()) {
                     sunsetDate = new Date(sunsetDate.time + 86400000)
                 }
-                runOnce(sunsetDate, "handleTimeEvent", [overwrite: true])
+                runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
             }
         } catch (Exception e) {
-            log.error "Failed to reschedule sunrise/sunset trigger: ${e.message}"
+            log.error "Failed to reschedule sunset trigger: ${e.message}"
         }
     }
 }
@@ -2515,6 +2721,7 @@ def handleModeEvent(evt) {
     state.previousMode = evt.value
 
     if (matchingTrigger) {
+        if (!evaluateTriggerCondition(matchingTrigger, "mode_change: ${evt.value}")) return
         executeRule("mode_change: ${evt.value}")
     }
 }
@@ -2527,6 +2734,7 @@ def handleHsmEvent(evt) {
     }
 
     if (matchingTrigger) {
+        if (!evaluateTriggerCondition(matchingTrigger, "hsm_change: ${evt.value}")) return
         executeRule("hsm_change: ${evt.value}")
     }
 }
@@ -2551,7 +2759,14 @@ def executeRule(triggerSource) {
 
 def evaluateConditions() {
     def logic = settings.conditionLogic ?: "all"
-    def results = atomicState.conditions.collect { evaluateCondition(it) }
+    def results = atomicState.conditions.collect { condition ->
+        try {
+            return evaluateCondition(condition)
+        } catch (Exception e) {
+            log.error "Error evaluating condition (${condition.type}): ${e.message}"
+            return false  // Treat failed conditions as not met (fail closed)
+        }
+    }
 
     if (logic == "all") {
         return results.every { it }
@@ -2570,7 +2785,9 @@ def evaluateCondition(condition) {
 
         case "mode":
             def currentMode = location.mode
-            def inModes = condition.modes ? condition.modes.contains(currentMode) : false
+            // Accept both singular 'mode' (string) and plural 'modes' (list)
+            def modeList = condition.modes ?: (condition.mode ? [condition.mode] : [])
+            def inModes = modeList.contains(currentMode)
             return condition.operator == "not_in" ? !inModes : inModes
 
         case "time_range":
@@ -2615,11 +2832,14 @@ def evaluateCondition(condition) {
             def device = parent.findDevice(condition.deviceId)
             if (!device) return false
             if (condition.forSeconds == null) return false
+            def forSeconds = condition.forSeconds as Integer
             def currentValue = device.currentValue(condition.attribute)
             if (currentValue?.toString() != condition.value?.toString()) return false
-            // Check how long it's been in this state
-            def events = device.eventsSince(new Date(now() - (condition.forSeconds * 1000)), [max: 10])
-            def recentChange = events?.find { it.name == condition.attribute && it.value?.toString() != condition.value?.toString() }
+            // Check how long it's been in this state — filter by attribute to avoid
+            // chatty devices exhausting the event limit with irrelevant attributes
+            def events = device.eventsSince(new Date(now() - (forSeconds * 1000)), [max: 100])
+                ?.findAll { it.name == condition.attribute }
+            def recentChange = events?.find { it.value?.toString() != condition.value?.toString() }
             return recentChange == null
 
         case "presence":
@@ -2661,7 +2881,8 @@ def evaluateCondition(condition) {
         // Note: "expression" condition type removed - Eval.me() not allowed in Hubitat sandbox
 
         default:
-            return true
+            log.warn "Unknown condition type: ${condition.type} — treating as not met (fail closed)"
+            return false
     }
 }
 
@@ -2959,6 +3180,56 @@ def executeAction(action, actionIndex = null) {
 
         case "stop":
             return false // Signal to stop execution
+
+        case "set_thermostat":
+            def tstatDevice = parent.findDevice(action.deviceId)
+            if (tstatDevice) {
+                try {
+                    if (action.thermostatMode) tstatDevice.setThermostatMode(action.thermostatMode)
+                    if (action.heatingSetpoint != null) tstatDevice.setHeatingSetpoint(action.heatingSetpoint)
+                    if (action.coolingSetpoint != null) tstatDevice.setCoolingSetpoint(action.coolingSetpoint)
+                    if (action.fanMode) tstatDevice.setThermostatFanMode(action.fanMode)
+                } catch (Exception e) {
+                    log.error "Error setting thermostat ${tstatDevice.label}: ${e.message}"
+                }
+            }
+            break
+
+        case "http_request":
+            try {
+                def method = action.method ?: "GET"
+                if (method == "GET") {
+                    httpGet([uri: action.url]) { resp ->
+                        log.debug "HTTP GET ${action.url} returned status ${resp.status}"
+                    }
+                } else if (method == "POST") {
+                    def params = [uri: action.url]
+                    if (action.contentType) params.contentType = action.contentType
+                    if (action.body) params.body = action.body
+                    httpPost(params) { resp ->
+                        log.debug "HTTP POST ${action.url} returned status ${resp.status}"
+                    }
+                }
+            } catch (Exception e) {
+                log.error "Error executing HTTP ${action.method ?: 'GET'} to ${action.url}: ${e.message}"
+            }
+            break
+
+        case "speak":
+            def speakDevice = parent.findDevice(action.deviceId)
+            if (speakDevice) {
+                try {
+                    if (action.volume != null) speakDevice.setVolume(action.volume)
+                    speakDevice.speak(action.message)
+                } catch (Exception e) {
+                    log.error "Error speaking on ${speakDevice.label}: ${e.message}"
+                }
+            }
+            break
+
+        case "comment":
+            log.info "Comment: ${action.text}"
+            break
     }
 
     return true // Continue execution
