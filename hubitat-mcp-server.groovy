@@ -311,8 +311,15 @@ def handleToolsCall(msg) {
         def result = executeTool(toolName, args)
         return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(result)]]])
     } catch (IllegalArgumentException e) {
+        mcpLog("warn", "server", "Validation error in ${toolName}: ${e.message}", null, [
+            details: [tool: toolName, error: e.message]
+        ])
         return jsonRpcError(msg.id, -32602, "Invalid params: ${e.message}")
     } catch (Exception e) {
+        mcpLog("error", "server", "Tool execution error in ${toolName}: ${e.message}", null, [
+            details: [tool: toolName, error: e.message],
+            stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")
+        ])
         log.error "Tool execution error: ${e.message}", e
         return jsonRpcError(msg.id, -32603, "Tool error: ${e.message}")
     }
@@ -429,7 +436,9 @@ PERFORMANCE NOTE: Returns summary information for all rules. For hubs with many 
   "actions": [...]
 }
 
-TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), mode_change, hsm_change
+TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), periodic (interval-based), mode_change, hsm_change
+TIME TRIGGER EXAMPLES: {"type":"time","time":"08:30"}, {"type":"time","sunrise":true,"offset":30}, {"type":"time","sunset":true,"offset":-15}
+  sunrise/sunset offset is in minutes (positive=after, negative=before). Many formats accepted and auto-normalized.
 CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
 ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log, set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation only), set_valve (open/close), set_fan_speed (low/medium/high/auto), set_shade (open/close/position)
 
@@ -1045,6 +1054,9 @@ def toolCreateRule(args) {
         throw new IllegalArgumentException("At least one action is required")
     }
 
+    // Normalize triggers (convert common sunrise/sunset formats to canonical form)
+    args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
+
     // Validate triggers
     args.triggers.each { trigger ->
         validateTrigger(trigger)
@@ -1130,8 +1142,9 @@ def toolUpdateRule(ruleId, args) {
         throw new IllegalArgumentException("Rule not found: ${ruleId}")
     }
 
-    // Validate any provided triggers
+    // Normalize and validate any provided triggers
     if (args.triggers != null) {
+        args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
         args.triggers.each { validateTrigger(it) }
     }
 
@@ -1787,6 +1800,56 @@ def normalizeOperator(operator) {
 // Normalize all operators in a rule's triggers, conditions, and actions
 // Converts symbolic operators ("==", "!=") to word form ("equals", "not_equals")
 // so they match the evaluateComparison() switch cases in the child app
+// Normalize trigger format - converts common sunrise/sunset trigger variations to canonical form
+// Canonical form: {"type": "time", "sunrise": true, "offset": N} or {"type": "time", "sunset": true, "offset": N}
+// Accepted variations:
+//   {"type": "time", "time": "sunrise", "offset": 30}  -> {"type": "time", "sunrise": true, "offset": 30}
+//   {"type": "time", "time": "sunset"}                  -> {"type": "time", "sunset": true}
+//   {"type": "sunrise", "offset": 30}                   -> {"type": "time", "sunrise": true, "offset": 30}
+//   {"type": "sunset"}                                  -> {"type": "time", "sunset": true}
+//   {"type": "sun", "event": "sunrise", "offset": 30}   -> {"type": "time", "sunrise": true, "offset": 30}
+//   {"type": "time", "sunEvent": "sunrise", "offsetMinutes": 30} -> {"type": "time", "sunrise": true, "offset": 30}
+def normalizeTrigger(trigger) {
+    def normalized = new LinkedHashMap(trigger)
+
+    // Handle {"type": "sunrise"} or {"type": "sunset"} - convert type to "time" and set flag
+    if (normalized.type in ["sunrise", "sunset"]) {
+        def sunType = normalized.type
+        normalized.type = "time"
+        normalized[sunType] = true
+        return normalized
+    }
+
+    // Handle {"type": "sun", "event": "sunrise/sunset"}
+    if (normalized.type == "sun" && normalized.event in ["sunrise", "sunset"]) {
+        normalized.type = "time"
+        normalized[normalized.event] = true
+        normalized.remove("event")
+        return normalized
+    }
+
+    // Handle {"type": "time", "time": "sunrise/sunset"} - time field has sun event name instead of HH:mm
+    if (normalized.type == "time" && normalized.time in ["sunrise", "sunset"]) {
+        def sunType = normalized.time
+        normalized.remove("time")
+        normalized[sunType] = true
+        return normalized
+    }
+
+    // Handle {"type": "time", "sunEvent": "sunrise/sunset", "offsetMinutes": N}
+    if (normalized.type == "time" && normalized.sunEvent in ["sunrise", "sunset"]) {
+        normalized[normalized.sunEvent] = true
+        if (normalized.offsetMinutes != null && normalized.offset == null) {
+            normalized.offset = normalized.offsetMinutes
+        }
+        normalized.remove("sunEvent")
+        normalized.remove("offsetMinutes")
+        return normalized
+    }
+
+    return normalized
+}
+
 def normalizeRuleOperators(args) {
     args.triggers?.each { trigger ->
         if (trigger.operator) trigger.operator = normalizeOperator(trigger.operator)
@@ -1889,11 +1952,23 @@ def validateTrigger(trigger) {
             break
         case "time":
             if (!trigger.time && !trigger.sunrise && !trigger.sunset) {
-                throw new IllegalArgumentException("time trigger requires time (HH:mm), sunrise, or sunset")
+                throw new IllegalArgumentException("time trigger requires time (HH:mm), sunrise, or sunset. Examples: {\"type\":\"time\",\"time\":\"08:30\"}, {\"type\":\"time\",\"sunrise\":true,\"offset\":30}")
             }
             // Validate time format if time is specified (not sunrise/sunset)
             if (trigger.time) {
                 validateTimeFormat(trigger.time, "time trigger")
+            }
+            // Validate offset for sunrise/sunset triggers
+            if ((trigger.sunrise || trigger.sunset) && trigger.offset != null) {
+                def offsetValue
+                try {
+                    offsetValue = trigger.offset as Integer
+                } catch (Exception e) {
+                    throw new IllegalArgumentException("time trigger: offset must be a number (minutes), got '${trigger.offset}'")
+                }
+                if (offsetValue < -180 || offsetValue > 180) {
+                    throw new IllegalArgumentException("time trigger: offset must be between -180 and 180 minutes, got ${offsetValue}")
+                }
             }
             break
         case "periodic":
