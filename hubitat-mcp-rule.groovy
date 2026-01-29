@@ -1186,6 +1186,9 @@ def getActionTypeOptions() {
         "http_request": "HTTP Request",
         "speak": "Speak (Text-to-Speech)",
         "comment": "Comment (Documentation)",
+        "set_valve": "Set Valve (Open/Close)",
+        "set_fan_speed": "Set Fan Speed",
+        "set_shade": "Set Window Shade",
         "variable_math": "Variable Math Operation"
     ]
 }
@@ -1399,6 +1402,37 @@ def renderActionFields() {
             section("Comment Settings") {
                 input "actionCommentText", "text", title: "Comment Text", required: false
                 paragraph "<i>This action just logs the comment text. Useful for documenting action sequences.</i>"
+            }
+            break
+
+        case "set_valve":
+            section("Set Valve Settings") {
+                input "actionDevice", "capability.valve", title: "Valve Device", required: false
+                input "actionValveCommand", "enum", title: "Command",
+                      options: ["open": "Open", "close": "Close"],
+                      required: false
+            }
+            break
+
+        case "set_fan_speed":
+            section("Set Fan Speed Settings") {
+                input "actionDevice", "capability.fanControl", title: "Fan Device", required: false
+                input "actionFanSpeed", "enum", title: "Speed",
+                      options: ["low": "Low", "medium-low": "Medium-Low", "medium": "Medium",
+                               "medium-high": "Medium-High", "high": "High",
+                               "on": "On", "off": "Off", "auto": "Auto"],
+                      required: false
+            }
+            break
+
+        case "set_shade":
+            section("Set Window Shade Settings") {
+                input "actionDevice", "capability.windowShade", title: "Shade Device", required: false
+                input "actionShadeCommand", "enum", title: "Command (optional)",
+                      options: ["open": "Open", "close": "Close"],
+                      required: false
+                input "actionShadePosition", "number", title: "Position (0-100, optional)", required: false, range: "0..100"
+                paragraph "<i>Set command OR position. If position is set, command is ignored.</i>"
             }
             break
     }
@@ -1703,6 +1737,30 @@ def buildActionFromSettings() {
             if (!settings.actionCommentText) return null
             action.text = settings.actionCommentText
             break
+
+        case "set_valve":
+            if (!settings.actionDevice || !settings.actionValveCommand) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            action.command = settings.actionValveCommand
+            break
+
+        case "set_fan_speed":
+            if (!settings.actionDevice || !settings.actionFanSpeed) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            action.speed = settings.actionFanSpeed
+            break
+
+        case "set_shade":
+            if (!settings.actionDevice) return null
+            action.deviceId = settings.actionDevice.id.toString()
+            if (settings.actionShadePosition != null) {
+                action.position = settings.actionShadePosition
+            } else if (settings.actionShadeCommand) {
+                action.command = settings.actionShadeCommand
+            } else {
+                return null  // Need either position or command
+            }
+            break
     }
 
     return action
@@ -1963,6 +2021,31 @@ def loadActionSettings(action) {
         case "comment":
             if (action.text) app.updateSetting("actionCommentText", action.text)
             break
+
+        case "set_valve":
+            if (action.deviceId) {
+                def device = parent.findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.valve", value: device.id])
+            }
+            if (action.command) app.updateSetting("actionValveCommand", action.command)
+            break
+
+        case "set_fan_speed":
+            if (action.deviceId) {
+                def device = parent.findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.fanControl", value: device.id])
+            }
+            if (action.speed) app.updateSetting("actionFanSpeed", action.speed)
+            break
+
+        case "set_shade":
+            if (action.deviceId) {
+                def device = parent.findDevice(action.deviceId)
+                if (device) app.updateSetting("actionDevice", [type: "capability.windowShade", value: device.id])
+            }
+            if (action.command) app.updateSetting("actionShadeCommand", action.command)
+            if (action.position != null) app.updateSetting("actionShadePosition", action.position)
+            break
     }
 }
 
@@ -2094,7 +2177,9 @@ def clearActionSettings() {
      // set_thermostat, http_request, speak, comment action settings
      "actionThermostatMode", "actionHeatingSetpoint", "actionCoolingSetpoint", "actionFanMode",
      "actionHttpMethod", "actionHttpUrl", "actionHttpContentType", "actionHttpBody",
-     "actionSpeakMessage", "actionSpeakVolume", "actionCommentText"].each {
+     "actionSpeakMessage", "actionSpeakVolume", "actionCommentText",
+     // set_valve, set_fan_speed, set_shade action settings
+     "actionValveCommand", "actionFanSpeed", "actionShadeCommand", "actionShadePosition"].each {
         app.removeSetting(it)
     }
 }
@@ -2396,6 +2481,22 @@ def describeAction(action) {
             def truncated = action.text?.length() > 50 ? action.text.substring(0, 50) + "..." : action.text
             return "Comment: ${truncated}"
 
+        case "set_valve":
+            def valveDev = parent.findDevice(action.deviceId)
+            def valveDevName = valveDev?.label ?: action.deviceId
+            return "${action.command?.capitalize()} valve ${valveDevName}"
+
+        case "set_fan_speed":
+            def fanDev = parent.findDevice(action.deviceId)
+            def fanDevName = fanDev?.label ?: action.deviceId
+            return "Set ${fanDevName} fan speed to ${action.speed}"
+
+        case "set_shade":
+            def shadeDev = parent.findDevice(action.deviceId)
+            def shadeDevName = shadeDev?.label ?: action.deviceId
+            if (action.position != null) return "Set ${shadeDevName} shade position to ${action.position}%"
+            return "${action.command?.capitalize()} shade ${shadeDevName}"
+
         default:
             return "Unknown action: ${action.type}"
     }
@@ -2409,9 +2510,13 @@ def subscribeToTriggers() {
         try {
             switch (trigger.type) {
                 case "device_event":
-                    def device = parent.findDevice(trigger.deviceId)
-                    if (device) {
-                        subscribe(device, trigger.attribute, "handleDeviceEvent")
+                    // Support multi-device triggers (deviceIds) and single device (deviceId)
+                    def deviceIdList = trigger.deviceIds ?: (trigger.deviceId ? [trigger.deviceId] : [])
+                    deviceIdList.each { devId ->
+                        def device = parent.findDevice(devId)
+                        if (device) {
+                            subscribe(device, trigger.attribute, "handleDeviceEvent")
+                        }
                     }
                     break
 
@@ -2504,6 +2609,32 @@ def subscribeToTriggers() {
 }
 
 /**
+ * Checks if a trigger matches a given device ID.
+ * Supports both single-device (deviceId) and multi-device (deviceIds) triggers.
+ */
+def triggerMatchesDevice(trigger, deviceIdStr) {
+    if (trigger.deviceIds) {
+        return trigger.deviceIds.collect { it.toString() }.contains(deviceIdStr)
+    }
+    return trigger.deviceId == deviceIdStr
+}
+
+/**
+ * For multi-device "all" mode triggers, checks that ALL devices in the list
+ * currently have the target attribute value. Returns true if all match.
+ */
+def checkAllDevicesMatch(trigger) {
+    if (!trigger.deviceIds) return true
+    return trigger.deviceIds.every { devId ->
+        def device = parent.findDevice(devId.toString())
+        if (!device) return false
+        def currentValue = device.currentValue(trigger.attribute)
+        if (trigger.value == null) return true  // No value constraint = any value is fine
+        return evaluateComparison(currentValue, trigger.operator ?: "equals", trigger.value)
+    }
+}
+
+/**
  * Evaluates a per-trigger condition gate. If the trigger has an inline "condition"
  * field, it must evaluate to true for the trigger to proceed. Returns true if
  * there is no condition or if the condition is met; false otherwise.
@@ -2537,14 +2668,25 @@ def handleDeviceEvent(evt) {
     if (!settings.ruleEnabled) return
     log.debug "Device event: ${evt.device.label} ${evt.name} = ${evt.value}"
 
+    def evtDeviceId = evt.device.id.toString()
+
     def matchingTrigger = atomicState.triggers?.find { t ->
         t.type == "device_event" &&
-        t.deviceId == evt.device.id.toString() &&
         t.attribute == evt.name &&
+        triggerMatchesDevice(t, evtDeviceId) &&
         (t.value == null || evaluateComparison(evt.value, t.operator ?: "equals", t.value))
     }
 
     if (matchingTrigger) {
+        // For "all" matchMode, verify ALL devices in the list currently match the target state
+        if (matchingTrigger.matchMode == "all" && matchingTrigger.deviceIds) {
+            def allMatch = checkAllDevicesMatch(matchingTrigger)
+            if (!allMatch) {
+                log.debug "Multi-device trigger (all mode): not all devices match, skipping"
+                return
+            }
+        }
+
         // Check per-trigger condition gate before proceeding
         if (!evaluateTriggerCondition(matchingTrigger, "device_event: ${evt.device.label} ${evt.name}")) return
 
@@ -2572,13 +2714,13 @@ def handleDeviceEvent(evt) {
             // If timer already running, just let it continue
         } else {
             // No duration - trigger immediately
-            executeRule("device_event: ${evt.device.label} ${evt.name}")
+            executeRule("device_event: ${evt.device.label} ${evt.name}", evt)
         }
     } else {
         // Condition no longer met - cancel any pending duration timer and reset fired state
         def triggersForDevice = atomicState.triggers?.findAll { t ->
             t.type == "device_event" &&
-            t.deviceId == evt.device.id.toString() &&
+            triggerMatchesDevice(t, evtDeviceId) &&
             t.attribute == evt.name &&
             t.duration && t.duration > 0
         }
@@ -2648,7 +2790,7 @@ def handleButtonEvent(evt) {
 
     if (matchingTrigger) {
         if (!evaluateTriggerCondition(matchingTrigger, "button_event: ${evt.device.label} ${evt.name}")) return
-        executeRule("button_event: ${evt.device.label} ${evt.name}")
+        executeRule("button_event: ${evt.device.label} ${evt.name}", evt)
     }
 }
 
@@ -2722,7 +2864,7 @@ def handleModeEvent(evt) {
 
     if (matchingTrigger) {
         if (!evaluateTriggerCondition(matchingTrigger, "mode_change: ${evt.value}")) return
-        executeRule("mode_change: ${evt.value}")
+        executeRule("mode_change: ${evt.value}", evt)
     }
 }
 
@@ -2735,11 +2877,11 @@ def handleHsmEvent(evt) {
 
     if (matchingTrigger) {
         if (!evaluateTriggerCondition(matchingTrigger, "hsm_change: ${evt.value}")) return
-        executeRule("hsm_change: ${evt.value}")
+        executeRule("hsm_change: ${evt.value}", evt)
     }
 }
 
-def executeRule(triggerSource) {
+def executeRule(triggerSource, evt = null) {
     log.info "Rule '${settings.ruleName}' triggered by ${triggerSource}"
 
     // Check conditions
@@ -2754,7 +2896,7 @@ def executeRule(triggerSource) {
     // Execute actions
     state.lastTriggered = now()
     state.executionCount = (state.executionCount ?: 0) + 1
-    executeActions()
+    executeActions(evt)
 }
 
 def evaluateConditions() {
@@ -2911,15 +3053,60 @@ def evaluateComparison(current, operator, target) {
     }
 }
 
-def executeActions() {
-    executeActionsFromIndex(0)
+/**
+ * Substitutes %variableName% placeholders in text with actual variable values.
+ * Supports built-in event variables (%device%, %value%, %name%, %time%, %date%),
+ * time variables (%now%), hub variables (%mode%), local rule variables, and global hub variables.
+ */
+def substituteVariables(String text, evt = null) {
+    if (!text) return text
+
+    def result = text
+
+    // Built-in event variables
+    if (evt) {
+        result = result.replace("%device%", evt.displayName ?: "")
+        result = result.replace("%value%", evt.value?.toString() ?: "")
+        result = result.replace("%name%", evt.name ?: "")
+        result = result.replace("%time%", new Date().format("HH:mm:ss"))
+        result = result.replace("%date%", new Date().format("yyyy-MM-dd"))
+    }
+    result = result.replace("%now%", new Date().format("yyyy-MM-dd HH:mm:ss"))
+    result = result.replace("%mode%", location.mode ?: "")
+
+    // Local variables
+    def locals = atomicState.localVariables ?: [:]
+    locals.each { name, value ->
+        result = result.replace("%${name}%", value?.toString() ?: "")
+    }
+
+    // Global hub variables
+    def varPattern = /%([^%]+)%/
+    def matcher = result =~ varPattern
+    while (matcher.find()) {
+        def varName = matcher.group(1)
+        try {
+            def hubVar = getGlobalVar(varName)
+            if (hubVar != null) {
+                result = result.replace("%${varName}%", hubVar.value?.toString() ?: "")
+            }
+        } catch (e) {
+            // Variable not found, leave placeholder
+        }
+    }
+
+    return result
 }
 
-def executeActionsFromIndex(startIndex) {
+def executeActions(evt = null) {
+    executeActionsFromIndex(0, evt)
+}
+
+def executeActionsFromIndex(startIndex, evt = null) {
     def actions = atomicState.actions ?: []
     for (int i = startIndex; i < actions.size(); i++) {
         def action = actions[i]
-        def result = executeAction(action, i)
+        def result = executeAction(action, i, evt)
         if (result == false) {
             break // Stop if action returns false (e.g., stop action)
         } else if (result == "delayed") {
@@ -2939,7 +3126,7 @@ def resumeDelayedActions(data) {
     executeActionsFromIndex(data.nextIndex)
 }
 
-def executeAction(action, actionIndex = null) {
+def executeAction(action, actionIndex = null, evt = null) {
     log.debug "Executing action: ${describeAction(action)}"
 
     switch (action.type) {
@@ -3164,7 +3351,7 @@ def executeAction(action, actionIndex = null) {
         case "send_notification":
             def notifyDevice = parent.findDevice(action.deviceId)
             if (notifyDevice) {
-                notifyDevice.deviceNotification(action.message)
+                notifyDevice.deviceNotification(substituteVariables(action.message, evt))
             }
             break
 
@@ -3229,6 +3416,87 @@ def executeAction(action, actionIndex = null) {
 
         case "comment":
             log.info "Comment: ${action.text}"
+            break
+
+        case "set_valve":
+            def valveDevice = parent.findDevice(action.deviceId)
+            if (valveDevice) {
+                try {
+                    if (action.command == "open") {
+                        valveDevice.open()
+                    } else if (action.command == "close") {
+                        valveDevice.close()
+                    }
+                } catch (Exception e) {
+                    log.error "Error setting valve ${valveDevice.label}: ${e.message}"
+                }
+            }
+            break
+
+        case "set_fan_speed":
+            def fanDevice = parent.findDevice(action.deviceId)
+            if (fanDevice) {
+                try {
+                    fanDevice.setSpeed(action.speed)
+                } catch (Exception e) {
+                    log.error "Error setting fan speed on ${fanDevice.label}: ${e.message}"
+                }
+            }
+            break
+
+        case "set_shade":
+            def shadeDevice = parent.findDevice(action.deviceId)
+            if (shadeDevice) {
+                try {
+                    if (action.position != null) {
+                        shadeDevice.setPosition(action.position)
+                    } else if (action.command == "open") {
+                        shadeDevice.open()
+                    } else if (action.command == "close") {
+                        shadeDevice.close()
+                    }
+                } catch (Exception e) {
+                    log.error "Error setting shade ${shadeDevice.label}: ${e.message}"
+                }
+            }
+            break
+
+        case "variable_math":
+            def varName = action.variableName
+            def scope = action.scope ?: "local"
+            def currentVal = 0
+
+            if (scope == "local") {
+                def locals = atomicState.localVariables ?: [:]
+                currentVal = locals[varName] ?: 0
+            } else {
+                // Global hub variable
+                def hubVar = getGlobalVar(varName)
+                currentVal = hubVar?.value ?: 0
+            }
+
+            // Ensure numeric
+            currentVal = currentVal instanceof Number ? currentVal : (currentVal?.toString()?.isNumber() ? currentVal.toString().toBigDecimal() : 0)
+            def operand = action.operand instanceof Number ? action.operand : action.operand?.toString()?.toBigDecimal() ?: 0
+
+            def mathResult
+            switch (action.operation) {
+                case "add": mathResult = currentVal + operand; break
+                case "subtract": mathResult = currentVal - operand; break
+                case "multiply": mathResult = currentVal * operand; break
+                case "divide": mathResult = operand != 0 ? currentVal / operand : currentVal; break
+                case "modulo": mathResult = operand != 0 ? currentVal % operand : currentVal; break
+                case "set": mathResult = operand; break
+                default: mathResult = currentVal
+            }
+
+            if (scope == "local") {
+                def locals = atomicState.localVariables ?: [:]
+                locals[varName] = mathResult
+                atomicState.localVariables = locals
+            } else {
+                setGlobalVar(varName, mathResult)
+            }
             break
     }
 

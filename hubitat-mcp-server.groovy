@@ -431,7 +431,7 @@ PERFORMANCE NOTE: Returns summary information for all rules. For hubs with many 
 
 TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), mode_change, hsm_change
 CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
-ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log, set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation only)
+ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log, set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation only), set_valve (open/close), set_fan_speed (low/medium/high/auto), set_shade (open/close/position)
 
 Always verify rule created correctly after.""",
             inputSchema: [
@@ -2134,8 +2134,17 @@ def validateAction(action) {
         case "set_thermostat":
             if (!action.deviceId) throw new IllegalArgumentException("set_thermostat action requires deviceId")
             if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
+            if (!action.thermostatMode && action.heatingSetpoint == null && action.coolingSetpoint == null && !action.fanMode) {
+                throw new IllegalArgumentException("set_thermostat requires at least one of: thermostatMode, heatingSetpoint, coolingSetpoint, fanMode")
+            }
             if (action.thermostatMode && !["heat", "cool", "auto", "off", "emergency heat"].contains(action.thermostatMode)) {
                 throw new IllegalArgumentException("set_thermostat: invalid thermostatMode '${action.thermostatMode}'")
+            }
+            if (action.heatingSetpoint != null && (action.heatingSetpoint < 40 || action.heatingSetpoint > 100)) {
+                throw new IllegalArgumentException("set_thermostat: heatingSetpoint must be 40-100")
+            }
+            if (action.coolingSetpoint != null && (action.coolingSetpoint < 40 || action.coolingSetpoint > 100)) {
+                throw new IllegalArgumentException("set_thermostat: coolingSetpoint must be 40-100")
             }
             if (action.fanMode && !["auto", "on", "circulate"].contains(action.fanMode)) {
                 throw new IllegalArgumentException("set_thermostat: invalid fanMode '${action.fanMode}'")
@@ -2143,8 +2152,14 @@ def validateAction(action) {
             break
         case "http_request":
             if (!action.url) throw new IllegalArgumentException("http_request action requires url")
+            if (!(action.url.startsWith("http://") || action.url.startsWith("https://"))) {
+                throw new IllegalArgumentException("http_request: url must start with http:// or https://")
+            }
             if (action.method && !["GET", "POST"].contains(action.method)) {
                 throw new IllegalArgumentException("http_request: method must be GET or POST")
+            }
+            if (action.method == "POST" && !action.body) {
+                throw new IllegalArgumentException("http_request: body is required for POST requests")
             }
             break
         case "speak":
@@ -2154,6 +2169,35 @@ def validateAction(action) {
             break
         case "comment":
             if (!action.text) throw new IllegalArgumentException("comment action requires text")
+            break
+        case "set_valve":
+            if (!action.deviceId) throw new IllegalArgumentException("set_valve action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
+            if (!action.command) throw new IllegalArgumentException("set_valve action requires command")
+            if (!["open", "close"].contains(action.command)) {
+                throw new IllegalArgumentException("set_valve: command must be 'open' or 'close'")
+            }
+            break
+        case "set_fan_speed":
+            if (!action.deviceId) throw new IllegalArgumentException("set_fan_speed action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
+            if (!action.speed) throw new IllegalArgumentException("set_fan_speed action requires speed")
+            if (!["low", "medium-low", "medium", "medium-high", "high", "on", "off", "auto"].contains(action.speed)) {
+                throw new IllegalArgumentException("set_fan_speed: invalid speed '${action.speed}'")
+            }
+            break
+        case "set_shade":
+            if (!action.deviceId) throw new IllegalArgumentException("set_shade action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
+            if (action.command == null && action.position == null) {
+                throw new IllegalArgumentException("set_shade action requires command or position")
+            }
+            if (action.command && !["open", "close"].contains(action.command)) {
+                throw new IllegalArgumentException("set_shade: command must be 'open' or 'close'")
+            }
+            if (action.position != null && (action.position < 0 || action.position > 100)) {
+                throw new IllegalArgumentException("set_shade: position must be 0-100")
+            }
             break
         default:
             throw new IllegalArgumentException("Unknown action type: ${action.type}")
