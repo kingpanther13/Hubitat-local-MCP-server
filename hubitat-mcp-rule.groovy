@@ -2289,20 +2289,26 @@ def subscribeToTriggers() {
                     } else if (trigger.sunrise) {
                         if (location.sunrise) {
                             def offset = trigger.offset ?: 0
-                            // schedule() does not accept Long — convert to Date for runOnce()
-                            // Use runOnce() since sunrise time changes daily
                             def sunriseDate = new Date(location.sunrise.time + (offset * 60000))
-                            runOnce(sunriseDate, "handleTimeEvent", [overwrite: true])
+                            // If sunrise already passed today, schedule for tomorrow
+                            if (sunriseDate.time <= now()) {
+                                sunriseDate = new Date(sunriseDate.time + 86400000)
+                            }
+                            // Use distinct handler name so sunset runOnce doesn't overwrite this
+                            runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
                         } else {
                             log.warn "Cannot schedule sunrise trigger: sunrise time not available for this location"
                         }
                     } else if (trigger.sunset) {
                         if (location.sunset) {
                             def offset = trigger.offset ?: 0
-                            // schedule() does not accept Long — convert to Date for runOnce()
-                            // Use runOnce() since sunset time changes daily
                             def sunsetDate = new Date(location.sunset.time + (offset * 60000))
-                            runOnce(sunsetDate, "handleTimeEvent", [overwrite: true])
+                            // If sunset already passed today, schedule for tomorrow
+                            if (sunsetDate.time <= now()) {
+                                sunsetDate = new Date(sunsetDate.time + 86400000)
+                            }
+                            // Use distinct handler name so sunrise runOnce doesn't overwrite this
+                            runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
                         } else {
                             log.warn "Cannot schedule sunset trigger: sunset time not available for this location"
                         }
@@ -2475,32 +2481,53 @@ def handleButtonEvent(evt) {
 
 def handleTimeEvent() {
     if (!settings.ruleEnabled) return
-    // Re-schedule sunrise/sunset triggers for the next day (runOnce only fires once)
-    rescheduleRunOnceTriggers()
     executeRule("time trigger")
 }
 
-def rescheduleRunOnceTriggers() {
-    atomicState.triggers?.findAll { it.type == "time" && (it.sunrise || it.sunset) }?.each { trigger ->
+def handleSunriseEvent() {
+    if (!settings.ruleEnabled) return
+    // Re-schedule this sunrise trigger for the next day (runOnce only fires once)
+    rescheduleSunriseTrigger()
+    executeRule("sunrise trigger")
+}
+
+def handleSunsetEvent() {
+    if (!settings.ruleEnabled) return
+    // Re-schedule this sunset trigger for the next day (runOnce only fires once)
+    rescheduleSunsetTrigger()
+    executeRule("sunset trigger")
+}
+
+def rescheduleSunriseTrigger() {
+    atomicState.triggers?.findAll { it.type == "time" && it.sunrise }?.each { trigger ->
         try {
-            if (trigger.sunrise && location.sunrise) {
+            if (location.sunrise) {
                 def offset = trigger.offset ?: 0
                 def sunriseDate = new Date(location.sunrise.time + (offset * 60000))
-                // If today's sunrise already passed, schedule for tomorrow
                 if (sunriseDate.time <= now()) {
                     sunriseDate = new Date(sunriseDate.time + 86400000)
                 }
-                runOnce(sunriseDate, "handleTimeEvent", [overwrite: true])
-            } else if (trigger.sunset && location.sunset) {
+                runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
+            }
+        } catch (Exception e) {
+            log.error "Failed to reschedule sunrise trigger: ${e.message}"
+        }
+    }
+}
+
+def rescheduleSunsetTrigger() {
+    atomicState.triggers?.findAll { it.type == "time" && it.sunset }?.each { trigger ->
+        try {
+            if (location.sunset) {
                 def offset = trigger.offset ?: 0
                 def sunsetDate = new Date(location.sunset.time + (offset * 60000))
                 if (sunsetDate.time <= now()) {
                     sunsetDate = new Date(sunsetDate.time + 86400000)
                 }
-                runOnce(sunsetDate, "handleTimeEvent", [overwrite: true])
+                runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
             }
         } catch (Exception e) {
-            log.error "Failed to reschedule sunrise/sunset trigger: ${e.message}"
+            log.error "Failed to reschedule sunset trigger: ${e.message}"
         }
     }
 }
