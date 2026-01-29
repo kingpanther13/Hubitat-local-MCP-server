@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.3.0 - Added rule export, import, and clone functionality
+ * Version: 0.3.0 - Version update check feature + daily GitHub update notifications
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -46,6 +46,9 @@ def mainPage() {
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> 0.3.0"
+                if (state.updateCheck?.updateAvailable) {
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                }
             }
         }
 
@@ -189,6 +192,9 @@ def initialize() {
     if (!state.ruleVariables) {
         state.ruleVariables = [:]
     }
+    // Schedule daily version update check at 3am and run immediately
+    schedule("0 0 3 ? * *", "checkForUpdate")
+    checkForUpdate()
 }
 
 // ==================== MCP REQUEST HANDLERS ====================
@@ -206,7 +212,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.12"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.3.0"}')
 }
 
 def handleMcpGet() {
@@ -273,15 +279,19 @@ def handleNotification(msg) {
 }
 
 def handleInitialize(msg) {
+    def info = [
+        name: "hubitat-mcp-rule-server",
+        version: "0.3.0"
+    ]
+    if (state.updateCheck?.updateAvailable) {
+        info.updateAvailable = state.updateCheck.latestVersion
+    }
     return jsonRpcResult(msg.id, [
         protocolVersion: "2024-11-05",
         capabilities: [
             tools: [:]
         ],
-        serverInfo: [
-            name: "hubitat-mcp-rule-server",
-            version: "0.2.12"
-        ]
+        serverInfo: info
     ])
 }
 
@@ -712,6 +722,14 @@ The deviceMapping is an object where keys are old device IDs and values are new 
                 ],
                 required: ["ruleId"]
             ]
+        ],
+        [
+            name: "check_for_update",
+            description: "Check if a newer version of MCP Rule Server is available on GitHub",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
         ]
     ]
 }
@@ -762,6 +780,9 @@ def executeTool(toolName, args) {
         case "export_rule": return toolExportRule(args)
         case "import_rule": return toolImportRule(args)
         case "clone_rule": return toolCloneRule(args)
+
+        // Version Check
+        case "check_for_update": return toolCheckForUpdate(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -2396,8 +2417,8 @@ def toolGetLoggingStatus(args) {
     initDebugLogs()
     def entries = state.debugLogs.entries ?: []
 
-    return [
-        version: "0.2.12",
+    def result = [
+        version: "0.3.0",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2411,10 +2432,14 @@ def toolGetLoggingStatus(args) {
         oldestEntry: entries.size() > 0 ? formatTimestamp(entries.first().timestamp) : null,
         newestEntry: entries.size() > 0 ? formatTimestamp(entries.last().timestamp) : null
     ]
+    if (state.updateCheck?.updateAvailable) {
+        result.updateAvailable = state.updateCheck.latestVersion
+    }
+    return result
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.2.12"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.3.0"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -2517,10 +2542,123 @@ _Add any other context about the problem here._
 
 Thank you for helping improve the MCP Rule Server!"""
 
-    return [
+    def result = [
         success: true,
         report: report,
         submitUrl: "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/new",
         instructions: "Copy the 'report' field content and paste it into a new GitHub issue at the submitUrl. Add any additional context or screenshots that might help diagnose the issue."
     ]
+    if (state.updateCheck?.updateAvailable) {
+        result.updateAvailable = state.updateCheck.latestVersion
+    }
+    return result
+}
+
+// ==================== VERSION UPDATE CHECK ====================
+
+def currentVersion() {
+    return "0.3.0"
+}
+
+def isNewerVersion(String remote, String local) {
+    try {
+        def remoteParts = remote.tokenize('.').collect { it as int }
+        def localParts = local.tokenize('.').collect { it as int }
+        def maxLen = Math.max(remoteParts.size(), localParts.size())
+        for (int i = 0; i < maxLen; i++) {
+            def r = i < remoteParts.size() ? remoteParts[i] : 0
+            def l = i < localParts.size() ? localParts[i] : 0
+            if (r > l) return true
+            if (r < l) return false
+        }
+        return false
+    } catch (Exception e) {
+        log.warn "Version comparison failed: ${e.message}"
+        return false
+    }
+}
+
+def checkForUpdate() {
+    try {
+        // Skip if checked within last 24 hours (unless forced)
+        if (state.updateCheck?.checkedAt) {
+            def hoursSinceCheck = (now() - state.updateCheck.checkedAt) / (1000 * 60 * 60)
+            if (hoursSinceCheck < 24) {
+                logDebug("Version check skipped - last checked ${hoursSinceCheck.round(1)} hours ago")
+                return
+            }
+        }
+        doUpdateCheck()
+    } catch (Exception e) {
+        log.warn "Version update check failed: ${e.message}"
+    }
+}
+
+def doUpdateCheck() {
+    try {
+        def params = [
+            uri: "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json",
+            contentType: "application/json",
+            timeout: 30
+        ]
+        asynchttpGet("handleUpdateCheckResponse", params)
+    } catch (Exception e) {
+        log.warn "Failed to initiate version check: ${e.message}"
+    }
+}
+
+def handleUpdateCheckResponse(resp, data) {
+    try {
+        if (resp.status != 200) {
+            log.warn "Version check HTTP error: ${resp.status}"
+            return
+        }
+        def json = new groovy.json.JsonSlurper().parseText(resp.data)
+        def latestVersion = json.version
+        if (!latestVersion) {
+            log.warn "Version check: no version field in response"
+            return
+        }
+        def installed = currentVersion()
+        def updateAvailable = isNewerVersion(latestVersion, installed)
+        state.updateCheck = [
+            latestVersion: latestVersion,
+            checkedAt: now(),
+            updateAvailable: updateAvailable
+        ]
+        if (updateAvailable) {
+            log.info "MCP Rule Server update available: v${latestVersion} (installed: v${installed})"
+        } else {
+            logDebug("MCP Rule Server is up to date (v${installed})")
+        }
+    } catch (Exception e) {
+        log.warn "Version check response parsing failed: ${e.message}"
+    }
+}
+
+def toolCheckForUpdate(args) {
+    try {
+        // Force check by clearing the checkedAt timestamp
+        if (state.updateCheck) {
+            state.updateCheck.checkedAt = null
+        }
+        doUpdateCheck()
+        // Return current state (async call may not have completed yet)
+        def installed = currentVersion()
+        def updateInfo = state.updateCheck ?: [:]
+        return [
+            success: true,
+            installedVersion: installed,
+            latestVersion: updateInfo.latestVersion ?: "unknown (check in progress)",
+            updateAvailable: updateInfo.updateAvailable ?: false,
+            lastChecked: updateInfo.checkedAt ? formatTimestamp(updateInfo.checkedAt) : "checking now",
+            note: "Version check is asynchronous. If latestVersion shows 'unknown', call this tool again in a few seconds to see the result."
+        ]
+    } catch (Exception e) {
+        return [
+            success: false,
+            error: "Version check failed: ${e.message}",
+            installedVersion: currentVersion()
+        ]
+    }
 }
