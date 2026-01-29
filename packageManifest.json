@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-01-29",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.3.0 - Major feature release: Rule portability, new action types, conditional triggers, and reliability improvements.\n\nNEW FEATURES:\n- Rule export/import/clone: export_rule exports rules as portable JSON with device manifest; import_rule imports with optional device ID remapping; clone_rule duplicates existing rules (disabled by default)\n- Conditional triggers: Per-trigger condition gates — individual triggers only fire when their inline condition is met\n- 8 new action types: set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation-only no-op), set_valve (open/close), set_fan_speed, set_shade (open/close/position), variable_math (arithmetic on local/global variables)\n- Variable math: add, subtract, multiply, divide, modulo, set operations on local or global variables\n- String substitution in actions: %device%, %value%, %name%, %time%, %date%, %now%, %mode%, and variable references\n- Version update check: Automatic daily check against GitHub with UI banner and check_for_update MCP tool\n- Sunrise/sunset trigger normalization: Accepts 6+ input formats and auto-normalizes to canonical form\n\nRELIABILITY:\n- Debug logging overhaul: 45+ silent failure points now route through MCP debug log system\n- Child app ruleLog() bridge to parent mcpLog() with fallback to standard logging\n\n34 MCP tools total (up from 30).",
+    "releaseNotes": "v0.3.1 - Bug fixes from comprehensive v0.3.0 testing:\n- Fixed test_rule dry run showing 'Unknown action: variable_math' (missing describeAction case)\n- Fixed test_rule dry run showing 'Log [null]' for log actions without explicit level (defaults to 'info')\n- Fixed set_log_level not persisting between requests (nested state mutation + enum setting type)\n\nSee v0.3.0 release notes for major feature changes.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

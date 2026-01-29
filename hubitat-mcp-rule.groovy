@@ -2397,7 +2397,7 @@ def describeAction(action) {
             return "Wait ${action.seconds} seconds"
 
         case "log":
-            return "Log [${action.level}]: '${action.message}'"
+            return "Log [${action.level ?: 'info'}]: '${action.message}'"
 
         case "stop":
             return "Stop rule execution"
@@ -2496,6 +2496,10 @@ def describeAction(action) {
             def shadeDevName = shadeDev?.label ?: action.deviceId
             if (action.position != null) return "Set ${shadeDevName} shade position to ${action.position}%"
             return "${action.command?.capitalize()} shade ${shadeDevName}"
+
+        case "variable_math":
+            def mathScope = action.scope ?: "local"
+            return "Variable math: ${mathScope} '${action.variableName}' ${action.operation} ${action.operand}"
 
         default:
             return "Unknown action: ${action.type}"

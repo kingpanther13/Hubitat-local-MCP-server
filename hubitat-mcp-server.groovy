@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.3.0 - Version update check feature + daily GitHub update notifications
+ * Version: 0.3.1 - Version update check feature + daily GitHub update notifications
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.3.0"
+                paragraph "<b>Version:</b> 0.3.1"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -212,7 +212,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.3.0"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.3.1"}')
 }
 
 def handleMcpGet() {
@@ -281,7 +281,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.3.0"
+        version: "0.3.1"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1278,7 +1278,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.3.0",
+        serverVersion: "0.3.1",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -2532,9 +2532,12 @@ def toolSetLogLevel(args) {
     initDebugLogs()
     // Log BEFORE changing level so confirmation isn't suppressed when raising threshold
     mcpLog("info", "server", "Log level changed from ${previousLevel} to: ${level}")
-    state.debugLogs.config.logLevel = level
-    // Also update the setting so UI stays in sync
-    app.updateSetting("mcpLogLevel", level)
+    // Use read-modify-write for state persistence (nested mutations don't persist in Hubitat)
+    def config = state.debugLogs.config ?: [:]
+    config.logLevel = level
+    state.debugLogs = [entries: state.debugLogs.entries ?: [], config: config]
+    // Update the setting so UI stays in sync (use [type, value] map for enum settings)
+    app.updateSetting("mcpLogLevel", [type: "enum", value: level])
 
     return [
         success: true,
@@ -2548,7 +2551,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.3.0",
+        version: "0.3.1",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2569,7 +2572,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.3.0"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.3.1"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -2687,7 +2690,7 @@ Thank you for helping improve the MCP Rule Server!"""
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.3.0"
+    return "0.3.1"
 }
 
 def isNewerVersion(String remote, String local) {

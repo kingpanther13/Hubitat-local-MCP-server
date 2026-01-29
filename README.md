@@ -483,6 +483,10 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.3.1** - Bug fixes from comprehensive v0.3.0 testing:
+  - Fixed `test_rule` dry run showing "Unknown action: variable_math" (missing `describeAction()` case in child app)
+  - Fixed `test_rule` dry run showing "Log [null]" for log actions without explicit level (now defaults to "info")
+  - Fixed `set_log_level` not persisting between MCP requests (nested `state` mutation + enum setting type fix)
 - **v0.3.0** - Major feature release: Rule portability, new action types, conditional triggers, and reliability improvements
   - **Rule export/import/clone**: `export_rule` exports rules as portable JSON with a device manifest; `import_rule` imports with optional device ID remapping; `clone_rule` duplicates an existing rule (disabled by default)
   - **Conditional triggers**: Each trigger can now have an inline `condition` gate — the trigger only fires if its condition evaluates to true
