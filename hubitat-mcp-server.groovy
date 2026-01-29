@@ -225,7 +225,8 @@ def handleMcpRequest() {
         response = processJsonRpcMessage(requestBody)
     }
 
-    if (response == null) {
+    // Per JSON-RPC 2.0 spec: if no response objects (all notifications), return nothing
+    if (response == null || (response instanceof List && response.isEmpty())) {
         return render(status: 202, contentType: "application/json", data: "")
     }
 
@@ -734,6 +735,7 @@ def toolListDevices(detailed, offset, limit) {
 
     // Apply pagination
     def startIndex = offset ?: 0
+    if (startIndex < 0) startIndex = 0
     def endIndex = totalCount
     if (limit && limit > 0) {
         endIndex = Math.min(startIndex + limit, totalCount)
@@ -881,6 +883,7 @@ def toolSendCommand(deviceId, command, parameters) {
 }
 
 def toolGetDeviceEvents(deviceId, limit) {
+    if (limit == null || limit < 1) limit = 10
     def device = findDevice(deviceId)
     if (!device) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -1081,8 +1084,15 @@ def toolUpdateRule(ruleId, args) {
 
     // Update via child app API
     def updateData = [:]
-    if (args.name != null) updateData.name = args.name.trim()
-    if (args.description != null) updateData.description = args.description
+    if (args.name != null) {
+        updateData.name = args.name.trim()
+        childApp.updateSetting("ruleName", args.name.trim())
+        childApp.updateLabel(args.name.trim())
+    }
+    if (args.description != null) {
+        updateData.description = args.description
+        childApp.updateSetting("ruleDescription", args.description)
+    }
     if (args.enabled != null) updateData.enabled = args.enabled
     if (args.triggers != null) updateData.triggers = args.triggers
     if (args.conditions != null) updateData.conditions = args.conditions
@@ -1564,25 +1574,26 @@ def validateTrigger(trigger) {
             }
             break
         case "periodic":
-            if (trigger.interval != null) {
-                def interval = trigger.interval as Integer
-                def unit = trigger.unit ?: "minutes"
-                if (interval < 1) {
-                    throw new IllegalArgumentException("periodic trigger interval must be at least 1")
-                }
-                switch (unit) {
-                    case "minutes":
-                        if (interval > 59) throw new IllegalArgumentException("periodic trigger interval for minutes must be 1-59 (got ${interval}). Use hours for larger intervals.")
-                        break
-                    case "hours":
-                        if (interval > 23) throw new IllegalArgumentException("periodic trigger interval for hours must be 1-23 (got ${interval}). Use days for larger intervals.")
-                        break
-                    case "days":
-                        if (interval > 31) throw new IllegalArgumentException("periodic trigger interval for days must be 1-31 (got ${interval})")
-                        break
-                    default:
-                        throw new IllegalArgumentException("periodic trigger unit must be minutes, hours, or days (got ${unit})")
-                }
+            if (trigger.interval == null) {
+                throw new IllegalArgumentException("periodic trigger requires interval")
+            }
+            def periodicInterval = trigger.interval as Integer
+            def periodicUnit = trigger.unit ?: "minutes"
+            if (periodicInterval < 1) {
+                throw new IllegalArgumentException("periodic trigger interval must be at least 1")
+            }
+            switch (periodicUnit) {
+                case "minutes":
+                    if (periodicInterval > 59) throw new IllegalArgumentException("periodic trigger interval for minutes must be 1-59 (got ${periodicInterval}). Use hours for larger intervals.")
+                    break
+                case "hours":
+                    if (periodicInterval > 23) throw new IllegalArgumentException("periodic trigger interval for hours must be 1-23 (got ${periodicInterval}). Use days for larger intervals.")
+                    break
+                case "days":
+                    if (periodicInterval > 31) throw new IllegalArgumentException("periodic trigger interval for days must be 1-31 (got ${periodicInterval})")
+                    break
+                default:
+                    throw new IllegalArgumentException("periodic trigger unit must be minutes, hours, or days (got ${periodicUnit})")
             }
             break
         case "mode_change":
@@ -1782,7 +1793,7 @@ def validateAction(action) {
             break
         case "set_color_temperature":
             if (!action.deviceId) throw new IllegalArgumentException("set_color_temperature action requires deviceId")
-            if (!action.temperature) throw new IllegalArgumentException("set_color_temperature action requires temperature")
+            if (action.temperature == null) throw new IllegalArgumentException("set_color_temperature action requires temperature")
             break
         case "lock":
         case "unlock":
