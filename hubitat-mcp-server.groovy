@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.3.2 - Comprehensive bug fixes (25 bugs fixed)
+ * Version: 0.3.3 - Multi-device trigger support, validation fixes
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.3.2"
+                paragraph "<b>Version:</b> 0.3.3"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -306,7 +306,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.3.2"
+        version: "0.3.3"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -461,7 +461,8 @@ PERFORMANCE NOTE: Returns summary information for all rules. For hubs with many 
   "actions": [...]
 }
 
-TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), periodic (interval-based), mode_change, hsm_change
+TRIGGERS: device_event (with duration for debouncing; supports multi-device via deviceIds array with matchMode any/all), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), periodic (interval-based), mode_change, hsm_change
+MULTI-DEVICE TRIGGER: {"type":"device_event","deviceIds":["id1","id2"],"attribute":"switch","value":"on","matchMode":"all"} - triggers when any device changes, optionally requires all to match
 TIME TRIGGER EXAMPLES: {"type":"time","time":"08:30"}, {"type":"time","sunrise":true,"offset":30}, {"type":"time","sunset":true,"offset":-15}
   sunrise/sunset offset is in minutes (positive=after, negative=before). Many formats accepted and auto-normalized.
 CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
@@ -1303,7 +1304,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.3.2",
+        serverVersion: "0.3.3",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -1961,9 +1962,24 @@ def validateTrigger(trigger) {
 
     switch (trigger.type) {
         case "device_event":
-            if (!trigger.deviceId) throw new IllegalArgumentException("device_event trigger requires deviceId")
+            // Support single device (deviceId) or multi-device (deviceIds array)
+            if (!trigger.deviceId && !trigger.deviceIds) throw new IllegalArgumentException("device_event trigger requires deviceId or deviceIds")
             if (!trigger.attribute) throw new IllegalArgumentException("device_event trigger requires attribute")
-            if (!findDevice(trigger.deviceId)) throw new IllegalArgumentException("Device not found: ${trigger.deviceId}")
+            if (trigger.deviceId) {
+                if (!findDevice(trigger.deviceId)) throw new IllegalArgumentException("Device not found: ${trigger.deviceId}")
+            }
+            if (trigger.deviceIds) {
+                if (!(trigger.deviceIds instanceof List) || trigger.deviceIds.size() == 0) {
+                    throw new IllegalArgumentException("device_event trigger deviceIds must be a non-empty list")
+                }
+                trigger.deviceIds.each { devId ->
+                    if (!findDevice(devId)) throw new IllegalArgumentException("Device not found: ${devId}")
+                }
+                // Validate matchMode if present
+                if (trigger.matchMode && !["any", "all"].contains(trigger.matchMode)) {
+                    throw new IllegalArgumentException("device_event trigger matchMode must be 'any' or 'all' (got '${trigger.matchMode}')")
+                }
+            }
             // Validate operator if present
             validateOperator(trigger.operator, "device_event trigger")
             // Validate duration if present (for debouncing)
@@ -2052,6 +2068,10 @@ def validateCondition(condition) {
             if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
             // Validate operator if present
             validateOperator(condition.operator, "device_was condition")
+            // Require value when operator is specified (same as device_state)
+            if (condition.operator && condition.value == null) {
+                throw new IllegalArgumentException("device_was condition requires value when operator is specified")
+            }
             // Validate forSeconds duration (for "state for X seconds" checks)
             validateDuration(condition.forSeconds, "device_was condition")
             break
@@ -2600,7 +2620,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.3.2",
+        version: "0.3.3",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2621,7 +2641,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.3.2"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.3.3"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -2739,7 +2759,7 @@ Thank you for helping improve the MCP Rule Server!"""
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.3.2"
+    return "0.3.3"
 }
 
 def isNewerVersion(String remote, String local) {

@@ -1024,8 +1024,8 @@ def loadConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("conditionDevice", [type: "capability.illuminanceMeasurement", value: device.id])
             }
-            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
-            if (condition.value != null) app.updateSetting("conditionValue", condition.value)
+            if (condition.operator) app.updateSetting("conditionOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("conditionValue", [type: "text", value: condition.value])
             break
 
         case "power":
@@ -1033,8 +1033,8 @@ def loadConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("conditionDevice", [type: "capability.powerMeter", value: device.id])
             }
-            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
-            if (condition.value != null) app.updateSetting("conditionValue", condition.value)
+            if (condition.operator) app.updateSetting("conditionOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("conditionValue", [type: "text", value: condition.value])
             break
     }
 }
@@ -2768,7 +2768,8 @@ def handleDeviceEvent(evt) {
         }
 
         triggersForDevice?.each { t ->
-            def triggerKey = "duration_${t.deviceId}_${t.attribute}"
+            def tDeviceKey = t.deviceId ?: (t.deviceIds?.sort()?.join("_") ?: "unknown")
+            def triggerKey = "duration_${tDeviceKey}_${t.attribute}"
             if (state.durationTimers?.get(triggerKey)) {
                 log.debug "Duration trigger: condition no longer met, canceling timer for ${evt.device.label} ${evt.name}"
                 state.durationTimers.remove(triggerKey)
@@ -2796,14 +2797,30 @@ def checkDurationTrigger(data) {
 
     // Re-check that the condition is still met
     def trigger = timerData.trigger
-    def device = parent.findDevice(trigger.deviceId)
-    if (!device) {
-        state.durationTimers.remove(triggerKey)
-        return
-    }
+    def stillMet = false
 
-    def currentValue = device.currentValue(trigger.attribute)
-    def stillMet = trigger.value == null || evaluateComparison(currentValue, trigger.operator ?: "equals", trigger.value)
+    if (trigger.deviceIds) {
+        // Multi-device trigger: check based on matchMode
+        if (trigger.matchMode == "all") {
+            stillMet = checkAllDevicesMatch(trigger)
+        } else {
+            // "any" mode: at least one device still matches
+            stillMet = trigger.deviceIds.any { devId ->
+                def dev = parent.findDevice(devId.toString())
+                if (!dev) return false
+                def val = dev.currentValue(trigger.attribute)
+                return trigger.value == null || evaluateComparison(val, trigger.operator ?: "equals", trigger.value)
+            }
+        }
+    } else {
+        def device = parent.findDevice(trigger.deviceId)
+        if (!device) {
+            state.durationTimers.remove(triggerKey)
+            return
+        }
+        def currentValue = device.currentValue(trigger.attribute)
+        stillMet = trigger.value == null || evaluateComparison(currentValue, trigger.operator ?: "equals", trigger.value)
+    }
 
     if (stillMet) {
         def durationDisplay = formatDurationForDisplay(trigger)

@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.3.2",
+    "version": "0.3.3",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-01-29",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.3.2 - Comprehensive bug fixes (25 bugs fixed):\n\nHIGH:\n- Fixed inverted trigger guards in time/sunrise/sunset handlers that could fire rules without matching trigger\n- Fixed evt not forwarded to nested actions in if_then_else and repeat blocks\n- Added missing findDevice() validation for set_level, set_color, set_color_temperature, lock, unlock, activate_scene\n\nMEDIUM:\n- Added substituteVariables() to log, speak, set_variable, and set_local_variable actions\n- Fixed thermostat setpoint validation to support both Fahrenheit (40-100) and Celsius (4-38)\n- Added unschedule() to enableRule() to prevent duplicate scheduled triggers\n- Added validation for set_hsm status and set_mode mode names\n- Added value requirement for device_state and variable conditions when operator specified\n- Fixed JSON-RPC protocol: empty batch error, missing method error code, parse error handling\n- Added equals/not_equals operators for illuminance/power in if_then_else UI\n- Wired clearAllSubPageSettings() to main page to clean up orphaned form state\n\nLOW:\n- Fixed duration trigger key collision for multi-device triggers\n- Fixed hardcoded health endpoint version (now uses currentVersion())\n- Added variable_math to UI (renderActionFields, buildActionFromSettings, loadActionSettings)\n- Fixed falsy value loss (0, empty string) in UI load functions\n- Changed HTTP 202 to 204 for JSON-RPC notifications\n- Made periodic trigger UI range unit-aware\n- Converted ~150 updateSetting() calls to typed format\n- Added default case to executeAction() for unknown action types",
+    "releaseNotes": "v0.3.3 - Multi-device trigger support and validation fixes:\n\n- Added multi-device trigger support: device_event triggers now accept deviceIds array with matchMode (any/all)\n- Fixed duration trigger key mismatch in cancellation path for multi-device triggers\n- Fixed checkDurationTrigger to handle multi-device triggers (checks all/any devices based on matchMode)\n- Added missing value validation for device_was condition when operator is specified\n- Fixed missing typed updateSetting for illuminance and power condition loading",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
