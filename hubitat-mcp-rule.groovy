@@ -2262,6 +2262,7 @@ def describeAction(action) {
 // ==================== RULE EXECUTION ====================
 
 def subscribeToTriggers() {
+    def subscribedEvents = [] as Set
     atomicState.triggers?.each { trigger ->
         try {
             switch (trigger.type) {
@@ -2316,11 +2317,17 @@ def subscribeToTriggers() {
                     break
 
                 case "mode_change":
-                    subscribe(location, "mode", "handleModeEvent")
+                    if (!subscribedEvents.contains("location:mode")) {
+                        subscribe(location, "mode", "handleModeEvent")
+                        subscribedEvents.add("location:mode")
+                    }
                     break
 
                 case "hsm_change":
-                    subscribe(location, "hsmStatus", "handleHsmEvent")
+                    if (!subscribedEvents.contains("location:hsmStatus")) {
+                        subscribe(location, "hsmStatus", "handleHsmEvent")
+                        subscribedEvents.add("location:hsmStatus")
+                    }
                     break
 
                 case "periodic":
@@ -2578,7 +2585,14 @@ def executeRule(triggerSource) {
 
 def evaluateConditions() {
     def logic = settings.conditionLogic ?: "all"
-    def results = atomicState.conditions.collect { evaluateCondition(it) }
+    def results = atomicState.conditions.collect { condition ->
+        try {
+            return evaluateCondition(condition)
+        } catch (Exception e) {
+            log.error "Error evaluating condition (${condition.type}): ${e.message}"
+            return false  // Treat failed conditions as not met (fail closed)
+        }
+    }
 
     if (logic == "all") {
         return results.every { it }
@@ -2644,11 +2658,14 @@ def evaluateCondition(condition) {
             def device = parent.findDevice(condition.deviceId)
             if (!device) return false
             if (condition.forSeconds == null) return false
+            def forSeconds = condition.forSeconds as Integer
             def currentValue = device.currentValue(condition.attribute)
             if (currentValue?.toString() != condition.value?.toString()) return false
-            // Check how long it's been in this state
-            def events = device.eventsSince(new Date(now() - (condition.forSeconds * 1000)), [max: 10])
-            def recentChange = events?.find { it.name == condition.attribute && it.value?.toString() != condition.value?.toString() }
+            // Check how long it's been in this state — filter by attribute to avoid
+            // chatty devices exhausting the event limit with irrelevant attributes
+            def events = device.eventsSince(new Date(now() - (forSeconds * 1000)), [max: 100])
+                ?.findAll { it.name == condition.attribute }
+            def recentChange = events?.find { it.value?.toString() != condition.value?.toString() }
             return recentChange == null
 
         case "presence":
