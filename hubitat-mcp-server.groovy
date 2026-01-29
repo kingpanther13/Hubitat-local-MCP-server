@@ -440,7 +440,7 @@ TRIGGERS: device_event (with duration for debouncing), button_event (pushed/held
 TIME TRIGGER EXAMPLES: {"type":"time","time":"08:30"}, {"type":"time","sunrise":true,"offset":30}, {"type":"time","sunset":true,"offset":-15}
   sunrise/sunset offset is in minutes (positive=after, negative=before). Many formats accepted and auto-normalized.
 CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
-ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log, set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation only), set_valve (open/close), set_fan_speed (low/medium/high/auto), set_shade (open/close/position)
+ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log, set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation only), set_valve (open/close), set_fan_speed (low/medium/high/auto), set_shade (open/close/position), variable_math (arithmetic on variables: add/subtract/multiply/divide/modulo/set with variableName, operation, operand, scope local|global)
 
 Always verify rule created correctly after.""",
             inputSchema: [
@@ -2272,6 +2272,17 @@ def validateAction(action) {
             }
             if (action.position != null && (action.position < 0 || action.position > 100)) {
                 throw new IllegalArgumentException("set_shade: position must be 0-100")
+            }
+            break
+        case "variable_math":
+            if (!action.variableName) throw new IllegalArgumentException("variable_math action requires variableName")
+            if (!action.operation) throw new IllegalArgumentException("variable_math action requires operation")
+            if (!["add", "subtract", "multiply", "divide", "modulo", "set"].contains(action.operation)) {
+                throw new IllegalArgumentException("variable_math: operation must be one of: add, subtract, multiply, divide, modulo, set")
+            }
+            if (action.operand == null) throw new IllegalArgumentException("variable_math action requires operand")
+            if (action.scope && !["local", "global"].contains(action.scope)) {
+                throw new IllegalArgumentException("variable_math: scope must be 'local' or 'global'")
             }
             break
         default:

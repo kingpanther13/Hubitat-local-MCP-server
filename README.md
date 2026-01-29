@@ -16,9 +16,18 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Create automations** - Build rules with triggers, conditions, and actions
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 
-**New in v0.2.0:** MCP-accessible debug logging system! Debug rules and troubleshoot issues directly through MCP without needing to access the Hubitat UI. Includes 5 new diagnostic tools.
+**New in v0.3.0:**
+- **Rule export/import/clone** - Export rules as portable JSON, import them with device remapping, or clone existing rules
+- **Conditional triggers** - Add per-trigger condition gates so individual triggers only fire when their condition is met
+- **8 new action types** - `set_thermostat`, `http_request`, `speak` (TTS), `comment`, `set_valve`, `set_fan_speed`, `set_shade`, `variable_math`
+- **Variable math** - Perform arithmetic on local/global variables (add, subtract, multiply, divide, modulo, set)
+- **Version update check** - Automatic daily check for new versions with UI banner and MCP tool
+- **Sunrise/sunset normalization** - Accepts many trigger formats and auto-normalizes to canonical form
+- **Debug logging overhaul** - 45+ silent failure points now route through MCP debug logs
 
-**v0.1.0:** Parent/Child architecture! Rules are now separate child apps with isolated settings, just like Hubitat's native Rule Machine.
+**v0.2.0:** MCP-accessible debug logging system with 6 diagnostic tools.
+
+**v0.1.0:** Parent/Child architecture with isolated child app settings.
 
 Instead of running a separate Node.js MCP server on another machine, this runs natively on the Hubitat hub itself.
 
@@ -32,18 +41,18 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Create new rules** as child apps (like Rule Machine)
 - **Edit triggers** - Device events, button presses, time schedules, mode changes, and more
 - **Edit conditions** - Device state, time range, mode, variables, presence, and 14 condition types total
-- **Edit actions** - Device commands, scenes, delays, notifications, and 18 action types total
+- **Edit actions** - Device commands, scenes, delays, notifications, and 29 action types total
 - **Enable/disable rules** with a single tap
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (30 total)
+### MCP Tools (34 total)
 
 | Category | Tools |
 |----------|-------|
 | **Devices** | `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events` |
-| **Rules** | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule` |
-| **System** | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable` |
+| **Rules** | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule`, `export_rule`, `import_rule`, `clone_rule` |
+| **System** | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable`, `check_for_update` |
 | **State Capture** | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
 | **Debug/Diagnostics** | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
 
@@ -95,6 +104,14 @@ Create automations via natural language through Claude:
 - `log` - Write to Hubitat logs
 - `capture_state` / `restore_state` - Save and restore device states
 - `send_notification` - Send push notification to notification devices
+- `set_thermostat` - Set thermostat mode, heating/cooling setpoints, and fan mode
+- `http_request` - Make HTTP GET/POST requests (webhooks, external APIs)
+- `speak` - Text-to-speech on speech synthesis devices (with optional volume)
+- `comment` - Documentation-only action (no-op, for annotating rule logic)
+- `set_valve` - Open or close a valve device
+- `set_fan_speed` - Set fan speed (low/medium-low/medium/medium-high/high/on/off/auto)
+- `set_shade` - Open, close, or set position (0-100) of window shades
+- `variable_math` - Arithmetic on local/global variables (add, subtract, multiply, divide, modulo, set)
 
 ## Requirements
 
@@ -466,6 +483,16 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.3.0** - Major feature release: Rule portability, new action types, conditional triggers, and reliability improvements
+  - **Rule export/import/clone**: `export_rule` exports rules as portable JSON with a device manifest; `import_rule` imports with optional device ID remapping; `clone_rule` duplicates an existing rule (disabled by default)
+  - **Conditional triggers**: Each trigger can now have an inline `condition` gate — the trigger only fires if its condition evaluates to true
+  - **8 new action types**: `set_thermostat` (mode/setpoints/fan), `http_request` (GET/POST), `speak` (TTS with optional volume), `comment` (documentation-only no-op), `set_valve` (open/close), `set_fan_speed` (low through auto), `set_shade` (open/close/position), `variable_math` (arithmetic on local/global variables)
+  - **Variable math**: Perform `add`, `subtract`, `multiply`, `divide`, `modulo`, or `set` operations on local or global variables within rule actions
+  - **String substitution**: Actions like `send_notification` now support `%device%`, `%value%`, `%name%`, `%time%`, `%date%`, `%now%`, `%mode%`, and variable references
+  - **Version update check**: Automatic daily check against GitHub; UI shows an orange banner when outdated; `check_for_update` MCP tool for on-demand checks; update status included in MCP `initialize` response
+  - **Sunrise/sunset trigger normalization**: Accepts 6+ input formats (e.g., `{"type":"sunrise"}`, `{"type":"time","time":"sunrise"}`, `{"type":"sun","event":"sunset"}`) and auto-normalizes to canonical form on create/update
+  - **Debug logging overhaul**: 45+ silent failure points across both parent and child apps now route through the MCP debug log system; child app uses `ruleLog()` bridge to parent's `mcpLog()`
+  - 34 MCP tools total (up from 30)
 - **v0.2.12** - Fourth code review: Critical UI bug fixes + 16 additional bug fixes: UI rule creation blocked by cross-page `required` validation (sub-page inputs now `required:false`), UI trigger dropdown resetting on every render (`clearTriggerSettings` ran on `submitOnChange` re-renders), UI cancel button trapped by validation popup, sunrise/sunset `runOnce` overwrite bug (shared handler name), missing past-time check for sunrise/sunset, `update_rule` not syncing name/description/label, mode condition singular/plural key, `time_range` rejecting sunrise/sunset, `evaluateCondition` default true→false, `eventsSince` limit 10→100 with attribute filter, duplicate subscriptions on rule update, `forSeconds` type coercion, per-condition error isolation, negative offset/limit clamping, JSON-RPC batch null check, `set_color_temperature` falsy check
 - **v0.2.11** - Third code review (16 fixes): `settings.ruleEnabled` stale after `updateSetting()` (new enabled rules didn't subscribe), `schedule()` crash with Long for sunrise/sunset (now uses `runOnce()` + daily reschedule), `schedule()` crash with bare HH:mm (now converts to cron), added `singleThreaded:true` to child app, `send_notification` missing deviceId validation, `send_command` param type crash, `get_attribute` false "not found" for null-valued attributes, reject `expression` condition (always `true` since v0.1.18), `device_command` rule action param type conversion, `state.previousMode` init for mode_change triggers, repeat validation `times`/`count` roundtrip, `get_debug_logs` limit=0 falsy bug, log level confirmation ordering, delay warning in nested blocks, periodic trigger interval validation, dead code cleanup
 - **v0.2.10** - Fixed operator handling: `equals`/`not_equals` rejected by MCP validation, `!=` had inverted logic at runtime. Now accepts both word and symbolic forms (`equals`/`==`, `not_equals`/`!=`), normalizes to word form before storing.
