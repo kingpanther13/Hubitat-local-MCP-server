@@ -98,6 +98,7 @@ def clearDurationState() {
 // ==================== MAIN PAGE ====================
 
 def mainPage() {
+    clearAllSubPageSettings()  // Clean up orphaned sub-page settings on return to main page
     dynamicPage(name: "mainPage", title: "Configure Rule", install: true, uninstall: true) {
         section("Rule Settings") {
             input "ruleName", "text", title: "Rule Name", required: true, submitOnChange: true
@@ -319,10 +320,11 @@ def renderTriggerFields() {
 
         case "periodic":
             section("Periodic Schedule") {
-                input "triggerInterval", "number", title: "Every (max: 59 min, 23 hrs, 31 days)", required: false, range: "1..59"
                 input "triggerUnit", "enum", title: "Unit",
                       options: ["minutes": "Minutes", "hours": "Hours", "days": "Days"],
-                      required: false, defaultValue: "minutes"
+                      required: false, defaultValue: "minutes", submitOnChange: true
+                def maxInterval = settings.triggerUnit == "hours" ? 23 : (settings.triggerUnit == "days" ? 31 : 59)
+                input "triggerInterval", "number", title: "Every (1-${maxInterval})", required: false, range: "1..${maxInterval}"
             }
             break
 
@@ -453,9 +455,9 @@ def loadTriggerSettings(trigger) {
                 def device = parent.findDevice(trigger.deviceId)
                 if (device) app.updateSetting("triggerDevice", [type: "capability.*", value: device.id])
             }
-            if (trigger.attribute) app.updateSetting("triggerAttribute", trigger.attribute)
-            if (trigger.operator) app.updateSetting("triggerOperator", trigger.operator)
-            if (trigger.value) app.updateSetting("triggerValue", trigger.value)
+            if (trigger.attribute) app.updateSetting("triggerAttribute", [type: "text", value: trigger.attribute])
+            if (trigger.operator) app.updateSetting("triggerOperator", [type: "enum", value: trigger.operator])
+            if (trigger.value != null) app.updateSetting("triggerValue", [type: "text", value: trigger.value])
             if (trigger.duration) {
                 // Load original value and unit if available, otherwise convert from seconds
                 if (trigger.durationValue && trigger.durationUnit) {
@@ -474,35 +476,35 @@ def loadTriggerSettings(trigger) {
                 def device = parent.findDevice(trigger.deviceId)
                 if (device) app.updateSetting("triggerDevice", [type: "capability.pushableButton", value: device.id])
             }
-            if (trigger.buttonNumber) app.updateSetting("triggerButtonNumber", trigger.buttonNumber)
-            if (trigger.action) app.updateSetting("triggerButtonAction", trigger.action)
+            if (trigger.buttonNumber != null) app.updateSetting("triggerButtonNumber", [type: "number", value: trigger.buttonNumber])
+            if (trigger.action) app.updateSetting("triggerButtonAction", [type: "enum", value: trigger.action])
             break
 
         case "time":
             if (trigger.time) {
-                app.updateSetting("triggerTimeType", "specific")
-                app.updateSetting("triggerTime", trigger.time)
+                app.updateSetting("triggerTimeType", [type: "enum", value: "specific"])
+                app.updateSetting("triggerTime", [type: "time", value: trigger.time])
             } else if (trigger.sunrise) {
-                app.updateSetting("triggerTimeType", "sunrise")
-                app.updateSetting("triggerOffset", trigger.offset ?: 0)
+                app.updateSetting("triggerTimeType", [type: "enum", value: "sunrise"])
+                app.updateSetting("triggerOffset", [type: "number", value: trigger.offset != null ? trigger.offset : 0])
             } else if (trigger.sunset) {
-                app.updateSetting("triggerTimeType", "sunset")
-                app.updateSetting("triggerOffset", trigger.offset ?: 0)
+                app.updateSetting("triggerTimeType", [type: "enum", value: "sunset"])
+                app.updateSetting("triggerOffset", [type: "number", value: trigger.offset != null ? trigger.offset : 0])
             }
             break
 
         case "periodic":
-            if (trigger.interval) app.updateSetting("triggerInterval", trigger.interval)
-            if (trigger.unit) app.updateSetting("triggerUnit", trigger.unit)
+            if (trigger.interval != null) app.updateSetting("triggerInterval", [type: "number", value: trigger.interval])
+            if (trigger.unit) app.updateSetting("triggerUnit", [type: "enum", value: trigger.unit])
             break
 
         case "mode_change":
-            if (trigger.fromMode) app.updateSetting("triggerFromMode", trigger.fromMode)
-            if (trigger.toMode) app.updateSetting("triggerToMode", trigger.toMode)
+            if (trigger.fromMode) app.updateSetting("triggerFromMode", [type: "enum", value: trigger.fromMode])
+            if (trigger.toMode) app.updateSetting("triggerToMode", [type: "enum", value: trigger.toMode])
             break
 
         case "hsm_change":
-            if (trigger.status) app.updateSetting("triggerHsmStatus", trigger.status)
+            if (trigger.status) app.updateSetting("triggerHsmStatus", [type: "enum", value: trigger.status])
             break
     }
 }
@@ -948,41 +950,41 @@ def loadConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("conditionDevice", [type: "capability.*", value: device.id])
             }
-            if (condition.attribute) app.updateSetting("conditionAttribute", condition.attribute)
-            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
-            if (condition.value) app.updateSetting("conditionValue", condition.value)
-            if (condition.forSeconds) app.updateSetting("conditionDuration", condition.forSeconds)
+            if (condition.attribute) app.updateSetting("conditionAttribute", [type: "text", value: condition.attribute])
+            if (condition.operator) app.updateSetting("conditionOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("conditionValue", [type: "text", value: condition.value])
+            if (condition.forSeconds != null) app.updateSetting("conditionDuration", [type: "number", value: condition.forSeconds])
             break
 
         case "time_range":
             // Support both 'start'/'end' (MCP format) and 'startTime'/'endTime' (UI format) for backwards compatibility
             def startTime = condition.start ?: condition.startTime
             def endTime = condition.end ?: condition.endTime
-            if (startTime) app.updateSetting("conditionStartTime", startTime)
-            if (endTime) app.updateSetting("conditionEndTime", endTime)
+            if (startTime) app.updateSetting("conditionStartTime", [type: "time", value: startTime])
+            if (endTime) app.updateSetting("conditionEndTime", [type: "time", value: endTime])
             break
 
         case "mode":
-            if (condition.modes) app.updateSetting("conditionModes", condition.modes)
-            if (condition.operator) app.updateSetting("conditionModeOperator", condition.operator)
+            if (condition.modes) app.updateSetting("conditionModes", [type: "enum", value: condition.modes])
+            if (condition.operator) app.updateSetting("conditionModeOperator", [type: "enum", value: condition.operator])
             break
 
         case "variable":
-            if (condition.variableName) app.updateSetting("conditionVariableName", condition.variableName)
-            if (condition.operator) app.updateSetting("conditionOperator", condition.operator)
-            if (condition.value) app.updateSetting("conditionValue", condition.value)
+            if (condition.variableName) app.updateSetting("conditionVariableName", [type: "text", value: condition.variableName])
+            if (condition.operator) app.updateSetting("conditionOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("conditionValue", [type: "text", value: condition.value])
             break
 
         case "days_of_week":
-            if (condition.days) app.updateSetting("conditionDays", condition.days)
+            if (condition.days) app.updateSetting("conditionDays", [type: "enum", value: condition.days])
             break
 
         case "sun_position":
-            if (condition.position) app.updateSetting("conditionSunPosition", condition.position)
+            if (condition.position) app.updateSetting("conditionSunPosition", [type: "enum", value: condition.position])
             break
 
         case "hsm_status":
-            if (condition.status) app.updateSetting("conditionHsmStatus", condition.status)
+            if (condition.status) app.updateSetting("conditionHsmStatus", [type: "enum", value: condition.status])
             break
 
         case "presence":
@@ -990,7 +992,7 @@ def loadConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("conditionDevice", [type: "capability.presenceSensor", value: device.id])
             }
-            if (condition.status) app.updateSetting("conditionPresenceStatus", condition.status)
+            if (condition.status) app.updateSetting("conditionPresenceStatus", [type: "enum", value: condition.status])
             break
 
         case "lock":
@@ -998,7 +1000,7 @@ def loadConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("conditionDevice", [type: "capability.lock", value: device.id])
             }
-            if (condition.status) app.updateSetting("conditionLockStatus", condition.status)
+            if (condition.status) app.updateSetting("conditionLockStatus", [type: "enum", value: condition.status])
             break
 
         case "thermostat_mode":
@@ -1006,7 +1008,7 @@ def loadConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("conditionDevice", [type: "capability.thermostat", value: device.id])
             }
-            if (condition.mode) app.updateSetting("conditionThermostatMode", condition.mode)
+            if (condition.mode) app.updateSetting("conditionThermostatMode", [type: "enum", value: condition.mode])
             break
 
         case "thermostat_state":
@@ -1014,7 +1016,7 @@ def loadConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("conditionDevice", [type: "capability.thermostat", value: device.id])
             }
-            if (condition.state) app.updateSetting("conditionThermostatState", condition.state)
+            if (condition.state) app.updateSetting("conditionThermostatState", [type: "enum", value: condition.state])
             break
 
         case "illuminance":
@@ -1435,6 +1437,20 @@ def renderActionFields() {
                 paragraph "<i>Set command OR position. If position is set, command is ignored.</i>"
             }
             break
+
+        case "variable_math":
+            section("Variable Math Operation Settings") {
+                input "actionVariableMathName", "text", title: "Variable Name", required: false
+                input "actionVariableMathOperation", "enum", title: "Operation",
+                      options: ["add": "Add", "subtract": "Subtract", "multiply": "Multiply",
+                               "divide": "Divide", "modulo": "Modulo", "set": "Set To"],
+                      required: false
+                input "actionVariableMathOperand", "decimal", title: "Operand Value", required: false
+                input "actionVariableMathScope", "enum", title: "Variable Scope",
+                      options: ["local": "Local (this rule only)", "global": "Global (hub variable)"],
+                      required: false, defaultValue: "local"
+            }
+            break
     }
 }
 
@@ -1539,7 +1555,7 @@ def renderIfConditionFields() {
         case "illuminance":
             input "actionIfDevice", "capability.illuminanceMeasurement", title: "Illuminance Sensor", required: false
             input "actionIfOperator", "enum", title: "Comparison",
-                  options: [">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
+                  options: ["equals": "Equals", "not_equals": "Not Equals", ">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
                   required: false, defaultValue: "<"
             input "actionIfValue", "number", title: "Lux Value", required: false
             break
@@ -1547,7 +1563,7 @@ def renderIfConditionFields() {
         case "power":
             input "actionIfDevice", "capability.powerMeter", title: "Power Meter", required: false
             input "actionIfOperator", "enum", title: "Comparison",
-                  options: [">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
+                  options: ["equals": "Equals", "not_equals": "Not Equals", ">": "Greater Than", "<": "Less Than", ">=": "Greater/Equal", "<=": "Less/Equal"],
                   required: false, defaultValue: ">"
             input "actionIfValue", "number", title: "Watts", required: false
             break
@@ -1761,6 +1777,14 @@ def buildActionFromSettings() {
                 return null  // Need either position or command
             }
             break
+
+        case "variable_math":
+            if (!settings.actionVariableMathName || !settings.actionVariableMathOperation) return null
+            action.variableName = settings.actionVariableMathName
+            action.operation = settings.actionVariableMathOperation
+            action.operand = settings.actionVariableMathOperand ?: 0
+            action.scope = settings.actionVariableMathScope ?: "local"
+            break
     }
 
     return action
@@ -1882,10 +1906,10 @@ def loadActionSettings(action) {
                     app.updateSetting("actionDevice", [type: capType, value: device.id])
                 }
             }
-            if (action.command) app.updateSetting("actionCommand", action.command)
-            if (action.parameters) app.updateSetting("actionParams", action.parameters.join(", "))
-            if (action.level != null) app.updateSetting("actionLevel", action.level)
-            if (action.duration) app.updateSetting("actionDuration", action.duration)
+            if (action.command) app.updateSetting("actionCommand", [type: "enum", value: action.command])
+            if (action.parameters) app.updateSetting("actionParams", [type: "text", value: action.parameters.join(", ")])
+            if (action.level != null) app.updateSetting("actionLevel", [type: "number", value: action.level])
+            if (action.duration != null) app.updateSetting("actionDuration", [type: "number", value: action.duration])
             break
 
         case "set_color":
@@ -1893,9 +1917,9 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionDevice", [type: "capability.colorControl", value: device.id])
             }
-            if (action.hue != null) app.updateSetting("actionHue", action.hue)
-            if (action.saturation != null) app.updateSetting("actionSaturation", action.saturation)
-            if (action.level != null) app.updateSetting("actionLevel", action.level)
+            if (action.hue != null) app.updateSetting("actionHue", [type: "number", value: action.hue])
+            if (action.saturation != null) app.updateSetting("actionSaturation", [type: "number", value: action.saturation])
+            if (action.level != null) app.updateSetting("actionLevel", [type: "number", value: action.level])
             break
 
         case "set_color_temperature":
@@ -1903,8 +1927,8 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionDevice", [type: "capability.colorTemperature", value: device.id])
             }
-            if (action.temperature != null) app.updateSetting("actionColorTemperature", action.temperature)
-            if (action.level != null) app.updateSetting("actionLevel", action.level)
+            if (action.temperature != null) app.updateSetting("actionColorTemperature", [type: "number", value: action.temperature])
+            if (action.level != null) app.updateSetting("actionLevel", [type: "number", value: action.level])
             break
 
         case "lock":
@@ -1923,21 +1947,21 @@ def loadActionSettings(action) {
             break
 
         case "set_mode":
-            if (action.mode) app.updateSetting("actionMode", action.mode)
+            if (action.mode) app.updateSetting("actionMode", [type: "enum", value: action.mode])
             break
 
         case "set_hsm":
-            if (action.status) app.updateSetting("actionHsmStatus", action.status)
+            if (action.status) app.updateSetting("actionHsmStatus", [type: "enum", value: action.status])
             break
 
         case "set_variable":
-            if (action.variableName) app.updateSetting("actionVariableName", action.variableName)
-            if (action.value) app.updateSetting("actionVariableValue", action.value)
+            if (action.variableName) app.updateSetting("actionVariableName", [type: "text", value: action.variableName])
+            if (action.value != null) app.updateSetting("actionVariableValue", [type: "text", value: action.value])
             break
 
         case "set_local_variable":
-            if (action.variableName) app.updateSetting("actionLocalVariableName", action.variableName)
-            if (action.value) app.updateSetting("actionLocalVariableValue", action.value)
+            if (action.variableName) app.updateSetting("actionLocalVariableName", [type: "text", value: action.variableName])
+            if (action.value != null) app.updateSetting("actionLocalVariableValue", [type: "text", value: action.value])
             break
 
         case "send_notification":
@@ -1945,7 +1969,7 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionNotificationDevice", [type: "capability.notification", value: device.id])
             }
-            if (action.message) app.updateSetting("actionNotificationMessage", action.message)
+            if (action.message) app.updateSetting("actionNotificationMessage", [type: "text", value: action.message])
             break
 
         case "capture_state":
@@ -1954,24 +1978,24 @@ def loadActionSettings(action) {
                 def devices = action.deviceIds.collect { parent.findDevice(it) }.findAll { it != null }
                 if (devices) app.updateSetting("actionCaptureDevices", [type: "capability.*", value: devices.collect { it.id }])
             }
-            if (action.stateId) app.updateSetting("actionCaptureStateId", action.stateId)
+            if (action.stateId) app.updateSetting("actionCaptureStateId", [type: "text", value: action.stateId])
             break
 
         case "restore_state":
-            if (action.stateId) app.updateSetting("actionRestoreStateId", action.stateId)
+            if (action.stateId) app.updateSetting("actionRestoreStateId", [type: "text", value: action.stateId])
             break
 
         case "delay":
-            if (action.seconds) app.updateSetting("actionDelaySeconds", action.seconds)
-            if (action.delayId) app.updateSetting("actionDelayId", action.delayId)
+            if (action.seconds != null) app.updateSetting("actionDelaySeconds", [type: "number", value: action.seconds])
+            if (action.delayId) app.updateSetting("actionDelayId", [type: "text", value: action.delayId])
             break
 
         case "cancel_delayed":
             if (action.delayId == "all") {
-                app.updateSetting("actionCancelDelayId", "all")
+                app.updateSetting("actionCancelDelayId", [type: "enum", value: "all"])
             } else if (action.delayId) {
-                app.updateSetting("actionCancelDelayId", "specific")
-                app.updateSetting("actionCancelSpecificId", action.delayId)
+                app.updateSetting("actionCancelDelayId", [type: "enum", value: "specific"])
+                app.updateSetting("actionCancelSpecificId", [type: "text", value: action.delayId])
             }
             break
 
@@ -1982,13 +2006,13 @@ def loadActionSettings(action) {
             break
 
         case "repeat":
-            if (action.count) app.updateSetting("actionRepeatCount", action.count)
-            else if (action.times) app.updateSetting("actionRepeatCount", action.times)
+            if (action.count != null) app.updateSetting("actionRepeatCount", [type: "number", value: action.count])
+            else if (action.times != null) app.updateSetting("actionRepeatCount", [type: "number", value: action.times])
             break
 
         case "log":
-            if (action.message) app.updateSetting("actionLogMessage", action.message)
-            if (action.level) app.updateSetting("actionLogLevel", action.level)
+            if (action.message) app.updateSetting("actionLogMessage", [type: "text", value: action.message])
+            if (action.level) app.updateSetting("actionLogLevel", [type: "enum", value: action.level])
             break
 
         case "set_thermostat":
@@ -1996,17 +2020,17 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionDevice", [type: "capability.thermostat", value: device.id])
             }
-            if (action.thermostatMode) app.updateSetting("actionThermostatMode", action.thermostatMode)
-            if (action.heatingSetpoint != null) app.updateSetting("actionHeatingSetpoint", action.heatingSetpoint)
-            if (action.coolingSetpoint != null) app.updateSetting("actionCoolingSetpoint", action.coolingSetpoint)
-            if (action.fanMode) app.updateSetting("actionFanMode", action.fanMode)
+            if (action.thermostatMode) app.updateSetting("actionThermostatMode", [type: "enum", value: action.thermostatMode])
+            if (action.heatingSetpoint != null) app.updateSetting("actionHeatingSetpoint", [type: "number", value: action.heatingSetpoint])
+            if (action.coolingSetpoint != null) app.updateSetting("actionCoolingSetpoint", [type: "number", value: action.coolingSetpoint])
+            if (action.fanMode) app.updateSetting("actionFanMode", [type: "enum", value: action.fanMode])
             break
 
         case "http_request":
-            if (action.method) app.updateSetting("actionHttpMethod", action.method)
-            if (action.url) app.updateSetting("actionHttpUrl", action.url)
-            if (action.contentType) app.updateSetting("actionHttpContentType", action.contentType)
-            if (action.body) app.updateSetting("actionHttpBody", action.body)
+            if (action.method) app.updateSetting("actionHttpMethod", [type: "enum", value: action.method])
+            if (action.url) app.updateSetting("actionHttpUrl", [type: "text", value: action.url])
+            if (action.contentType) app.updateSetting("actionHttpContentType", [type: "text", value: action.contentType])
+            if (action.body) app.updateSetting("actionHttpBody", [type: "text", value: action.body])
             break
 
         case "speak":
@@ -2014,12 +2038,12 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionDevice", [type: "capability.speechSynthesis", value: device.id])
             }
-            if (action.message) app.updateSetting("actionSpeakMessage", action.message)
-            if (action.volume != null) app.updateSetting("actionSpeakVolume", action.volume)
+            if (action.message) app.updateSetting("actionSpeakMessage", [type: "text", value: action.message])
+            if (action.volume != null) app.updateSetting("actionSpeakVolume", [type: "number", value: action.volume])
             break
 
         case "comment":
-            if (action.text) app.updateSetting("actionCommentText", action.text)
+            if (action.text) app.updateSetting("actionCommentText", [type: "text", value: action.text])
             break
 
         case "set_valve":
@@ -2027,7 +2051,7 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionDevice", [type: "capability.valve", value: device.id])
             }
-            if (action.command) app.updateSetting("actionValveCommand", action.command)
+            if (action.command) app.updateSetting("actionValveCommand", [type: "enum", value: action.command])
             break
 
         case "set_fan_speed":
@@ -2035,7 +2059,7 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionDevice", [type: "capability.fanControl", value: device.id])
             }
-            if (action.speed) app.updateSetting("actionFanSpeed", action.speed)
+            if (action.speed) app.updateSetting("actionFanSpeed", [type: "enum", value: action.speed])
             break
 
         case "set_shade":
@@ -2043,8 +2067,15 @@ def loadActionSettings(action) {
                 def device = parent.findDevice(action.deviceId)
                 if (device) app.updateSetting("actionDevice", [type: "capability.windowShade", value: device.id])
             }
-            if (action.command) app.updateSetting("actionShadeCommand", action.command)
-            if (action.position != null) app.updateSetting("actionShadePosition", action.position)
+            if (action.command) app.updateSetting("actionShadeCommand", [type: "enum", value: action.command])
+            if (action.position != null) app.updateSetting("actionShadePosition", [type: "number", value: action.position])
+            break
+
+        case "variable_math":
+            if (action.variableName) app.updateSetting("actionVariableMathName", [type: "text", value: action.variableName])
+            if (action.operation) app.updateSetting("actionVariableMathOperation", [type: "enum", value: action.operation])
+            if (action.operand != null) app.updateSetting("actionVariableMathOperand", [type: "decimal", value: action.operand])
+            if (action.scope) app.updateSetting("actionVariableMathScope", [type: "enum", value: action.scope])
             break
     }
 }
@@ -2062,37 +2093,37 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.*", value: device.id])
             }
-            if (condition.attribute) app.updateSetting("actionIfAttribute", condition.attribute)
-            if (condition.operator) app.updateSetting("actionIfOperator", condition.operator)
-            if (condition.value) app.updateSetting("actionIfValue", condition.value)
+            if (condition.attribute) app.updateSetting("actionIfAttribute", [type: "text", value: condition.attribute])
+            if (condition.operator) app.updateSetting("actionIfOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("actionIfValue", [type: "text", value: condition.value])
             break
 
         case "mode":
-            if (condition.modes) app.updateSetting("actionIfModes", condition.modes)
-            if (condition.operator) app.updateSetting("actionIfModeOperator", condition.operator)
+            if (condition.modes) app.updateSetting("actionIfModes", [type: "enum", value: condition.modes])
+            if (condition.operator) app.updateSetting("actionIfModeOperator", [type: "enum", value: condition.operator])
             break
 
         case "time_range":
-            if (condition.startTime) app.updateSetting("actionIfStartTime", condition.startTime)
-            if (condition.endTime) app.updateSetting("actionIfEndTime", condition.endTime)
+            if (condition.startTime) app.updateSetting("actionIfStartTime", [type: "time", value: condition.startTime])
+            if (condition.endTime) app.updateSetting("actionIfEndTime", [type: "time", value: condition.endTime])
             break
 
         case "variable":
-            if (condition.variableName) app.updateSetting("actionIfVariableName", condition.variableName)
-            if (condition.operator) app.updateSetting("actionIfOperator", condition.operator)
-            if (condition.value) app.updateSetting("actionIfValue", condition.value)
+            if (condition.variableName) app.updateSetting("actionIfVariableName", [type: "text", value: condition.variableName])
+            if (condition.operator) app.updateSetting("actionIfOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("actionIfValue", [type: "text", value: condition.value])
             break
 
         case "hsm_status":
-            if (condition.status) app.updateSetting("actionIfHsmStatus", condition.status)
+            if (condition.status) app.updateSetting("actionIfHsmStatus", [type: "enum", value: condition.status])
             break
 
         case "sun_position":
-            if (condition.position) app.updateSetting("actionIfSunPosition", condition.position)
+            if (condition.position) app.updateSetting("actionIfSunPosition", [type: "enum", value: condition.position])
             break
 
         case "days_of_week":
-            if (condition.days) app.updateSetting("actionIfDays", condition.days)
+            if (condition.days) app.updateSetting("actionIfDays", [type: "enum", value: condition.days])
             break
 
         case "device_was":
@@ -2100,9 +2131,9 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.*", value: device.id])
             }
-            if (condition.attribute) app.updateSetting("actionIfAttribute", condition.attribute)
-            if (condition.value) app.updateSetting("actionIfValue", condition.value)
-            if (condition.forSeconds) app.updateSetting("actionIfDuration", condition.forSeconds)
+            if (condition.attribute) app.updateSetting("actionIfAttribute", [type: "text", value: condition.attribute])
+            if (condition.value != null) app.updateSetting("actionIfValue", [type: "text", value: condition.value])
+            if (condition.forSeconds != null) app.updateSetting("actionIfDuration", [type: "number", value: condition.forSeconds])
             break
 
         case "presence":
@@ -2110,7 +2141,7 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.presenceSensor", value: device.id])
             }
-            if (condition.status) app.updateSetting("actionIfPresenceStatus", condition.status)
+            if (condition.status) app.updateSetting("actionIfPresenceStatus", [type: "enum", value: condition.status])
             break
 
         case "lock":
@@ -2118,7 +2149,7 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.lock", value: device.id])
             }
-            if (condition.status) app.updateSetting("actionIfLockStatus", condition.status)
+            if (condition.status) app.updateSetting("actionIfLockStatus", [type: "enum", value: condition.status])
             break
 
         case "thermostat_mode":
@@ -2126,7 +2157,7 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.thermostat", value: device.id])
             }
-            if (condition.mode) app.updateSetting("actionIfThermostatMode", condition.mode)
+            if (condition.mode) app.updateSetting("actionIfThermostatMode", [type: "enum", value: condition.mode])
             break
 
         case "thermostat_state":
@@ -2134,7 +2165,7 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.thermostat", value: device.id])
             }
-            if (condition.state) app.updateSetting("actionIfThermostatState", condition.state)
+            if (condition.state) app.updateSetting("actionIfThermostatState", [type: "enum", value: condition.state])
             break
 
         case "illuminance":
@@ -2142,8 +2173,8 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.illuminanceMeasurement", value: device.id])
             }
-            if (condition.operator) app.updateSetting("actionIfOperator", condition.operator)
-            if (condition.value != null) app.updateSetting("actionIfValue", condition.value)
+            if (condition.operator) app.updateSetting("actionIfOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("actionIfValue", [type: "number", value: condition.value])
             break
 
         case "power":
@@ -2151,8 +2182,8 @@ def loadIfConditionSettings(condition) {
                 def device = parent.findDevice(condition.deviceId)
                 if (device) app.updateSetting("actionIfDevice", [type: "capability.powerMeter", value: device.id])
             }
-            if (condition.operator) app.updateSetting("actionIfOperator", condition.operator)
-            if (condition.value != null) app.updateSetting("actionIfValue", condition.value)
+            if (condition.operator) app.updateSetting("actionIfOperator", [type: "enum", value: condition.operator])
+            if (condition.value != null) app.updateSetting("actionIfValue", [type: "number", value: condition.value])
             break
     }
 }
@@ -2179,7 +2210,9 @@ def clearActionSettings() {
      "actionHttpMethod", "actionHttpUrl", "actionHttpContentType", "actionHttpBody",
      "actionSpeakMessage", "actionSpeakVolume", "actionCommentText",
      // set_valve, set_fan_speed, set_shade action settings
-     "actionValveCommand", "actionFanSpeed", "actionShadeCommand", "actionShadePosition"].each {
+     "actionValveCommand", "actionFanSpeed", "actionShadeCommand", "actionShadePosition",
+     // variable_math action settings
+     "actionVariableMathName", "actionVariableMathOperation", "actionVariableMathOperand", "actionVariableMathScope"].each {
         app.removeSetting(it)
     }
 }
@@ -2700,7 +2733,8 @@ def handleDeviceEvent(evt) {
 
         // Check if this trigger has a duration requirement
         if (matchingTrigger.duration && matchingTrigger.duration > 0) {
-            def triggerKey = "duration_${matchingTrigger.deviceId}_${matchingTrigger.attribute}"
+            def triggerDeviceKey = matchingTrigger.deviceId ?: (matchingTrigger.deviceIds?.sort()?.join("_") ?: "unknown")
+            def triggerKey = "duration_${triggerDeviceKey}_${matchingTrigger.attribute}"
 
             // Initialize state maps if needed
             if (!state.durationTimers) state.durationTimers = [:]
@@ -2805,7 +2839,8 @@ def handleButtonEvent(evt) {
 def handleTimeEvent() {
     if (!settings.ruleEnabled) return
     def matchingTrigger = atomicState.triggers?.find { t -> t.type == "time" && t.time }
-    if (matchingTrigger && !evaluateTriggerCondition(matchingTrigger, "time trigger")) return
+    if (!matchingTrigger) return
+    if (!evaluateTriggerCondition(matchingTrigger, "time trigger")) return
     executeRule("time trigger")
 }
 
@@ -2814,7 +2849,8 @@ def handleSunriseEvent() {
     // Re-schedule this sunrise trigger for the next day (runOnce only fires once)
     rescheduleSunriseTrigger()
     def matchingTrigger = atomicState.triggers?.find { t -> t.type == "time" && t.sunrise }
-    if (matchingTrigger && !evaluateTriggerCondition(matchingTrigger, "sunrise trigger")) return
+    if (!matchingTrigger) return
+    if (!evaluateTriggerCondition(matchingTrigger, "sunrise trigger")) return
     executeRule("sunrise trigger")
 }
 
@@ -2823,7 +2859,8 @@ def handleSunsetEvent() {
     // Re-schedule this sunset trigger for the next day (runOnce only fires once)
     rescheduleSunsetTrigger()
     def matchingTrigger = atomicState.triggers?.find { t -> t.type == "time" && t.sunset }
-    if (matchingTrigger && !evaluateTriggerCondition(matchingTrigger, "sunset trigger")) return
+    if (!matchingTrigger) return
+    if (!evaluateTriggerCondition(matchingTrigger, "sunset trigger")) return
     executeRule("sunset trigger")
 }
 
@@ -3197,7 +3234,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             break
 
         case "set_variable":
-            parent.setRuleVariable(action.variableName, action.value)
+            parent.setRuleVariable(action.variableName, substituteVariables(action.value?.toString() ?: "", evt))
             break
 
         case "delay":
@@ -3213,10 +3250,11 @@ def executeAction(action, actionIndex = null, evt = null) {
             break
 
         case "log":
+            def logMsg = substituteVariables(action.message, evt)
             switch (action.level) {
-                case "warn": log.warn action.message; break
-                case "debug": log.debug action.message; break
-                default: log.info action.message
+                case "warn": log.warn logMsg; break
+                case "debug": log.debug logMsg; break
+                default: log.info logMsg
             }
             break
 
@@ -3230,12 +3268,12 @@ def executeAction(action, actionIndex = null, evt = null) {
             if (conditionResult) {
                 def thenList = action.thenActions ?: []
                 for (int i = 0; i < thenList.size(); i++) {
-                    if (!executeAction(thenList[i])) return false
+                    if (!executeAction(thenList[i], null, evt)) return false
                 }
             } else if (action.elseActions) {
                 def elseList = action.elseActions ?: []
                 for (int i = 0; i < elseList.size(); i++) {
-                    if (!executeAction(elseList[i])) return false
+                    if (!executeAction(elseList[i], null, evt)) return false
                 }
             }
             break
@@ -3256,7 +3294,7 @@ def executeAction(action, actionIndex = null, evt = null) {
 
         case "set_local_variable":
             def vars = atomicState.localVariables ?: [:]
-            vars[action.variableName] = action.value
+            vars[action.variableName] = substituteVariables(action.value?.toString() ?: "", evt)
             atomicState.localVariables = vars
             break
 
@@ -3386,7 +3424,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             def repeatActions = action.actions ?: []
             for (int r = 0; r < repeatCount; r++) {
                 for (int i = 0; i < repeatActions.size(); i++) {
-                    if (!executeAction(repeatActions[i])) return false
+                    if (!executeAction(repeatActions[i], null, evt)) return false
                 }
             }
             break
@@ -3435,7 +3473,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             if (speakDevice) {
                 try {
                     if (action.volume != null) speakDevice.setVolume(action.volume)
-                    speakDevice.speak(action.message)
+                    speakDevice.speak(substituteVariables(action.message, evt))
                 } catch (Exception e) {
                     ruleLog("error", "Error speaking on ${speakDevice.label}: ${e.message}")
                 }
@@ -3533,6 +3571,10 @@ def executeAction(action, actionIndex = null, evt = null) {
             } else {
                 setGlobalVar(varName, mathResult)
             }
+            break
+
+        default:
+            ruleLog("warn", "Unknown action type '${action.type}', skipping")
             break
     }
 
@@ -3653,6 +3695,7 @@ def enableRule() {
     state.updatedAt = now()
     clearDurationState()  // Clear orphaned duration state from previous disable
     unsubscribe()
+    unschedule()
     subscribeToTriggers()
 }
 

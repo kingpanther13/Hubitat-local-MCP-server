@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.3.1 - Version update check feature + daily GitHub update notifications
+ * Version: 0.3.2 - Comprehensive bug fixes (25 bugs fixed)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.3.1"
+                paragraph "<b>Version:</b> 0.3.2"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -212,7 +212,8 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.3.1"}')
+    def ver = currentVersion()
+    return render(contentType: "application/json", data: """{"status":"ok","server":"hubitat-mcp-rule-server","version":"${ver}"}""")
 }
 
 def handleMcpGet() {
@@ -221,19 +222,37 @@ def handleMcpGet() {
 }
 
 def handleMcpRequest() {
-    def requestBody = request.JSON
+    def requestBody
+    try {
+        requestBody = request.JSON
+    } catch (Exception e) {
+        // Bug fix: return proper JSON-RPC parse error (-32700)
+        def errResp = jsonRpcError(null, -32700, "Parse error: invalid JSON")
+        return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson(errResp))
+    }
+
+    if (requestBody == null) {
+        def errResp = jsonRpcError(null, -32700, "Parse error: empty or invalid JSON body")
+        return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson(errResp))
+    }
+
     logDebug("MCP Request: ${requestBody}")
 
     def response
     if (requestBody instanceof List) {
-        response = requestBody.collect { msg -> processJsonRpcMessage(msg) }.findAll { it != null }
+        // Bug fix: empty batch array must return error per JSON-RPC 2.0 spec
+        if (requestBody.isEmpty()) {
+            response = jsonRpcError(null, -32600, "Invalid Request: empty batch array")
+        } else {
+            response = requestBody.collect { msg -> processJsonRpcMessage(msg) }.findAll { it != null }
+        }
     } else {
         response = processJsonRpcMessage(requestBody)
     }
 
     // Per JSON-RPC 2.0 spec: if no response objects (all notifications), return nothing
     if (response == null || (response instanceof List && response.isEmpty())) {
-        return render(status: 202, contentType: "application/json", data: "")
+        return render(status: 204, contentType: "application/json", data: "")
     }
 
     def jsonResponse = groovy.json.JsonOutput.toJson(response)
@@ -250,7 +269,13 @@ def processJsonRpcMessage(msg) {
         return jsonRpcError(msg?.id, -32600, "Invalid Request: must use JSON-RPC 2.0")
     }
 
-    if (msg.id == null && msg.method) {
+    // Bug fix: missing method is Invalid Request (-32600), not Method not found (-32601)
+    if (!msg.method) {
+        if (msg.id == null) return null  // Notification without method — ignore
+        return jsonRpcError(msg.id, -32600, "Invalid Request: missing method field")
+    }
+
+    if (msg.id == null) {
         handleNotification(msg)
         return null
     }
@@ -281,7 +306,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.3.1"
+        version: "0.3.2"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1278,7 +1303,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.3.1",
+        serverVersion: "0.3.2",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -2015,6 +2040,10 @@ def validateCondition(condition) {
             if (!findDevice(condition.deviceId)) throw new IllegalArgumentException("Device not found: ${condition.deviceId}")
             // Validate operator if present
             validateOperator(condition.operator, "device_state condition")
+            // Bug fix: require value when an operator is specified
+            if (condition.operator && condition.value == null) {
+                throw new IllegalArgumentException("device_state condition requires value when operator is specified")
+            }
             break
         case "device_was":
             if (!condition.deviceId) throw new IllegalArgumentException("device_was condition requires deviceId")
@@ -2061,6 +2090,10 @@ def validateCondition(condition) {
             if (!condition.variableName) throw new IllegalArgumentException("variable condition requires variableName")
             // Validate operator if present
             validateOperator(condition.operator, "variable condition")
+            // Bug fix: require value when an operator is specified
+            if (condition.operator && condition.value == null) {
+                throw new IllegalArgumentException("variable condition requires value when operator is specified")
+            }
             break
         case "days_of_week":
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
@@ -2144,6 +2177,7 @@ def validateAction(action) {
             break
         case "activate_scene":
             if (!action.sceneDeviceId) throw new IllegalArgumentException("activate_scene action requires sceneDeviceId")
+            if (!findDevice(action.sceneDeviceId)) throw new IllegalArgumentException("Device not found: ${action.sceneDeviceId}")
             break
         case "set_variable":
             if (!action.variableName) throw new IllegalArgumentException("set_variable action requires variableName")
@@ -2153,9 +2187,17 @@ def validateAction(action) {
             break
         case "set_mode":
             if (!action.mode) throw new IllegalArgumentException("set_mode action requires mode")
+            def validModes = location.modes?.collect { it.name }
+            if (validModes && !validModes.contains(action.mode)) {
+                throw new IllegalArgumentException("set_mode: invalid mode '${action.mode}'. Valid modes: ${validModes.join(', ')}")
+            }
             break
         case "set_hsm":
             if (!action.status) throw new IllegalArgumentException("set_hsm action requires status")
+            def validHsmActions = ["armAway", "armHome", "armNight", "disarm"]
+            if (!validHsmActions.contains(action.status)) {
+                throw new IllegalArgumentException("set_hsm: invalid status '${action.status}'. Valid values: ${validHsmActions.join(', ')}")
+            }
             break
         case "delay":
             if (action.seconds == null) throw new IllegalArgumentException("delay action requires seconds")
@@ -2184,18 +2226,22 @@ def validateAction(action) {
             break
         case "set_level":
             if (!action.deviceId) throw new IllegalArgumentException("set_level action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
             if (action.level == null) throw new IllegalArgumentException("set_level action requires level")
             break
         case "set_color":
             if (!action.deviceId) throw new IllegalArgumentException("set_color action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
             break
         case "set_color_temperature":
             if (!action.deviceId) throw new IllegalArgumentException("set_color_temperature action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
             if (action.temperature == null) throw new IllegalArgumentException("set_color_temperature action requires temperature")
             break
         case "lock":
         case "unlock":
             if (!action.deviceId) throw new IllegalArgumentException("${action.type} action requires deviceId")
+            if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
             break
         case "capture_state":
             if (!action.deviceIds) throw new IllegalArgumentException("capture_state action requires deviceIds")
@@ -2215,11 +2261,14 @@ def validateAction(action) {
             if (action.thermostatMode && !["heat", "cool", "auto", "off", "emergency heat"].contains(action.thermostatMode)) {
                 throw new IllegalArgumentException("set_thermostat: invalid thermostatMode '${action.thermostatMode}'")
             }
-            if (action.heatingSetpoint != null && (action.heatingSetpoint < 40 || action.heatingSetpoint > 100)) {
-                throw new IllegalArgumentException("set_thermostat: heatingSetpoint must be 40-100")
+            def isCelsius = location.temperatureScale == "C"
+            def minSetpoint = isCelsius ? 4 : 40
+            def maxSetpoint = isCelsius ? 38 : 100
+            if (action.heatingSetpoint != null && (action.heatingSetpoint < minSetpoint || action.heatingSetpoint > maxSetpoint)) {
+                throw new IllegalArgumentException("set_thermostat: heatingSetpoint must be ${minSetpoint}-${maxSetpoint}")
             }
-            if (action.coolingSetpoint != null && (action.coolingSetpoint < 40 || action.coolingSetpoint > 100)) {
-                throw new IllegalArgumentException("set_thermostat: coolingSetpoint must be 40-100")
+            if (action.coolingSetpoint != null && (action.coolingSetpoint < minSetpoint || action.coolingSetpoint > maxSetpoint)) {
+                throw new IllegalArgumentException("set_thermostat: coolingSetpoint must be ${minSetpoint}-${maxSetpoint}")
             }
             if (action.fanMode && !["auto", "on", "circulate"].contains(action.fanMode)) {
                 throw new IllegalArgumentException("set_thermostat: invalid fanMode '${action.fanMode}'")
@@ -2551,7 +2600,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.3.1",
+        version: "0.3.2",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2572,7 +2621,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.3.1"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.3.2"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -2690,7 +2739,7 @@ Thank you for helping improve the MCP Rule Server!"""
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.3.1"
+    return "0.3.2"
 }
 
 def isNewerVersion(String remote, String local) {
