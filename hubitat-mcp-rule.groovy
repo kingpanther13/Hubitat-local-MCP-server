@@ -2597,7 +2597,9 @@ def evaluateCondition(condition) {
 
         case "mode":
             def currentMode = location.mode
-            def inModes = condition.modes ? condition.modes.contains(currentMode) : false
+            // Accept both singular 'mode' (string) and plural 'modes' (list)
+            def modeList = condition.modes ?: (condition.mode ? [condition.mode] : [])
+            def inModes = modeList.contains(currentMode)
             return condition.operator == "not_in" ? !inModes : inModes
 
         case "time_range":
@@ -2688,7 +2690,8 @@ def evaluateCondition(condition) {
         // Note: "expression" condition type removed - Eval.me() not allowed in Hubitat sandbox
 
         default:
-            return true
+            log.warn "Unknown condition type: ${condition.type} — treating as not met (fail closed)"
+            return false
     }
 }
 

@@ -1621,10 +1621,14 @@ def validateCondition(condition) {
             // Accept both new (start/end) and old (startTime/endTime) field names for compatibility
             def startVal = condition.start ?: condition.startTime
             def endVal = condition.end ?: condition.endTime
-            if (!startVal && !condition.startSunrise && !condition.startSunset) {
+            // Sunrise/sunset boundaries are not implemented in the rule engine — reject them
+            if (condition.startSunrise || condition.startSunset || condition.endSunrise || condition.endSunset) {
+                throw new IllegalArgumentException("time_range condition does not support sunrise/sunset boundaries. Use fixed HH:mm times for start and end.")
+            }
+            if (!startVal) {
                 throw new IllegalArgumentException("time_range condition requires start time")
             }
-            if (!endVal && !condition.endSunrise && !condition.endSunset) {
+            if (!endVal) {
                 throw new IllegalArgumentException("time_range condition requires end time")
             }
             // Validate time format for start/end if specified (not sunrise/sunset)
