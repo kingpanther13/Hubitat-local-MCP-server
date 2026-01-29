@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.2.10 - Critical bug fixes from thorough code review
+ * Version: 0.2.11 - Third code review: validation, type safety, integration, and logic fixes
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,7 +45,7 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.2.10"
+                paragraph "<b>Version:</b> 0.2.11"
             }
         }
 
@@ -206,7 +206,7 @@ mappings {
 }
 
 def handleHealth() {
-    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.10"}')
+    return render(contentType: "application/json", data: '{"status":"ok","server":"hubitat-mcp-rule-server","version":"0.2.11"}')
 }
 
 def handleMcpGet() {
@@ -279,7 +279,7 @@ def handleInitialize(msg) {
         ],
         serverInfo: [
             name: "hubitat-mcp-rule-server",
-            version: "0.2.10"
+            version: "0.2.11"
         ]
     ])
 }
@@ -861,8 +861,9 @@ def toolSendCommand(deviceId, command, parameters) {
 
     if (parameters && parameters.size() > 0) {
         def convertedParams = parameters.collect { param ->
-            if (param.isNumber()) {
-                return param.contains(".") ? param.toDouble() : param.toInteger()
+            def s = param.toString()
+            if (s.isNumber()) {
+                return s.contains(".") ? s.toDouble() : s.toInteger()
             }
             return param
         }
@@ -912,12 +913,13 @@ def toolGetAttribute(deviceId, attribute) {
     // Capture label before operations to avoid serialization issues
     def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
 
-    def value = device.currentValue(attribute)
-    if (value == null) {
-        def supportedAttrs = device.supportedAttributes?.collect { it.name }
-        throw new IllegalArgumentException("Attribute '${attribute}' not found. Available: ${supportedAttrs}")
+    // Check if attribute exists on this device before reading its value
+    def supportedAttrs = device.supportedAttributes?.collect { it.name } ?: []
+    if (!supportedAttrs.contains(attribute)) {
+        throw new IllegalArgumentException("Attribute '${attribute}' not found on device '${deviceLabel}'. Available: ${supportedAttrs}")
     }
 
+    def value = device.currentValue(attribute)
     return [
         device: deviceLabel,
         attribute: attribute,
@@ -1562,6 +1564,26 @@ def validateTrigger(trigger) {
             }
             break
         case "periodic":
+            if (trigger.interval != null) {
+                def interval = trigger.interval as Integer
+                def unit = trigger.unit ?: "minutes"
+                if (interval < 1) {
+                    throw new IllegalArgumentException("periodic trigger interval must be at least 1")
+                }
+                switch (unit) {
+                    case "minutes":
+                        if (interval > 59) throw new IllegalArgumentException("periodic trigger interval for minutes must be 1-59 (got ${interval}). Use hours for larger intervals.")
+                        break
+                    case "hours":
+                        if (interval > 23) throw new IllegalArgumentException("periodic trigger interval for hours must be 1-23 (got ${interval}). Use days for larger intervals.")
+                        break
+                    case "days":
+                        if (interval > 31) throw new IllegalArgumentException("periodic trigger interval for days must be 1-31 (got ${interval})")
+                        break
+                    default:
+                        throw new IllegalArgumentException("periodic trigger unit must be minutes, hours, or days (got ${unit})")
+                }
+            }
             break
         case "mode_change":
             break
@@ -1680,8 +1702,8 @@ def validateCondition(condition) {
             validateOperator(condition.operator, "power condition")
             break
         case "expression":
-            if (!condition.expression) throw new IllegalArgumentException("expression condition requires expression")
-            break
+            throw new IllegalArgumentException("expression condition type is not supported (Eval.me() is not allowed in Hubitat sandbox)")
+
         default:
             throw new IllegalArgumentException("Unknown condition type: ${condition.type}")
     }
@@ -1736,8 +1758,9 @@ def validateAction(action) {
         case "cancel_delayed":
             break
         case "repeat":
-            if (action.times == null) throw new IllegalArgumentException("repeat action requires times")
-            if (action.times < 1) throw new IllegalArgumentException("repeat action: times must be at least 1")
+            def repeatTimes = action.times != null ? action.times : action.count
+            if (repeatTimes == null) throw new IllegalArgumentException("repeat action requires times (or count)")
+            if (repeatTimes < 1) throw new IllegalArgumentException("repeat action: times must be at least 1")
             if (!action.actions) throw new IllegalArgumentException("repeat action requires actions")
             action.actions.each { validateAction(it) }
             break
@@ -1767,6 +1790,7 @@ def validateAction(action) {
         case "restore_state":
             break
         case "send_notification":
+            if (!action.deviceId) throw new IllegalArgumentException("send_notification action requires deviceId")
             if (!action.message) throw new IllegalArgumentException("send_notification action requires message")
             break
         default:
@@ -1786,10 +1810,7 @@ def getSelectedDevices() {
     return settings.selectedDevices
 }
 
-// Allow child apps to find devices
-def findDeviceForChild(deviceId) {
-    return findDevice(deviceId)
-}
+
 
 def jsonRpcResult(id, result) {
     return [jsonrpc: "2.0", id: id, result: result]
@@ -1905,7 +1926,7 @@ def mcpLogError(String component, String message, Exception e = null, String rul
 def toolGetDebugLogs(args) {
     initDebugLogs()
 
-    def limit = Math.min((args.limit as Integer) ?: 50, 200)
+    def limit = args.limit != null ? Math.min(args.limit as Integer, 200) : 50
     def level = args.level ?: "all"
     def component = args.component
     def ruleId = args.ruleId
@@ -2017,10 +2038,11 @@ def toolSetLogLevel(args) {
     def previousLevel = getConfiguredLogLevel()
 
     initDebugLogs()
+    // Log BEFORE changing level so confirmation isn't suppressed when raising threshold
+    mcpLog("info", "server", "Log level changed from ${previousLevel} to: ${level}")
     state.debugLogs.config.logLevel = level
     // Also update the setting so UI stays in sync
     app.updateSetting("mcpLogLevel", level)
-    mcpLog("info", "server", "Log level changed from ${previousLevel} to: ${level}")
 
     return [
         success: true,
@@ -2034,7 +2056,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     return [
-        version: "0.2.10",
+        version: "0.2.11",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2051,7 +2073,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.2.10"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.2.11"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info

@@ -12,6 +12,7 @@ definition(
     description: "Individual automation rule for MCP Rule Server",
     category: "Automation",
     parent: "mcp:MCP Rule Server",
+    singleThreaded: true,
     iconUrl: "",
     iconX2Url: ""
 )
@@ -70,6 +71,9 @@ def uninstalled() {
 def initialize() {
     // Clear any stale duration timer state (timers were canceled by unschedule() in updated())
     clearDurationState()
+
+    // Initialize previousMode so mode_change triggers with fromMode work on first event
+    state.previousMode = location.mode
 
     if (settings.ruleEnabled) {
         subscribeToTriggers()
@@ -316,7 +320,7 @@ def renderTriggerFields() {
 
         case "periodic":
             section("Periodic Schedule") {
-                input "triggerInterval", "number", title: "Every", required: true, range: "1..999"
+                input "triggerInterval", "number", title: "Every (max: 59 min, 23 hrs, 31 days)", required: true, range: "1..59"
                 input "triggerUnit", "enum", title: "Unit",
                       options: ["minutes": "Minutes", "hours": "Hours", "days": "Days"],
                       required: true, defaultValue: "minutes"
@@ -2277,18 +2281,28 @@ def subscribeToTriggers() {
 
                 case "time":
                     if (trigger.time) {
-                        schedule(trigger.time, "handleTimeEvent")
+                        // trigger.time is "HH:mm" format — convert to cron expression for schedule()
+                        // schedule() only accepts cron strings or ISO 8601 date strings, not bare "HH:mm"
+                        def parts = trigger.time.split(":")
+                        def cronTime = "0 ${parts[1]} ${parts[0]} ? * * *"
+                        schedule(cronTime, "handleTimeEvent")
                     } else if (trigger.sunrise) {
                         if (location.sunrise) {
                             def offset = trigger.offset ?: 0
-                            schedule(location.sunrise.time + (offset * 60000), "handleTimeEvent")
+                            // schedule() does not accept Long — convert to Date for runOnce()
+                            // Use runOnce() since sunrise time changes daily
+                            def sunriseDate = new Date(location.sunrise.time + (offset * 60000))
+                            runOnce(sunriseDate, "handleTimeEvent", [overwrite: true])
                         } else {
                             log.warn "Cannot schedule sunrise trigger: sunrise time not available for this location"
                         }
                     } else if (trigger.sunset) {
                         if (location.sunset) {
                             def offset = trigger.offset ?: 0
-                            schedule(location.sunset.time + (offset * 60000), "handleTimeEvent")
+                            // schedule() does not accept Long — convert to Date for runOnce()
+                            // Use runOnce() since sunset time changes daily
+                            def sunsetDate = new Date(location.sunset.time + (offset * 60000))
+                            runOnce(sunsetDate, "handleTimeEvent", [overwrite: true])
                         } else {
                             log.warn "Cannot schedule sunset trigger: sunset time not available for this location"
                         }
@@ -2309,15 +2323,20 @@ def subscribeToTriggers() {
                     def cronExpr
                     switch (unit) {
                         case "minutes":
+                            interval = Math.max(1, Math.min(interval as Integer, 59))
                             cronExpr = "0 */${interval} * ? * *"
                             break
                         case "hours":
+                            interval = Math.max(1, Math.min(interval as Integer, 23))
                             cronExpr = "0 0 */${interval} ? * *"
                             break
                         case "days":
+                            interval = Math.max(1, Math.min(interval as Integer, 31))
                             cronExpr = "0 0 0 */${interval} * ?"
                             break
                         default:
+                            log.warn "Unknown periodic unit '${unit}', defaulting to minutes"
+                            interval = Math.max(1, Math.min(interval as Integer, 59))
                             cronExpr = "0 */${interval} * ? * *"
                     }
                     schedule(cronExpr, "handlePeriodicEvent")
@@ -2456,7 +2475,34 @@ def handleButtonEvent(evt) {
 
 def handleTimeEvent() {
     if (!settings.ruleEnabled) return
+    // Re-schedule sunrise/sunset triggers for the next day (runOnce only fires once)
+    rescheduleRunOnceTriggers()
     executeRule("time trigger")
+}
+
+def rescheduleRunOnceTriggers() {
+    atomicState.triggers?.findAll { it.type == "time" && (it.sunrise || it.sunset) }?.each { trigger ->
+        try {
+            if (trigger.sunrise && location.sunrise) {
+                def offset = trigger.offset ?: 0
+                def sunriseDate = new Date(location.sunrise.time + (offset * 60000))
+                // If today's sunrise already passed, schedule for tomorrow
+                if (sunriseDate.time <= now()) {
+                    sunriseDate = new Date(sunriseDate.time + 86400000)
+                }
+                runOnce(sunriseDate, "handleTimeEvent", [overwrite: true])
+            } else if (trigger.sunset && location.sunset) {
+                def offset = trigger.offset ?: 0
+                def sunsetDate = new Date(location.sunset.time + (offset * 60000))
+                if (sunsetDate.time <= now()) {
+                    sunsetDate = new Date(sunsetDate.time + 86400000)
+                }
+                runOnce(sunsetDate, "handleTimeEvent", [overwrite: true])
+            }
+        } catch (Exception e) {
+            log.error "Failed to reschedule sunrise/sunset trigger: ${e.message}"
+        }
+    }
 }
 
 def handleModeEvent(evt) {
@@ -2681,7 +2727,14 @@ def executeAction(action, actionIndex = null) {
             if (device) {
                 try {
                     if (action.parameters) {
-                        device."${action.command}"(*action.parameters)
+                        def convertedParams = action.parameters.collect { param ->
+                            def s = param.toString()
+                            if (s.isNumber()) {
+                                return s.contains(".") ? s.toDouble() : s.toInteger()
+                            }
+                            return param
+                        }
+                        device."${action.command}"(*convertedParams)
                     } else {
                         device."${action.command}"()
                     }
@@ -2732,6 +2785,8 @@ def executeAction(action, actionIndex = null) {
                 log.debug "Scheduling delayed continuation in ${action.seconds} seconds (delayId: ${delayId})"
                 runIn(action.seconds, handlerName, [data: [nextIndex: actionIndex + 1, delayId: delayId]])
                 return "delayed" // Signal to stop current execution, will resume via scheduled handler
+            } else {
+                log.warn "Delay action skipped: delays inside if_then_else or repeat blocks are not supported (no actionIndex context)"
             }
             break
 
@@ -3007,10 +3062,13 @@ def updateRuleFromParent(data) {
     if (data.enabled != null) app.updateSetting("ruleEnabled", data.enabled)
 
     // Re-subscribe based on current enabled state
+    // NOTE: app.updateSetting() does NOT update the in-memory settings map within the
+    // same execution context. We must use data.enabled directly when available.
+    def shouldBeEnabled = (data.enabled != null) ? data.enabled : settings.ruleEnabled
     unsubscribe()
     unschedule()
     clearDurationState()  // Clear duration state when rule is updated to prevent orphaned triggers
-    if (settings.ruleEnabled) {
+    if (shouldBeEnabled) {
         subscribeToTriggers()
     }
 }
