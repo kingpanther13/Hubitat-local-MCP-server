@@ -2516,6 +2516,8 @@ def subscribeToTriggers() {
                         def device = parent.findDevice(devId)
                         if (device) {
                             subscribe(device, trigger.attribute, "handleDeviceEvent")
+                        } else {
+                            ruleLog("warn", "Trigger subscription skipped: device not found (ID: ${devId})")
                         }
                     }
                     break
@@ -2524,6 +2526,8 @@ def subscribeToTriggers() {
                     def device = parent.findDevice(trigger.deviceId)
                     if (device) {
                         subscribe(device, trigger.action, "handleButtonEvent")
+                    } else {
+                        ruleLog("warn", "Trigger subscription skipped: device not found (ID: ${trigger.deviceId})")
                     }
                     break
 
@@ -2545,7 +2549,7 @@ def subscribeToTriggers() {
                             // Use distinct handler name so sunset runOnce doesn't overwrite this
                             runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
                         } else {
-                            log.warn "Cannot schedule sunrise trigger: sunrise time not available for this location"
+                            ruleLog("warn", "Cannot schedule sunrise trigger: sunrise time not available for this location")
                         }
                     } else if (trigger.sunset) {
                         if (location.sunset) {
@@ -2558,7 +2562,7 @@ def subscribeToTriggers() {
                             // Use distinct handler name so sunrise runOnce doesn't overwrite this
                             runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
                         } else {
-                            log.warn "Cannot schedule sunset trigger: sunset time not available for this location"
+                            ruleLog("warn", "Cannot schedule sunset trigger: sunset time not available for this location")
                         }
                     }
                     break
@@ -2595,7 +2599,7 @@ def subscribeToTriggers() {
                             cronExpr = "0 0 0 */${interval} * ?"
                             break
                         default:
-                            log.warn "Unknown periodic unit '${unit}', defaulting to minutes"
+                            ruleLog("warn", "Unknown periodic unit '${unit}', defaulting to minutes")
                             interval = Math.max(1, Math.min(interval as Integer, 59))
                             cronExpr = "0 */${interval} * ? * *"
                     }
@@ -2603,7 +2607,7 @@ def subscribeToTriggers() {
                     break
             }
         } catch (Exception e) {
-            log.error "Failed to subscribe to trigger (type=${trigger.type}): ${e.message}"
+            ruleLog("error", "Failed to subscribe to trigger (type=${trigger.type}): ${e.message}")
         }
     }
 }
@@ -2648,7 +2652,7 @@ def evaluateTriggerCondition(trigger, triggerSource) {
         }
         return result
     } catch (Exception e) {
-        log.error "Error evaluating per-trigger condition for ${triggerSource}: ${e.message}"
+        ruleLog("error", "Error evaluating per-trigger condition for ${triggerSource}: ${e.message}")
         return false  // Fail closed
     }
 }
@@ -2831,7 +2835,7 @@ def rescheduleSunriseTrigger() {
                 runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
             }
         } catch (Exception e) {
-            log.error "Failed to reschedule sunrise trigger: ${e.message}"
+            ruleLog("error", "Failed to reschedule sunrise trigger: ${e.message}")
         }
     }
 }
@@ -2848,7 +2852,7 @@ def rescheduleSunsetTrigger() {
                 runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
             }
         } catch (Exception e) {
-            log.error "Failed to reschedule sunset trigger: ${e.message}"
+            ruleLog("error", "Failed to reschedule sunset trigger: ${e.message}")
         }
     }
 }
@@ -2905,7 +2909,7 @@ def evaluateConditions() {
         try {
             return evaluateCondition(condition)
         } catch (Exception e) {
-            log.error "Error evaluating condition (${condition.type}): ${e.message}"
+            ruleLog("error", "Error evaluating condition (${condition.type}): ${e.message}")
             return false  // Treat failed conditions as not met (fail closed)
         }
     }
@@ -2939,7 +2943,7 @@ def evaluateCondition(condition) {
             try {
                 return timeOfDayIsBetween(toDateTime(startTime), toDateTime(endTime), new Date())
             } catch (Exception e) {
-                log.warn "time_range condition failed to parse times (start=${startTime}, end=${endTime}): ${e.message}"
+                ruleLog("warn", "time_range condition failed to parse times (start=${startTime}, end=${endTime}): ${e.message}")
                 return false
             }
 
@@ -2951,7 +2955,7 @@ def evaluateCondition(condition) {
             def sunriseTime = location.sunrise
             def sunsetTime = location.sunset
             if (!sunriseTime || !sunsetTime) {
-                log.warn "Cannot evaluate sun_position: sunrise/sunset times not available for this location"
+                ruleLog("warn", "Cannot evaluate sun_position: sunrise/sunset times not available for this location")
                 return false
             }
             def now = new Date()
@@ -3023,7 +3027,7 @@ def evaluateCondition(condition) {
         // Note: "expression" condition type removed - Eval.me() not allowed in Hubitat sandbox
 
         default:
-            log.warn "Unknown condition type: ${condition.type} — treating as not met (fail closed)"
+            ruleLog("warn", "Unknown condition type: ${condition.type} — treating as not met (fail closed)")
             return false
     }
 }
@@ -3147,8 +3151,10 @@ def executeAction(action, actionIndex = null, evt = null) {
                         device."${action.command}"()
                     }
                 } catch (Exception e) {
-                    log.error "Error executing command '${action.command}' on device ${device.label}: ${e.message}"
+                    ruleLog("error", "Error executing command '${action.command}' on device ${device.label}: ${e.message}")
                 }
+            } else {
+                ruleLog("warn", "Action 'device_command' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3160,6 +3166,8 @@ def executeAction(action, actionIndex = null, evt = null) {
                 } else {
                     device.on()
                 }
+            } else {
+                ruleLog("warn", "Action 'toggle_device' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3171,6 +3179,8 @@ def executeAction(action, actionIndex = null, evt = null) {
                 } else {
                     device.setLevel(action.level)
                 }
+            } else {
+                ruleLog("warn", "Action 'set_level' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3194,7 +3204,7 @@ def executeAction(action, actionIndex = null, evt = null) {
                 runIn(action.seconds, handlerName, [data: [nextIndex: actionIndex + 1, delayId: delayId]])
                 return "delayed" // Signal to stop current execution, will resume via scheduled handler
             } else {
-                log.warn "Delay action skipped: delays inside if_then_else or repeat blocks are not supported (no actionIndex context)"
+                ruleLog("warn", "Delay action skipped: delays inside if_then_else or repeat blocks are not supported (no actionIndex context)")
             }
             break
 
@@ -3208,7 +3218,7 @@ def executeAction(action, actionIndex = null, evt = null) {
 
         case "if_then_else":
             if (!action.condition) {
-                log.warn "if_then_else action has no condition, skipping"
+                ruleLog("warn", "if_then_else action has no condition, skipping")
                 break
             }
             def conditionResult = evaluateCondition(action.condition)
@@ -3250,6 +3260,8 @@ def executeAction(action, actionIndex = null, evt = null) {
             def sceneDevice = parent.findDevice(action.sceneDeviceId)
             if (sceneDevice) {
                 sceneDevice.on()
+            } else {
+                ruleLog("warn", "Action 'activate_scene' skipped: device not found (ID: ${action.sceneDeviceId})")
             }
             break
 
@@ -3261,6 +3273,8 @@ def executeAction(action, actionIndex = null, evt = null) {
                 if (action.saturation != null) colorMap.saturation = action.saturation
                 if (action.level != null) colorMap.level = action.level
                 colorDevice.setColor(colorMap)
+            } else {
+                ruleLog("warn", "Action 'set_color' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3272,6 +3286,8 @@ def executeAction(action, actionIndex = null, evt = null) {
                 } else {
                     ctDevice.setColorTemperature(action.temperature)
                 }
+            } else {
+                ruleLog("warn", "Action 'set_color_temperature' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3279,6 +3295,8 @@ def executeAction(action, actionIndex = null, evt = null) {
             def lockDevice = parent.findDevice(action.deviceId)
             if (lockDevice) {
                 lockDevice.lock()
+            } else {
+                ruleLog("warn", "Action 'lock' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3286,6 +3304,8 @@ def executeAction(action, actionIndex = null, evt = null) {
             def unlockDevice = parent.findDevice(action.deviceId)
             if (unlockDevice) {
                 unlockDevice.unlock()
+            } else {
+                ruleLog("warn", "Action 'unlock' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3311,10 +3331,10 @@ def executeAction(action, actionIndex = null, evt = null) {
 
                 // Log warnings about capacity
                 if (saveResult?.deletedStates) {
-                    log.warn "Captured state limit reached: Deleted old state(s) '${saveResult.deletedStates.join(', ')}' to make room"
+                    ruleLog("warn", "Captured state limit reached: Deleted old state(s) '${saveResult.deletedStates.join(', ')}' to make room")
                 }
                 if (saveResult?.nearLimit) {
-                    log.warn "Captured states nearing limit: ${saveResult.totalStored}/${saveResult.maxLimit} slots used"
+                    ruleLog("warn", "Captured states nearing limit: ${saveResult.totalStored}/${saveResult.maxLimit} slots used")
                 }
             }
             break
@@ -3344,7 +3364,7 @@ def executeAction(action, actionIndex = null, evt = null) {
                 }
                 log.debug "Restored states for ${savedStates.size()} devices (stateId: ${stateKey})"
             } else {
-                log.warn "No captured state found for stateId: ${stateKey}"
+                ruleLog("warn", "No captured state found for stateId: ${stateKey}")
             }
             break
 
@@ -3352,6 +3372,8 @@ def executeAction(action, actionIndex = null, evt = null) {
             def notifyDevice = parent.findDevice(action.deviceId)
             if (notifyDevice) {
                 notifyDevice.deviceNotification(substituteVariables(action.message, evt))
+            } else {
+                ruleLog("warn", "Action 'send_notification' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3377,8 +3399,10 @@ def executeAction(action, actionIndex = null, evt = null) {
                     if (action.coolingSetpoint != null) tstatDevice.setCoolingSetpoint(action.coolingSetpoint)
                     if (action.fanMode) tstatDevice.setThermostatFanMode(action.fanMode)
                 } catch (Exception e) {
-                    log.error "Error setting thermostat ${tstatDevice.label}: ${e.message}"
+                    ruleLog("error", "Error setting thermostat ${tstatDevice.label}: ${e.message}")
                 }
+            } else {
+                ruleLog("warn", "Action 'set_thermostat' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3398,7 +3422,7 @@ def executeAction(action, actionIndex = null, evt = null) {
                     }
                 }
             } catch (Exception e) {
-                log.error "Error executing HTTP ${action.method ?: 'GET'} to ${action.url}: ${e.message}"
+                ruleLog("error", "Error executing HTTP ${action.method ?: 'GET'} to ${action.url}: ${e.message}")
             }
             break
 
@@ -3409,8 +3433,10 @@ def executeAction(action, actionIndex = null, evt = null) {
                     if (action.volume != null) speakDevice.setVolume(action.volume)
                     speakDevice.speak(action.message)
                 } catch (Exception e) {
-                    log.error "Error speaking on ${speakDevice.label}: ${e.message}"
+                    ruleLog("error", "Error speaking on ${speakDevice.label}: ${e.message}")
                 }
+            } else {
+                ruleLog("warn", "Action 'speak' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3428,8 +3454,10 @@ def executeAction(action, actionIndex = null, evt = null) {
                         valveDevice.close()
                     }
                 } catch (Exception e) {
-                    log.error "Error setting valve ${valveDevice.label}: ${e.message}"
+                    ruleLog("error", "Error setting valve ${valveDevice.label}: ${e.message}")
                 }
+            } else {
+                ruleLog("warn", "Action 'set_valve' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3439,8 +3467,10 @@ def executeAction(action, actionIndex = null, evt = null) {
                 try {
                     fanDevice.setSpeed(action.speed)
                 } catch (Exception e) {
-                    log.error "Error setting fan speed on ${fanDevice.label}: ${e.message}"
+                    ruleLog("error", "Error setting fan speed on ${fanDevice.label}: ${e.message}")
                 }
+            } else {
+                ruleLog("warn", "Action 'set_fan_speed' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3456,8 +3486,10 @@ def executeAction(action, actionIndex = null, evt = null) {
                         shadeDevice.close()
                     }
                 } catch (Exception e) {
-                    log.error "Error setting shade ${shadeDevice.label}: ${e.message}"
+                    ruleLog("error", "Error setting shade ${shadeDevice.label}: ${e.message}")
                 }
+            } else {
+                ruleLog("warn", "Action 'set_shade' skipped: device not found (ID: ${action.deviceId})")
             }
             break
 
@@ -3618,6 +3650,23 @@ def enableRule() {
     clearDurationState()  // Clear orphaned duration state from previous disable
     unsubscribe()
     subscribeToTriggers()
+}
+
+// Bridge to parent's mcpLog for MCP debug log visibility
+// Falls back to standard logging if parent method unavailable
+def ruleLog(String level, String message, Map extraData = null) {
+    def ruleId = app.id?.toString()
+    try {
+        parent.mcpLog(level, "rule", message, ruleId, extraData)
+    } catch (Exception e) {
+        // Fallback to standard logging if parent method unavailable
+        switch (level) {
+            case "debug": log.debug message; break
+            case "info": log.info message; break
+            case "warn": log.warn message; break
+            case "error": log.error message; break
+        }
+    }
 }
 
 def disableRule() {

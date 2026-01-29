@@ -2692,7 +2692,7 @@ def isNewerVersion(String remote, String local) {
         }
         return false
     } catch (Exception e) {
-        log.warn "Version comparison failed: ${e.message}"
+        mcpLog("warn", "server", "Version comparison failed: ${e.message}")
         return false
     }
 }
@@ -2709,7 +2709,7 @@ def checkForUpdate() {
         }
         doUpdateCheck()
     } catch (Exception e) {
-        log.warn "Version update check failed: ${e.message}"
+        mcpLog("warn", "server", "Version update check failed: ${e.message}")
     }
 }
 
@@ -2722,20 +2722,20 @@ def doUpdateCheck() {
         ]
         asynchttpGet("handleUpdateCheckResponse", params)
     } catch (Exception e) {
-        log.warn "Failed to initiate version check: ${e.message}"
+        mcpLog("warn", "server", "Failed to initiate version check: ${e.message}")
     }
 }
 
 def handleUpdateCheckResponse(resp, data) {
     try {
         if (resp.status != 200) {
-            log.warn "Version check HTTP error: ${resp.status}"
+            mcpLog("warn", "server", "Version check HTTP error: ${resp.status}")
             return
         }
         def json = new groovy.json.JsonSlurper().parseText(resp.data)
         def latestVersion = json.version
         if (!latestVersion) {
-            log.warn "Version check: no version field in response"
+            mcpLog("warn", "server", "Version check: no version field in response")
             return
         }
         def installed = currentVersion()
@@ -2751,7 +2751,7 @@ def handleUpdateCheckResponse(resp, data) {
             logDebug("MCP Rule Server is up to date (v${installed})")
         }
     } catch (Exception e) {
-        log.warn "Version check response parsing failed: ${e.message}"
+        mcpLog("warn", "server", "Version check response parsing failed: ${e.message}")
     }
 }
 
