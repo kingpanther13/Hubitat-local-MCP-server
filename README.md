@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.2:**
+- **Source size safety limit** — large app/driver source truncated at 100KB to prevent hub memory issues
+
 **New in v0.4.1:**
 - **Bug fixes** for `get_app_source`, `get_driver_source`, and `create_hub_backup` — all Hub Admin tools now functional
 - **Two-tier backup system** — full hub backup (24h) + automatic item-level source backup before modify/delete
@@ -568,6 +571,10 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.2** - Source size safety limit
+  - **100KB truncation limit** on `get_app_source` and `get_driver_source` to prevent hub memory issues from very large source code responses
+  - **Item-level backups** also capped at 100KB to protect hub state storage
+  - Returns `sourceLength`, `truncated` flag, and warning when output is incomplete
 - **v0.4.1** - Bug fixes for Hub Admin tools + two-tier backup system
   - **Fixed `get_app_source` and `get_driver_source`** returning 404: Query parameters now passed via `query` map instead of embedded in path string
   - **Fixed `create_hub_backup`** returning 405 Method Not Allowed: Changed from `POST /hub/backup` to `GET /hub/backupDB?fileName=latest`
