@@ -17,11 +17,16 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.1:**
+- **8 new app/driver management tools** - `get_app_source`, `get_driver_source`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
+- **Review fixes** - Unsafe numeric parsing, stale cookie invalidation, backup response validation, corrected list API endpoints
+- **SKILL.md** - Claude Code development skill for project conventions
+- **52 MCP tools total**
+
 **New in v0.4.0:**
-- **18 Hub Admin tools** - Full hub administration through MCP: hub details, health monitoring, app/driver source code management, backup, reboot, shutdown, Z-Wave repair
-- **App/driver code management** - Install, update, and delete Groovy apps and drivers directly through MCP (with safety gates and mandatory backup enforcement)
+- **10 Hub Admin tools** - Hub details, health monitoring, backup, reboot, shutdown, Z-Wave repair, app/driver listing
 - **Hub Security support** - Automatic cookie-based authentication for hubs with Hub Security enabled
-- **52 MCP tools total** (up from 34 in v0.3.x)
+- **44 MCP tools total** (up from 34 in v0.3.x)
 
 **New in v0.3.0:**
 - **Rule export/import/clone** - Export rules as portable JSON, import them with device remapping, or clone existing rules
@@ -562,16 +567,21 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.4.0** - Hub Admin Tools + App/Driver Management (52 tools total)
-  - **18 new Hub Admin tools**: Full hub administration through MCP
-  - **Hub Admin Read Tools** (8): `get_hub_details` (firmware, memory, temp, db size), `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health` (health dashboard with warnings), `get_app_source`, `get_driver_source`
-  - **Hub Admin Write Tools** (10): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
-  - **Hub Security support**: Automatic cookie-based authentication for hubs with Hub Security enabled; 30-minute cookie caching with auto-renewal; stale cookie detection and re-authentication
+- **v0.4.1** - App/Driver Management + Review Fixes (52 tools total)
+  - **8 new app/driver management tools**: `get_app_source`, `get_driver_source`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
+  - **New `hubInternalPostForm` helper**: Form-encoded POST for app/driver install/update endpoints with Hub Security cookie auth
+  - **Optimistic locking** for code updates: Fetches current version before updating to prevent conflicts
+  - **Review fixes**: Unsafe numeric parsing in hub health checks (freeMemory, temperature, databaseSize), stale Hub Security cookie invalidation on 401/403 errors, backup response validation before setting timestamp, corrected list endpoints to `/hub2/userAppTypes` and `/hub2/userDeviceTypes`
+  - **SKILL.md**: Claude Code development skill documenting all project conventions and architecture
+  - **README.md**: Comprehensive documentation for v0.3.2, v0.3.3, v0.4.0, and v0.4.1 features
+- **v0.4.0** - Hub Admin Tools with Hub Security support (44 tools total)
+  - **10 new Hub Admin tools**: Full hub administration through MCP
+  - **Hub Admin Read Tools** (6): `get_hub_details` (firmware, memory, temp, db size), `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health` (health dashboard with warnings)
+  - **Hub Admin Write Tools** (4): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`
+  - **Hub Security support**: Automatic cookie-based authentication for hubs with Hub Security enabled; 30-minute cookie caching with auto-renewal
   - **Three-layer safety gate** for write tools: settings toggle + explicit `confirm=true` + mandatory backup within last hour
-  - **App/driver code management**: Install new apps/drivers from Groovy source, update existing code with optimistic locking (prevents version conflicts), delete apps/drivers permanently
   - **UI toggles**: Independent enable/disable for Hub Admin Read and Write access in app settings
   - **Graceful degradation**: All Hub Admin tools handle unavailable endpoints, non-JSON responses, and firmware variations
-  - Review fixes: Unsafe numeric parsing in health checks, stale cookie invalidation, backup response validation, corrected list endpoints (`/hub2/userAppTypes` and `/hub2/userDeviceTypes`)
 - **v0.3.3** - Multi-device trigger support and validation fixes
   - Fixed multi-device triggers: rules can now trigger from multiple devices for the same attribute
   - Validation improvements for trigger and condition edge cases
