@@ -978,6 +978,182 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 ],
                 required: ["confirm"]
             ]
+        ],
+        // Hub Admin App/Driver Source Read Tools
+        [
+            name: "get_app_source",
+            description: """Get the Groovy source code of an installed app by its ID.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Use list_hub_apps to find app IDs first. Returns the full source code text and the internal version number.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "The app ID (from list_hub_apps)"]
+                ],
+                required: ["appId"]
+            ]
+        ],
+        [
+            name: "get_driver_source",
+            description: """Get the Groovy source code of an installed driver by its ID.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Use list_hub_drivers to find driver IDs first. Returns the full source code text and the internal version number.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    driverId: [type: "string", description: "The driver ID (from list_hub_drivers)"]
+                ],
+                required: ["driverId"]
+            ]
+        ],
+        // Hub Admin App/Driver Management Write Tools
+        [
+            name: "install_app",
+            description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user what app you are about to install and show them the source code
+3. Get EXPLICIT user confirmation to proceed
+4. Set confirm=true
+
+Installs a new Groovy app on the Hubitat hub from source code. The source code must be valid Hubitat app Groovy code.
+
+Returns the new app ID on success. After installation, the app still needs to be added via Apps > Add User App in the Hubitat web UI.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    source: [type: "string", description: "The full Groovy source code for the app"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["source", "confirm"]
+            ]
+        ],
+        [
+            name: "install_driver",
+            description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user what driver you are about to install and show them the source code
+3. Get EXPLICIT user confirmation to proceed
+4. Set confirm=true
+
+Installs a new Groovy driver on the Hubitat hub from source code. The source code must be valid Hubitat driver Groovy code.
+
+Returns the new driver ID on success. After installation, devices can be assigned to use this driver.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    source: [type: "string", description: "The full Groovy source code for the driver"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["source", "confirm"]
+            ]
+        ],
+        [
+            name: "update_app_code",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING APP CODE ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Use get_app_source to read the CURRENT code first
+3. Tell the user what changes you are making
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Updates the Groovy source code of an existing app. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
+
+WARNING: Incorrect code can break the app and any automations depending on it.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "The app ID to update"],
+                    source: [type: "string", description: "The full new Groovy source code"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["appId", "source", "confirm"]
+            ]
+        ],
+        [
+            name: "update_driver_code",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING DRIVER CODE ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Use get_driver_source to read the CURRENT code first
+3. Tell the user what changes you are making
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Updates the Groovy source code of an existing driver. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
+
+WARNING: Incorrect code can break the driver and all devices using it.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    driverId: [type: "string", description: "The driver ID to update"],
+                    source: [type: "string", description: "The full new Groovy source code"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["driverId", "source", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_app",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES AN APP ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user which app (by name and ID) you are about to delete
+3. Warn that this is PERMANENT and cannot be undone
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Permanently deletes an installed app from the hub. This removes the app code — any app instances using this code must be removed first via the Hubitat web UI.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "The app ID to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["appId", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_driver",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES A DRIVER ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user which driver (by name and ID) you are about to delete
+3. Warn that this is PERMANENT and cannot be undone — all devices using this driver will be affected
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Permanently deletes an installed driver from the hub. Devices using this driver must be changed to a different driver first.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    driverId: [type: "string", description: "The driver ID to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["driverId", "confirm"]
+            ]
         ]
     ]
 }
@@ -1045,6 +1221,16 @@ def executeTool(toolName, args) {
         case "reboot_hub": return toolRebootHub(args)
         case "shutdown_hub": return toolShutdownHub(args)
         case "zwave_repair": return toolZwaveRepair(args)
+
+        // Hub Admin App/Driver Management
+        case "get_app_source": return toolGetAppSource(args)
+        case "get_driver_source": return toolGetDriverSource(args)
+        case "install_app": return toolInstallApp(args)
+        case "install_driver": return toolInstallDriver(args)
+        case "update_app_code": return toolUpdateAppCode(args)
+        case "update_driver_code": return toolUpdateDriverCode(args)
+        case "delete_app": return toolDeleteApp(args)
+        case "delete_driver": return toolDeleteDriver(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -2666,8 +2852,18 @@ def hubInternalGet(String path) {
     }
 
     def responseText = null
-    httpGet(params) { resp ->
-        responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+    try {
+        httpGet(params) { resp ->
+            responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+        }
+    } catch (Exception e) {
+        // Clear cached cookie on auth failures so next call re-authenticates
+        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+            state.hubSecurityCookie = null
+            state.hubSecurityCookieExpiry = null
+            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+        }
+        throw e
     }
     return responseText
 }
@@ -2694,10 +2890,61 @@ def hubInternalPost(String path, Map body = null) {
     }
 
     def responseText = null
-    httpPost(params) { resp ->
-        responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+    try {
+        httpPost(params) { resp ->
+            responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+        }
+    } catch (Exception e) {
+        // Clear cached cookie on auth failures so next call re-authenticates
+        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+            state.hubSecurityCookie = null
+            state.hubSecurityCookieExpiry = null
+            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+        }
+        throw e
     }
     return responseText
+}
+
+/**
+ * Make an authenticated POST request to the hub's internal API with form-encoded body.
+ * Used for app/driver management endpoints that require application/x-www-form-urlencoded.
+ */
+def hubInternalPostForm(String path, Map body, int timeout = 420) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        requestContentType: "application/x-www-form-urlencoded",
+        headers: [
+            "Connection": "keep-alive"
+        ],
+        body: body,
+        timeout: timeout,
+        ignoreSSLIssues: true
+    ]
+    if (cookie) {
+        params.headers["Cookie"] = cookie
+    }
+
+    def result = null
+    try {
+        httpPost(params) { resp ->
+            result = [
+                status: resp.status,
+                location: resp.headers?."Location"?.toString(),
+                data: resp.data
+            ]
+        }
+    } catch (Exception e) {
+        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+            state.hubSecurityCookie = null
+            state.hubSecurityCookieExpiry = null
+            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+        }
+        throw e
+    }
+    return result
 }
 
 /**
@@ -3176,7 +3423,7 @@ def toolListHubApps(args) {
 
     def result = [:]
     try {
-        def responseText = hubInternalGet("/hub2/appsList")
+        def responseText = hubInternalGet("/hub2/userAppTypes")
         if (responseText) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseText)
@@ -3214,7 +3461,7 @@ def toolListHubDrivers(args) {
 
     def result = [:]
     try {
-        def responseText = hubInternalGet("/hub2/driversList")
+        def responseText = hubInternalGet("/hub2/userDeviceTypes")
         if (responseText) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseText)
@@ -3264,6 +3511,9 @@ def toolGetZwaveDetails(args) {
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON format"
             }
+        } else {
+            result.source = "hub_api"
+            result.note = "Empty response from Z-Wave info endpoint"
         }
     } catch (Exception e) {
         mcpLog("debug", "hub-admin", "Z-Wave info API call failed: ${e.message}")
@@ -3298,6 +3548,9 @@ def toolGetZigbeeDetails(args) {
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON format"
             }
+        } else {
+            result.source = "hub_api"
+            result.note = "Empty response from Zigbee info endpoint"
         }
     } catch (Exception e) {
         mcpLog("debug", "hub-admin", "Zigbee info API call failed: ${e.message}")
@@ -3331,11 +3584,15 @@ def toolGetHubHealth(args) {
         def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
         if (freeMemory) {
             health.freeMemoryKB = freeMemory.trim()
-            def memKB = freeMemory.trim() as Integer
-            if (memKB < 50000) {
-                health.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
-            } else if (memKB < 100000) {
-                health.memoryNote = "Memory is moderate: ${memKB}KB free."
+            try {
+                def memKB = freeMemory.trim() as Integer
+                if (memKB < 50000) {
+                    health.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+                } else if (memKB < 100000) {
+                    health.memoryNote = "Memory is moderate: ${memKB}KB free."
+                }
+            } catch (NumberFormatException nfe) {
+                mcpLog("debug", "hub-admin", "Free memory value not numeric: ${freeMemory.trim()}")
             }
         }
     } catch (Exception e) {
@@ -3348,11 +3605,15 @@ def toolGetHubHealth(args) {
         def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
         if (tempC) {
             health.internalTempCelsius = tempC.trim()
-            def temp = tempC.trim() as Double
-            if (temp > 70) {
-                health.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
-            } else if (temp > 60) {
-                health.temperatureNote = "Temperature is warm: ${temp}°C."
+            try {
+                def temp = tempC.trim() as Double
+                if (temp > 70) {
+                    health.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+                } else if (temp > 60) {
+                    health.temperatureNote = "Temperature is warm: ${temp}°C."
+                }
+            } catch (NumberFormatException nfe) {
+                mcpLog("debug", "hub-admin", "Temperature value not numeric: ${tempC.trim()}")
             }
         }
     } catch (Exception e) {
@@ -3365,9 +3626,13 @@ def toolGetHubHealth(args) {
         def dbSize = hubInternalGet("/hub/advanced/databaseSize")
         if (dbSize) {
             health.databaseSizeKB = dbSize.trim()
-            def dbKB = dbSize.trim() as Integer
-            if (dbKB > 500000) {
-                health.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+            try {
+                def dbKB = dbSize.trim() as Integer
+                if (dbKB > 500000) {
+                    health.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+                }
+            } catch (NumberFormatException nfe) {
+                mcpLog("debug", "hub-admin", "Database size value not numeric: ${dbSize.trim()}")
             }
         }
     } catch (Exception e) {
@@ -3398,14 +3663,27 @@ def toolCreateHubBackup(args) {
 
     try {
         def responseText = hubInternalPost("/hub/backup")
-        state.lastBackupTimestamp = now()
+        def backupTime = now()
 
-        mcpLog("info", "hub-admin", "Hub backup created successfully at ${formatTimestamp(now())}")
+        // Basic validation - don't set timestamp if response looks like an error
+        if (responseText != null && (responseText.contains("error") || responseText.contains("failed"))) {
+            mcpLog("warn", "hub-admin", "Hub backup response may indicate failure: ${responseText?.take(200)}")
+            return [
+                success: false,
+                error: "Backup may have failed - response indicates an error",
+                response: responseText?.take(500),
+                note: "The hub responded but the response suggests the backup may not have been created. Check the Hubitat web UI to verify."
+            ]
+        }
+
+        state.lastBackupTimestamp = backupTime
+
+        mcpLog("info", "hub-admin", "Hub backup created successfully at ${formatTimestamp(backupTime)}")
         return [
             success: true,
             message: "Hub backup created successfully",
-            backupTimestamp: formatTimestamp(now()),
-            backupTimestampEpoch: now(),
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
             note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore.",
             response: responseText?.take(500)
         ]
@@ -3491,6 +3769,348 @@ def toolZwaveRepair(args) {
             error: "Z-Wave repair failed: ${e.message}",
             note: "The Z-Wave repair could not be started. Check Hub Security credentials or try starting it manually from the Hubitat web UI at Settings → Z-Wave Details → Repair."
         ]
+    }
+}
+
+// ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
+
+def toolGetAppSource(args) {
+    requireHubAdminRead()
+    if (!args.appId) throw new IllegalArgumentException("appId is required")
+
+    try {
+        def responseText = hubInternalGet("/app/ajax/code?id=${args.appId}")
+        if (responseText) {
+            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            if (parsed.status == "error") {
+                return [success: false, error: parsed.errorMessage ?: "Failed to get app source"]
+            }
+            mcpLog("info", "hub-admin", "Retrieved source code for app ID: ${args.appId}")
+            return [
+                success: true,
+                appId: args.appId,
+                source: parsed.source,
+                version: parsed.version,
+                status: parsed.status
+            ]
+        }
+        return [success: false, error: "Empty response from hub"]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to get app source: ${e.message}")
+        return [success: false, error: "Failed to get app source: ${e.message}"]
+    }
+}
+
+def toolGetDriverSource(args) {
+    requireHubAdminRead()
+    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+
+    try {
+        def responseText = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
+        if (responseText) {
+            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            if (parsed.status == "error") {
+                return [success: false, error: parsed.errorMessage ?: "Failed to get driver source"]
+            }
+            mcpLog("info", "hub-admin", "Retrieved source code for driver ID: ${args.driverId}")
+            return [
+                success: true,
+                driverId: args.driverId,
+                source: parsed.source,
+                version: parsed.version,
+                status: parsed.status
+            ]
+        }
+        return [success: false, error: "Empty response from hub"]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to get driver source: ${e.message}")
+        return [success: false, error: "Failed to get driver source: ${e.message}"]
+    }
+}
+
+def toolInstallApp(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    mcpLog("info", "hub-admin", "Installing new app...")
+    try {
+        def result = hubInternalPostForm("/app/save", [
+            id: "",
+            version: "",
+            create: "",
+            source: args.source
+        ])
+
+        def newAppId = null
+        if (result?.location) {
+            // Extract app ID from redirect Location header: /app/editor/123
+            newAppId = result.location.replaceAll(".*?/app/editor/", "").replaceAll("[^0-9]", "")
+        }
+
+        mcpLog("info", "hub-admin", "App installed successfully${newAppId ? ' (ID: ' + newAppId + ')' : ''}")
+        return [
+            success: true,
+            message: "App installed successfully",
+            appId: newAppId,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "App installation failed: ${e.message}")
+        return [
+            success: false,
+            error: "App installation failed: ${e.message}",
+            note: "Check that the Groovy source code is valid and doesn't have syntax errors."
+        ]
+    }
+}
+
+def toolInstallDriver(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    mcpLog("info", "hub-admin", "Installing new driver...")
+    try {
+        def result = hubInternalPostForm("/driver/save", [
+            id: "",
+            version: "",
+            create: "",
+            source: args.source
+        ])
+
+        def newDriverId = null
+        if (result?.location) {
+            newDriverId = result.location.replaceAll(".*?/driver/editor/", "").replaceAll("[^0-9]", "")
+        }
+
+        mcpLog("info", "hub-admin", "Driver installed successfully${newDriverId ? ' (ID: ' + newDriverId + ')' : ''}")
+        return [
+            success: true,
+            message: "Driver installed successfully",
+            driverId: newDriverId,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Driver installation failed: ${e.message}")
+        return [
+            success: false,
+            error: "Driver installation failed: ${e.message}",
+            note: "Check that the Groovy source code is valid and doesn't have syntax errors."
+        ]
+    }
+}
+
+def toolUpdateAppCode(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.appId) throw new IllegalArgumentException("appId is required")
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    // First get the current version (required for optimistic locking)
+    def currentVersion = null
+    try {
+        def codeResp = hubInternalGet("/app/ajax/code?id=${args.appId}")
+        if (codeResp) {
+            def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
+            currentVersion = parsed.version
+        }
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Could not retrieve current app version for ID ${args.appId}: ${e.message}")
+    }
+
+    if (currentVersion == null) {
+        throw new IllegalArgumentException("Could not determine current version for app ID ${args.appId}. The app may not exist.")
+    }
+
+    mcpLog("info", "hub-admin", "Updating app ID: ${args.appId} (current version: ${currentVersion})")
+    try {
+        def result = hubInternalPostForm("/app/ajax/update", [
+            id: args.appId,
+            version: currentVersion,
+            source: args.source
+        ])
+
+        def responseData = result?.data
+        def success = false
+        def errorMsg = null
+
+        if (responseData) {
+            try {
+                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
+            } catch (Exception parseErr) {
+                // Response was not JSON
+                success = true // Assume success if no error thrown
+            }
+        } else {
+            success = true
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "App ID ${args.appId} updated successfully")
+            return [
+                success: true,
+                message: "App code updated successfully",
+                appId: args.appId,
+                previousVersion: currentVersion,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: errorMsg ?: "Update failed - the hub returned an error",
+                appId: args.appId,
+                note: "Check the Groovy source code for syntax errors or compilation issues."
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "App update failed: ${e.message}")
+        return [success: false, error: "App update failed: ${e.message}"]
+    }
+}
+
+def toolUpdateDriverCode(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    def currentVersion = null
+    try {
+        def codeResp = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
+        if (codeResp) {
+            def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
+            currentVersion = parsed.version
+        }
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Could not retrieve current driver version for ID ${args.driverId}: ${e.message}")
+    }
+
+    if (currentVersion == null) {
+        throw new IllegalArgumentException("Could not determine current version for driver ID ${args.driverId}. The driver may not exist.")
+    }
+
+    mcpLog("info", "hub-admin", "Updating driver ID: ${args.driverId} (current version: ${currentVersion})")
+    try {
+        def result = hubInternalPostForm("/driver/ajax/update", [
+            id: args.driverId,
+            version: currentVersion,
+            source: args.source
+        ])
+
+        def responseData = result?.data
+        def success = false
+        def errorMsg = null
+
+        if (responseData) {
+            try {
+                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
+            } catch (Exception parseErr) {
+                success = true
+            }
+        } else {
+            success = true
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "Driver ID ${args.driverId} updated successfully")
+            return [
+                success: true,
+                message: "Driver code updated successfully",
+                driverId: args.driverId,
+                previousVersion: currentVersion,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: errorMsg ?: "Update failed - the hub returned an error",
+                driverId: args.driverId,
+                note: "Check the Groovy source code for syntax errors or compilation issues."
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Driver update failed: ${e.message}")
+        return [success: false, error: "Driver update failed: ${e.message}"]
+    }
+}
+
+def toolDeleteApp(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.appId) throw new IllegalArgumentException("appId is required")
+
+    mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
+    try {
+        def responseText = hubInternalGet("/app/edit/deleteJsonSafe/${args.appId}")
+        def success = false
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                success = parsed.status == true
+            } catch (Exception parseErr) {
+                // If not JSON, check if it contains error indicators
+                success = !responseText.contains("error")
+            }
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "App ID ${args.appId} deleted successfully")
+            return [
+                success: true,
+                message: "App deleted successfully",
+                appId: args.appId,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: "Delete may have failed - check the Hubitat web UI to verify",
+                appId: args.appId,
+                response: responseText?.take(500)
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "App deletion failed: ${e.message}")
+        return [success: false, error: "App deletion failed: ${e.message}"]
+    }
+}
+
+def toolDeleteDriver(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+
+    mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
+    try {
+        def responseText = hubInternalGet("/driver/editor/deleteJson/${args.driverId}")
+        def success = false
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                success = parsed.status == true
+            } catch (Exception parseErr) {
+                success = !responseText.contains("error")
+            }
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "Driver ID ${args.driverId} deleted successfully")
+            return [
+                success: true,
+                message: "Driver deleted successfully",
+                driverId: args.driverId,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: "Delete may have failed - check the Hubitat web UI to verify",
+                driverId: args.driverId,
+                response: responseText?.take(500)
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Driver deletion failed: ${e.message}")
+        return [success: false, error: "Driver deletion failed: ${e.message}"]
     }
 }
 
