@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.3.3 - Multi-device trigger support, validation fixes
+ * Version: 0.4.0 - Hub Admin Read/Write tools with Hub Security support
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.3.3"
+                paragraph "<b>Version:</b> 0.4.0"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -57,6 +57,34 @@ def mainPage() {
                   multiple: true, required: false, submitOnChange: true
             if (selectedDevices) {
                 paragraph "Selected ${selectedDevices.size()} devices"
+            }
+        }
+
+        section("Hub Admin Access") {
+            paragraph "<b>Hub Admin Tools</b> provide read and write access to hub configuration, installed apps/drivers, Z-Wave/Zigbee radios, and hub management operations."
+            paragraph "<i>These tools use the hub's internal API and may require Hub Security credentials if Hub Security is enabled.</i>"
+            input "enableHubAdminRead", "bool", title: "Enable Hub Admin Read Tools",
+                  description: "Allows MCP to read hub details, installed apps/drivers, Z-Wave/Zigbee info, and hub health metrics",
+                  defaultValue: false, submitOnChange: true
+            input "enableHubAdminWrite", "bool", title: "Enable Hub Admin Write Tools",
+                  description: "Allows MCP to reboot, shutdown, create backups, and run Z-Wave repair",
+                  defaultValue: false, submitOnChange: true
+            if (settings.enableHubAdminWrite) {
+                paragraph "<b style='color: red;'>⚠ WARNING: Hub Admin Write tools can reboot, shut down, or modify your hub. " +
+                          "A backup is MANDATORY before any write operation. The AI assistant is instructed to create a backup " +
+                          "before every write operation and will refuse to proceed without one.</b>"
+            }
+        }
+
+        section("Hub Security") {
+            paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
+                      "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
+            input "hubSecurityEnabled", "bool", title: "Hub Security Enabled",
+                  description: "Turn on if your hub has Hub Security (login) enabled",
+                  defaultValue: false, submitOnChange: true
+            if (settings.hubSecurityEnabled) {
+                input "hubSecurityUser", "text", title: "Hub Security Username", required: false
+                input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
             }
         }
 
@@ -306,7 +334,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.3.3"
+        version: "0.4.0"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -765,6 +793,191 @@ The deviceMapping is an object where keys are old device IDs and values are new 
                 type: "object",
                 properties: [:]
             ]
+        ],
+
+        // ==================== HUB ADMIN READ TOOLS ====================
+        [
+            name: "get_hub_details",
+            description: """Get extended hub information including model, firmware, memory usage, internal temperature, network configuration, and radio details.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+If Hub Security is enabled on the hub, credentials must be configured in app settings.
+
+Returns more detailed information than get_hub_info, including live memory and temperature data from the hub's internal API.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "list_hub_apps",
+            description: """List all installed apps on the Hubitat hub, not just MCP-managed rules.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Returns app names, IDs, and types. Uses the hub's internal API endpoint.
+Note: Results depend on hub firmware version. Some older firmware may not support this endpoint.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "list_hub_drivers",
+            description: """List all installed drivers on the Hubitat hub.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Returns driver names, IDs, and types. Uses the hub's internal API endpoint.
+Note: Results depend on hub firmware version. Some older firmware may not support this endpoint.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "get_zwave_details",
+            description: """Get Z-Wave radio information including firmware version, home ID, and device node details.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Uses the hub's internal API to fetch Z-Wave radio status and device table.
+Note: Results depend on hub firmware and Z-Wave radio availability.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "get_zigbee_details",
+            description: """Get Zigbee radio information including channel, PAN ID, firmware version, and device details.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Uses the hub's internal API to fetch Zigbee radio status.
+Note: Results depend on hub firmware and Zigbee radio availability.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "get_hub_health",
+            description: """Get hub health metrics including free memory, internal temperature, uptime, and database size.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Provides a quick health check snapshot useful for diagnosing performance issues.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+
+        // ==================== HUB ADMIN WRITE TOOLS ====================
+        [
+            name: "create_hub_backup",
+            description: """Create a backup of the Hubitat hub database.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in the MCP Rule Server app settings.
+
+NOTE: This is the ONLY Hub Admin Write tool that does NOT require a prior backup (since it IS the backup tool).
+However, this tool still requires the confirm parameter to be true and Hub Admin Write to be enabled.
+
+⚠️ IMPORTANT: You MUST call this tool and verify success BEFORE using ANY other Hub Admin Write tool (reboot_hub, shutdown_hub, zwave_repair).
+Store the backup timestamp from the response — other write tools will verify a recent backup exists.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "reboot_hub",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — DESTRUCTIVE OPERATION ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Call 'create_hub_backup' and verify the response shows success=true
+2. Note the backup timestamp from the response
+3. Tell the user: "I have created a hub backup at [timestamp]. I am about to reboot your Hubitat hub."
+4. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+5. Set the 'confirm' parameter to true
+
+Reboots the Hubitat hub. Effects:
+- Hub will be UNREACHABLE for 1-3 minutes during reboot
+- ALL automations, rules, and device communications STOP during reboot
+- ALL scheduled jobs are lost and must be re-initialized
+- Z-Wave and Zigbee radios restart (devices may take additional time to reconnect)
+
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested a reboot.
+If the backup failed, DO NOT proceed — inform the user instead.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "shutdown_hub",
+            description: """⚠️⚠️⚠️ EXTREME CAUTION — THIS WILL POWER OFF THE HUB ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Call 'create_hub_backup' and verify the response shows success=true
+2. Note the backup timestamp from the response
+3. Tell the user: "I have created a hub backup at [timestamp]. I am about to SHUT DOWN your Hubitat hub. It will NOT restart automatically — you must physically unplug and replug the hub to restart it."
+4. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+5. Set the 'confirm' parameter to true
+
+Shuts down the Hubitat hub COMPLETELY. Effects:
+- Hub will POWER OFF and will NOT restart automatically
+- ALL automations, rules, and device communications PERMANENTLY STOP until manually restarted
+- User must physically power-cycle the hub to bring it back online
+- ALL smart home functionality ceases until hub is restarted
+
+This is NOT a reboot — the hub stays off. Only use when user explicitly wants to shut down.
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested a shutdown.
+If the backup failed, DO NOT proceed — inform the user instead.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "zwave_repair",
+            description: """⚠️ WARNING — NETWORK-DISRUPTIVE OPERATION ⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Call 'create_hub_backup' and verify the response shows success=true
+2. Note the backup timestamp from the response
+3. Tell the user: "I have created a hub backup at [timestamp]. I am about to start a Z-Wave network repair. This can take 5-30 minutes depending on network size and may cause temporary device communication issues."
+4. Get EXPLICIT user confirmation to proceed
+5. Set the 'confirm' parameter to true
+
+Starts a Z-Wave network repair/optimization. Effects:
+- Takes 5-30+ minutes depending on Z-Wave network size
+- Z-Wave devices may be temporarily unresponsive during repair
+- Automations using Z-Wave devices may fail during the process
+- Best run during off-peak hours when device reliability is less critical
+
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested a Z-Wave repair.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the Z-Wave repair."]
+                ],
+                required: ["confirm"]
+            ]
         ]
     ]
 }
@@ -818,6 +1031,20 @@ def executeTool(toolName, args) {
 
         // Version Check
         case "check_for_update": return toolCheckForUpdate(args)
+
+        // Hub Admin Read Tools
+        case "get_hub_details": return toolGetHubDetails(args)
+        case "list_hub_apps": return toolListHubApps(args)
+        case "list_hub_drivers": return toolListHubDrivers(args)
+        case "get_zwave_details": return toolGetZwaveDetails(args)
+        case "get_zigbee_details": return toolGetZigbeeDetails(args)
+        case "get_hub_health": return toolGetHubHealth(args)
+
+        // Hub Admin Write Tools
+        case "create_hub_backup": return toolCreateHubBackup(args)
+        case "reboot_hub": return toolRebootHub(args)
+        case "shutdown_hub": return toolShutdownHub(args)
+        case "zwave_repair": return toolZwaveRepair(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -1304,7 +1531,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.3.3",
+        serverVersion: "0.4.0",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -2373,6 +2600,131 @@ def getSelectedDevices() {
 
 
 
+// ==================== HUB SECURITY & INTERNAL API HELPERS ====================
+
+/**
+ * Authenticate with Hub Security and return a session cookie.
+ * Returns null if Hub Security is not enabled or credentials are not configured.
+ * Caches the cookie for 30 minutes to avoid excessive login requests.
+ */
+def getHubSecurityCookie() {
+    if (!settings.hubSecurityEnabled) return null
+    if (!settings.hubSecurityUser || !settings.hubSecurityPassword) {
+        mcpLog("warn", "hub-admin", "Hub Security is enabled but credentials are not configured")
+        return null
+    }
+
+    // Check if we have a valid cached cookie
+    if (state.hubSecurityCookie && state.hubSecurityCookieExpiry && state.hubSecurityCookieExpiry > now()) {
+        return state.hubSecurityCookie
+    }
+
+    // Authenticate
+    def cookie = null
+    try {
+        httpPost([
+            uri: "http://127.0.0.1:8080",
+            path: "/login",
+            body: [username: settings.hubSecurityUser, password: settings.hubSecurityPassword],
+            textParser: true,
+            ignoreSSLIssues: true
+        ]) { resp ->
+            cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0)
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub Security authentication failed: ${e.message}")
+        throw new RuntimeException("Hub Security authentication failed. Check your username and password in MCP Rule Server settings.")
+    }
+
+    if (cookie) {
+        state.hubSecurityCookie = cookie
+        state.hubSecurityCookieExpiry = now() + (30 * 60 * 1000) // 30 minutes
+        mcpLog("debug", "hub-admin", "Hub Security authentication successful")
+    } else {
+        mcpLog("warn", "hub-admin", "Hub Security authentication returned no cookie")
+    }
+
+    return cookie
+}
+
+/**
+ * Make an authenticated GET request to the hub's internal API.
+ * Automatically includes Hub Security cookie if configured.
+ * Returns the response body as text.
+ */
+def hubInternalGet(String path) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        textParser: true,
+        ignoreSSLIssues: true,
+        timeout: 30
+    ]
+    if (cookie) {
+        params.headers = ["Cookie": cookie]
+    }
+
+    def responseText = null
+    httpGet(params) { resp ->
+        responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+    }
+    return responseText
+}
+
+/**
+ * Make an authenticated POST request to the hub's internal API.
+ * Automatically includes Hub Security cookie if configured.
+ * Returns the response body as text.
+ */
+def hubInternalPost(String path, Map body = null) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        textParser: true,
+        ignoreSSLIssues: true,
+        timeout: 30
+    ]
+    if (cookie) {
+        params.headers = ["Cookie": cookie]
+    }
+    if (body) {
+        params.body = body
+    }
+
+    def responseText = null
+    httpPost(params) { resp ->
+        responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+    }
+    return responseText
+}
+
+/**
+ * Check if Hub Admin Read access is enabled. Throws if not.
+ */
+def requireHubAdminRead() {
+    if (!settings.enableHubAdminRead) {
+        throw new IllegalArgumentException("Hub Admin Read access is disabled. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to use this tool.")
+    }
+}
+
+/**
+ * Check if Hub Admin Write access is enabled and a recent backup exists. Throws if not.
+ */
+def requireHubAdminWrite(Boolean confirmParam) {
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
+    }
+    if (!confirmParam) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with create_hub_backup first? Review the tool description for the mandatory pre-flight checklist.")
+    }
+    // Check for recent backup (within 1 hour)
+    if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 3600000) {
+        throw new IllegalArgumentException("BACKUP REQUIRED: No backup found within the last hour. You MUST call create_hub_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+    }
+}
+
 def jsonRpcResult(id, result) {
     return [jsonrpc: "2.0", id: id, result: result]
 }
@@ -2620,7 +2972,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.3.3",
+        version: "0.4.0",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2641,7 +2993,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.3.3"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.0"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -2756,10 +3108,396 @@ Thank you for helping improve the MCP Rule Server!"""
     return result
 }
 
+// ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
+
+def toolGetHubDetails(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def details = [
+        name: hub?.name,
+        localIP: hub?.localIP,
+        timeZone: location.timeZone?.ID,
+        temperatureScale: location.temperatureScale,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        zipCode: location.zipCode
+    ]
+
+    // Safe property access for hub properties
+    try { details.model = hub?.hardwareID } catch (Exception e) { details.model = "unavailable" }
+    try { details.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { details.firmwareVersion = "unavailable" }
+    try { details.uptime = hub?.uptime } catch (Exception e) { details.uptime = "unavailable" }
+    try { details.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { details.zigbeeChannel = "unavailable" }
+    try { details.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { details.zwaveVersion = "unavailable" }
+    try { details.zigbeeId = hub?.zigbeeId } catch (Exception e) { details.zigbeeId = "unavailable" }
+    try { details.type = hub?.type } catch (Exception e) { details.type = "unavailable" }
+    try { details.hubData = hub?.data } catch (Exception e) { details.hubData = null }
+
+    // Extended info via internal API
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) details.freeMemoryKB = freeMemory.trim()
+    } catch (Exception e) {
+        details.freeMemoryKB = "unavailable (${e.message})"
+        mcpLog("debug", "hub-admin", "Could not get free memory: ${e.message}")
+    }
+
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) details.internalTempCelsius = tempC.trim()
+    } catch (Exception e) {
+        details.internalTempCelsius = "unavailable (${e.message})"
+        mcpLog("debug", "hub-admin", "Could not get internal temperature: ${e.message}")
+    }
+
+    // Hub database size via internal API
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) details.databaseSizeKB = dbSize.trim()
+    } catch (Exception e) {
+        details.databaseSizeKB = "unavailable"
+        mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
+    }
+
+    details.mcpServerVersion = "0.4.0"
+    details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
+    details.ruleCount = getChildApps()?.size() ?: 0
+    details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
+    details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
+
+    mcpLog("info", "hub-admin", "Retrieved extended hub details")
+    return details
+}
+
+def toolListHubApps(args) {
+    requireHubAdminRead()
+
+    def result = [:]
+    try {
+        def responseText = hubInternalGet("/hub2/appsList")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.apps = parsed
+                result.count = parsed instanceof List ? parsed.size() : 0
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                // Response was not JSON - return what we can
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+            }
+        } else {
+            result.apps = []
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "list_hub_apps API call failed: ${e.message}")
+        // Fallback: return MCP child apps as the only apps we can enumerate
+        def childApps = getChildApps()
+        result.apps = childApps?.collect { ca ->
+            [id: ca.id.toString(), name: ca.getSetting("ruleName") ?: ca.label ?: "Unknown", type: "MCP Rule"]
+        } ?: []
+        result.count = result.apps.size()
+        result.source = "mcp_only"
+        result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
+    }
+
+    mcpLog("info", "hub-admin", "Listed hub apps (source: ${result.source})")
+    return result
+}
+
+def toolListHubDrivers(args) {
+    requireHubAdminRead()
+
+    def result = [:]
+    try {
+        def responseText = hubInternalGet("/hub2/driversList")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.drivers = parsed
+                result.count = parsed instanceof List ? parsed.size() : 0
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+            }
+        } else {
+            result.drivers = []
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "list_hub_drivers API call failed: ${e.message}")
+        result.drivers = []
+        result.count = 0
+        result.source = "unavailable"
+        result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
+    }
+
+    mcpLog("info", "hub-admin", "Listed hub drivers (source: ${result.source})")
+    return result
+}
+
+def toolGetZwaveDetails(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def result = [:]
+
+    // Basic Z-Wave info from hub object
+    try { result.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { result.zwaveVersion = "unavailable" }
+
+    // Extended Z-Wave info via internal API
+    try {
+        def responseText = hubInternalGet("/hub2/zwaveInfo")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.zwaveData = parsed
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                result.rawResponse = responseText?.take(3000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON format"
+            }
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "Z-Wave info API call failed: ${e.message}")
+        result.source = "sdk_only"
+        result.note = "Extended Z-Wave info unavailable (${e.message}). Showing basic info from hub SDK."
+    }
+
+    mcpLog("info", "hub-admin", "Retrieved Z-Wave details")
+    return result
+}
+
+def toolGetZigbeeDetails(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def result = [:]
+
+    // Basic Zigbee info from hub object
+    try { result.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { result.zigbeeChannel = "unavailable" }
+    try { result.zigbeeId = hub?.zigbeeId } catch (Exception e) { result.zigbeeId = "unavailable" }
+
+    // Extended Zigbee info via internal API
+    try {
+        def responseText = hubInternalGet("/hub2/zigbeeInfo")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.zigbeeData = parsed
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                result.rawResponse = responseText?.take(3000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON format"
+            }
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "Zigbee info API call failed: ${e.message}")
+        result.source = "sdk_only"
+        result.note = "Extended Zigbee info unavailable (${e.message}). Showing basic info from hub SDK."
+    }
+
+    mcpLog("info", "hub-admin", "Retrieved Zigbee details")
+    return result
+}
+
+def toolGetHubHealth(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def health = [
+        timestamp: formatTimestamp(now())
+    ]
+
+    // Uptime
+    try { health.uptimeSeconds = hub?.uptime } catch (Exception e) { health.uptimeSeconds = "unavailable" }
+    if (health.uptimeSeconds && health.uptimeSeconds instanceof Number) {
+        def days = (health.uptimeSeconds / 86400).toInteger()
+        def hours = ((health.uptimeSeconds % 86400) / 3600).toInteger()
+        def mins = ((health.uptimeSeconds % 3600) / 60).toInteger()
+        health.uptimeFormatted = "${days}d ${hours}h ${mins}m"
+    }
+
+    // Free memory
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) {
+            health.freeMemoryKB = freeMemory.trim()
+            def memKB = freeMemory.trim() as Integer
+            if (memKB < 50000) {
+                health.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+            } else if (memKB < 100000) {
+                health.memoryNote = "Memory is moderate: ${memKB}KB free."
+            }
+        }
+    } catch (Exception e) {
+        health.freeMemoryKB = "unavailable"
+        mcpLog("debug", "hub-admin", "Could not get free memory: ${e.message}")
+    }
+
+    // Internal temperature
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) {
+            health.internalTempCelsius = tempC.trim()
+            def temp = tempC.trim() as Double
+            if (temp > 70) {
+                health.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+            } else if (temp > 60) {
+                health.temperatureNote = "Temperature is warm: ${temp}°C."
+            }
+        }
+    } catch (Exception e) {
+        health.internalTempCelsius = "unavailable"
+        mcpLog("debug", "hub-admin", "Could not get internal temperature: ${e.message}")
+    }
+
+    // Database size
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) {
+            health.databaseSizeKB = dbSize.trim()
+            def dbKB = dbSize.trim() as Integer
+            if (dbKB > 500000) {
+                health.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+            }
+        }
+    } catch (Exception e) {
+        health.databaseSizeKB = "unavailable"
+    }
+
+    // MCP-specific health
+    health.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    health.mcpRuleCount = getChildApps()?.size() ?: 0
+    health.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+    health.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+
+    mcpLog("info", "hub-admin", "Hub health check completed")
+    return health
+}
+
+// ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
+
+def toolCreateHubBackup(args) {
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings.")
+    }
+    if (!args.confirm) {
+        throw new IllegalArgumentException("You must set confirm=true to create a backup.")
+    }
+
+    mcpLog("info", "hub-admin", "Creating hub backup...")
+
+    try {
+        def responseText = hubInternalPost("/hub/backup")
+        state.lastBackupTimestamp = now()
+
+        mcpLog("info", "hub-admin", "Hub backup created successfully at ${formatTimestamp(now())}")
+        return [
+            success: true,
+            message: "Hub backup created successfully",
+            backupTimestamp: formatTimestamp(now()),
+            backupTimestampEpoch: now(),
+            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub backup FAILED: ${e.message}")
+        return [
+            success: false,
+            error: "Backup failed: ${e.message}",
+            note: "The backup could not be created. Do NOT proceed with any Hub Admin Write operations. " +
+                  "Check Hub Security credentials if Hub Security is enabled, or try creating a backup manually from the Hubitat web UI."
+        ]
+    }
+}
+
+def toolRebootHub(args) {
+    requireHubAdminWrite(args.confirm)
+
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+
+    try {
+        def responseText = hubInternalPost("/hub/reboot")
+        return [
+            success: true,
+            message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub reboot failed: ${e.message}")
+        return [
+            success: false,
+            error: "Reboot failed: ${e.message}",
+            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+        ]
+    }
+}
+
+def toolShutdownHub(args) {
+    requireHubAdminWrite(args.confirm)
+
+    mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP — hub will NOT restart automatically")
+
+    try {
+        def responseText = hubInternalPost("/hub/shutdown")
+        return [
+            success: true,
+            message: "Hub shutdown initiated. The hub will power off and will NOT restart automatically.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "The hub is powering down. To restart, you must physically unplug and replug the hub power cable. ALL smart home functionality will stop until the hub is manually restarted.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub shutdown failed: ${e.message}")
+        return [
+            success: false,
+            error: "Shutdown failed: ${e.message}",
+            note: "The shutdown command could not be sent. Check Hub Security credentials or try shutting down manually from the Hubitat web UI."
+        ]
+    }
+}
+
+def toolZwaveRepair(args) {
+    requireHubAdminWrite(args.confirm)
+
+    mcpLog("info", "hub-admin", "Z-Wave repair initiated by MCP")
+
+    try {
+        def responseText = hubInternalPost("/hub/zwaveRepair")
+        return [
+            success: true,
+            message: "Z-Wave network repair started. This process runs in the background.",
+            duration: "Typically takes 5-30 minutes depending on Z-Wave network size",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "Z-Wave devices may be temporarily unresponsive during the repair process. Do not initiate another repair until this one completes.",
+            note: "Check the Hubitat Logs page for Z-Wave repair progress and completion status.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Z-Wave repair failed to start: ${e.message}")
+        return [
+            success: false,
+            error: "Z-Wave repair failed: ${e.message}",
+            note: "The Z-Wave repair could not be started. Check Hub Security credentials or try starting it manually from the Hubitat web UI at Settings → Z-Wave Details → Repair."
+        ]
+    }
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.3.3"
+    return "0.4.0"
 }
 
 def isNewerVersion(String remote, String local) {
