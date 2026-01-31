@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.1 - Bug fixes for Hub Admin tools (source retrieval, backup creation)
+ * Version: 0.4.2 - Source size safety limit to prevent hub memory issues
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.1"
+                paragraph "<b>Version:</b> 0.4.2"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -284,7 +284,20 @@ def handleMcpRequest() {
     }
 
     def jsonResponse = groovy.json.JsonOutput.toJson(response)
-    logDebug("MCP Response: ${jsonResponse}")
+
+    // Safety guard: hub enforces 128KB response limit — truncate oversized responses
+    def maxResponseSize = 124000 // Leave 4KB headroom under 128KB limit
+    if (jsonResponse.length() > maxResponseSize) {
+        mcpLog("error", "system", "MCP response too large: ${jsonResponse.length()} bytes (limit ${maxResponseSize}). Returning error instead.")
+        def errResp = jsonRpcError(
+            (response instanceof Map) ? response.id : null,
+            -32603,
+            "Response too large (${jsonResponse.length()} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
+        )
+        jsonResponse = groovy.json.JsonOutput.toJson(errResp)
+    }
+
+    logDebug("MCP Response: ${jsonResponse.take(500)}${jsonResponse.length() > 500 ? '...[' + jsonResponse.length() + ' bytes total]' : ''}")
     return render(contentType: "application/json", data: jsonResponse)
 }
 
@@ -334,7 +347,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.1"
+        version: "0.4.2"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1724,7 +1737,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.1",
+        serverVersion: "0.4.2",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -3012,13 +3025,25 @@ def backupItemSource(String type, String id) {
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
     }
 
+    // Cap stored source at 100KB to prevent state size issues on the hub
+    def maxBackupSize = 64000
+    def sourceToStore = parsed.source
+    def truncated = false
+    if (sourceToStore.length() > maxBackupSize) {
+        mcpLog("warn", "hub-admin", "${type} ID ${id} source is ${sourceToStore.length()} chars, truncating backup to ${maxBackupSize}")
+        sourceToStore = sourceToStore.take(maxBackupSize)
+        truncated = true
+    }
+
     def backup = [
         type: type,
         id: id,
-        source: parsed.source,
+        source: sourceToStore,
         version: parsed.version,
-        timestamp: now()
+        timestamp: now(),
+        fullLength: parsed.source.length()
     ]
+    if (truncated) backup.truncated = true
     state.itemBackups[key] = backup
 
     // Prune old backups — keep at most 20 entries, remove oldest if over limit
@@ -3278,7 +3303,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.1",
+        version: "0.4.2",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -3299,7 +3324,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.1"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.2"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -3466,7 +3491,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.1"
+    details.mcpServerVersion = "0.4.2"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -3827,6 +3852,7 @@ def toolGetAppSource(args) {
     requireHubAdminRead()
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
+    def maxSourceSize = 64000 // ~64KB safety limit — JSON encoding + wrapper must stay under hub's 128KB response limit
     try {
         def responseText = hubInternalGet("/app/ajax/code", [id: args.appId])
         if (responseText) {
@@ -3834,14 +3860,27 @@ def toolGetAppSource(args) {
             if (parsed.status == "error") {
                 return [success: false, error: parsed.errorMessage ?: "Failed to get app source"]
             }
-            mcpLog("info", "hub-admin", "Retrieved source code for app ID: ${args.appId}")
-            return [
+            def source = parsed.source ?: ""
+            def truncated = false
+            if (source.length() > maxSourceSize) {
+                mcpLog("warn", "hub-admin", "App ID ${args.appId} source is ${source.length()} chars, truncating to ${maxSourceSize}")
+                source = source.take(maxSourceSize)
+                truncated = true
+            }
+            mcpLog("info", "hub-admin", "Retrieved source code for app ID: ${args.appId} (${source.length()} chars${truncated ? ', truncated' : ''})")
+            def result = [
                 success: true,
                 appId: args.appId,
-                source: parsed.source,
+                source: source,
                 version: parsed.version,
-                status: parsed.status
+                status: parsed.status,
+                sourceLength: parsed.source?.length() ?: 0
             ]
+            if (truncated) {
+                result.truncated = true
+                result.warning = "Source code exceeded ${maxSourceSize} character safety limit (hub has 128KB response cap) and was truncated. The full source is ${parsed.source.length()} characters."
+            }
+            return result
         }
         return [success: false, error: "Empty response from hub"]
     } catch (Exception e) {
@@ -3854,6 +3893,7 @@ def toolGetDriverSource(args) {
     requireHubAdminRead()
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
+    def maxSourceSize = 64000 // ~64KB safety limit — JSON encoding + wrapper must stay under hub's 128KB response limit
     try {
         def responseText = hubInternalGet("/driver/ajax/code", [id: args.driverId])
         if (responseText) {
@@ -3861,14 +3901,27 @@ def toolGetDriverSource(args) {
             if (parsed.status == "error") {
                 return [success: false, error: parsed.errorMessage ?: "Failed to get driver source"]
             }
-            mcpLog("info", "hub-admin", "Retrieved source code for driver ID: ${args.driverId}")
-            return [
+            def source = parsed.source ?: ""
+            def truncated = false
+            if (source.length() > maxSourceSize) {
+                mcpLog("warn", "hub-admin", "Driver ID ${args.driverId} source is ${source.length()} chars, truncating to ${maxSourceSize}")
+                source = source.take(maxSourceSize)
+                truncated = true
+            }
+            mcpLog("info", "hub-admin", "Retrieved source code for driver ID: ${args.driverId} (${source.length()} chars${truncated ? ', truncated' : ''})")
+            def result = [
                 success: true,
                 driverId: args.driverId,
-                source: parsed.source,
+                source: source,
                 version: parsed.version,
-                status: parsed.status
+                status: parsed.status,
+                sourceLength: parsed.source?.length() ?: 0
             ]
+            if (truncated) {
+                result.truncated = true
+                result.warning = "Source code exceeded ${maxSourceSize} character safety limit (hub has 128KB response cap) and was truncated. The full source is ${parsed.source.length()} characters."
+            }
+            return result
         }
         return [success: false, error: "Empty response from hub"]
     } catch (Exception e) {
@@ -4157,7 +4210,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.1"
+    return "0.4.2"
 }
 
 def isNewerVersion(String remote, String local) {

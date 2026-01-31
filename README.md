@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.2:**
+- **Response size safety limits** — source truncated at 64KB + global 128KB response guard to prevent hub lag/crash
+
 **New in v0.4.1:**
 - **Bug fixes** for `get_app_source`, `get_driver_source`, and `create_hub_backup` — all Hub Admin tools now functional
 - **Two-tier backup system** — full hub backup (24h) + automatic item-level source backup before modify/delete
@@ -568,6 +571,12 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
+  - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
+  - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub
+  - **Item-level backups** capped at 64KB to protect hub state storage
+  - **Debug log truncation** — large responses no longer spam the debug log (capped at 500 chars)
+  - Returns `sourceLength`, `truncated` flag, and warning when output is incomplete
 - **v0.4.1** - Bug fixes for Hub Admin tools + two-tier backup system
   - **Fixed `get_app_source` and `get_driver_source`** returning 404: Query parameters now passed via `query` map instead of embedded in path string
   - **Fixed `create_hub_backup`** returning 405 Method Not Allowed: Changed from `POST /hub/backup` to `GET /hub/backupDB?fileName=latest`
