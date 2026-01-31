@@ -15,6 +15,18 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Control devices** - Turn lights on/off, set levels, trigger scenes
 - **Create automations** - Build rules with triggers, conditions, and actions
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
+- **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
+
+**New in v0.4.1:**
+- **8 new app/driver management tools** - `get_app_source`, `get_driver_source`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
+- **Review fixes** - Unsafe numeric parsing, stale cookie invalidation, backup response validation, corrected list API endpoints
+- **SKILL.md** - Claude Code development skill for project conventions
+- **52 MCP tools total**
+
+**New in v0.4.0:**
+- **10 Hub Admin tools** - Hub details, health monitoring, backup, reboot, shutdown, Z-Wave repair, app/driver listing
+- **Hub Security support** - Automatic cookie-based authentication for hubs with Hub Security enabled
+- **44 MCP tools total** (up from 34 in v0.3.x)
 
 **New in v0.3.0:**
 - **Rule export/import/clone** - Export rules as portable JSON, import them with device remapping, or clone existing rules
@@ -46,15 +58,17 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (34 total)
+### MCP Tools (52 total)
 
 | Category | Tools |
 |----------|-------|
-| **Devices** | `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events` |
-| **Rules** | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule`, `export_rule`, `import_rule`, `clone_rule` |
-| **System** | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable`, `check_for_update` |
-| **State Capture** | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
-| **Debug/Diagnostics** | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
+| **Devices** (5) | `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events` |
+| **Rules** (11) | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule`, `export_rule`, `import_rule`, `clone_rule` |
+| **System** (9) | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable`, `check_for_update` |
+| **State Capture** (3) | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
+| **Debug/Diagnostics** (6) | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
+| **Hub Admin Read** (8) | `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source` |
+| **Hub Admin Write** (10) | `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` |
 
 ### Rule Engine
 
@@ -113,10 +127,80 @@ Create automations via natural language through Claude:
 - `set_shade` - Open, close, or set position (0-100) of window shades
 - `variable_math` - Arithmetic on local/global variables (add, subtract, multiply, divide, modulo, set)
 
+### Hub Admin Tools (v0.4.0+)
+
+Manage and monitor your Hubitat hub directly through MCP. Both Hub Admin Read and Hub Admin Write access are **disabled by default** and must be explicitly enabled in the app settings.
+
+#### Enabling Hub Admin Tools
+
+1. Open **Apps** → **MCP Rule Server** in the Hubitat web UI
+2. Under **Hub Admin Access**, toggle:
+   - **Enable Hub Admin Read Tools** — for read-only hub information
+   - **Enable Hub Admin Write Tools** — for backup, reboot, shutdown, Z-Wave repair, and app/driver management
+3. If your hub has **Hub Security** enabled, also configure:
+   - **Hub Security Username** and **Password** under the Hub Security section
+
+#### Hub Admin Read Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_hub_details` | Hub model, firmware, IP, uptime, free memory, CPU temperature, database size, Z-Wave/Zigbee info |
+| `list_hub_apps` | List all user-installed apps (ID, name, namespace) |
+| `list_hub_drivers` | List all user-installed drivers (ID, name, namespace) |
+| `get_zwave_details` | Z-Wave radio firmware, frequency, device details |
+| `get_zigbee_details` | Zigbee channel, PAN ID, radio details |
+| `get_hub_health` | Health dashboard with memory/temperature/database warnings, uptime, MCP statistics |
+| `get_app_source` | Retrieve the full Groovy source code of an installed app by ID |
+| `get_driver_source` | Retrieve the full Groovy source code of an installed driver by ID |
+
+#### Hub Admin Write Tools
+
+All write tools enforce a **three-layer safety gate**:
+1. Hub Admin Write must be **enabled** in settings
+2. The AI must pass `confirm=true` explicitly
+3. A hub **backup must exist within the last hour** (enforced automatically)
+
+| Tool | Description |
+|------|-------------|
+| `create_hub_backup` | Create a hub database backup (required before any other write operation) |
+| `reboot_hub` | Reboot the hub (will be unreachable for 1-3 minutes) |
+| `shutdown_hub` | Shut down the hub (requires manual power cycle to restart) |
+| `zwave_repair` | Start a Z-Wave network repair (runs in background for 5-30 minutes) |
+| `install_app` | Install a new Groovy app from source code |
+| `install_driver` | Install a new Groovy driver from source code |
+| `update_app_code` | Update an existing app's source code (uses optimistic locking) |
+| `update_driver_code` | Update an existing driver's source code (uses optimistic locking) |
+| `delete_app` | Permanently delete an installed app |
+| `delete_driver` | Permanently delete an installed driver |
+
+#### Hub Security Support
+
+If your hub has Hub Security enabled (login required for the web UI), the MCP server handles authentication automatically:
+- Configure your Hub Security username and password in the app settings
+- The server caches the session cookie for 30 minutes
+- Stale cookies are automatically cleared and re-authenticated on the next request
+- If Hub Security is not enabled, no credentials are needed
+
+#### Example Usage
+
+```
+"What's the hub's health status? Check memory and temperature."
+→ Uses get_hub_health
+
+"List all installed apps and show me the source code for app ID 42"
+→ Uses list_hub_apps, then get_app_source
+
+"Create a backup, then install this driver code on my hub: [code]"
+→ Uses create_hub_backup, then install_driver
+
+"My Z-Wave devices are responding slowly. Run a Z-Wave repair."
+→ Uses create_hub_backup (mandatory), then zwave_repair
+```
+
 ## Requirements
 
 - Hubitat Elevation C-7, C-8, or C-8 Pro
-- Hubitat firmware with OAuth support (any recent version)
+- Hubitat firmware 2.3.0+ (for OAuth and internal API support)
 
 ## Installation
 
@@ -483,6 +567,28 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.1** - App/Driver Management + Review Fixes (52 tools total)
+  - **8 new app/driver management tools**: `get_app_source`, `get_driver_source`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
+  - **New `hubInternalPostForm` helper**: Form-encoded POST for app/driver install/update endpoints with Hub Security cookie auth
+  - **Optimistic locking** for code updates: Fetches current version before updating to prevent conflicts
+  - **Review fixes**: Unsafe numeric parsing in hub health checks (freeMemory, temperature, databaseSize), stale Hub Security cookie invalidation on 401/403 errors, backup response validation before setting timestamp, corrected list endpoints to `/hub2/userAppTypes` and `/hub2/userDeviceTypes`
+  - **SKILL.md**: Claude Code development skill documenting all project conventions and architecture
+  - **README.md**: Comprehensive documentation for v0.3.2, v0.3.3, v0.4.0, and v0.4.1 features
+- **v0.4.0** - Hub Admin Tools with Hub Security support (44 tools total)
+  - **10 new Hub Admin tools**: Full hub administration through MCP
+  - **Hub Admin Read Tools** (6): `get_hub_details` (firmware, memory, temp, db size), `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health` (health dashboard with warnings)
+  - **Hub Admin Write Tools** (4): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`
+  - **Hub Security support**: Automatic cookie-based authentication for hubs with Hub Security enabled; 30-minute cookie caching with auto-renewal
+  - **Three-layer safety gate** for write tools: settings toggle + explicit `confirm=true` + mandatory backup within last hour
+  - **UI toggles**: Independent enable/disable for Hub Admin Read and Write access in app settings
+  - **Graceful degradation**: All Hub Admin tools handle unavailable endpoints, non-JSON responses, and firmware variations
+- **v0.3.3** - Multi-device trigger support and validation fixes
+  - Fixed multi-device triggers: rules can now trigger from multiple devices for the same attribute
+  - Validation improvements for trigger and condition edge cases
+  - Minor stability fixes
+- **v0.3.2** - Comprehensive bug fixes (25 bugs verified and fixed)
+  - Systematic testing and fixing of 25 confirmed bugs across rule creation, trigger handling, condition evaluation, action execution, and MCP tool responses
+  - Improved error messages and edge case handling throughout
 - **v0.3.1** - Bug fixes from comprehensive v0.3.0 testing:
   - Fixed `test_rule` dry run showing "Unknown action: variable_math" (missing `describeAction()` case in child app)
   - Fixed `test_rule` dry run showing "Log [null]" for log actions without explicit level (now defaults to "info")
