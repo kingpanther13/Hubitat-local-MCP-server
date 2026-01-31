@@ -6,7 +6,7 @@
     "dateReleased": "2026-01-31",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.4.1 - Bug fixes for Hub Admin tools:\n\n- Fixed get_app_source and get_driver_source returning 404 (query params now passed via query map instead of embedded in path)\n- Fixed create_hub_backup returning 405 Method Not Allowed (changed from POST /hub/backup to GET /hub/backupDB?fileName=latest)\n- Fixed update_app_code and update_driver_code version fetch (same query param fix)\n- Backup timeout increased to 120s for larger hubs\n- All 12 previously blocked write operations now unblocked (backup gate was failing)",
+    "releaseNotes": "v0.4.1 - Bug fixes for Hub Admin tools:\n\n- Fixed get_app_source and get_driver_source returning 404 (query params now passed via query map instead of embedded in path)\n- Fixed create_hub_backup returning 405 Method Not Allowed (changed from POST /hub/backup to GET /hub/backupDB?fileName=latest)\n- Fixed update_app_code and update_driver_code version fetch (same query param fix)\n- Backup timeout increased to 300s (5 min) for larger hubs\n- All 12 previously blocked write operations now unblocked (backup gate was failing)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

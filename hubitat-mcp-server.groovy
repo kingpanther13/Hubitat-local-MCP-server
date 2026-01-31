@@ -3667,7 +3667,7 @@ def toolCreateHubBackup(args) {
     try {
         // GET /hub/backupDB?fileName=latest triggers a fresh backup and returns the .lzf file
         // We just need the backup to be created; the binary response confirms success
-        def responseText = hubInternalGet("/hub/backupDB", [fileName: "latest"], 120)
+        def responseText = hubInternalGet("/hub/backupDB", [fileName: "latest"], 300)
         def backupTime = now()
 
         state.lastBackupTimestamp = backupTime

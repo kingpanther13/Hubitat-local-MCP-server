@@ -570,7 +570,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **Fixed `create_hub_backup`** returning 405 Method Not Allowed: Changed from `POST /hub/backup` to `GET /hub/backupDB?fileName=latest`
   - **Fixed `update_app_code` and `update_driver_code`** version fetch (same query parameter fix)
   - **Unblocked all Hub Admin Write tools**: Backup creation was failing, which blocked all 9 write operations behind the safety gate
-  - **Backup timeout** increased to 120 seconds for larger hubs
+  - **Backup timeout** increased to 300 seconds (5 minutes) for larger hubs
   - **SKILL.md**: Claude Code development skill documenting all project conventions and architecture
 - **v0.4.0** - Hub Admin Tools with Hub Security support (52 tools total)
   - **18 new Hub Admin tools**: Full hub administration through MCP
