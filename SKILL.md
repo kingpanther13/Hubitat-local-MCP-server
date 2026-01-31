@@ -173,9 +173,16 @@ Three tiers of access control:
 **`requireHubAdminWrite(args.confirm)`** — Three-layer check:
 1. `settings.enableHubAdminWrite` must be true
 2. `args.confirm` must be `true` (explicit confirmation parameter)
-3. `state.lastBackupTimestamp` must be within the last hour
+3. `state.lastBackupTimestamp` must be within the last 24 hours
 
 Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup operation, so it can't require a prior backup).
+
+**`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
+- Called by `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` before making changes
+- Fetches current source code and stores in `state.itemBackups` keyed by `"app_<id>"` or `"driver_<id>"`
+- 1-hour window: if a backup of the same item exists within the last hour, it is kept (preserves the pre-edit original across a series of edits)
+- Prunes to max 20 entries to limit state size
+- Not needed for install tools (nothing to lose when creating new)
 
 ### Hub Internal API Helpers
 
@@ -183,8 +190,8 @@ Three helpers for calling the hub's internal HTTP API at `http://127.0.0.1:8080`
 
 | Helper | Use Case | Content Type |
 |--------|----------|--------------|
-| `hubInternalGet(path)` | Read endpoints, returns response text | text |
-| `hubInternalPost(path, body?)` | Simple POST endpoints (backup, reboot, shutdown, zwave repair) | text |
+| `hubInternalGet(path, query?, timeout?)` | Read endpoints (default 30s timeout), returns response text | text |
+| `hubInternalPost(path, body?)` | Simple POST endpoints (reboot, shutdown, zwave repair) | text |
 | `hubInternalPostForm(path, body, timeout?)` | Form-encoded POST (app/driver install/update) | `application/x-www-form-urlencoded` |
 
 All three:
@@ -219,7 +226,8 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 | `debugLogs` | Map | `{entries: [], config: {logLevel, maxEntries}}` circular buffer |
 | `hubSecurityCookie` | String | Cached auth cookie |
 | `hubSecurityCookieExpiry` | Long | Cookie expiry epoch ms |
-| `lastBackupTimestamp` | Long | Last backup epoch ms (used by write safety gate) |
+| `lastBackupTimestamp` | Long | Last hub backup epoch ms (24-hour write safety gate) |
+| `itemBackups` | Map | Source code backups keyed by `"app_<id>"` / `"driver_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
 
 **Child app uses `atomicState`** for `triggers`, `conditions`, `actions` arrays. This is critical — `atomicState` provides immediate persistence and prevents race conditions when the parent creates a rule and immediately enables it. Regular `state` is used for counters and timestamps.
@@ -305,13 +313,13 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub2/userDeviceTypes` | Installed user drivers (JSON array: id, name, namespace) |
 | `/hub2/zwaveInfo` | Z-Wave radio details (JSON) |
 | `/hub2/zigbeeInfo` | Zigbee radio details (JSON) |
-| `/app/ajax/code?id=<id>` | App source code (JSON: source, version, status) |
-| `/driver/ajax/code?id=<id>` | Driver source code (JSON: source, version, status) |
+| `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
+| `/driver/ajax/code` with query `id=<id>` | Driver source code (JSON: source, version, status) |
+| `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |
 |------|------|---------|
-| `/hub/backup` | none | Create hub backup |
 | `/hub/reboot` | none | Reboot hub |
 | `/hub/shutdown` | none | Shutdown hub |
 | `/hub/zwaveRepair` | none | Start Z-Wave network repair |

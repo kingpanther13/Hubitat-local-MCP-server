@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.0 - Hub Admin Read/Write tools with Hub Security support
+ * Version: 0.4.1 - Bug fixes for Hub Admin tools (source retrieval, backup creation)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.0"
+                paragraph "<b>Version:</b> 0.4.1"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -334,7 +334,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.0"
+        version: "0.4.1"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -872,15 +872,17 @@ Provides a quick health check snapshot useful for diagnosing performance issues.
         // ==================== HUB ADMIN WRITE TOOLS ====================
         [
             name: "create_hub_backup",
-            description: """Create a backup of the Hubitat hub database.
+            description: """Create a full backup of the Hubitat hub database.
 
 Requires 'Enable Hub Admin Write Tools' to be turned on in the MCP Rule Server app settings.
 
 NOTE: This is the ONLY Hub Admin Write tool that does NOT require a prior backup (since it IS the backup tool).
 However, this tool still requires the confirm parameter to be true and Hub Admin Write to be enabled.
 
-⚠️ IMPORTANT: You MUST call this tool and verify success BEFORE using ANY other Hub Admin Write tool (reboot_hub, shutdown_hub, zwave_repair).
-Store the backup timestamp from the response — other write tools will verify a recent backup exists.""",
+⚠️ IMPORTANT: You MUST call this tool and verify success BEFORE using ANY other Hub Admin Write tool.
+A hub backup is required within the last 24 hours for any write operation. This backup may take a few minutes on larger hubs.
+
+Note: When modifying or deleting individual apps/drivers, those tools also automatically back up the specific item's source code before making changes.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -894,11 +896,10 @@ Store the backup timestamp from the response — other write tools will verify a
             description: """⚠️⚠️⚠️ CRITICAL WARNING — DESTRUCTIVE OPERATION ⚠️⚠️⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Call 'create_hub_backup' and verify the response shows success=true
-2. Note the backup timestamp from the response
-3. Tell the user: "I have created a hub backup at [timestamp]. I am about to reboot your Hubitat hub."
-4. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
-5. Set the 'confirm' parameter to true
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
+2. Tell the user: "I am about to reboot your Hubitat hub."
+3. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+4. Set the 'confirm' parameter to true
 
 Reboots the Hubitat hub. Effects:
 - Hub will be UNREACHABLE for 1-3 minutes during reboot
@@ -924,11 +925,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             description: """⚠️⚠️⚠️ EXTREME CAUTION — THIS WILL POWER OFF THE HUB ⚠️⚠️⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Call 'create_hub_backup' and verify the response shows success=true
-2. Note the backup timestamp from the response
-3. Tell the user: "I have created a hub backup at [timestamp]. I am about to SHUT DOWN your Hubitat hub. It will NOT restart automatically — you must physically unplug and replug the hub to restart it."
-4. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
-5. Set the 'confirm' parameter to true
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
+2. Tell the user: "I am about to SHUT DOWN your Hubitat hub. It will NOT restart automatically — you must physically unplug and replug the hub to restart it."
+3. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+4. Set the 'confirm' parameter to true
 
 Shuts down the Hubitat hub COMPLETELY. Effects:
 - Hub will POWER OFF and will NOT restart automatically
@@ -955,11 +955,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             description: """⚠️ WARNING — NETWORK-DISRUPTIVE OPERATION ⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Call 'create_hub_backup' and verify the response shows success=true
-2. Note the backup timestamp from the response
-3. Tell the user: "I have created a hub backup at [timestamp]. I am about to start a Z-Wave network repair. This can take 5-30 minutes depending on network size and may cause temporary device communication issues."
-4. Get EXPLICIT user confirmation to proceed
-5. Set the 'confirm' parameter to true
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
+2. Tell the user: "I am about to start a Z-Wave network repair. This can take 5-30 minutes depending on network size and may cause temporary device communication issues."
+3. Get EXPLICIT user confirmation to proceed
+4. Set the 'confirm' parameter to true
 
 Starts a Z-Wave network repair/optimization. Effects:
 - Takes 5-30+ minutes depending on Z-Wave network size
@@ -1014,7 +1013,7 @@ Use list_hub_drivers to find driver IDs first. Returns the full source code text
             description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST:
-1. Call 'create_hub_backup' and verify success
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
 2. Tell the user what app you are about to install and show them the source code
 3. Get EXPLICIT user confirmation to proceed
 4. Set confirm=true
@@ -1038,7 +1037,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST:
-1. Call 'create_hub_backup' and verify success
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
 2. Tell the user what driver you are about to install and show them the source code
 3. Get EXPLICIT user confirmation to proceed
 4. Set confirm=true
@@ -1062,13 +1061,15 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING APP CODE ⚠️⚠️⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST:
-1. Call 'create_hub_backup' and verify success
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
 2. Use get_app_source to read the CURRENT code first
 3. Tell the user what changes you are making
 4. Get EXPLICIT user confirmation to proceed
 5. Set confirm=true
 
 Updates the Groovy source code of an existing app. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
+
+The app's current source code is automatically backed up before modification. If the same app is modified multiple times within an hour, the original pre-edit source is preserved.
 
 WARNING: Incorrect code can break the app and any automations depending on it.
 
@@ -1088,13 +1089,15 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING DRIVER CODE ⚠️⚠️⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST:
-1. Call 'create_hub_backup' and verify success
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
 2. Use get_driver_source to read the CURRENT code first
 3. Tell the user what changes you are making
 4. Get EXPLICIT user confirmation to proceed
 5. Set confirm=true
 
 Updates the Groovy source code of an existing driver. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
+
+The driver's current source code is automatically backed up before modification. If the same driver is modified multiple times within an hour, the original pre-edit source is preserved.
 
 WARNING: Incorrect code can break the driver and all devices using it.
 
@@ -1114,13 +1117,15 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES AN APP ⚠️⚠️⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST:
-1. Call 'create_hub_backup' and verify success
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
 2. Tell the user which app (by name and ID) you are about to delete
 3. Warn that this is PERMANENT and cannot be undone
 4. Get EXPLICIT user confirmation to proceed
 5. Set confirm=true
 
 Permanently deletes an installed app from the hub. This removes the app code — any app instances using this code must be removed first via the Hubitat web UI.
+
+The app's source code is automatically backed up before deletion so it can be re-installed if needed.
 
 Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
             inputSchema: [
@@ -1137,13 +1142,15 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES A DRIVER ⚠️⚠️⚠️
 
 MANDATORY PRE-FLIGHT CHECKLIST:
-1. Call 'create_hub_backup' and verify success
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
 2. Tell the user which driver (by name and ID) you are about to delete
 3. Warn that this is PERMANENT and cannot be undone — all devices using this driver will be affected
 4. Get EXPLICIT user confirmation to proceed
 5. Set confirm=true
 
 Permanently deletes an installed driver from the hub. Devices using this driver must be changed to a different driver first.
+
+The driver's source code is automatically backed up before deletion so it can be re-installed if needed.
 
 Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
             inputSchema: [
@@ -1717,7 +1724,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.0",
+        serverVersion: "0.4.1",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -2838,15 +2845,18 @@ def getHubSecurityCookie() {
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
-def hubInternalGet(String path) {
+def hubInternalGet(String path, Map query = null, int timeout = 30) {
     def cookie = getHubSecurityCookie()
     def params = [
         uri: "http://127.0.0.1:8080",
         path: path,
         textParser: true,
         ignoreSSLIssues: true,
-        timeout: 30
+        timeout: timeout
     ]
+    if (query) {
+        params.query = query
+    }
     if (cookie) {
         params.headers = ["Cookie": cookie]
     }
@@ -2966,10 +2976,59 @@ def requireHubAdminWrite(Boolean confirmParam) {
     if (!confirmParam) {
         throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with create_hub_backup first? Review the tool description for the mandatory pre-flight checklist.")
     }
-    // Check for recent backup (within 1 hour)
-    if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 3600000) {
-        throw new IllegalArgumentException("BACKUP REQUIRED: No backup found within the last hour. You MUST call create_hub_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+    // Check for recent hub backup (within 24 hours)
+    if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
+        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call create_hub_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
     }
+}
+
+/**
+ * Automatically back up an individual item's source code before modifying or deleting it.
+ * Stores in state.itemBackups keyed by "app_<id>" or "driver_<id>".
+ * If a backup of this item already exists within the last hour, skips (preserves the pre-edit original).
+ * Returns the backup entry on success, or throws if the source cannot be retrieved.
+ */
+def backupItemSource(String type, String id) {
+    if (!state.itemBackups) state.itemBackups = [:]
+
+    def key = "${type}_${id}"
+    def existing = state.itemBackups[key]
+
+    // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
+    if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
+        mcpLog("debug", "hub-admin", "Item backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
+        return existing
+    }
+
+    // Fetch the current source
+    def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+    def responseText = hubInternalGet(ajaxPath, [id: id])
+    if (!responseText) {
+        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: empty response from hub")
+    }
+
+    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    if (parsed.status == "error" || !parsed.source) {
+        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
+    }
+
+    def backup = [
+        type: type,
+        id: id,
+        source: parsed.source,
+        version: parsed.version,
+        timestamp: now()
+    ]
+    state.itemBackups[key] = backup
+
+    // Prune old backups — keep at most 20 entries, remove oldest if over limit
+    if (state.itemBackups.size() > 20) {
+        def oldest = state.itemBackups.min { it.value.timestamp }
+        if (oldest) state.itemBackups.remove(oldest.key)
+    }
+
+    mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code (version ${parsed.version})")
+    return backup
 }
 
 def jsonRpcResult(id, result) {
@@ -3219,7 +3278,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.0",
+        version: "0.4.1",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -3240,7 +3299,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.0"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.1"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -3407,7 +3466,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.0"
+    details.mcpServerVersion = "0.4.1"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -3662,19 +3721,10 @@ def toolCreateHubBackup(args) {
     mcpLog("info", "hub-admin", "Creating hub backup...")
 
     try {
-        def responseText = hubInternalPost("/hub/backup")
+        // GET /hub/backupDB?fileName=latest triggers a fresh backup and returns the .lzf file
+        // We just need the backup to be created; the binary response confirms success
+        def responseText = hubInternalGet("/hub/backupDB", [fileName: "latest"], 300)
         def backupTime = now()
-
-        // Basic validation - don't set timestamp if response looks like an error
-        if (responseText != null && (responseText.contains("error") || responseText.contains("failed"))) {
-            mcpLog("warn", "hub-admin", "Hub backup response may indicate failure: ${responseText?.take(200)}")
-            return [
-                success: false,
-                error: "Backup may have failed - response indicates an error",
-                response: responseText?.take(500),
-                note: "The hub responded but the response suggests the backup may not have been created. Check the Hubitat web UI to verify."
-            ]
-        }
 
         state.lastBackupTimestamp = backupTime
 
@@ -3684,8 +3734,7 @@ def toolCreateHubBackup(args) {
             message: "Hub backup created successfully",
             backupTimestamp: formatTimestamp(backupTime),
             backupTimestampEpoch: backupTime,
-            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore.",
-            response: responseText?.take(500)
+            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
         ]
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Hub backup FAILED: ${e.message}")
@@ -3779,7 +3828,7 @@ def toolGetAppSource(args) {
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
     try {
-        def responseText = hubInternalGet("/app/ajax/code?id=${args.appId}")
+        def responseText = hubInternalGet("/app/ajax/code", [id: args.appId])
         if (responseText) {
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
             if (parsed.status == "error") {
@@ -3806,7 +3855,7 @@ def toolGetDriverSource(args) {
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
     try {
-        def responseText = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
+        def responseText = hubInternalGet("/driver/ajax/code", [id: args.driverId])
         if (responseText) {
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
             if (parsed.status == "error") {
@@ -3904,17 +3953,9 @@ def toolUpdateAppCode(args) {
     if (!args.appId) throw new IllegalArgumentException("appId is required")
     if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
 
-    // First get the current version (required for optimistic locking)
-    def currentVersion = null
-    try {
-        def codeResp = hubInternalGet("/app/ajax/code?id=${args.appId}")
-        if (codeResp) {
-            def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
-            currentVersion = parsed.version
-        }
-    } catch (Exception e) {
-        throw new IllegalArgumentException("Could not retrieve current app version for ID ${args.appId}: ${e.message}")
-    }
+    // Back up current source and get version (serves dual purpose: safety backup + optimistic locking)
+    def itemBackup = backupItemSource("app", args.appId.toString())
+    def currentVersion = itemBackup.version
 
     if (currentVersion == null) {
         throw new IllegalArgumentException("Could not determine current version for app ID ${args.appId}. The app may not exist.")
@@ -3973,16 +4014,9 @@ def toolUpdateDriverCode(args) {
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
     if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
 
-    def currentVersion = null
-    try {
-        def codeResp = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
-        if (codeResp) {
-            def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
-            currentVersion = parsed.version
-        }
-    } catch (Exception e) {
-        throw new IllegalArgumentException("Could not retrieve current driver version for ID ${args.driverId}: ${e.message}")
-    }
+    // Back up current source and get version (serves dual purpose: safety backup + optimistic locking)
+    def itemBackup = backupItemSource("driver", args.driverId.toString())
+    def currentVersion = itemBackup.version
 
     if (currentVersion == null) {
         throw new IllegalArgumentException("Could not determine current version for driver ID ${args.driverId}. The driver may not exist.")
@@ -4039,6 +4073,9 @@ def toolDeleteApp(args) {
     requireHubAdminWrite(args.confirm)
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
+    // Back up source code before deletion so it can be restored if needed
+    backupItemSource("app", args.appId.toString())
+
     mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
     try {
         def responseText = hubInternalGet("/app/edit/deleteJsonSafe/${args.appId}")
@@ -4079,6 +4116,9 @@ def toolDeleteDriver(args) {
     requireHubAdminWrite(args.confirm)
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
+    // Back up source code before deletion so it can be restored if needed
+    backupItemSource("driver", args.driverId.toString())
+
     mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
     try {
         def responseText = hubInternalGet("/driver/editor/deleteJson/${args.driverId}")
@@ -4117,7 +4157,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.0"
+    return "0.4.1"
 }
 
 def isNewerVersion(String remote, String local) {
