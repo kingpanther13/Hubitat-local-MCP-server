@@ -23,7 +23,14 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Hub Security support** - Automatic cookie-based authentication for hubs with Hub Security enabled
 - **52 MCP tools total** (up from 34 in v0.3.x)
 
-**v0.3.0:** Rule export/import/clone, 8 new action types, conditional triggers, variable math, version update check.
+**New in v0.3.0:**
+- **Rule export/import/clone** - Export rules as portable JSON, import them with device remapping, or clone existing rules
+- **Conditional triggers** - Add per-trigger condition gates so individual triggers only fire when their condition is met
+- **8 new action types** - `set_thermostat`, `http_request`, `speak` (TTS), `comment`, `set_valve`, `set_fan_speed`, `set_shade`, `variable_math`
+- **Variable math** - Perform arithmetic on local/global variables (add, subtract, multiply, divide, modulo, set)
+- **Version update check** - Automatic daily check for new versions with UI banner and MCP tool
+- **Sunrise/sunset normalization** - Accepts many trigger formats and auto-normalizes to canonical form
+- **Debug logging overhaul** - 45+ silent failure points now route through MCP debug logs
 
 **v0.2.0:** MCP-accessible debug logging system with 6 diagnostic tools.
 
