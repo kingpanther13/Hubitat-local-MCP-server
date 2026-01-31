@@ -3,6 +3,8 @@
  *
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
+ *
+ * Version: 0.4.0
  */
 
 definition(

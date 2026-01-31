@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.3.3 - Multi-device trigger support, validation fixes
+ * Version: 0.4.0 - Hub Admin Read/Write tools with Hub Security support
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.3.3"
+                paragraph "<b>Version:</b> 0.4.0"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.3.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -57,6 +57,34 @@ def mainPage() {
                   multiple: true, required: false, submitOnChange: true
             if (selectedDevices) {
                 paragraph "Selected ${selectedDevices.size()} devices"
+            }
+        }
+
+        section("Hub Admin Access") {
+            paragraph "<b>Hub Admin Tools</b> provide read and write access to hub configuration, installed apps/drivers, Z-Wave/Zigbee radios, and hub management operations."
+            paragraph "<i>These tools use the hub's internal API and may require Hub Security credentials if Hub Security is enabled.</i>"
+            input "enableHubAdminRead", "bool", title: "Enable Hub Admin Read Tools",
+                  description: "Allows MCP to read hub details, installed apps/drivers, Z-Wave/Zigbee info, and hub health metrics",
+                  defaultValue: false, submitOnChange: true
+            input "enableHubAdminWrite", "bool", title: "Enable Hub Admin Write Tools",
+                  description: "Allows MCP to reboot, shutdown, create backups, and run Z-Wave repair",
+                  defaultValue: false, submitOnChange: true
+            if (settings.enableHubAdminWrite) {
+                paragraph "<b style='color: red;'>⚠ WARNING: Hub Admin Write tools can reboot, shut down, or modify your hub. " +
+                          "A backup is MANDATORY before any write operation. The AI assistant is instructed to create a backup " +
+                          "before every write operation and will refuse to proceed without one.</b>"
+            }
+        }
+
+        section("Hub Security") {
+            paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
+                      "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
+            input "hubSecurityEnabled", "bool", title: "Hub Security Enabled",
+                  description: "Turn on if your hub has Hub Security (login) enabled",
+                  defaultValue: false, submitOnChange: true
+            if (settings.hubSecurityEnabled) {
+                input "hubSecurityUser", "text", title: "Hub Security Username", required: false
+                input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
             }
         }
 
@@ -306,7 +334,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.3.3"
+        version: "0.4.0"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -765,6 +793,367 @@ The deviceMapping is an object where keys are old device IDs and values are new 
                 type: "object",
                 properties: [:]
             ]
+        ],
+
+        // ==================== HUB ADMIN READ TOOLS ====================
+        [
+            name: "get_hub_details",
+            description: """Get extended hub information including model, firmware, memory usage, internal temperature, network configuration, and radio details.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+If Hub Security is enabled on the hub, credentials must be configured in app settings.
+
+Returns more detailed information than get_hub_info, including live memory and temperature data from the hub's internal API.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "list_hub_apps",
+            description: """List all installed apps on the Hubitat hub, not just MCP-managed rules.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Returns app names, IDs, and types. Uses the hub's internal API endpoint.
+Note: Results depend on hub firmware version. Some older firmware may not support this endpoint.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "list_hub_drivers",
+            description: """List all installed drivers on the Hubitat hub.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Returns driver names, IDs, and types. Uses the hub's internal API endpoint.
+Note: Results depend on hub firmware version. Some older firmware may not support this endpoint.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "get_zwave_details",
+            description: """Get Z-Wave radio information including firmware version, home ID, and device node details.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Uses the hub's internal API to fetch Z-Wave radio status and device table.
+Note: Results depend on hub firmware and Z-Wave radio availability.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "get_zigbee_details",
+            description: """Get Zigbee radio information including channel, PAN ID, firmware version, and device details.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Uses the hub's internal API to fetch Zigbee radio status.
+Note: Results depend on hub firmware and Zigbee radio availability.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "get_hub_health",
+            description: """Get hub health metrics including free memory, internal temperature, uptime, and database size.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Provides a quick health check snapshot useful for diagnosing performance issues.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+
+        // ==================== HUB ADMIN WRITE TOOLS ====================
+        [
+            name: "create_hub_backup",
+            description: """Create a backup of the Hubitat hub database.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in the MCP Rule Server app settings.
+
+NOTE: This is the ONLY Hub Admin Write tool that does NOT require a prior backup (since it IS the backup tool).
+However, this tool still requires the confirm parameter to be true and Hub Admin Write to be enabled.
+
+⚠️ IMPORTANT: You MUST call this tool and verify success BEFORE using ANY other Hub Admin Write tool (reboot_hub, shutdown_hub, zwave_repair).
+Store the backup timestamp from the response — other write tools will verify a recent backup exists.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "reboot_hub",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — DESTRUCTIVE OPERATION ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Call 'create_hub_backup' and verify the response shows success=true
+2. Note the backup timestamp from the response
+3. Tell the user: "I have created a hub backup at [timestamp]. I am about to reboot your Hubitat hub."
+4. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+5. Set the 'confirm' parameter to true
+
+Reboots the Hubitat hub. Effects:
+- Hub will be UNREACHABLE for 1-3 minutes during reboot
+- ALL automations, rules, and device communications STOP during reboot
+- ALL scheduled jobs are lost and must be re-initialized
+- Z-Wave and Zigbee radios restart (devices may take additional time to reconnect)
+
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested a reboot.
+If the backup failed, DO NOT proceed — inform the user instead.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "shutdown_hub",
+            description: """⚠️⚠️⚠️ EXTREME CAUTION — THIS WILL POWER OFF THE HUB ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Call 'create_hub_backup' and verify the response shows success=true
+2. Note the backup timestamp from the response
+3. Tell the user: "I have created a hub backup at [timestamp]. I am about to SHUT DOWN your Hubitat hub. It will NOT restart automatically — you must physically unplug and replug the hub to restart it."
+4. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+5. Set the 'confirm' parameter to true
+
+Shuts down the Hubitat hub COMPLETELY. Effects:
+- Hub will POWER OFF and will NOT restart automatically
+- ALL automations, rules, and device communications PERMANENTLY STOP until manually restarted
+- User must physically power-cycle the hub to bring it back online
+- ALL smart home functionality ceases until hub is restarted
+
+This is NOT a reboot — the hub stays off. Only use when user explicitly wants to shut down.
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested a shutdown.
+If the backup failed, DO NOT proceed — inform the user instead.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "zwave_repair",
+            description: """⚠️ WARNING — NETWORK-DISRUPTIVE OPERATION ⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Call 'create_hub_backup' and verify the response shows success=true
+2. Note the backup timestamp from the response
+3. Tell the user: "I have created a hub backup at [timestamp]. I am about to start a Z-Wave network repair. This can take 5-30 minutes depending on network size and may cause temporary device communication issues."
+4. Get EXPLICIT user confirmation to proceed
+5. Set the 'confirm' parameter to true
+
+Starts a Z-Wave network repair/optimization. Effects:
+- Takes 5-30+ minutes depending on Z-Wave network size
+- Z-Wave devices may be temporarily unresponsive during repair
+- Automations using Z-Wave devices may fail during the process
+- Best run during off-peak hours when device reliability is less critical
+
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested a Z-Wave repair.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the Z-Wave repair."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        // Hub Admin App/Driver Source Read Tools
+        [
+            name: "get_app_source",
+            description: """Get the Groovy source code of an installed app by its ID.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Use list_hub_apps to find app IDs first. Returns the full source code text and the internal version number.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "The app ID (from list_hub_apps)"]
+                ],
+                required: ["appId"]
+            ]
+        ],
+        [
+            name: "get_driver_source",
+            description: """Get the Groovy source code of an installed driver by its ID.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
+Use list_hub_drivers to find driver IDs first. Returns the full source code text and the internal version number.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    driverId: [type: "string", description: "The driver ID (from list_hub_drivers)"]
+                ],
+                required: ["driverId"]
+            ]
+        ],
+        // Hub Admin App/Driver Management Write Tools
+        [
+            name: "install_app",
+            description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user what app you are about to install and show them the source code
+3. Get EXPLICIT user confirmation to proceed
+4. Set confirm=true
+
+Installs a new Groovy app on the Hubitat hub from source code. The source code must be valid Hubitat app Groovy code.
+
+Returns the new app ID on success. After installation, the app still needs to be added via Apps > Add User App in the Hubitat web UI.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    source: [type: "string", description: "The full Groovy source code for the app"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["source", "confirm"]
+            ]
+        ],
+        [
+            name: "install_driver",
+            description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user what driver you are about to install and show them the source code
+3. Get EXPLICIT user confirmation to proceed
+4. Set confirm=true
+
+Installs a new Groovy driver on the Hubitat hub from source code. The source code must be valid Hubitat driver Groovy code.
+
+Returns the new driver ID on success. After installation, devices can be assigned to use this driver.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    source: [type: "string", description: "The full Groovy source code for the driver"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["source", "confirm"]
+            ]
+        ],
+        [
+            name: "update_app_code",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING APP CODE ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Use get_app_source to read the CURRENT code first
+3. Tell the user what changes you are making
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Updates the Groovy source code of an existing app. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
+
+WARNING: Incorrect code can break the app and any automations depending on it.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "The app ID to update"],
+                    source: [type: "string", description: "The full new Groovy source code"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["appId", "source", "confirm"]
+            ]
+        ],
+        [
+            name: "update_driver_code",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING DRIVER CODE ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Use get_driver_source to read the CURRENT code first
+3. Tell the user what changes you are making
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Updates the Groovy source code of an existing driver. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
+
+WARNING: Incorrect code can break the driver and all devices using it.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    driverId: [type: "string", description: "The driver ID to update"],
+                    source: [type: "string", description: "The full new Groovy source code"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["driverId", "source", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_app",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES AN APP ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user which app (by name and ID) you are about to delete
+3. Warn that this is PERMANENT and cannot be undone
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Permanently deletes an installed app from the hub. This removes the app code — any app instances using this code must be removed first via the Hubitat web UI.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "The app ID to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["appId", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_driver",
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES A DRIVER ⚠️⚠️⚠️
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Call 'create_hub_backup' and verify success
+2. Tell the user which driver (by name and ID) you are about to delete
+3. Warn that this is PERMANENT and cannot be undone — all devices using this driver will be affected
+4. Get EXPLICIT user confirmation to proceed
+5. Set confirm=true
+
+Permanently deletes an installed driver from the hub. Devices using this driver must be changed to a different driver first.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    driverId: [type: "string", description: "The driver ID to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["driverId", "confirm"]
+            ]
         ]
     ]
 }
@@ -818,6 +1207,30 @@ def executeTool(toolName, args) {
 
         // Version Check
         case "check_for_update": return toolCheckForUpdate(args)
+
+        // Hub Admin Read Tools
+        case "get_hub_details": return toolGetHubDetails(args)
+        case "list_hub_apps": return toolListHubApps(args)
+        case "list_hub_drivers": return toolListHubDrivers(args)
+        case "get_zwave_details": return toolGetZwaveDetails(args)
+        case "get_zigbee_details": return toolGetZigbeeDetails(args)
+        case "get_hub_health": return toolGetHubHealth(args)
+
+        // Hub Admin Write Tools
+        case "create_hub_backup": return toolCreateHubBackup(args)
+        case "reboot_hub": return toolRebootHub(args)
+        case "shutdown_hub": return toolShutdownHub(args)
+        case "zwave_repair": return toolZwaveRepair(args)
+
+        // Hub Admin App/Driver Management
+        case "get_app_source": return toolGetAppSource(args)
+        case "get_driver_source": return toolGetDriverSource(args)
+        case "install_app": return toolInstallApp(args)
+        case "install_driver": return toolInstallDriver(args)
+        case "update_app_code": return toolUpdateAppCode(args)
+        case "update_driver_code": return toolUpdateDriverCode(args)
+        case "delete_app": return toolDeleteApp(args)
+        case "delete_driver": return toolDeleteDriver(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -1304,7 +1717,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.3.3",
+        serverVersion: "0.4.0",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -2373,6 +2786,192 @@ def getSelectedDevices() {
 
 
 
+// ==================== HUB SECURITY & INTERNAL API HELPERS ====================
+
+/**
+ * Authenticate with Hub Security and return a session cookie.
+ * Returns null if Hub Security is not enabled or credentials are not configured.
+ * Caches the cookie for 30 minutes to avoid excessive login requests.
+ */
+def getHubSecurityCookie() {
+    if (!settings.hubSecurityEnabled) return null
+    if (!settings.hubSecurityUser || !settings.hubSecurityPassword) {
+        mcpLog("warn", "hub-admin", "Hub Security is enabled but credentials are not configured")
+        return null
+    }
+
+    // Check if we have a valid cached cookie
+    if (state.hubSecurityCookie && state.hubSecurityCookieExpiry && state.hubSecurityCookieExpiry > now()) {
+        return state.hubSecurityCookie
+    }
+
+    // Authenticate
+    def cookie = null
+    try {
+        httpPost([
+            uri: "http://127.0.0.1:8080",
+            path: "/login",
+            body: [username: settings.hubSecurityUser, password: settings.hubSecurityPassword],
+            textParser: true,
+            ignoreSSLIssues: true
+        ]) { resp ->
+            cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0)
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub Security authentication failed: ${e.message}")
+        throw new RuntimeException("Hub Security authentication failed. Check your username and password in MCP Rule Server settings.")
+    }
+
+    if (cookie) {
+        state.hubSecurityCookie = cookie
+        state.hubSecurityCookieExpiry = now() + (30 * 60 * 1000) // 30 minutes
+        mcpLog("debug", "hub-admin", "Hub Security authentication successful")
+    } else {
+        mcpLog("warn", "hub-admin", "Hub Security authentication returned no cookie")
+    }
+
+    return cookie
+}
+
+/**
+ * Make an authenticated GET request to the hub's internal API.
+ * Automatically includes Hub Security cookie if configured.
+ * Returns the response body as text.
+ */
+def hubInternalGet(String path) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        textParser: true,
+        ignoreSSLIssues: true,
+        timeout: 30
+    ]
+    if (cookie) {
+        params.headers = ["Cookie": cookie]
+    }
+
+    def responseText = null
+    try {
+        httpGet(params) { resp ->
+            responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+        }
+    } catch (Exception e) {
+        // Clear cached cookie on auth failures so next call re-authenticates
+        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+            state.hubSecurityCookie = null
+            state.hubSecurityCookieExpiry = null
+            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+        }
+        throw e
+    }
+    return responseText
+}
+
+/**
+ * Make an authenticated POST request to the hub's internal API.
+ * Automatically includes Hub Security cookie if configured.
+ * Returns the response body as text.
+ */
+def hubInternalPost(String path, Map body = null) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        textParser: true,
+        ignoreSSLIssues: true,
+        timeout: 30
+    ]
+    if (cookie) {
+        params.headers = ["Cookie": cookie]
+    }
+    if (body) {
+        params.body = body
+    }
+
+    def responseText = null
+    try {
+        httpPost(params) { resp ->
+            responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+        }
+    } catch (Exception e) {
+        // Clear cached cookie on auth failures so next call re-authenticates
+        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+            state.hubSecurityCookie = null
+            state.hubSecurityCookieExpiry = null
+            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+        }
+        throw e
+    }
+    return responseText
+}
+
+/**
+ * Make an authenticated POST request to the hub's internal API with form-encoded body.
+ * Used for app/driver management endpoints that require application/x-www-form-urlencoded.
+ */
+def hubInternalPostForm(String path, Map body, int timeout = 420) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        requestContentType: "application/x-www-form-urlencoded",
+        headers: [
+            "Connection": "keep-alive"
+        ],
+        body: body,
+        timeout: timeout,
+        ignoreSSLIssues: true
+    ]
+    if (cookie) {
+        params.headers["Cookie"] = cookie
+    }
+
+    def result = null
+    try {
+        httpPost(params) { resp ->
+            result = [
+                status: resp.status,
+                location: resp.headers?."Location"?.toString(),
+                data: resp.data
+            ]
+        }
+    } catch (Exception e) {
+        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+            state.hubSecurityCookie = null
+            state.hubSecurityCookieExpiry = null
+            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+        }
+        throw e
+    }
+    return result
+}
+
+/**
+ * Check if Hub Admin Read access is enabled. Throws if not.
+ */
+def requireHubAdminRead() {
+    if (!settings.enableHubAdminRead) {
+        throw new IllegalArgumentException("Hub Admin Read access is disabled. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to use this tool.")
+    }
+}
+
+/**
+ * Check if Hub Admin Write access is enabled and a recent backup exists. Throws if not.
+ */
+def requireHubAdminWrite(Boolean confirmParam) {
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
+    }
+    if (!confirmParam) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with create_hub_backup first? Review the tool description for the mandatory pre-flight checklist.")
+    }
+    // Check for recent backup (within 1 hour)
+    if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 3600000) {
+        throw new IllegalArgumentException("BACKUP REQUIRED: No backup found within the last hour. You MUST call create_hub_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+    }
+}
+
 def jsonRpcResult(id, result) {
     return [jsonrpc: "2.0", id: id, result: result]
 }
@@ -2620,7 +3219,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.3.3",
+        version: "0.4.0",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -2641,7 +3240,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.3.3"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.0"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -2756,10 +3355,769 @@ Thank you for helping improve the MCP Rule Server!"""
     return result
 }
 
+// ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
+
+def toolGetHubDetails(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def details = [
+        name: hub?.name,
+        localIP: hub?.localIP,
+        timeZone: location.timeZone?.ID,
+        temperatureScale: location.temperatureScale,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        zipCode: location.zipCode
+    ]
+
+    // Safe property access for hub properties
+    try { details.model = hub?.hardwareID } catch (Exception e) { details.model = "unavailable" }
+    try { details.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { details.firmwareVersion = "unavailable" }
+    try { details.uptime = hub?.uptime } catch (Exception e) { details.uptime = "unavailable" }
+    try { details.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { details.zigbeeChannel = "unavailable" }
+    try { details.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { details.zwaveVersion = "unavailable" }
+    try { details.zigbeeId = hub?.zigbeeId } catch (Exception e) { details.zigbeeId = "unavailable" }
+    try { details.type = hub?.type } catch (Exception e) { details.type = "unavailable" }
+    try { details.hubData = hub?.data } catch (Exception e) { details.hubData = null }
+
+    // Extended info via internal API
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) details.freeMemoryKB = freeMemory.trim()
+    } catch (Exception e) {
+        details.freeMemoryKB = "unavailable (${e.message})"
+        mcpLog("debug", "hub-admin", "Could not get free memory: ${e.message}")
+    }
+
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) details.internalTempCelsius = tempC.trim()
+    } catch (Exception e) {
+        details.internalTempCelsius = "unavailable (${e.message})"
+        mcpLog("debug", "hub-admin", "Could not get internal temperature: ${e.message}")
+    }
+
+    // Hub database size via internal API
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) details.databaseSizeKB = dbSize.trim()
+    } catch (Exception e) {
+        details.databaseSizeKB = "unavailable"
+        mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
+    }
+
+    details.mcpServerVersion = "0.4.0"
+    details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
+    details.ruleCount = getChildApps()?.size() ?: 0
+    details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
+    details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
+
+    mcpLog("info", "hub-admin", "Retrieved extended hub details")
+    return details
+}
+
+def toolListHubApps(args) {
+    requireHubAdminRead()
+
+    def result = [:]
+    try {
+        def responseText = hubInternalGet("/hub2/userAppTypes")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.apps = parsed
+                result.count = parsed instanceof List ? parsed.size() : 0
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                // Response was not JSON - return what we can
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+            }
+        } else {
+            result.apps = []
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "list_hub_apps API call failed: ${e.message}")
+        // Fallback: return MCP child apps as the only apps we can enumerate
+        def childApps = getChildApps()
+        result.apps = childApps?.collect { ca ->
+            [id: ca.id.toString(), name: ca.getSetting("ruleName") ?: ca.label ?: "Unknown", type: "MCP Rule"]
+        } ?: []
+        result.count = result.apps.size()
+        result.source = "mcp_only"
+        result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
+    }
+
+    mcpLog("info", "hub-admin", "Listed hub apps (source: ${result.source})")
+    return result
+}
+
+def toolListHubDrivers(args) {
+    requireHubAdminRead()
+
+    def result = [:]
+    try {
+        def responseText = hubInternalGet("/hub2/userDeviceTypes")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.drivers = parsed
+                result.count = parsed instanceof List ? parsed.size() : 0
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+            }
+        } else {
+            result.drivers = []
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "list_hub_drivers API call failed: ${e.message}")
+        result.drivers = []
+        result.count = 0
+        result.source = "unavailable"
+        result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
+    }
+
+    mcpLog("info", "hub-admin", "Listed hub drivers (source: ${result.source})")
+    return result
+}
+
+def toolGetZwaveDetails(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def result = [:]
+
+    // Basic Z-Wave info from hub object
+    try { result.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { result.zwaveVersion = "unavailable" }
+
+    // Extended Z-Wave info via internal API
+    try {
+        def responseText = hubInternalGet("/hub2/zwaveInfo")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.zwaveData = parsed
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                result.rawResponse = responseText?.take(3000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON format"
+            }
+        } else {
+            result.source = "hub_api"
+            result.note = "Empty response from Z-Wave info endpoint"
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "Z-Wave info API call failed: ${e.message}")
+        result.source = "sdk_only"
+        result.note = "Extended Z-Wave info unavailable (${e.message}). Showing basic info from hub SDK."
+    }
+
+    mcpLog("info", "hub-admin", "Retrieved Z-Wave details")
+    return result
+}
+
+def toolGetZigbeeDetails(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def result = [:]
+
+    // Basic Zigbee info from hub object
+    try { result.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { result.zigbeeChannel = "unavailable" }
+    try { result.zigbeeId = hub?.zigbeeId } catch (Exception e) { result.zigbeeId = "unavailable" }
+
+    // Extended Zigbee info via internal API
+    try {
+        def responseText = hubInternalGet("/hub2/zigbeeInfo")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.zigbeeData = parsed
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                result.rawResponse = responseText?.take(3000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON format"
+            }
+        } else {
+            result.source = "hub_api"
+            result.note = "Empty response from Zigbee info endpoint"
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "Zigbee info API call failed: ${e.message}")
+        result.source = "sdk_only"
+        result.note = "Extended Zigbee info unavailable (${e.message}). Showing basic info from hub SDK."
+    }
+
+    mcpLog("info", "hub-admin", "Retrieved Zigbee details")
+    return result
+}
+
+def toolGetHubHealth(args) {
+    requireHubAdminRead()
+
+    def hub = location.hub
+    def health = [
+        timestamp: formatTimestamp(now())
+    ]
+
+    // Uptime
+    try { health.uptimeSeconds = hub?.uptime } catch (Exception e) { health.uptimeSeconds = "unavailable" }
+    if (health.uptimeSeconds && health.uptimeSeconds instanceof Number) {
+        def days = (health.uptimeSeconds / 86400).toInteger()
+        def hours = ((health.uptimeSeconds % 86400) / 3600).toInteger()
+        def mins = ((health.uptimeSeconds % 3600) / 60).toInteger()
+        health.uptimeFormatted = "${days}d ${hours}h ${mins}m"
+    }
+
+    // Free memory
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) {
+            health.freeMemoryKB = freeMemory.trim()
+            try {
+                def memKB = freeMemory.trim() as Integer
+                if (memKB < 50000) {
+                    health.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+                } else if (memKB < 100000) {
+                    health.memoryNote = "Memory is moderate: ${memKB}KB free."
+                }
+            } catch (NumberFormatException nfe) {
+                mcpLog("debug", "hub-admin", "Free memory value not numeric: ${freeMemory.trim()}")
+            }
+        }
+    } catch (Exception e) {
+        health.freeMemoryKB = "unavailable"
+        mcpLog("debug", "hub-admin", "Could not get free memory: ${e.message}")
+    }
+
+    // Internal temperature
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) {
+            health.internalTempCelsius = tempC.trim()
+            try {
+                def temp = tempC.trim() as Double
+                if (temp > 70) {
+                    health.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+                } else if (temp > 60) {
+                    health.temperatureNote = "Temperature is warm: ${temp}°C."
+                }
+            } catch (NumberFormatException nfe) {
+                mcpLog("debug", "hub-admin", "Temperature value not numeric: ${tempC.trim()}")
+            }
+        }
+    } catch (Exception e) {
+        health.internalTempCelsius = "unavailable"
+        mcpLog("debug", "hub-admin", "Could not get internal temperature: ${e.message}")
+    }
+
+    // Database size
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) {
+            health.databaseSizeKB = dbSize.trim()
+            try {
+                def dbKB = dbSize.trim() as Integer
+                if (dbKB > 500000) {
+                    health.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+                }
+            } catch (NumberFormatException nfe) {
+                mcpLog("debug", "hub-admin", "Database size value not numeric: ${dbSize.trim()}")
+            }
+        }
+    } catch (Exception e) {
+        health.databaseSizeKB = "unavailable"
+    }
+
+    // MCP-specific health
+    health.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    health.mcpRuleCount = getChildApps()?.size() ?: 0
+    health.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+    health.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+
+    mcpLog("info", "hub-admin", "Hub health check completed")
+    return health
+}
+
+// ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
+
+def toolCreateHubBackup(args) {
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings.")
+    }
+    if (!args.confirm) {
+        throw new IllegalArgumentException("You must set confirm=true to create a backup.")
+    }
+
+    mcpLog("info", "hub-admin", "Creating hub backup...")
+
+    try {
+        def responseText = hubInternalPost("/hub/backup")
+        def backupTime = now()
+
+        // Basic validation - don't set timestamp if response looks like an error
+        if (responseText != null && (responseText.contains("error") || responseText.contains("failed"))) {
+            mcpLog("warn", "hub-admin", "Hub backup response may indicate failure: ${responseText?.take(200)}")
+            return [
+                success: false,
+                error: "Backup may have failed - response indicates an error",
+                response: responseText?.take(500),
+                note: "The hub responded but the response suggests the backup may not have been created. Check the Hubitat web UI to verify."
+            ]
+        }
+
+        state.lastBackupTimestamp = backupTime
+
+        mcpLog("info", "hub-admin", "Hub backup created successfully at ${formatTimestamp(backupTime)}")
+        return [
+            success: true,
+            message: "Hub backup created successfully",
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
+            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub backup FAILED: ${e.message}")
+        return [
+            success: false,
+            error: "Backup failed: ${e.message}",
+            note: "The backup could not be created. Do NOT proceed with any Hub Admin Write operations. " +
+                  "Check Hub Security credentials if Hub Security is enabled, or try creating a backup manually from the Hubitat web UI."
+        ]
+    }
+}
+
+def toolRebootHub(args) {
+    requireHubAdminWrite(args.confirm)
+
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+
+    try {
+        def responseText = hubInternalPost("/hub/reboot")
+        return [
+            success: true,
+            message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub reboot failed: ${e.message}")
+        return [
+            success: false,
+            error: "Reboot failed: ${e.message}",
+            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+        ]
+    }
+}
+
+def toolShutdownHub(args) {
+    requireHubAdminWrite(args.confirm)
+
+    mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP — hub will NOT restart automatically")
+
+    try {
+        def responseText = hubInternalPost("/hub/shutdown")
+        return [
+            success: true,
+            message: "Hub shutdown initiated. The hub will power off and will NOT restart automatically.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "The hub is powering down. To restart, you must physically unplug and replug the hub power cable. ALL smart home functionality will stop until the hub is manually restarted.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Hub shutdown failed: ${e.message}")
+        return [
+            success: false,
+            error: "Shutdown failed: ${e.message}",
+            note: "The shutdown command could not be sent. Check Hub Security credentials or try shutting down manually from the Hubitat web UI."
+        ]
+    }
+}
+
+def toolZwaveRepair(args) {
+    requireHubAdminWrite(args.confirm)
+
+    mcpLog("info", "hub-admin", "Z-Wave repair initiated by MCP")
+
+    try {
+        def responseText = hubInternalPost("/hub/zwaveRepair")
+        return [
+            success: true,
+            message: "Z-Wave network repair started. This process runs in the background.",
+            duration: "Typically takes 5-30 minutes depending on Z-Wave network size",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "Z-Wave devices may be temporarily unresponsive during the repair process. Do not initiate another repair until this one completes.",
+            note: "Check the Hubitat Logs page for Z-Wave repair progress and completion status.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Z-Wave repair failed to start: ${e.message}")
+        return [
+            success: false,
+            error: "Z-Wave repair failed: ${e.message}",
+            note: "The Z-Wave repair could not be started. Check Hub Security credentials or try starting it manually from the Hubitat web UI at Settings → Z-Wave Details → Repair."
+        ]
+    }
+}
+
+// ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
+
+def toolGetAppSource(args) {
+    requireHubAdminRead()
+    if (!args.appId) throw new IllegalArgumentException("appId is required")
+
+    try {
+        def responseText = hubInternalGet("/app/ajax/code?id=${args.appId}")
+        if (responseText) {
+            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            if (parsed.status == "error") {
+                return [success: false, error: parsed.errorMessage ?: "Failed to get app source"]
+            }
+            mcpLog("info", "hub-admin", "Retrieved source code for app ID: ${args.appId}")
+            return [
+                success: true,
+                appId: args.appId,
+                source: parsed.source,
+                version: parsed.version,
+                status: parsed.status
+            ]
+        }
+        return [success: false, error: "Empty response from hub"]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to get app source: ${e.message}")
+        return [success: false, error: "Failed to get app source: ${e.message}"]
+    }
+}
+
+def toolGetDriverSource(args) {
+    requireHubAdminRead()
+    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+
+    try {
+        def responseText = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
+        if (responseText) {
+            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            if (parsed.status == "error") {
+                return [success: false, error: parsed.errorMessage ?: "Failed to get driver source"]
+            }
+            mcpLog("info", "hub-admin", "Retrieved source code for driver ID: ${args.driverId}")
+            return [
+                success: true,
+                driverId: args.driverId,
+                source: parsed.source,
+                version: parsed.version,
+                status: parsed.status
+            ]
+        }
+        return [success: false, error: "Empty response from hub"]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to get driver source: ${e.message}")
+        return [success: false, error: "Failed to get driver source: ${e.message}"]
+    }
+}
+
+def toolInstallApp(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    mcpLog("info", "hub-admin", "Installing new app...")
+    try {
+        def result = hubInternalPostForm("/app/save", [
+            id: "",
+            version: "",
+            create: "",
+            source: args.source
+        ])
+
+        def newAppId = null
+        if (result?.location) {
+            // Extract app ID from redirect Location header: /app/editor/123
+            newAppId = result.location.replaceAll(".*?/app/editor/", "").replaceAll("[^0-9]", "")
+        }
+
+        mcpLog("info", "hub-admin", "App installed successfully${newAppId ? ' (ID: ' + newAppId + ')' : ''}")
+        return [
+            success: true,
+            message: "App installed successfully",
+            appId: newAppId,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "App installation failed: ${e.message}")
+        return [
+            success: false,
+            error: "App installation failed: ${e.message}",
+            note: "Check that the Groovy source code is valid and doesn't have syntax errors."
+        ]
+    }
+}
+
+def toolInstallDriver(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    mcpLog("info", "hub-admin", "Installing new driver...")
+    try {
+        def result = hubInternalPostForm("/driver/save", [
+            id: "",
+            version: "",
+            create: "",
+            source: args.source
+        ])
+
+        def newDriverId = null
+        if (result?.location) {
+            newDriverId = result.location.replaceAll(".*?/driver/editor/", "").replaceAll("[^0-9]", "")
+        }
+
+        mcpLog("info", "hub-admin", "Driver installed successfully${newDriverId ? ' (ID: ' + newDriverId + ')' : ''}")
+        return [
+            success: true,
+            message: "Driver installed successfully",
+            driverId: newDriverId,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Driver installation failed: ${e.message}")
+        return [
+            success: false,
+            error: "Driver installation failed: ${e.message}",
+            note: "Check that the Groovy source code is valid and doesn't have syntax errors."
+        ]
+    }
+}
+
+def toolUpdateAppCode(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.appId) throw new IllegalArgumentException("appId is required")
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    // First get the current version (required for optimistic locking)
+    def currentVersion = null
+    try {
+        def codeResp = hubInternalGet("/app/ajax/code?id=${args.appId}")
+        if (codeResp) {
+            def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
+            currentVersion = parsed.version
+        }
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Could not retrieve current app version for ID ${args.appId}: ${e.message}")
+    }
+
+    if (currentVersion == null) {
+        throw new IllegalArgumentException("Could not determine current version for app ID ${args.appId}. The app may not exist.")
+    }
+
+    mcpLog("info", "hub-admin", "Updating app ID: ${args.appId} (current version: ${currentVersion})")
+    try {
+        def result = hubInternalPostForm("/app/ajax/update", [
+            id: args.appId,
+            version: currentVersion,
+            source: args.source
+        ])
+
+        def responseData = result?.data
+        def success = false
+        def errorMsg = null
+
+        if (responseData) {
+            try {
+                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
+            } catch (Exception parseErr) {
+                // Response was not JSON
+                success = true // Assume success if no error thrown
+            }
+        } else {
+            success = true
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "App ID ${args.appId} updated successfully")
+            return [
+                success: true,
+                message: "App code updated successfully",
+                appId: args.appId,
+                previousVersion: currentVersion,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: errorMsg ?: "Update failed - the hub returned an error",
+                appId: args.appId,
+                note: "Check the Groovy source code for syntax errors or compilation issues."
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "App update failed: ${e.message}")
+        return [success: false, error: "App update failed: ${e.message}"]
+    }
+}
+
+def toolUpdateDriverCode(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    def currentVersion = null
+    try {
+        def codeResp = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
+        if (codeResp) {
+            def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
+            currentVersion = parsed.version
+        }
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Could not retrieve current driver version for ID ${args.driverId}: ${e.message}")
+    }
+
+    if (currentVersion == null) {
+        throw new IllegalArgumentException("Could not determine current version for driver ID ${args.driverId}. The driver may not exist.")
+    }
+
+    mcpLog("info", "hub-admin", "Updating driver ID: ${args.driverId} (current version: ${currentVersion})")
+    try {
+        def result = hubInternalPostForm("/driver/ajax/update", [
+            id: args.driverId,
+            version: currentVersion,
+            source: args.source
+        ])
+
+        def responseData = result?.data
+        def success = false
+        def errorMsg = null
+
+        if (responseData) {
+            try {
+                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
+            } catch (Exception parseErr) {
+                success = true
+            }
+        } else {
+            success = true
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "Driver ID ${args.driverId} updated successfully")
+            return [
+                success: true,
+                message: "Driver code updated successfully",
+                driverId: args.driverId,
+                previousVersion: currentVersion,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: errorMsg ?: "Update failed - the hub returned an error",
+                driverId: args.driverId,
+                note: "Check the Groovy source code for syntax errors or compilation issues."
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Driver update failed: ${e.message}")
+        return [success: false, error: "Driver update failed: ${e.message}"]
+    }
+}
+
+def toolDeleteApp(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.appId) throw new IllegalArgumentException("appId is required")
+
+    mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
+    try {
+        def responseText = hubInternalGet("/app/edit/deleteJsonSafe/${args.appId}")
+        def success = false
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                success = parsed.status == true
+            } catch (Exception parseErr) {
+                // If not JSON, check if it contains error indicators
+                success = !responseText.contains("error")
+            }
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "App ID ${args.appId} deleted successfully")
+            return [
+                success: true,
+                message: "App deleted successfully",
+                appId: args.appId,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: "Delete may have failed - check the Hubitat web UI to verify",
+                appId: args.appId,
+                response: responseText?.take(500)
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "App deletion failed: ${e.message}")
+        return [success: false, error: "App deletion failed: ${e.message}"]
+    }
+}
+
+def toolDeleteDriver(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+
+    mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
+    try {
+        def responseText = hubInternalGet("/driver/editor/deleteJson/${args.driverId}")
+        def success = false
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                success = parsed.status == true
+            } catch (Exception parseErr) {
+                success = !responseText.contains("error")
+            }
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "Driver ID ${args.driverId} deleted successfully")
+            return [
+                success: true,
+                message: "Driver deleted successfully",
+                driverId: args.driverId,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        } else {
+            return [
+                success: false,
+                error: "Delete may have failed - check the Hubitat web UI to verify",
+                driverId: args.driverId,
+                response: responseText?.take(500)
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Driver deletion failed: ${e.message}")
+        return [success: false, error: "Driver deletion failed: ${e.message}"]
+    }
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.3.3"
+    return "0.4.0"
 }
 
 def isNewerVersion(String remote, String local) {
