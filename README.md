@@ -19,6 +19,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 
 **New in v0.4.1:**
 - **Bug fixes** for `get_app_source`, `get_driver_source`, and `create_hub_backup` — all Hub Admin tools now functional
+- **Two-tier backup system** — full hub backup (24h) + automatic item-level source backup before modify/delete
 - **SKILL.md** - Claude Code development skill for project conventions
 
 **New in v0.4.0:**
@@ -156,7 +157,9 @@ Manage and monitor your Hubitat hub directly through MCP. Both Hub Admin Read an
 All write tools enforce a **three-layer safety gate**:
 1. Hub Admin Write must be **enabled** in settings
 2. The AI must pass `confirm=true` explicitly
-3. A hub **backup must exist within the last hour** (enforced automatically)
+3. A full hub **backup must exist within the last 24 hours** (enforced automatically)
+
+Additionally, tools that **modify or delete** existing apps/drivers automatically back up the item's source code before making changes (1-hour window — preserves the original pre-edit source across multiple edits).
 
 | Tool | Description |
 |------|-------------|
@@ -565,11 +568,12 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.4.1** - Bug fixes for Hub Admin tools
+- **v0.4.1** - Bug fixes for Hub Admin tools + two-tier backup system
   - **Fixed `get_app_source` and `get_driver_source`** returning 404: Query parameters now passed via `query` map instead of embedded in path string
   - **Fixed `create_hub_backup`** returning 405 Method Not Allowed: Changed from `POST /hub/backup` to `GET /hub/backupDB?fileName=latest`
   - **Fixed `update_app_code` and `update_driver_code`** version fetch (same query parameter fix)
   - **Unblocked all Hub Admin Write tools**: Backup creation was failing, which blocked all 9 write operations behind the safety gate
+  - **Two-tier backup system**: Full hub backup required within 24 hours (was 1 hour); individual item source code automatically backed up before any modify/delete operation (1-hour window preserves pre-edit original)
   - **Backup timeout** increased to 300 seconds (5 minutes) for larger hubs
   - **SKILL.md**: Claude Code development skill documenting all project conventions and architecture
 - **v0.4.0** - Hub Admin Tools with Hub Security support (52 tools total)
@@ -577,7 +581,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **Hub Admin Read Tools** (8): `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source`
   - **Hub Admin Write Tools** (10): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
   - **Hub Security support**: Automatic cookie-based authentication for hubs with Hub Security enabled; 30-minute cookie caching with auto-renewal
-  - **Three-layer safety gate** for write tools: settings toggle + explicit `confirm=true` + mandatory backup within last hour
+  - **Three-layer safety gate** for write tools: settings toggle + explicit `confirm=true` + mandatory hub backup within last 24 hours
   - **UI toggles**: Independent enable/disable for Hub Admin Read and Write access in app settings
   - **Graceful degradation**: All Hub Admin tools handle unavailable endpoints, non-JSON responses, and firmware variations
 - **v0.3.3** - Multi-device trigger support and validation fixes
