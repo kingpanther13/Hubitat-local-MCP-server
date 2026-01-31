@@ -183,8 +183,8 @@ Three helpers for calling the hub's internal HTTP API at `http://127.0.0.1:8080`
 
 | Helper | Use Case | Content Type |
 |--------|----------|--------------|
-| `hubInternalGet(path)` | Read endpoints, returns response text | text |
-| `hubInternalPost(path, body?)` | Simple POST endpoints (backup, reboot, shutdown, zwave repair) | text |
+| `hubInternalGet(path, query?, timeout?)` | Read endpoints (default 30s timeout), returns response text | text |
+| `hubInternalPost(path, body?)` | Simple POST endpoints (reboot, shutdown, zwave repair) | text |
 | `hubInternalPostForm(path, body, timeout?)` | Form-encoded POST (app/driver install/update) | `application/x-www-form-urlencoded` |
 
 All three:
@@ -305,13 +305,13 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub2/userDeviceTypes` | Installed user drivers (JSON array: id, name, namespace) |
 | `/hub2/zwaveInfo` | Z-Wave radio details (JSON) |
 | `/hub2/zigbeeInfo` | Zigbee radio details (JSON) |
-| `/app/ajax/code?id=<id>` | App source code (JSON: source, version, status) |
-| `/driver/ajax/code?id=<id>` | Driver source code (JSON: source, version, status) |
+| `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
+| `/driver/ajax/code` with query `id=<id>` | Driver source code (JSON: source, version, status) |
+| `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |
 |------|------|---------|
-| `/hub/backup` | none | Create hub backup |
 | `/hub/reboot` | none | Reboot hub |
 | `/hub/shutdown` | none | Shutdown hub |
 | `/hub/zwaveRepair` | none | Start Z-Wave network repair |

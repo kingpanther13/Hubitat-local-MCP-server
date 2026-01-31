@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.0 - Hub Admin Read/Write tools with Hub Security support
+ * Version: 0.4.1 - Bug fixes for Hub Admin tools (source retrieval, backup creation)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.0"
+                paragraph "<b>Version:</b> 0.4.1"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -334,7 +334,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.0"
+        version: "0.4.1"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1717,7 +1717,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.0",
+        serverVersion: "0.4.1",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -2838,15 +2838,18 @@ def getHubSecurityCookie() {
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
-def hubInternalGet(String path) {
+def hubInternalGet(String path, Map query = null, int timeout = 30) {
     def cookie = getHubSecurityCookie()
     def params = [
         uri: "http://127.0.0.1:8080",
         path: path,
         textParser: true,
         ignoreSSLIssues: true,
-        timeout: 30
+        timeout: timeout
     ]
+    if (query) {
+        params.query = query
+    }
     if (cookie) {
         params.headers = ["Cookie": cookie]
     }
@@ -3219,7 +3222,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.0",
+        version: "0.4.1",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -3240,7 +3243,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.0"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.1"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -3407,7 +3410,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.0"
+    details.mcpServerVersion = "0.4.1"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -3662,19 +3665,10 @@ def toolCreateHubBackup(args) {
     mcpLog("info", "hub-admin", "Creating hub backup...")
 
     try {
-        def responseText = hubInternalPost("/hub/backup")
+        // GET /hub/backupDB?fileName=latest triggers a fresh backup and returns the .lzf file
+        // We just need the backup to be created; the binary response confirms success
+        def responseText = hubInternalGet("/hub/backupDB", [fileName: "latest"], 120)
         def backupTime = now()
-
-        // Basic validation - don't set timestamp if response looks like an error
-        if (responseText != null && (responseText.contains("error") || responseText.contains("failed"))) {
-            mcpLog("warn", "hub-admin", "Hub backup response may indicate failure: ${responseText?.take(200)}")
-            return [
-                success: false,
-                error: "Backup may have failed - response indicates an error",
-                response: responseText?.take(500),
-                note: "The hub responded but the response suggests the backup may not have been created. Check the Hubitat web UI to verify."
-            ]
-        }
 
         state.lastBackupTimestamp = backupTime
 
@@ -3684,8 +3678,7 @@ def toolCreateHubBackup(args) {
             message: "Hub backup created successfully",
             backupTimestamp: formatTimestamp(backupTime),
             backupTimestampEpoch: backupTime,
-            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore.",
-            response: responseText?.take(500)
+            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
         ]
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Hub backup FAILED: ${e.message}")
@@ -3779,7 +3772,7 @@ def toolGetAppSource(args) {
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
     try {
-        def responseText = hubInternalGet("/app/ajax/code?id=${args.appId}")
+        def responseText = hubInternalGet("/app/ajax/code", [id: args.appId])
         if (responseText) {
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
             if (parsed.status == "error") {
@@ -3806,7 +3799,7 @@ def toolGetDriverSource(args) {
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
     try {
-        def responseText = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
+        def responseText = hubInternalGet("/driver/ajax/code", [id: args.driverId])
         if (responseText) {
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
             if (parsed.status == "error") {
@@ -3907,7 +3900,7 @@ def toolUpdateAppCode(args) {
     // First get the current version (required for optimistic locking)
     def currentVersion = null
     try {
-        def codeResp = hubInternalGet("/app/ajax/code?id=${args.appId}")
+        def codeResp = hubInternalGet("/app/ajax/code", [id: args.appId])
         if (codeResp) {
             def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
             currentVersion = parsed.version
@@ -3975,7 +3968,7 @@ def toolUpdateDriverCode(args) {
 
     def currentVersion = null
     try {
-        def codeResp = hubInternalGet("/driver/ajax/code?id=${args.driverId}")
+        def codeResp = hubInternalGet("/driver/ajax/code", [id: args.driverId])
         if (codeResp) {
             def parsed = new groovy.json.JsonSlurper().parseText(codeResp)
             currentVersion = parsed.version
@@ -4117,7 +4110,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.0"
+    return "0.4.1"
 }
 
 def isNewerVersion(String remote, String local) {
