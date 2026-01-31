@@ -6,7 +6,7 @@
     "dateReleased": "2026-01-31",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.4.2 - Source size safety limit to prevent hub memory issues:\n\n- get_app_source and get_driver_source now truncate responses over 100KB with a warning flag\n- Item-level backups (backupItemSource) also capped at 100KB to protect hub state storage\n- Prevents hub slowdowns or crashes when retrieving very large app/driver source code\n- Returns sourceLength and truncated flag so callers know when output is incomplete",
+    "releaseNotes": "v0.4.2 - Response size safety limits (hub enforces 128KB cap):\n\n- Source retrieval tools (get_app_source, get_driver_source) truncate at 64KB to stay under hub's 128KB response limit\n- Global response size guard in handleMcpRequest catches ANY oversized response before sending\n- Item-level backups capped at 64KB to protect hub state storage\n- Debug logging truncated to 500 chars to prevent log spam from large responses\n- Fixes hub lag/crash when retrieving large app source (e.g. MCP Rule Server's own 4000+ line source)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

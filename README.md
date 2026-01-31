@@ -18,7 +18,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
 **New in v0.4.2:**
-- **Source size safety limit** — large app/driver source truncated at 100KB to prevent hub memory issues
+- **Response size safety limits** — source truncated at 64KB + global 128KB response guard to prevent hub lag/crash
 
 **New in v0.4.1:**
 - **Bug fixes** for `get_app_source`, `get_driver_source`, and `create_hub_backup` — all Hub Admin tools now functional
@@ -571,9 +571,11 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.4.2** - Source size safety limit
-  - **100KB truncation limit** on `get_app_source` and `get_driver_source` to prevent hub memory issues from very large source code responses
-  - **Item-level backups** also capped at 100KB to protect hub state storage
+- **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
+  - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
+  - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub
+  - **Item-level backups** capped at 64KB to protect hub state storage
+  - **Debug log truncation** — large responses no longer spam the debug log (capped at 500 chars)
   - Returns `sourceLength`, `truncated` flag, and warning when output is incomplete
 - **v0.4.1** - Bug fixes for Hub Admin tools + two-tier backup system
   - **Fixed `get_app_source` and `get_driver_source`** returning 404: Query parameters now passed via `query` map instead of embedded in path string

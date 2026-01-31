@@ -284,7 +284,20 @@ def handleMcpRequest() {
     }
 
     def jsonResponse = groovy.json.JsonOutput.toJson(response)
-    logDebug("MCP Response: ${jsonResponse}")
+
+    // Safety guard: hub enforces 128KB response limit — truncate oversized responses
+    def maxResponseSize = 124000 // Leave 4KB headroom under 128KB limit
+    if (jsonResponse.length() > maxResponseSize) {
+        mcpLog("error", "system", "MCP response too large: ${jsonResponse.length()} bytes (limit ${maxResponseSize}). Returning error instead.")
+        def errResp = jsonRpcError(
+            (response instanceof Map) ? response.id : null,
+            -32603,
+            "Response too large (${jsonResponse.length()} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
+        )
+        jsonResponse = groovy.json.JsonOutput.toJson(errResp)
+    }
+
+    logDebug("MCP Response: ${jsonResponse.take(500)}${jsonResponse.length() > 500 ? '...[' + jsonResponse.length() + ' bytes total]' : ''}")
     return render(contentType: "application/json", data: jsonResponse)
 }
 
@@ -3013,7 +3026,7 @@ def backupItemSource(String type, String id) {
     }
 
     // Cap stored source at 100KB to prevent state size issues on the hub
-    def maxBackupSize = 100000
+    def maxBackupSize = 64000
     def sourceToStore = parsed.source
     def truncated = false
     if (sourceToStore.length() > maxBackupSize) {
@@ -3839,7 +3852,7 @@ def toolGetAppSource(args) {
     requireHubAdminRead()
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
-    def maxSourceSize = 100000 // ~100KB safety limit to prevent hub memory issues
+    def maxSourceSize = 64000 // ~64KB safety limit — JSON encoding + wrapper must stay under hub's 128KB response limit
     try {
         def responseText = hubInternalGet("/app/ajax/code", [id: args.appId])
         if (responseText) {
@@ -3865,7 +3878,7 @@ def toolGetAppSource(args) {
             ]
             if (truncated) {
                 result.truncated = true
-                result.warning = "Source code exceeded ${maxSourceSize} character limit and was truncated. The full source is ${parsed.source.length()} characters."
+                result.warning = "Source code exceeded ${maxSourceSize} character safety limit (hub has 128KB response cap) and was truncated. The full source is ${parsed.source.length()} characters."
             }
             return result
         }
@@ -3880,7 +3893,7 @@ def toolGetDriverSource(args) {
     requireHubAdminRead()
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
-    def maxSourceSize = 100000 // ~100KB safety limit to prevent hub memory issues
+    def maxSourceSize = 64000 // ~64KB safety limit — JSON encoding + wrapper must stay under hub's 128KB response limit
     try {
         def responseText = hubInternalGet("/driver/ajax/code", [id: args.driverId])
         if (responseText) {
@@ -3906,7 +3919,7 @@ def toolGetDriverSource(args) {
             ]
             if (truncated) {
                 result.truncated = true
-                result.warning = "Source code exceeded ${maxSourceSize} character limit and was truncated. The full source is ${parsed.source.length()} characters."
+                result.warning = "Source code exceeded ${maxSourceSize} character safety limit (hub has 128KB response cap) and was truncated. The full source is ${parsed.source.length()} characters."
             }
             return result
         }
