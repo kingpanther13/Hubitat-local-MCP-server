@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 52+ tools for device control, rule automation, hub admin, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 55 tools for device control, rule automation, hub admin, and app/driver management.
 license: MIT
 ---
 
@@ -27,7 +27,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 52 tool definitions + dispatch         │  │
+│  │  - 55 tool definitions + dispatch         │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │

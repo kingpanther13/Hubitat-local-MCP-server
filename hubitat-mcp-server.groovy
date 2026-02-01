@@ -3125,7 +3125,10 @@ def backupItemSource(String type, String id) {
     if (state.itemBackupManifest.size() > 20) {
         def oldest = state.itemBackupManifest.min { it.value.timestamp }
         if (oldest) {
-            try { deleteHubFile(oldest.value.fileName) } catch (Exception e) { /* file may already be gone */ }
+            mcpLog("debug", "hub-admin", "Pruning oldest backup: ${oldest.key} (${oldest.value.fileName}, from ${formatTimestamp(oldest.value.timestamp)})")
+            try { deleteHubFile(oldest.value.fileName) } catch (Exception e) {
+                mcpLog("warn", "hub-admin", "Could not delete pruned backup file '${oldest.value.fileName}': ${e.message}")
+            }
             state.itemBackupManifest.remove(oldest.key)
         }
     }
@@ -3162,12 +3165,13 @@ def toolListItemBackups() {
             id: entry.id,
             fileName: entry.fileName,
             version: entry.version,
+            timestampEpoch: entry.timestamp ?: 0,
             timestamp: formatTimestamp(entry.timestamp),
             age: formatAge(entry.timestamp),
             sourceLength: entry.sourceLength ?: 0,
             directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
-    }.sort { a, b -> (b.timestamp <=> a.timestamp) } // Newest first
+    }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) } // Newest first
 
     return [
         backups: backupList,
@@ -3191,6 +3195,7 @@ def toolGetItemBackup(args) {
     def entry = manifest[args.backupKey]
 
     if (!entry) {
+        mcpLog("debug", "hub-admin", "Backup key '${args.backupKey}' not found in manifest")
         def availableKeys = manifest.keySet().sort()
         return [
             error: "No backup found for key '${args.backupKey}'",
@@ -3203,8 +3208,10 @@ def toolGetItemBackup(args) {
     def source
     try {
         def bytes = downloadHubFile(entry.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
         source = new String(bytes, "UTF-8")
     } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to read backup file '${entry.fileName}': ${e.message}")
         return [
             error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
             backupKey: args.backupKey,
@@ -3257,6 +3264,7 @@ def toolRestoreItemBackup(args) {
     def entry = manifest[args.backupKey]
 
     if (!entry) {
+        mcpLog("debug", "hub-admin", "Restore: backup key '${args.backupKey}' not found in manifest")
         def availableKeys = manifest.keySet().sort()
         return [
             success: false,
@@ -3269,8 +3277,10 @@ def toolRestoreItemBackup(args) {
     def source
     try {
         def bytes = downloadHubFile(entry.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
         source = new String(bytes, "UTF-8")
     } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to read backup file '${entry.fileName}' for restore: ${e.message}")
         return [
             success: false,
             error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
@@ -3280,6 +3290,7 @@ def toolRestoreItemBackup(args) {
     }
 
     if (!source) {
+        mcpLog("warn", "hub-admin", "Backup file '${entry.fileName}' is empty — cannot restore")
         return [
             success: false,
             error: "Backup file exists but is empty",
@@ -3289,47 +3300,102 @@ def toolRestoreItemBackup(args) {
 
     mcpLog("info", "hub-admin", "Restoring ${entry.type} ID ${entry.id} from backup file ${entry.fileName} (version ${entry.version}, ${formatTimestamp(entry.timestamp)})")
 
-    // Remove the manifest entry BEFORE restoring so backupItemSource creates a fresh backup of the CURRENT state
+    // Save a copy of the entry before modifying manifest
     def entryCopy = entry.clone()
-    manifest.remove(args.backupKey)
-    state.itemBackupManifest = manifest
 
+    // Before restoring, back up the CURRENT source under a different filename so it's not overwritten
+    // (the original backup file uses the same deterministic name, so backupItemSource would overwrite it)
+    def preRestoreFileName = "mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy"
+    def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
     try {
-        def result
-        if (entryCopy.type == "app") {
-            result = toolUpdateAppCode([appId: entryCopy.id, source: source, confirm: true])
-        } else {
-            result = toolUpdateDriverCode([driverId: entryCopy.id, source: source, confirm: true])
+        def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+        def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
+        if (responseText) {
+            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            if (parsed.source) {
+                uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
+                if (!state.itemBackupManifest) state.itemBackupManifest = [:]
+                state.itemBackupManifest[preRestoreBackupKey] = [
+                    type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
+                    version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
+                ]
+                mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+            }
+        }
+    } catch (Exception preBackupErr) {
+        mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} — proceeding with restore anyway")
+    }
+
+    // Now push the backup source directly via the hub internal API (bypass toolUpdateAppCode to avoid
+    // its backupItemSource call which would overwrite our original backup file)
+    try {
+        // Fetch current version for optimistic locking
+        def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+        def versionResp = hubInternalGet(ajaxPath, [id: entryCopy.id])
+        def currentVersion = null
+        if (versionResp) {
+            try {
+                def vParsed = new groovy.json.JsonSlurper().parseText(versionResp)
+                currentVersion = vParsed.version
+            } catch (Exception vErr) { /* proceed without version */ }
         }
 
-        if (result?.success) {
-            // Clean up the old backup file since restore succeeded (a new backup of pre-restore state now exists)
-            try { deleteHubFile(entryCopy.fileName) } catch (Exception e) { /* file cleanup is best-effort */ }
+        def updatePath = (entryCopy.type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
+        def result = hubInternalPostForm(updatePath, [
+            id: entryCopy.id,
+            version: currentVersion ?: entryCopy.version,
+            source: source
+        ])
+
+        def responseData = result?.data
+        def success = false
+        def errorMsg = null
+        if (responseData) {
+            try {
+                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
+            } catch (Exception parseErr) {
+                mcpLog("warn", "hub-admin", "Restore update response was not JSON: ${responseData?.toString()?.take(200)}")
+                errorMsg = "Unexpected response format — restore may have succeeded but could not be confirmed."
+            }
+        } else {
+            success = true
+        }
+
+        if (success) {
+            // Remove the original backup manifest entry (the pre-restore backup has its own entry)
+            if (state.itemBackupManifest) state.itemBackupManifest.remove(args.backupKey)
+            mcpLog("info", "hub-admin", "Restore succeeded: ${entryCopy.type} ID ${entryCopy.id} restored to version ${entryCopy.version}")
             return [
                 success: true,
                 message: "Restored ${entryCopy.type} ID ${entryCopy.id} to version ${entryCopy.version} (backup from ${formatTimestamp(entryCopy.timestamp)})",
                 type: entryCopy.type,
                 id: entryCopy.id,
                 restoredVersion: entryCopy.version,
-                updateResult: result
+                preRestoreBackup: preRestoreBackupKey,
+                preRestoreFile: preRestoreFileName,
+                undoHint: "To undo this restore, use 'restore_item_backup' with backupKey='${preRestoreBackupKey}'"
             ]
         } else {
-            // Restore failed — put the manifest entry back so user can try again
-            if (!state.itemBackupManifest) state.itemBackupManifest = [:]
-            state.itemBackupManifest[args.backupKey] = entryCopy
+            mcpLog("error", "hub-admin", "Restore failed for ${entryCopy.type} ID ${entryCopy.id}: ${errorMsg ?: 'unknown error'}")
             return [
                 success: false,
-                error: "Restore failed: ${result?.error ?: 'unknown error'}",
+                error: "Restore failed: ${errorMsg ?: 'unknown error'}",
                 backupKey: args.backupKey,
                 message: "The backup has been preserved — you can try again or restore manually.",
                 directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
             ]
         }
     } catch (Exception e) {
-        // Restore failed — put the manifest entry back
-        if (!state.itemBackupManifest) state.itemBackupManifest = [:]
-        state.itemBackupManifest[args.backupKey] = entryCopy
-        throw e
+        mcpLog("error", "hub-admin", "Restore failed with exception for ${entryCopy.type} ID ${entryCopy.id}: ${e.message}")
+        return [
+            success: false,
+            error: "Restore failed: ${e.message}",
+            backupKey: args.backupKey,
+            message: "The backup has been preserved — you can try again or restore manually.",
+            directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
+        ]
     }
 }
 
@@ -4433,7 +4499,13 @@ def toolDeleteApp(args) {
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
     // Back up source code to File Manager before deletion so it can be restored if needed
-    backupItemSource("app", args.appId.toString())
+    def backupSucceeded = true
+    try {
+        backupItemSource("app", args.appId.toString())
+    } catch (Exception backupErr) {
+        backupSucceeded = false
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for app ${args.appId}: ${backupErr.message} — proceeding with delete")
+    }
 
     mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
     try {
@@ -4452,14 +4524,16 @@ def toolDeleteApp(args) {
         if (success) {
             mcpLog("info", "hub-admin", "App ID ${args.appId} deleted successfully")
             def backupEntry = state.itemBackupManifest?.get("app_${args.appId}")
-            return [
+            def result = [
                 success: true,
-                message: "App deleted successfully. Source code backed up to File Manager.",
+                message: backupSucceeded ? "App deleted successfully. Source code backed up to File Manager." : "App deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
                 appId: args.appId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use 'restore_item_backup' with backupKey='app_${args.appId}', or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install via install_app." : null
+                restoreHint: backupEntry ? "To restore: use 'install_app' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
             ]
+            if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
+            return result
         } else {
             return [
                 success: false,
@@ -4479,7 +4553,13 @@ def toolDeleteDriver(args) {
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
     // Back up source code to File Manager before deletion so it can be restored if needed
-    backupItemSource("driver", args.driverId.toString())
+    def backupSucceeded = true
+    try {
+        backupItemSource("driver", args.driverId.toString())
+    } catch (Exception backupErr) {
+        backupSucceeded = false
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for driver ${args.driverId}: ${backupErr.message} — proceeding with delete")
+    }
 
     mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
     try {
@@ -4497,14 +4577,16 @@ def toolDeleteDriver(args) {
         if (success) {
             mcpLog("info", "hub-admin", "Driver ID ${args.driverId} deleted successfully")
             def backupEntry = state.itemBackupManifest?.get("driver_${args.driverId}")
-            return [
+            def result = [
                 success: true,
-                message: "Driver deleted successfully. Source code backed up to File Manager.",
+                message: backupSucceeded ? "Driver deleted successfully. Source code backed up to File Manager." : "Driver deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
                 driverId: args.driverId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use 'restore_item_backup' with backupKey='driver_${args.driverId}', or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install via install_driver." : null
+                restoreHint: backupEntry ? "To restore: use 'install_driver' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
             ]
+            if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
+            return result
         } else {
             return [
                 success: false,

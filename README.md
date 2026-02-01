@@ -62,7 +62,7 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (52 total)
+### MCP Tools (55 total)
 
 | Category | Tools |
 |----------|-------|
@@ -679,7 +679,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **Two-tier backup system**: Full hub backup required within 24 hours (was 1 hour); individual item source code automatically backed up before any modify/delete operation (1-hour window preserves pre-edit original)
   - **Backup timeout** increased to 300 seconds (5 minutes) for larger hubs
   - **SKILL.md**: Claude Code development skill documenting all project conventions and architecture
-- **v0.4.0** - Hub Admin Tools with Hub Security support (55 tools total)
+- **v0.4.0** - Hub Admin Tools with Hub Security support (52 tools total)
   - **18 new Hub Admin tools**: Full hub administration through MCP
   - **Hub Admin Read Tools** (8): `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source`
   - **Hub Admin Write Tools** (10): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
