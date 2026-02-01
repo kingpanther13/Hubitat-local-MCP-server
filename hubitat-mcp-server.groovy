@@ -3022,12 +3022,12 @@ def hubInternalGet(String path, Map query = null, int timeout = 30) {
     def responseText = null
     try {
         httpGet(params) { resp ->
-            def dataClassName = resp.data?.getClass()?.name ?: ""
-            if (dataClassName.contains("Reader") || dataClassName.contains("InputStream")) {
-                // textParser: true returns a Reader/InputStream — read it fully
+            // textParser: true returns a Reader/InputStream — try .text first to read it fully
+            // Sandbox blocks instanceof and getClass(), so use try-catch duck typing
+            try {
                 responseText = resp.data.text
-            } else {
-                responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+            } catch (Exception readErr) {
+                responseText = resp.data?.toString()
             }
         }
     } catch (Exception e) {
@@ -3106,10 +3106,11 @@ def hubInternalPostForm(String path, Map body, int timeout = 420) {
     try {
         httpPost(params) { resp ->
             def responseData = resp.data
-            def rdClassName = responseData?.getClass()?.name ?: ""
-            if (rdClassName.contains("Reader") || rdClassName.contains("InputStream")) {
-                // textParser: true returns a Reader/InputStream — read it fully
+            // textParser: true returns a Reader/InputStream — try .text to read it fully
+            try {
                 responseData = responseData.text
+            } catch (Exception readErr) {
+                responseData = responseData?.toString()
             }
             result = [
                 status: resp.status,
