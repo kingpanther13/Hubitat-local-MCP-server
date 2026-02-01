@@ -648,6 +648,50 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 > **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to. They represent potential directions the project could go.
 
+### Rule Engine — Trigger Enhancements
+- **Endpoint/webhook triggers** — create local LAN and/or cloud URLs that trigger a rule when hit (like Rule Machine's Local/Cloud End Point triggers)
+- **Hub variable change triggers** — trigger a rule when a hub variable or rule engine variable value changes
+- **Conditional triggers** — evaluate a condition at the moment a trigger fires; rule only executes if the condition is true (Rule Machine 5.1 feature — different from separate conditions which are evaluated independently)
+- **Sticky/duration triggers** — trigger only when a device state persists for N seconds (debounce built into the trigger itself, not just via conditions)
+- **System start trigger** — fire actions on hub boot/restart
+- **Date range triggers** — trigger between two calendar dates (e.g., seasonal automations)
+- **Cron/periodic triggers** — interval-based recurring triggers (e.g., every 5 minutes, every hour) beyond simple time-of-day schedules
+
+### Rule Engine — Condition Enhancements
+- **Required Expressions (rule gates)** — a prerequisite expression that must be true for the rule to run at all, with an option to cancel in-flight actions (pending delays, repeats) when the gate expression becomes false mid-execution
+- **Full boolean expression builder** — support AND/OR/XOR/NOT with nested parenthetical grouping for complex condition logic (currently only supports all/any)
+- **Private Boolean** — per-rule built-in boolean variable that can be read/set by other rules, usable as a condition or restriction
+
+### Rule Engine — Action Enhancements
+- **Fade dimmer over time** — gradually ramp a dimmer level from current to target over a specified duration
+- **Change color temperature over time** — gradually transition color temperature (e.g., warm to cool over 30 minutes)
+- **Per-mode actions** — different action parameters depending on current hub mode (e.g., set level to 100 in Day mode, 30 in Night mode)
+- **Wait for Event** — pause execution until a specific device event occurs, with configurable timeout
+- **Wait for Expression** — pause until a boolean expression becomes true, with timeout and optional duration requirement (expression must remain true for N seconds)
+- **Repeat While / Repeat Until** — loop with expression evaluation (current `repeat` only does count-based)
+- **Rule-to-rule control** — run another rule's actions, pause/resume other rules
+- **Cancel Rule Timers** — cancel pending timers (delays, waits) on other rules remotely
+- **File write/append/delete** — write to hub's local File Manager from within rule actions
+- **Ping IP address** — ping a host and store results (packet loss, latency) in a variable
+- **Custom Action** — run any arbitrary command on any device by selecting capability + command + parameters
+- **Music/siren control** — play sound, set volume, mute/unmute, control media players, sound chime/siren
+- **Disable/Enable a device** — programmatically disable or re-enable a Hubitat device
+- **Ramp actions** — start continuously raising/lowering a dimmer level, stop on command
+
+### Rule Engine — Variable System Enhancements
+- **Hub Variable Connectors** — expose hub variables as virtual device attributes so any app can read them
+- **Variable change events** — variables generating location events when they change, enabling triggers and conditions based on variable state
+- **Local variable triggers** — allow rule-scoped local variables to trigger re-evaluation when changed
+
+### Built-in Automation Equivalents
+- **Room Lighting** — room-centric lighting automation with motion triggers, scene management, vacancy mode (lights only turn off, never auto-on), per-mode settings, and scene transitions over time (Rule Machine covers most of this but Room Lighting is a dedicated streamlined UX)
+- **Zone Motion Controller** — combine multiple motion sensors into zones with aggregation logic, false-motion filtering, and configurable activation/deactivation behavior
+- **Mode Manager** — dedicated tool/rule template for automating mode changes based on time of day, presence sensors, sunrise/sunset (currently possible via rules but no dedicated tool)
+- **Button Controller** — streamlined button-to-action mapping (essentially the same as button_event triggers + actions but with a simplified single-purpose UX)
+- **Thermostat Scheduler** — schedule-based thermostat automation with per-time-slot, per-day, per-mode setpoints (currently partial via set_thermostat action)
+- **Lock Code Manager** — manage lock user codes, access schedules, and lock/unlock notifications
+- **Groups and Scenes** — Zigbee group messaging (eliminates the "popcorn effect" of staggered device commands), scene capture/recall with transition timing
+
 ### HPM Integration
 - **Search HPM repositories** — tool to search Hubitat Package Manager for available packages by keyword
 - **Install via HPM** — trigger HPM to install a package (app + driver bundles) without manual UI steps
@@ -671,9 +715,31 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - **Import into Rule Machine** — if RM's import mechanism is API-accessible, allow direct creation of native RM rules from MCP
 - **Bidirectional sync** — long-shot idea to keep MCP rules and RM rules in sync or allow migration between the two engines
 
+### Integration & Streaming
+- **MQTT client** — publish and subscribe to MQTT topics from within rules or as a standalone tool (connect to an external MQTT broker for bridging to Node-RED, Home Assistant, etc.)
+- **Event streaming / webhooks** — real-time POST of device events to external URLs as they happen (similar to Maker API's postURL feature but integrated into the MCP server)
+
+### Advanced Automation Patterns
+- **Occupancy / room state machine** — rooms with states like occupied, vacant, engaged, checking — going beyond simple motion-on/motion-off to track true room occupancy using multiple sensor types (motion, contact, power meters, presence)
+- **Presence-based automation** — geofencing triggers with first-to-arrive and last-to-leave logic, arrival/departure actions, presence-based mode changes
+- **Weather-based triggers** — respond to weather conditions (rain, temperature thresholds, wind speed, humidity) from weather station devices or external weather APIs
+- **Vacation mode** — random light cycling to simulate occupancy, timed on/off patterns, lock all doors, energy-saving thermostat presets
+
+### Monitoring & Diagnostics
+- **Device health watchdog** — monitor last check-in time for all devices, alert on stale/offline devices that haven't reported in a configurable period
+- **Z-Wave ghost device detection** — identify orphaned Z-Wave nodes (no routes, no linked device) and assist with removal workflow
+- **Event history / analytics** — aggregate device event data over time periods, generate summary reports (e.g., how many times a door opened today, average temperature over the last week)
+- **Hub performance monitoring** — track memory usage, temperature, and database size trends over time, alert on degradation
+- **Access to Hubitat logs/events** — read the hub's native log entries (app logs, device logs, location events) via MCP tools for diagnostics and troubleshooting without needing the web UI
+
+### Notification Enhancements
+- **Pushover integration** — native Pushover notifications from rules with support for priority levels (quiet, normal, high, emergency with repeat-until-acknowledged)
+- **Email notifications** — send emails via SendGrid or similar API from within rules
+- **Rate limiting / throttling** — configurable maximum notifications per timeframe to prevent notification storms
+- **Notification routing** — different notification targets per severity or event type (e.g., critical alerts to Pushover, informational to email)
+
 ### Additional Ideas
 - **Device creation/pairing assistance** — help users through the device pairing process for Z-Wave, Zigbee, and cloud-connected devices
-- **Notification/alert management** — more granular control over hub notifications and alert routing
 - **Scene management** — create, modify, and manage scenes (device state groups) beyond the current `activate_scene`
 - **Energy monitoring dashboard** — aggregate power/energy data from devices into summary reports
 - **Scheduled report generation** — periodic automated reports on hub health, device status, rule execution history
