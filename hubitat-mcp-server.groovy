@@ -1234,6 +1234,71 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 ],
                 required: ["backupKey", "confirm"]
             ]
+        ],
+        // File Manager Tools
+        [
+            name: "list_files",
+            description: """Lists all files in the hub's local File Manager.
+
+Returns file names, sizes, and direct download URLs. Files in File Manager are stored locally on the hub and accessible at http://<HUB_IP>/local/<filename>.
+
+Does not require Hub Admin Read/Write — always available.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "read_file",
+            description: """Reads the contents of a file from the hub's local File Manager.
+
+Returns the file contents as text. For binary files or files larger than 60KB, provides a direct download URL instead. Files are read locally via downloadHubFile() — no cloud involvement.
+
+Does not require Hub Admin Read/Write — always available.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"]
+                ],
+                required: ["fileName"]
+            ]
+        ],
+        [
+            name: "write_file",
+            description: """⚠️ Writes or creates a file in the hub's local File Manager.
+
+If the file already exists, a backup copy is automatically created first (named <original>_backup_<timestamp>.<ext>). The backup ensures the original can be recovered.
+
+File names may only contain letters, numbers, hyphens, underscores, and periods. No spaces allowed. Period cannot be the first character.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    fileName: [type: "string", description: "The file name to write (e.g., 'my-config.json'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."],
+                    content: [type: "string", description: "The text content to write to the file"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
+                ],
+                required: ["fileName", "content", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_file",
+            description: """⚠️ Deletes a file from the hub's local File Manager.
+
+A backup copy of the file is automatically created before deletion (named <original>_backup_<timestamp>.<ext>) so the contents can be recovered if needed.
+
+IMPORTANT: Always tell the user what file you're about to delete and get confirmation before proceeding.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    fileName: [type: "string", description: "The exact file name to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
+                ],
+                required: ["fileName", "confirm"]
+            ]
         ]
     ]
 }
@@ -1316,6 +1381,12 @@ def executeTool(toolName, args) {
         case "list_item_backups": return toolListItemBackups()
         case "get_item_backup": return toolGetItemBackup(args)
         case "restore_item_backup": return toolRestoreItemBackup(args)
+
+        // File Manager Tools
+        case "list_files": return toolListFiles()
+        case "read_file": return toolReadFile(args)
+        case "write_file": return toolWriteFile(args)
+        case "delete_file": return toolDeleteFile(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -3395,6 +3466,222 @@ def toolRestoreItemBackup(args) {
             backupKey: args.backupKey,
             message: "The backup has been preserved — you can try again or restore manually.",
             directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
+        ]
+    }
+}
+
+// ==================== FILE MANAGER TOOLS ====================
+
+/**
+ * Lists all files in the hub's local File Manager.
+ * Uses the hub internal API to query the file list.
+ */
+def toolListFiles() {
+    mcpLog("debug", "file-manager", "Listing files in File Manager")
+    try {
+        def responseText = hubInternalGet("/hub/fileManager/json")
+        if (!responseText) {
+            return [
+                files: [],
+                total: 0,
+                message: "File Manager returned empty response. It may be empty or the endpoint may not be available on this firmware.",
+                manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
+            ]
+        }
+
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        def fileList = []
+
+        if (parsed instanceof List) {
+            fileList = parsed.collect { f ->
+                def entry = [
+                    name: f.name ?: f.toString(),
+                    directDownload: "http://<HUB_IP>/local/${f.name ?: f.toString()}"
+                ]
+                if (f.size != null) entry.size = f.size
+                if (f.date) entry.lastModified = f.date
+                return entry
+            }.sort { a, b -> (a.name <=> b.name) }
+        }
+
+        mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager")
+        return [
+            files: fileList,
+            total: fileList.size(),
+            storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to list files: ${e.message}")
+        return [
+            files: [],
+            total: 0,
+            error: "Could not list files: ${e.message}",
+            manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
+        ]
+    }
+}
+
+/**
+ * Reads the contents of a file from the hub's local File Manager.
+ * Uses downloadHubFile() — fully local, no cloud involvement.
+ */
+def toolReadFile(args) {
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+
+    mcpLog("debug", "file-manager", "Reading file: ${args.fileName}")
+    def content
+    try {
+        def bytes = downloadHubFile(args.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
+        content = new String(bytes, "UTF-8")
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to read file '${args.fileName}': ${e.message}")
+        return [
+            success: false,
+            error: "File '${args.fileName}' could not be read: ${e.message}",
+            suggestion: "Check that the file name is correct. Go to Hubitat > Settings > File Manager to see available files.",
+            directDownload: "http://<HUB_IP>/local/${args.fileName}"
+        ]
+    }
+
+    def result = [
+        success: true,
+        fileName: args.fileName,
+        contentLength: content.length(),
+        directDownload: "http://<HUB_IP>/local/${args.fileName}"
+    ]
+
+    // Include content in response if it fits within the hub's response size limit
+    if (content.length() <= 60000) {
+        result.content = content
+    } else {
+        result.contentTooLargeForResponse = true
+        result.message = "File is ${content.length()} chars — too large for an MCP response. Download it directly from the URL below."
+        result.manualDownload = "Go to http://<HUB_IP>/local/${args.fileName} in your browser, or find it in Hubitat > Settings > File Manager."
+    }
+
+    mcpLog("info", "file-manager", "Read file '${args.fileName}' (${content.length()} chars)")
+    return result
+}
+
+/**
+ * Writes or creates a file in the hub's local File Manager.
+ * If the file already exists, automatically creates a backup copy first.
+ * Requires Hub Admin Write access.
+ */
+def toolWriteFile(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (args.content == null) throw new IllegalArgumentException("content is required")
+
+    // Validate file name — only A-Za-z0-9, hyphens, underscores, periods allowed
+    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
+        throw new IllegalArgumentException("Invalid file name '${args.fileName}'. Only letters, numbers, hyphens, underscores, and periods are allowed. Cannot start with a period.")
+    }
+
+    // If file already exists, back it up first
+    def backedUp = false
+    def backupFileName = null
+    try {
+        def existingBytes = downloadHubFile(args.fileName)
+        if (existingBytes != null) {
+            // File exists — create a backup before overwriting
+            def dotIndex = args.fileName.lastIndexOf('.')
+            def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
+            def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
+            def ts = new Date().format("yyyyMMdd-HHmmss")
+            backupFileName = "${baseName}_backup_${ts}${ext}"
+            uploadHubFile(backupFileName, existingBytes)
+            backedUp = true
+            mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
+        }
+    } catch (Exception e) {
+        // File doesn't exist or can't be read — that's fine, proceed with write
+        mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
+    }
+
+    // Write the file
+    try {
+        uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
+        mcpLog("info", "file-manager", "Wrote file '${args.fileName}' (${args.content.length()} chars)")
+
+        def result = [
+            success: true,
+            message: backedUp
+                ? "File '${args.fileName}' updated. Previous version backed up as '${backupFileName}'."
+                : "File '${args.fileName}' created.",
+            fileName: args.fileName,
+            contentLength: args.content.length(),
+            directDownload: "http://<HUB_IP>/local/${args.fileName}"
+        ]
+        if (backedUp) {
+            result.backupFile = backupFileName
+            result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+        }
+        return result
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to write file '${args.fileName}': ${e.message}")
+        return [
+            success: false,
+            error: "Failed to write file '${args.fileName}': ${e.message}"
+        ]
+    }
+}
+
+/**
+ * Deletes a file from the hub's local File Manager.
+ * Automatically creates a backup copy before deletion.
+ * Requires Hub Admin Write access.
+ */
+def toolDeleteFile(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+
+    // Back up the file before deleting
+    def backedUp = false
+    def backupFileName = null
+    try {
+        def bytes = downloadHubFile(args.fileName)
+        if (bytes == null) throw new Exception("File not found")
+        def dotIndex = args.fileName.lastIndexOf('.')
+        def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
+        def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
+        def ts = new Date().format("yyyyMMdd-HHmmss")
+        backupFileName = "${baseName}_backup_${ts}${ext}"
+        uploadHubFile(backupFileName, bytes)
+        backedUp = true
+        mcpLog("info", "file-manager", "Backed up '${args.fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
+    } catch (Exception e) {
+        mcpLog("warn", "file-manager", "Could not back up '${args.fileName}' before deletion: ${e.message}")
+    }
+
+    // Delete the file
+    try {
+        deleteHubFile(args.fileName)
+        mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
+
+        def result = [
+            success: true,
+            message: backedUp
+                ? "File '${args.fileName}' deleted. Backup saved as '${backupFileName}'."
+                : "File '${args.fileName}' deleted. WARNING: Could not create backup before deletion.",
+            fileName: args.fileName
+        ]
+        if (backedUp) {
+            result.backupFile = backupFileName
+            result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+            result.undoHint = "To recover: use 'read_file' on '${backupFileName}' to view contents, or 'write_file' to recreate '${args.fileName}' from the backup."
+        }
+        if (!backedUp) {
+            result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
+        }
+        return result
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to delete file '${args.fileName}': ${e.message}")
+        return [
+            success: false,
+            error: "Failed to delete '${args.fileName}': ${e.message}",
+            suggestion: "Check that the file exists. Use 'list_files' to see available files."
         ]
     }
 }

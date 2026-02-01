@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 55 tools for device control, rule automation, hub admin, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 59 tools for device control, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -27,7 +27,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 55 tool definitions + dispatch         │  │
+│  │  - 59 tool definitions + dispatch         │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -195,6 +195,13 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
 - All operations are fully local — no cloud involvement
 
+**File Manager Tools** (4 tools):
+- `list_files` — lists all files via `/hub/fileManager/json` internal API endpoint; always available, no access gate
+- `read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; always available
+- `write_file` — writes via `uploadHubFile()`; requires Hub Admin Write + confirm; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
+- `delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
+- File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
+
 ### Hub Internal API Helpers
 
 Three helpers for calling the hub's internal HTTP API at `http://127.0.0.1:8080`:
@@ -333,6 +340,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
 | `/driver/ajax/code` with query `id=<id>` | Driver source code (JSON: source, version, status) |
 | `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
+| `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |

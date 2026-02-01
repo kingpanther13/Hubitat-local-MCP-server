@@ -21,6 +21,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Comprehensive bug fixes** — null safety, race conditions, memory leaks, validation improvements
 - **File-based backups** — source code backups stored in hub's File Manager (no truncation, survives MCP uninstall)
 - **3 backup tools** — `list_item_backups`, `get_item_backup`, `restore_item_backup`
+- **4 File Manager tools** — `list_files`, `read_file`, `write_file`, `delete_file` with auto-backup safeguards
 
 **New in v0.4.1:**
 - **Bug fixes** for `get_app_source`, `get_driver_source`, and `create_hub_backup` — all Hub Admin tools now functional
@@ -62,7 +63,7 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (55 total)
+### MCP Tools (59 total)
 
 | Category | Tools |
 |----------|-------|
@@ -74,6 +75,7 @@ Manage your automation rules directly in the Hubitat web interface:
 | **Hub Admin Read** (8) | `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source` |
 | **Hub Admin Write** (10) | `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` |
 | **Item Backups** (3) | `list_item_backups`, `get_item_backup`, `restore_item_backup` |
+| **File Manager** (4) | `list_files`, `read_file`, `write_file`, `delete_file` |
 
 ### Rule Engine
 
@@ -215,6 +217,24 @@ Manually (without MCP — backups survive even if MCP is deleted):
 3. Or navigate directly to `http://<your-hub-ip>/local/mcp-backup-app-123.groovy`
 4. Go to Hubitat > **Apps Code** (or **Drivers Code**) > select the app/driver (or click "New App"/"New Driver" for deleted items)
 5. Paste the source code and click **Save**
+
+#### File Manager Tools
+
+These tools provide direct read/write access to the hub's local File Manager — the same storage area accessible via Hubitat > Settings > File Manager. Files are stored locally on the hub (~1GB capacity) and accessible at `http://<your-hub-ip>/local/<filename>`.
+
+| Tool | Description |
+|------|-------------|
+| `list_files` | List all files in File Manager with sizes and download URLs |
+| `read_file` | Read the contents of a file (returns text inline or download URL for large files) |
+| `write_file` | Create or update a file (auto-backs up existing file before overwriting) |
+| `delete_file` | Delete a file (auto-backs up file before deletion) |
+
+**Safety features:**
+- `write_file` on an existing file automatically creates a backup copy first (named `<original>_backup_<timestamp>.<ext>`)
+- `delete_file` automatically creates a backup copy before deletion
+- Both `write_file` and `delete_file` require Hub Admin Write access and `confirm=true`
+- `list_files` and `read_file` are always available (no access gates)
+- File name validation: only letters, numbers, hyphens, underscores, and periods allowed
 
 #### Hub Security Support
 
@@ -644,7 +664,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.4.3** - Comprehensive bug fixes + item backup tools (55 tools total)
+- **v0.4.3** - Comprehensive bug fixes + item backup & file manager tools (59 tools total)
   - **CRITICAL**: Fixed `evaluateComparison()` NullPointerException when device attribute returns null — numeric comparisons now fail closed instead of crashing
   - **CRITICAL**: Migrated `durationTimers` and `durationFired` from `state` to `atomicState` — fixes race condition where scheduled callbacks could read stale duration data
   - **CRITICAL**: Fixed unbounded `cancelledDelayIds` memory leak — now cleared on initialize/disable when scheduled callbacks are cancelled
@@ -665,6 +685,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **LOW**: Fixed comment/code mismatch in `backupItemSource` (said 100KB, code used 64KB)
   - **NEW**: 3 item backup tools — `list_item_backups`, `get_item_backup`, `restore_item_backup` — view and restore automatic pre-edit source code backups stored in File Manager
   - **NEW**: Backup tools include manual restore instructions and direct download URLs in every response, so users can recover even if MCP is unavailable
+  - **NEW**: 4 File Manager tools — `list_files`, `read_file`, `write_file`, `delete_file` — full read/write access to the hub's local file system with automatic backup-before-modify safeguards
 - **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
   - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
   - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub
