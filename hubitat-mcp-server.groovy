@@ -4697,17 +4697,28 @@ def toolGetHubLogs(args) {
         return [logs: [], message: "No log data returned from hub", count: 0]
     }
 
-    // The /logs/past/json endpoint returns tab-delimited lines: name\tlevel\tmessage\ttime\ttype
+    // The /logs/past/json endpoint returns a JSON array of tab-delimited strings:
+    // ["name\tlevel\tmessage\ttime\ttype", ...]
     def logs = []
-    def lines = responseText.split("\n")
-    for (line in lines) {
+    def logArray = []
+    try {
+        logArray = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        // If not JSON, fall back to splitting by newlines (older firmware)
+        mcpLog("debug", "monitoring", "Hub logs response not JSON, falling back to line-split: ${e.message}")
+        logArray = responseText.split("\n").toList()
+    }
+
+    def totalParsed = logArray.size()
+    for (logEntry in logArray) {
+        def line = logEntry?.toString()
         if (!line?.trim()) continue
         def parts = line.split("\t", -1)
-        if (parts.size() < 4) continue
+        if (parts.size() < 2) continue
 
         def entry = [
             name: parts[0]?.trim(),
-            level: parts[1]?.trim(),
+            level: parts.size() > 1 ? parts[1]?.trim() : "",
             message: parts.size() > 2 ? parts[2]?.trim() : "",
             time: parts.size() > 3 ? parts[3]?.trim() : "",
             type: parts.size() > 4 ? parts[4]?.trim() : ""
@@ -4733,7 +4744,7 @@ def toolGetHubLogs(args) {
     }
 
     // Truncation safety for 128KB cloud limit
-    def result = [logs: logs, count: logs.size(), totalParsed: lines.size()]
+    def result = [logs: logs, count: logs.size(), totalParsed: totalParsed]
     def jsonSize = new groovy.json.JsonBuilder(result).toString().size()
     if (jsonSize > 120000) {
         logs.each { it.message = it.message?.take(200) }
@@ -4741,7 +4752,7 @@ def toolGetHubLogs(args) {
         result.note = "Log messages truncated to fit response size limit"
     }
 
-    mcpLog("info", "monitoring", "Retrieved ${logs.size()} hub log entries (${lines.size()} total parsed)")
+    mcpLog("info", "monitoring", "Retrieved ${logs.size()} hub log entries (${totalParsed} total parsed)")
     return result
 }
 
