@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.8 - Fix Z-Wave/Zigbee endpoint compatibility for firmware 2.3.7.1+
+ * Version: 0.5.0 - Monitoring tools, device health, hub logs, performance tracking, delete_device
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.8"
+                paragraph "<b>Version:</b> 0.5.0"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.8). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.5.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.8"
+        version: "0.5.0"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -884,6 +884,77 @@ Provides a quick health check snapshot useful for diagnosing performance issues.
             ]
         ],
 
+        // ==================== MONITORING TOOLS ====================
+        [
+            name: "get_hub_logs",
+            description: """Access Hubitat's built-in system logs.
+
+Returns recent log entries from the hub's internal log endpoint. Supports filtering by log level and source/app name.
+
+PERFORMANCE WARNING:
+- Returns up to 'limit' entries (default 100, max 500)
+- Large log volumes may be truncated to fit the 128KB response limit
+- Use level and source filters to narrow results
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    level: [type: "string", description: "Filter by log level: trace, debug, info, warn, error. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error"]],
+                    source: [type: "string", description: "Filter by source/app name (case-insensitive substring match)"],
+                    limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100]
+                ]
+            ]
+        ],
+        [
+            name: "get_device_history",
+            description: """Get event history for a device over a time range.
+
+Uses device.eventsSince() to retrieve historical events. More flexible than get_device_events which only gets the N most recent — allows time-range queries and attribute filtering.
+
+Does not require Hub Admin access — works on any MCP-selected device.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "Device ID"],
+                    hoursBack: [type: "integer", description: "How many hours of history to retrieve. Default: 24, max: 168 (7 days).", default: 24],
+                    attribute: [type: "string", description: "Filter to a specific attribute name (e.g., 'temperature', 'switch')"],
+                    limit: [type: "integer", description: "Max events to return. Default: 100, max: 500.", default: 100]
+                ],
+                required: ["deviceId"]
+            ]
+        ],
+        [
+            name: "get_hub_performance",
+            description: """Comprehensive hub performance snapshot with historical trend tracking.
+
+Extends get_hub_health with time-series data. Each call optionally records a snapshot to a CSV file in File Manager for trend analysis over time. Returns current metrics plus recent trend data if available.
+
+Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    recordSnapshot: [type: "boolean", description: "Record this snapshot to the performance history CSV. Default: true.", default: true],
+                    trendPoints: [type: "integer", description: "Number of recent historical data points to include. Default: 10, max: 50.", default: 10]
+                ]
+            ]
+        ],
+        [
+            name: "device_health_check",
+            description: """Check device health across all MCP-selected devices.
+
+Iterates over all selected devices and flags any that have not reported activity within the specified threshold. Useful for identifying offline, dead-battery, or orphaned/ghost devices.
+
+Returns a summary with healthy vs stale device counts, plus details on stale devices.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    staleHours: [type: "integer", description: "Flag devices with no activity in this many hours. Default: 24.", default: 24],
+                    includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false]
+                ]
+            ]
+        ],
+
         // ==================== HUB ADMIN WRITE TOOLS ====================
         [
             name: "create_hub_backup",
@@ -993,6 +1064,50 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 required: ["confirm"]
             ]
         ],
+        // Device Admin
+        [
+            name: "delete_device",
+            description: """⚠️⚠️⚠️ EXTREME DANGER — PERMANENTLY DELETES A DEVICE FROM THE HUB ⚠️⚠️⚠️
+
+THIS IS THE MOST DESTRUCTIVE TOOL IN THE MCP SERVER. THERE IS NO UNDO.
+
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
+2. Use 'get_device' to inspect the device and confirm it is the CORRECT one
+3. Tell the user: "I am about to PERMANENTLY DELETE device '[name]' (ID [id]) from your hub. This CANNOT be undone. All event history for this device will be lost."
+4. If the device has recent activity, WARN the user it may still be functional — deletion is intended for ghost/orphaned devices
+5. If the device is on Z-Wave or Zigbee, WARN the user that proper exclusion should be done first to avoid creating ghost nodes on the mesh
+6. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+7. Set confirm=true
+
+This tool uses the hub's internal forceDelete endpoint. It is intended ONLY for:
+- Ghost/orphaned devices left behind after failed Z-Wave/Zigbee exclusion
+- Stale database records for devices that no longer physically exist
+- Virtual devices that cannot be removed through normal means
+
+Effects:
+- Device is PERMANENTLY removed from the hub database
+- ALL device events and history are PERMANENTLY lost
+- ANY automations, rules, or apps referencing this device WILL BREAK
+- If the device is still physically on Z-Wave/Zigbee, it becomes an unmanaged ghost on the mesh
+- The device's full details are logged to MCP debug logs for audit purposes
+
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested device deletion.
+NEVER use this tool for routine device management — use the Hubitat web UI instead.
+If the backup failed, DO NOT proceed — inform the user instead.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "The device ID to permanently delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created, device was verified, and user explicitly approved the deletion."]
+                ],
+                required: ["deviceId", "confirm"]
+            ]
+        ],
+
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
@@ -1395,11 +1510,20 @@ def executeTool(toolName, args) {
         case "get_zigbee_details": return toolGetZigbeeDetails(args)
         case "get_hub_health": return toolGetHubHealth(args)
 
+        // Monitoring Tools
+        case "get_hub_logs": return toolGetHubLogs(args)
+        case "get_device_history": return toolGetDeviceHistory(args)
+        case "get_hub_performance": return toolGetHubPerformance(args)
+        case "device_health_check": return toolDeviceHealthCheck(args)
+
         // Hub Admin Write Tools
         case "create_hub_backup": return toolCreateHubBackup(args)
         case "reboot_hub": return toolRebootHub(args)
         case "shutdown_hub": return toolShutdownHub(args)
         case "zwave_repair": return toolZwaveRepair(args)
+
+        // Device Admin
+        case "delete_device": return toolDeleteDevice(args)
 
         // Hub Admin App/Driver Management
         case "get_app_source": return toolGetAppSource(args)
@@ -1911,7 +2035,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.8",
+        serverVersion: "0.5.0",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4097,7 +4221,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.8",
+        version: "0.5.0",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4118,7 +4242,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.8"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.5.0"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4285,7 +4409,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.8"
+    details.mcpServerVersion = "0.5.0"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4547,6 +4671,310 @@ def toolGetHubHealth(args) {
 
     mcpLog("info", "hub-admin", "Hub health check completed")
     return health
+}
+
+// ==================== MONITORING TOOL IMPLEMENTATIONS ====================
+
+def toolGetHubLogs(args) {
+    requireHubAdminRead()
+
+    def maxLimit = 500
+    def limit = Math.min(args.limit ?: 100, maxLimit)
+    def levelFilter = args.level
+    def sourceFilter = args.source
+
+    mcpLog("info", "monitoring", "Fetching hub logs (level=${levelFilter}, source=${sourceFilter}, limit=${limit})")
+
+    def responseText = null
+    try {
+        responseText = hubInternalGet("/logs/past/json", null, 30)
+    } catch (Exception e) {
+        mcpLog("error", "monitoring", "Failed to fetch hub logs: ${e.message}")
+        return [logs: [], error: "Failed to fetch hub logs: ${e.message}", count: 0]
+    }
+
+    if (!responseText) {
+        return [logs: [], message: "No log data returned from hub", count: 0]
+    }
+
+    // The /logs/past/json endpoint returns tab-delimited lines: name\tlevel\tmessage\ttime\ttype
+    def logs = []
+    def lines = responseText.split("\n")
+    for (line in lines) {
+        if (!line?.trim()) continue
+        def parts = line.split("\t", -1)
+        if (parts.size() < 4) continue
+
+        def entry = [
+            name: parts[0]?.trim(),
+            level: parts[1]?.trim(),
+            message: parts.size() > 2 ? parts[2]?.trim() : "",
+            time: parts.size() > 3 ? parts[3]?.trim() : "",
+            type: parts.size() > 4 ? parts[4]?.trim() : ""
+        ]
+
+        // If message field contains tabs (extra fields), rejoin the middle parts
+        if (parts.size() > 5) {
+            try {
+                entry.message = parts[2..(parts.size() - 3)].join("\t")
+                entry.time = parts[-2]?.trim()
+                entry.type = parts[-1]?.trim()
+            } catch (Exception e) {
+                // Fall back to simple parsing
+            }
+        }
+
+        // Apply filters
+        if (levelFilter && entry.level?.toLowerCase() != levelFilter.toLowerCase()) continue
+        if (sourceFilter && !entry.name?.toLowerCase()?.contains(sourceFilter.toLowerCase())) continue
+
+        logs << entry
+        if (logs.size() >= limit) break
+    }
+
+    // Truncation safety for 128KB cloud limit
+    def result = [logs: logs, count: logs.size(), totalParsed: lines.size()]
+    def jsonSize = new groovy.json.JsonBuilder(result).toString().size()
+    if (jsonSize > 120000) {
+        logs.each { it.message = it.message?.take(200) }
+        result.truncated = true
+        result.note = "Log messages truncated to fit response size limit"
+    }
+
+    mcpLog("info", "monitoring", "Retrieved ${logs.size()} hub log entries (${lines.size()} total parsed)")
+    return result
+}
+
+def toolGetDeviceHistory(args) {
+    if (!args.deviceId) throw new IllegalArgumentException("deviceId is required")
+    def device = findDevice(args.deviceId)
+    if (!device) throw new IllegalArgumentException("Device not found: ${args.deviceId}. Device must be selected in MCP Rule Server app settings.")
+
+    def hoursBack = Math.min(args.hoursBack ?: 24, 168)
+    def limit = Math.min(args.limit ?: 100, 500)
+    def attributeFilter = args.attribute
+
+    def deviceLabel = device.label ?: device.name ?: "Device ${args.deviceId}"
+    def sinceDate = new Date(now() - (hoursBack * 3600000L))
+
+    def events
+    try {
+        events = device.eventsSince(sinceDate, [max: limit])
+    } catch (Exception e) {
+        mcpLog("warn", "monitoring", "eventsSince failed for ${deviceLabel}: ${e.message}")
+        return [error: "eventsSince not supported or failed: ${e.message}", device: deviceLabel, deviceId: args.deviceId]
+    }
+
+    def results = events?.collect { evt ->
+        [
+            name: evt.name,
+            value: evt.value,
+            unit: evt.unit,
+            description: evt.descriptionText,
+            date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+            isStateChange: evt.isStateChange
+        ]
+    } ?: []
+
+    // Apply attribute filter post-query
+    if (attributeFilter) {
+        results = results.findAll { it.name == attributeFilter }
+    }
+
+    mcpLog("info", "monitoring", "Retrieved ${results.size()} history events for ${deviceLabel} (${hoursBack}h back)")
+    return [
+        device: deviceLabel,
+        deviceId: args.deviceId,
+        hoursBack: hoursBack,
+        attributeFilter: attributeFilter,
+        events: results,
+        count: results.size(),
+        sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+    ]
+}
+
+def toolGetHubPerformance(args) {
+    requireHubAdminRead()
+
+    def recordSnapshot = args.recordSnapshot != false
+    def trendPoints = Math.min(args.trendPoints ?: 10, 50)
+
+    // Gather current metrics
+    def current = [timestamp: formatTimestamp(now()), timestampEpoch: now()]
+
+    try {
+        current.freeMemoryKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim()
+        try {
+            def memKB = current.freeMemoryKB as Integer
+            if (memKB < 50000) current.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+            else if (memKB < 100000) current.memoryNote = "Memory is moderate: ${memKB}KB free."
+        } catch (Exception nfe) { /* non-numeric */ }
+    } catch (Exception e) { current.freeMemoryKB = "unavailable" }
+
+    try {
+        current.internalTempC = hubInternalGet("/hub/advanced/internalTempCelsius")?.trim()
+        try {
+            def temp = current.internalTempC as Double
+            if (temp > 70) current.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+            else if (temp > 60) current.temperatureNote = "Temperature is warm: ${temp}°C."
+        } catch (Exception nfe) { /* non-numeric */ }
+    } catch (Exception e) { current.internalTempC = "unavailable" }
+
+    try {
+        current.databaseSizeKB = hubInternalGet("/hub/advanced/databaseSize")?.trim()
+        try {
+            def dbKB = current.databaseSizeKB as Integer
+            if (dbKB > 500000) current.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+        } catch (Exception nfe) { /* non-numeric */ }
+    } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+
+    try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
+    if (current.uptimeSeconds && current.uptimeSeconds instanceof Number) {
+        def days = (current.uptimeSeconds / 86400).toInteger()
+        def hours = ((current.uptimeSeconds % 86400) / 3600).toInteger()
+        def mins = ((current.uptimeSeconds % 3600) / 60).toInteger()
+        current.uptimeFormatted = "${days}d ${hours}h ${mins}m"
+    }
+
+    // CSV history management
+    def csvFileName = "mcp-performance-history.csv"
+    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
+    def history = []
+
+    // Read existing CSV from File Manager
+    try {
+        def existingBytes = downloadHubFile(csvFileName)
+        if (existingBytes) {
+            def csvText = new String(existingBytes, "UTF-8")
+            def csvLines = csvText.split("\n")
+            for (int i = 1; i < csvLines.size(); i++) {
+                if (csvLines[i]?.trim()) history << csvLines[i].trim()
+            }
+        }
+    } catch (Exception e) {
+        // File doesn't exist yet, that's fine
+        mcpLog("debug", "monitoring", "No existing performance CSV: ${e.message}")
+    }
+
+    // Record current snapshot to CSV
+    if (recordSnapshot) {
+        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeKB},${current.uptimeSeconds}"
+        history << csvRow
+
+        // Trim to 500 rows (rolling window)
+        if (history.size() > 500) {
+            history = history.drop(history.size() - 500)
+        }
+
+        // Write back to File Manager
+        def csvContent = csvHeader + "\n" + history.join("\n") + "\n"
+        try {
+            uploadHubFile(csvFileName, csvContent.getBytes("UTF-8"))
+        } catch (Exception e) {
+            mcpLog("warn", "monitoring", "Failed to write performance CSV: ${e.message}")
+        }
+    }
+
+    // Parse recent trend points for response
+    def trends = []
+    def startIdx = Math.max(0, history.size() - trendPoints)
+    for (int i = startIdx; i < history.size(); i++) {
+        def parts = history[i].split(",", -1)
+        if (parts.size() >= 5) {
+            try {
+                trends << [
+                    timestamp: formatTimestamp(parts[0] as Long),
+                    freeMemoryKB: parts[1],
+                    internalTempC: parts[2],
+                    databaseSizeKB: parts[3],
+                    uptimeSeconds: parts[4]
+                ]
+            } catch (Exception e) {
+                // Skip malformed rows
+            }
+        }
+    }
+
+    mcpLog("info", "monitoring", "Hub performance snapshot recorded=${recordSnapshot}, trendPoints=${trends.size()}")
+    return [
+        current: current,
+        trends: trends,
+        trendPointsAvailable: history.size(),
+        historyFile: csvFileName
+    ]
+}
+
+def toolDeviceHealthCheck(args) {
+    if (!settings.selectedDevices) {
+        return [message: "No devices selected for MCP access", summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]]
+    }
+
+    def staleHours = args.staleHours ?: 24
+    def includeHealthy = args.includeHealthy ?: false
+    def staleThreshold = now() - (staleHours * 3600000L)
+
+    def healthy = []
+    def stale = []
+    def unknown = []
+
+    settings.selectedDevices.each { device ->
+        def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
+        def entry = [
+            id: device.id.toString(),
+            name: deviceLabel
+        ]
+
+        def lastActivity = null
+        try {
+            lastActivity = device.lastActivity
+        } catch (Exception e) {
+            // Some device types may not support lastActivity
+        }
+
+        if (lastActivity) {
+            entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+            entry.hoursAgo = ((now() - lastActivity.time) / 3600000.0).round(1)
+
+            if (lastActivity.time < staleThreshold) {
+                stale << entry
+            } else {
+                healthy << entry
+            }
+        } else {
+            entry.lastActivity = "never"
+            entry.hoursAgo = null
+            unknown << entry
+        }
+    }
+
+    // Sort stale by most-stale first
+    stale.sort { a, b -> (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) }
+
+    def result = [
+        summary: [
+            totalDevices: settings.selectedDevices.size(),
+            healthyCount: healthy.size(),
+            staleCount: stale.size(),
+            unknownCount: unknown.size(),
+            staleThresholdHours: staleHours,
+            checkedAt: formatTimestamp(now())
+        ],
+        staleDevices: stale,
+        unknownDevices: unknown
+    ]
+
+    if (includeHealthy) {
+        result.healthyDevices = healthy
+    }
+
+    if (stale.size() > 0 || unknown.size() > 0) {
+        result.recommendation = "Found ${stale.size()} stale and ${unknown.size()} unknown devices. " +
+            "Stale devices may have dead batteries, be out of range, or be orphaned/ghost devices. " +
+            "Use 'get_device' on individual devices for more details."
+    }
+
+    mcpLog("info", "monitoring", "Device health check: ${healthy.size()} healthy, ${stale.size()} stale, ${unknown.size()} unknown (threshold: ${staleHours}h)")
+    return result
 }
 
 // ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
@@ -5060,10 +5488,206 @@ def toolDeleteDriver(args) {
     }
 }
 
+// ==================== DEVICE ADMIN TOOL IMPLEMENTATIONS ====================
+
+def toolDeleteDevice(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.deviceId) throw new IllegalArgumentException("deviceId is required")
+
+    def deviceId = args.deviceId.toString()
+
+    // Step 1: Gather device information for audit trail via hub internal API
+    // We intentionally do NOT restrict to findDevice() (selectedDevices only) because
+    // ghost/orphaned devices may not be in the selected device list
+    def deviceInfo = null
+    try {
+        def responseText = hubInternalGet("/device/fullJson/${deviceId}")
+        if (responseText) {
+            deviceInfo = new groovy.json.JsonSlurper().parseText(responseText)
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "Could not fetch device info for ${deviceId}: ${e.message}")
+    }
+
+    if (!deviceInfo) {
+        throw new IllegalArgumentException("Device ${deviceId} not found on hub. Verify the device ID is correct.")
+    }
+
+    def deviceName = deviceInfo.label ?: deviceInfo.name ?: "Unknown"
+    def deviceDNI = deviceInfo.deviceNetworkId ?: "unknown"
+    def deviceType = deviceInfo.typeName ?: deviceInfo.type ?: "unknown"
+    def warnings = []
+
+    // Step 2: Check for recent activity (active device warning)
+    try {
+        def selectedDevice = findDevice(deviceId)
+        if (selectedDevice) {
+            def lastActivity = selectedDevice.lastActivity
+            if (lastActivity) {
+                def hoursAgo = ((now() - lastActivity.time) / 3600000.0).round(1)
+                if (hoursAgo < 24) {
+                    warnings << "ACTIVE DEVICE: Last activity was ${hoursAgo} hours ago at ${lastActivity.format("yyyy-MM-dd'T'HH:mm:ss")}. This device may still be functional."
+                }
+            }
+            def recentEvents = selectedDevice.events(max: 3)
+            if (recentEvents && recentEvents.size() > 0) {
+                def lastEvent = recentEvents[0]
+                warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date?.format("yyyy-MM-dd'T'HH:mm:ss")}"
+            }
+        }
+    } catch (Exception e) {
+        // Device not in selected list or events unavailable — skip
+    }
+
+    // Step 3: Check Z-Wave/Zigbee radio membership
+    def isRadioDevice = false
+    try {
+        // Check if device has a zigbeeId (Zigbee device)
+        if (deviceInfo.zigbeeId) {
+            isRadioDevice = true
+            warnings << "ZIGBEE DEVICE: This device has Zigbee ID '${deviceInfo.zigbeeId}'. Force-deleting without proper Zigbee removal may leave an orphaned node on the mesh."
+        }
+        // Check if device network ID looks like a Z-Wave node (2-digit hex)
+        if (deviceDNI && deviceDNI.matches(/^[0-9A-Fa-f]{2}$/)) {
+            isRadioDevice = true
+            warnings << "Z-WAVE DEVICE: Network ID '${deviceDNI}' suggests this is a Z-Wave node. Force-deleting without proper Z-Wave exclusion will leave a ghost node that degrades mesh performance."
+        }
+    } catch (Exception e) {
+        // Skip radio check on error
+    }
+
+    // Step 4: Check if device is active on the Z-Wave/Zigbee radio node tables
+    if (isRadioDevice) {
+        try {
+            // Check Z-Wave node table
+            def zwaveEndpoints = ["/hub/zwaveDetails/json", "/hub2/zwaveInfo"]
+            for (endpoint in zwaveEndpoints) {
+                try {
+                    def zwResponse = hubInternalGet(endpoint)
+                    if (zwResponse) {
+                        def zwData = new groovy.json.JsonSlurper().parseText(zwResponse)
+                        def nodes = zwData?.nodes
+                        if (nodes) {
+                            def activeNode = nodes.find { it.deviceId?.toString() == deviceId }
+                            if (activeNode) {
+                                warnings << "ACTIVE ON Z-WAVE RADIO: Device is node ${activeNode.nodeId} with state '${activeNode.nodeState}'. It should be Z-Wave excluded BEFORE deletion."
+                            }
+                        }
+                    }
+                    break
+                } catch (Exception e) { /* try next endpoint */ }
+            }
+        } catch (Exception e) {
+            mcpLog("debug", "hub-admin", "Could not check Z-Wave radio for device ${deviceId}: ${e.message}")
+        }
+        try {
+            // Check Zigbee device table
+            def zigEndpoints = ["/hub/zigbeeDetails/json", "/hub2/zigbeeInfo"]
+            for (endpoint in zigEndpoints) {
+                try {
+                    def zigResponse = hubInternalGet(endpoint)
+                    if (zigResponse) {
+                        def zigData = new groovy.json.JsonSlurper().parseText(zigResponse)
+                        def devices = zigData?.devices
+                        if (devices) {
+                            def activeDevice = devices.find { it.id?.toString() == deviceId }
+                            if (activeDevice && activeDevice.active) {
+                                warnings << "ACTIVE ON ZIGBEE RADIO: Device '${activeDevice.name}' is active on the Zigbee mesh. It should be removed via Zigbee BEFORE deletion."
+                            }
+                        }
+                    }
+                    break
+                } catch (Exception e) { /* try next endpoint */ }
+            }
+        } catch (Exception e) {
+            mcpLog("debug", "hub-admin", "Could not check Zigbee radio for device ${deviceId}: ${e.message}")
+        }
+    }
+
+    // Step 5: Check if any MCP rules reference this device
+    try {
+        def childApps = getChildApps()
+        def referencingRules = []
+        childApps?.each { childApp ->
+            try {
+                def ruleData = childApp.getRuleData()
+                if (ruleData) {
+                    def ruleJson = new groovy.json.JsonBuilder(ruleData).toString()
+                    if (ruleJson.contains("\"${deviceId}\"")) {
+                        referencingRules << [id: ruleData.id, name: ruleData.name ?: "Unnamed"]
+                    }
+                }
+            } catch (Exception e) { /* skip rule */ }
+        }
+        if (referencingRules) {
+            warnings << "REFERENCED BY ${referencingRules.size()} MCP RULE(S): ${referencingRules.collect { "${it.name} (ID: ${it.id})" }.join(', ')}. These rules WILL BREAK after deletion."
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "Could not check MCP rules for device ${deviceId}: ${e.message}")
+    }
+
+    // Step 6: Full audit log BEFORE deletion
+    mcpLog("warn", "hub-admin", "DELETE DEVICE AUDIT: Deleting '${deviceName}' (ID: ${deviceId}, DNI: ${deviceDNI}, Type: ${deviceType}). Warnings: ${warnings.size() > 0 ? warnings.join(' | ') : 'none'}")
+
+    // Step 7: Execute force delete via hub internal API
+    try {
+        def responseText = hubInternalGet("/device/forceDelete/${deviceId}/yes", null, 30)
+        mcpLog("debug", "hub-admin", "Force delete response for device ${deviceId}: ${responseText?.take(500)}")
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Device force delete FAILED for '${deviceName}' (${deviceId}): ${e.message}")
+        return [
+            success: false,
+            error: "Force delete failed: ${e.message}",
+            deviceId: deviceId,
+            deviceName: deviceName,
+            warnings: warnings
+        ]
+    }
+
+    // Step 8: Verify deletion by attempting to re-fetch the device
+    def verified = false
+    try {
+        def checkResponse = hubInternalGet("/device/fullJson/${deviceId}")
+        if (checkResponse) {
+            try {
+                def checkParsed = new groovy.json.JsonSlurper().parseText(checkResponse)
+                verified = !checkParsed?.id
+            } catch (Exception parseErr) {
+                // Non-JSON response or error page = likely deleted
+                verified = true
+            }
+        } else {
+            verified = true
+        }
+    } catch (Exception e) {
+        // 404 or error = device is gone = success
+        verified = true
+    }
+
+    mcpLog(verified ? "info" : "warn", "hub-admin", "Device delete ${verified ? 'VERIFIED' : 'UNVERIFIED'}: '${deviceName}' (ID: ${deviceId})")
+
+    return [
+        success: verified,
+        deviceId: deviceId,
+        deviceName: deviceName,
+        message: verified
+            ? "Device '${deviceName}' (ID: ${deviceId}) has been permanently deleted."
+            : "Delete command was sent but device may still exist. Check Hubitat web UI to verify.",
+        warnings: warnings,
+        auditInfo: [
+            deletedAt: formatTimestamp(now()),
+            deviceType: deviceType,
+            deviceNetworkId: deviceDNI,
+            driverName: deviceType,
+            lastHubBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    ]
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.8"
+    return "0.5.0"
 }
 
 def isNewerVersion(String remote, String local) {

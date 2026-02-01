@@ -17,6 +17,14 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.5.0:**
+- **5 new tools** (64 total) — monitoring, device health, and device management
+- **`get_hub_logs`** — access Hubitat's built-in system logs with filtering by level (trace/debug/info/warn/error) and source/app name
+- **`get_device_history`** — time-range event queries using `eventsSince()` with attribute filtering, up to 7 days of history
+- **`get_hub_performance`** — comprehensive performance snapshots with CSV time-series trend tracking in File Manager for historical analysis
+- **`device_health_check`** — scan all selected devices and flag stale/offline devices that haven't reported within a configurable threshold
+- **`delete_device`** — force-delete ghost/orphaned devices with the strictest safeguards of any tool: Z-Wave/Zigbee radio activity checks, MCP rule reference checks, recent event checks, full audit logging, and deletion verification
+
 **New in v0.4.8:**
 - **Z-Wave/Zigbee endpoint fix** — `get_zwave_details` and `get_zigbee_details` now work on firmware 2.3.7.1+ by trying the new `/hub/zwaveDetails/json` and `/hub/zigbeeDetails/json` endpoints first, with automatic fallback to legacy `/hub2/` endpoints for older firmware
 
@@ -753,6 +761,12 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.5.0** - Monitoring tools and device management (64 tools)
+  - New `get_hub_logs` — access Hubitat's built-in system logs with level and source filtering
+  - New `get_device_history` — time-range event queries via `eventsSince()` with attribute filtering (up to 7 days)
+  - New `get_hub_performance` — performance snapshots with CSV time-series trend tracking in File Manager
+  - New `device_health_check` — scan all selected devices, flag stale/offline devices by configurable threshold
+  - New `delete_device` — force-delete ghost/orphaned devices with comprehensive safeguards (radio checks, rule references, audit logging, deletion verification)
 - **v0.4.8** - Fix Z-Wave and Zigbee endpoint compatibility (59 tools)
   - Fix `get_zwave_details` returning 404 on firmware 2.3.7.1+ — tries `/hub/zwaveDetails/json` first, falls back to `/hub2/zwaveInfo`
   - Fix `get_zigbee_details` returning 404 on firmware 2.3.7.1+ — tries `/hub/zigbeeDetails/json` first, falls back to `/hub2/zigbeeInfo`
