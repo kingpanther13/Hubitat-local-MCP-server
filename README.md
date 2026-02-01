@@ -608,6 +608,40 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - Time triggers use Hubitat's `schedule()` which has some limitations
 - Sunrise/sunset times are recalculated daily
 
+## Future Plans
+
+> **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to. They represent potential directions the project could go.
+
+### HPM Integration
+- **Search HPM repositories** — tool to search Hubitat Package Manager for available packages by keyword
+- **Install via HPM** — trigger HPM to install a package (app + driver bundles) without manual UI steps
+- **Uninstall via HPM** — remove packages cleanly through HPM's uninstall process
+- **Check for updates** — query HPM for available updates across all installed packages
+
+### App/Integration Discovery & Install (Outside HPM)
+- **Search for official integrations** — find and install built-in Hubitat apps and integrations that aren't yet enabled
+- **Search for custom apps** — discover and install community apps/drivers from sources outside HPM (GitHub repos, community forums, etc.)
+- **Browse available integrations** — list official integrations available on the hub that haven't been activated yet
+
+### Dashboard Management
+- **Create dashboards** — programmatically create new dashboards with device tiles and layouts
+- **Modify dashboards** — add/remove/rearrange tiles, change tile templates, update dashboard settings
+- **Delete dashboards** — remove dashboards that are no longer needed
+- **Official dashboard support preferred** — ideally interact with Hubitat's native dashboard system so dashboards appear on the home screen and mobile app; if not feasible, explore alternative dashboard solutions that can be set as defaults
+
+### Rule Machine Interoperability
+- **Read native Rule Machine rules** — since RM rules support export/import/clone in the UI, investigate whether there's an API to read their configuration
+- **Create rules in Rule Machine format** — research whether MCP-created rules could be exported in a format that Rule Machine can import, giving users native RM rules created through natural language
+- **Import into Rule Machine** — if RM's import mechanism is API-accessible, allow direct creation of native RM rules from MCP
+- **Bidirectional sync** — long-shot idea to keep MCP rules and RM rules in sync or allow migration between the two engines
+
+### Additional Ideas
+- **Device creation/pairing assistance** — help users through the device pairing process for Z-Wave, Zigbee, and cloud-connected devices
+- **Notification/alert management** — more granular control over hub notifications and alert routing
+- **Scene management** — create, modify, and manage scenes (device state groups) beyond the current `activate_scene`
+- **Energy monitoring dashboard** — aggregate power/energy data from devices into summary reports
+- **Scheduled report generation** — periodic automated reports on hub health, device status, rule execution history
+
 ## Version History
 
 - **v0.4.3** - Comprehensive bug fixes + item backup tools (55 tools total)

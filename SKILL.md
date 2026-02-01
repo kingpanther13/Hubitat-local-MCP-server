@@ -238,7 +238,7 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 | `hubSecurityCookie` | String | Cached auth cookie |
 | `hubSecurityCookieExpiry` | Long | Cookie expiry epoch ms |
 | `lastBackupTimestamp` | Long | Last hub backup epoch ms (24-hour write safety gate) |
-| `itemBackups` | Map | Source code backups keyed by `"app_<id>"` / `"driver_<id>"`, max 20 entries |
+| `itemBackupManifest` | Map | Metadata for source code backups stored in File Manager, keyed by `"app_<id>"` / `"driver_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
 
 **Child app uses `atomicState`** for `triggers`, `conditions`, `actions`, `localVariables`, `durationTimers`, `durationFired`, and `cancelledDelayIds`. This is critical — `atomicState` provides immediate persistence and prevents race conditions when scheduled callbacks (`runIn`) fire in separate execution contexts. Always use read-modify-write pattern with atomicState maps:
@@ -371,3 +371,34 @@ The server implements MCP protocol version `2024-11-05`:
 6. **Numeric parsing of API responses** — hub endpoints like `/hub/advanced/freeOSMemory` return text that might not be numeric; wrap `as Integer` / `as Double` conversions in try/catch
 7. **OAuth token** — created once in `initialize()` via `createAccessToken()` and stored in `state.accessToken`; never regenerate it or users lose their MCP endpoint URL
 8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations
+
+## Future Plans (Blue-Sky — Needs Research)
+
+These are speculative feature ideas that need feasibility research before implementation. When the user asks "what should I work on next?" or similar, reference this list.
+
+### HPM Integration
+- Search HPM repositories for packages by keyword
+- Install/uninstall packages via HPM programmatically
+- Check for updates across all installed packages
+
+### App/Integration Discovery (Outside HPM)
+- Search for and install official Hubitat integrations not yet enabled
+- Discover and install community apps/drivers from GitHub, forums, etc.
+
+### Dashboard Management
+- Create, modify, delete dashboards programmatically
+- Prefer official Hubitat dashboards (home screen + mobile app visibility)
+- If official API isn't available, explore alternatives that can be set as defaults
+
+### Rule Machine Interoperability
+- Read native RM rules via their export/import/clone UI mechanism (API unknown)
+- Export MCP rules in RM-importable format
+- Import directly into native Rule Machine if API exists
+- Bidirectional sync between MCP rules and RM rules (long-shot)
+
+### Additional Ideas
+- Device creation/pairing assistance (Z-Wave, Zigbee, cloud)
+- Notification/alert management (granular routing)
+- Scene management (create/modify/manage beyond activate_scene)
+- Energy monitoring aggregation and reports
+- Scheduled automated reports (hub health, device status, rule history)
