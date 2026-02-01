@@ -230,7 +230,13 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 | `itemBackups` | Map | Source code backups keyed by `"app_<id>"` / `"driver_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
 
-**Child app uses `atomicState`** for `triggers`, `conditions`, `actions` arrays. This is critical — `atomicState` provides immediate persistence and prevents race conditions when the parent creates a rule and immediately enables it. Regular `state` is used for counters and timestamps.
+**Child app uses `atomicState`** for `triggers`, `conditions`, `actions`, `localVariables`, `durationTimers`, `durationFired`, and `cancelledDelayIds`. This is critical — `atomicState` provides immediate persistence and prevents race conditions when scheduled callbacks (`runIn`) fire in separate execution contexts. Always use read-modify-write pattern with atomicState maps:
+```groovy
+def timers = atomicState.durationTimers ?: [:]
+timers[key] = value
+atomicState.durationTimers = timers  // Write back entire map
+```
+Direct nested mutation (`atomicState.map[key] = value`) silently fails to persist. Regular `state` is used for UI editor state, counters, and timestamps. `cancelledDelayIds` is cleared on `initialize()` since `unschedule()` in `updated()` cancels all pending callbacks.
 
 ### Parent-Child Communication
 
@@ -348,7 +354,7 @@ The server implements MCP protocol version `2024-11-05`:
 
 1. **Don't forget trailing commas** in `getToolDefinitions()` — it's a Groovy list literal, so every tool definition except the last needs a trailing comma after its closing `]`
 2. **Device IDs are strings in MCP but integers internally** — always use `.toString()` for comparison and return values
-3. **`state` vs `atomicState`** — use `atomicState` in the child app for rule data (triggers, conditions, actions) to prevent race conditions; use `state` for simple counters and timestamps
+3. **`state` vs `atomicState`** — use `atomicState` in the child app for rule data (triggers, conditions, actions) and cross-execution state (durationTimers, durationFired, cancelledDelayIds, localVariables); always use read-modify-write pattern for nested maps; use `state` only for UI editor state, counters, and timestamps
 4. **Hub properties can throw** — always wrap `hub?.propertyName` in try/catch with `"unavailable"` fallback
 5. **Hub internal API responses vary by firmware** — always handle both JSON and non-JSON responses with nested try/catch for parsing
 6. **Numeric parsing of API responses** — hub endpoints like `/hub/advanced/freeOSMemory` return text that might not be numeric; wrap `as Integer` / `as Double` conversions in try/catch
