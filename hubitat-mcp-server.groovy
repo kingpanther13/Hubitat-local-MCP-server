@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.4 - Fix InputStreamReader handling, delete response parsing, backup chain prevention
+ * Version: 0.4.5 - Chunked reading for large sources/files, resave and sourceFile update modes
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.4"
+                paragraph "<b>Version:</b> 0.4.5"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.4). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.5). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.4"
+        version: "0.4.5"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -998,12 +998,18 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             name: "get_app_source",
             description: """Get the Groovy source code of an installed app by its ID.
 
+Supports chunked reading for large sources that exceed the 64KB response limit. On first call (no offset), returns source up to 64KB plus metadata with totalLength. If truncated, call again with offset to get subsequent chunks.
+
+Also saves the full source to File Manager as 'mcp-source-app-{id}.groovy' when truncated, so update_app_code can use sourceFile instead of requiring the source to round-trip through the cloud.
+
 Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Use list_hub_apps to find app IDs first. Returns the full source code text and the internal version number.""",
+Use list_hub_apps to find app IDs first.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "The app ID (from list_hub_apps)"]
+                    appId: [type: "string", description: "The app ID (from list_hub_apps)"],
+                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
+                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
                 required: ["appId"]
             ]
@@ -1012,12 +1018,18 @@ Use list_hub_apps to find app IDs first. Returns the full source code text and t
             name: "get_driver_source",
             description: """Get the Groovy source code of an installed driver by its ID.
 
+Supports chunked reading for large sources that exceed the 64KB response limit. On first call (no offset), returns source up to 64KB plus metadata with totalLength. If truncated, call again with offset to get subsequent chunks.
+
+Also saves the full source to File Manager as 'mcp-source-driver-{id}.groovy' when truncated, so update_driver_code can use sourceFile instead of requiring the source to round-trip through the cloud.
+
 Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Use list_hub_drivers to find driver IDs first. Returns the full source code text and the internal version number.""",
+Use list_hub_drivers to find driver IDs first.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    driverId: [type: "string", description: "The driver ID (from list_hub_drivers)"]
+                    driverId: [type: "string", description: "The driver ID (from list_hub_drivers)"],
+                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
+                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
                 required: ["driverId"]
             ]
@@ -1084,6 +1096,13 @@ MANDATORY PRE-FLIGHT CHECKLIST:
 
 Updates the Groovy source code of an existing app. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
 
+Three modes:
+- **source**: Provide the full new source code directly (for small apps under 64KB)
+- **sourceFile**: Read source from a File Manager file (for large apps — avoids cloud size limits). Use with get_app_source which auto-saves large sources to File Manager.
+- **resave**: Re-save the current source code without changes (entirely local, no cloud round-trip). Useful for recompiling or triggering a backup.
+
+Only one of source/sourceFile/resave should be provided.
+
 The app's current source code is automatically backed up before modification. If the same app is modified multiple times within an hour, the original pre-edit source is preserved.
 
 WARNING: Incorrect code can break the app and any automations depending on it.
@@ -1093,10 +1112,12 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "The app ID to update"],
-                    source: [type: "string", description: "The full new Groovy source code"],
+                    source: [type: "string", description: "The full new Groovy source code (for apps under 64KB)"],
+                    sourceFile: [type: "string", description: "File Manager file name containing the source code (e.g., 'mcp-source-app-467.groovy'). Use this for large apps to avoid cloud size limits."],
+                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub — no cloud round-trip needed."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["appId", "source", "confirm"]
+                required: ["appId", "confirm"]
             ]
         ],
         [
@@ -1112,6 +1133,13 @@ MANDATORY PRE-FLIGHT CHECKLIST:
 
 Updates the Groovy source code of an existing driver. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
 
+Three modes:
+- **source**: Provide the full new source code directly (for small drivers under 64KB)
+- **sourceFile**: Read source from a File Manager file (for large drivers — avoids cloud size limits). Use with get_driver_source which auto-saves large sources to File Manager.
+- **resave**: Re-save the current source code without changes (entirely local, no cloud round-trip). Useful for recompiling or triggering a backup.
+
+Only one of source/sourceFile/resave should be provided.
+
 The driver's current source code is automatically backed up before modification. If the same driver is modified multiple times within an hour, the original pre-edit source is preserved.
 
 WARNING: Incorrect code can break the driver and all devices using it.
@@ -1121,10 +1149,12 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 type: "object",
                 properties: [
                     driverId: [type: "string", description: "The driver ID to update"],
-                    source: [type: "string", description: "The full new Groovy source code"],
+                    source: [type: "string", description: "The full new Groovy source code (for drivers under 64KB)"],
+                    sourceFile: [type: "string", description: "File Manager file name containing the source code (e.g., 'mcp-source-driver-747.groovy'). Use this for large drivers to avoid cloud size limits."],
+                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub — no cloud round-trip needed."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["driverId", "source", "confirm"]
+                required: ["driverId", "confirm"]
             ]
         ],
         [
@@ -1252,13 +1282,17 @@ Does not require Hub Admin Read/Write — always available.""",
             name: "read_file",
             description: """Reads the contents of a file from the hub's local File Manager.
 
-Returns the file contents as text. For binary files or files larger than 60KB, provides a direct download URL instead. Files are read locally via downloadHubFile() — no cloud involvement.
+Returns the file contents as text. Supports chunked reading for large files — use offset and length to read in segments that fit within the response size limit.
+
+Files are read locally via downloadHubFile() — no cloud involvement for the read itself, but the response travels through the cloud so each chunk must be under ~60KB.
 
 Does not require Hub Admin Read/Write — always available.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"]
+                    fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
+                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large files). Default: 0"],
+                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
                 ],
                 required: ["fileName"]
             ]
@@ -1873,7 +1907,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.4",
+        serverVersion: "0.4.5",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -3604,7 +3638,11 @@ def toolListFiles() {
 def toolReadFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
 
-    mcpLog("debug", "file-manager", "Reading file: ${args.fileName}")
+    def maxChunkSize = 60000
+    def requestedOffset = args.offset ? args.offset as int : 0
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+
+    mcpLog("debug", "file-manager", "Reading file: ${args.fileName} (offset: ${requestedOffset}, length: ${requestedLength})")
     def content
     try {
         def bytes = downloadHubFile(args.fileName)
@@ -3620,23 +3658,28 @@ def toolReadFile(args) {
         ]
     }
 
+    def totalLength = content.length()
+    def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
+    def chunk = (requestedOffset < totalLength) ? content.substring(requestedOffset, endIndex) : ""
+    def hasMore = endIndex < totalLength
+
     def result = [
         success: true,
         fileName: args.fileName,
-        contentLength: content.length(),
+        totalLength: totalLength,
+        offset: requestedOffset,
+        chunkLength: chunk.length(),
+        hasMore: hasMore,
+        content: chunk,
         directDownload: "http://<HUB_IP>/local/${args.fileName}"
     ]
-
-    // Include content in response if it fits within the hub's response size limit
-    if (content.length() <= 60000) {
-        result.content = content
-    } else {
-        result.contentTooLargeForResponse = true
-        result.message = "File is ${content.length()} chars — too large for an MCP response. Download it directly from the URL below."
-        result.manualDownload = "Go to http://<HUB_IP>/local/${args.fileName} in your browser, or find it in Hubitat > Settings > File Manager."
+    if (hasMore) {
+        result.nextOffset = endIndex
+        result.remainingChars = totalLength - endIndex
+        result.hint = "Call again with offset: ${endIndex} to get the next chunk."
     }
 
-    mcpLog("info", "file-manager", "Read file '${args.fileName}' (${content.length()} chars)")
+    mcpLog("info", "file-manager", "Read file '${args.fileName}' (${totalLength} chars total, returned offset ${requestedOffset}..${endIndex}${hasMore ? ', more available' : ''})")
     return result
 }
 
@@ -4030,7 +4073,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.4",
+        version: "0.4.5",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4051,7 +4094,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.4"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.5"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4218,7 +4261,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.4"
+    details.mcpServerVersion = "0.4.5"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4575,86 +4618,82 @@ def toolZwaveRepair(args) {
 
 // ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
 
-def toolGetAppSource(args) {
+def toolGetItemSource(String type, String idParam, args) {
     requireHubAdminRead()
-    if (!args.appId) throw new IllegalArgumentException("appId is required")
+    def itemId = args[idParam]
+    if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
-    def maxSourceSize = 64000 // ~64KB safety limit — JSON encoding + wrapper must stay under hub's 128KB response limit
+    def maxChunkSize = 64000
+    def requestedOffset = args.offset ? args.offset as int : 0
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+
+    def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+
     try {
-        def responseText = hubInternalGet("/app/ajax/code", [id: args.appId])
-        if (responseText) {
-            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-            if (parsed.status == "error") {
-                return [success: false, error: parsed.errorMessage ?: "Failed to get app source"]
-            }
-            def source = parsed.source ?: ""
-            def truncated = false
-            if (source.length() > maxSourceSize) {
-                mcpLog("warn", "hub-admin", "App ID ${args.appId} source is ${source.length()} chars, truncating to ${maxSourceSize}")
-                source = source.take(maxSourceSize)
-                truncated = true
-            }
-            mcpLog("info", "hub-admin", "Retrieved source code for app ID: ${args.appId} (${source.length()} chars${truncated ? ', truncated' : ''})")
-            def result = [
-                success: true,
-                appId: args.appId,
-                source: source,
-                version: parsed.version,
-                status: parsed.status,
-                sourceLength: parsed.source?.length() ?: 0
-            ]
-            if (truncated) {
-                result.truncated = true
-                result.warning = "Source code exceeded ${maxSourceSize} character safety limit (hub has 128KB response cap) and was truncated. The full source is ${parsed.source.length()} characters."
-            }
-            return result
+        def responseText = hubInternalGet(ajaxPath, [id: itemId])
+        if (!responseText) return [success: false, error: "Empty response from hub"]
+
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (parsed.status == "error") {
+            return [success: false, error: parsed.errorMessage ?: "Failed to get ${type} source"]
         }
-        return [success: false, error: "Empty response from hub"]
+
+        def fullSource = parsed.source ?: ""
+        def totalLength = fullSource.length()
+
+        // For large sources, save full copy to File Manager so update can use sourceFile
+        def savedToFile = null
+        if (totalLength > maxChunkSize) {
+            def sourceFileName = "mcp-source-${type}-${itemId}.groovy"
+            try {
+                uploadHubFile(sourceFileName, fullSource.getBytes("UTF-8"))
+                savedToFile = sourceFileName
+                mcpLog("info", "hub-admin", "Saved full ${type} ID ${itemId} source to File Manager: ${sourceFileName} (${totalLength} chars)")
+            } catch (Exception saveErr) {
+                mcpLog("warn", "hub-admin", "Could not save ${type} source to File Manager: ${saveErr.message}")
+            }
+        }
+
+        // Extract the requested chunk
+        def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
+        def chunk = (requestedOffset < totalLength) ? fullSource.substring(requestedOffset, endIndex) : ""
+        def hasMore = endIndex < totalLength
+
+        mcpLog("info", "hub-admin", "Retrieved ${type} ID ${itemId} source: ${totalLength} chars total, returning offset ${requestedOffset}..${endIndex}${hasMore ? ' (more available)' : ''}")
+
+        def result = [
+            success: true,
+            (idParam): itemId,
+            source: chunk,
+            version: parsed.version,
+            status: parsed.status,
+            totalLength: totalLength,
+            offset: requestedOffset,
+            chunkLength: chunk.length(),
+            hasMore: hasMore
+        ]
+        if (hasMore) {
+            result.nextOffset = endIndex
+            result.remainingChars = totalLength - endIndex
+            result.hint = "Call again with offset: ${endIndex} to get the next chunk."
+        }
+        if (savedToFile) {
+            result.sourceFile = savedToFile
+            result.sourceFileHint = "Full source saved to File Manager. Use update_${type}_code with sourceFile: '${savedToFile}' to update without cloud size limits."
+        }
+        return result
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to get app source: ${e.message}")
-        return [success: false, error: "Failed to get app source: ${e.message}"]
+        mcpLog("error", "hub-admin", "Failed to get ${type} source: ${e.message}")
+        return [success: false, error: "Failed to get ${type} source: ${e.message}"]
     }
 }
 
-def toolGetDriverSource(args) {
-    requireHubAdminRead()
-    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+def toolGetAppSource(args) {
+    return toolGetItemSource("app", "appId", args)
+}
 
-    def maxSourceSize = 64000 // ~64KB safety limit — JSON encoding + wrapper must stay under hub's 128KB response limit
-    try {
-        def responseText = hubInternalGet("/driver/ajax/code", [id: args.driverId])
-        if (responseText) {
-            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-            if (parsed.status == "error") {
-                return [success: false, error: parsed.errorMessage ?: "Failed to get driver source"]
-            }
-            def source = parsed.source ?: ""
-            def truncated = false
-            if (source.length() > maxSourceSize) {
-                mcpLog("warn", "hub-admin", "Driver ID ${args.driverId} source is ${source.length()} chars, truncating to ${maxSourceSize}")
-                source = source.take(maxSourceSize)
-                truncated = true
-            }
-            mcpLog("info", "hub-admin", "Retrieved source code for driver ID: ${args.driverId} (${source.length()} chars${truncated ? ', truncated' : ''})")
-            def result = [
-                success: true,
-                driverId: args.driverId,
-                source: source,
-                version: parsed.version,
-                status: parsed.status,
-                sourceLength: parsed.source?.length() ?: 0
-            ]
-            if (truncated) {
-                result.truncated = true
-                result.warning = "Source code exceeded ${maxSourceSize} character safety limit (hub has 128KB response cap) and was truncated. The full source is ${parsed.source.length()} characters."
-            }
-            return result
-        }
-        return [success: false, error: "Empty response from hub"]
-    } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to get driver source: ${e.message}")
-        return [success: false, error: "Failed to get driver source: ${e.message}"]
-    }
+def toolGetDriverSource(args) {
+    return toolGetItemSource("driver", "driverId", args)
 }
 
 def toolInstallApp(args) {
@@ -4736,25 +4775,59 @@ def toolInstallDriver(args) {
     }
 }
 
-def toolUpdateAppCode(args) {
+def toolUpdateItemCode(String type, String idParam, args) {
     requireHubAdminWrite(args.confirm)
-    if (!args.appId) throw new IllegalArgumentException("appId is required")
-    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+    def itemId = args[idParam]
+    if (!itemId) throw new IllegalArgumentException("${idParam} is required")
+
+    def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+    def updatePath = (type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
+
+    // Resolve source from one of three modes: source, sourceFile, or resave
+    def sourceCode = null
+    def sourceMode = null
+
+    if (args.resave) {
+        // Resave mode: fetch current source locally and re-save it (no cloud round-trip)
+        sourceMode = "resave"
+        mcpLog("info", "hub-admin", "Resave mode: fetching current ${type} ID ${itemId} source locally")
+        def responseText = hubInternalGet(ajaxPath, [id: itemId])
+        if (!responseText) throw new IllegalArgumentException("Could not fetch current source for ${type} ID ${itemId}")
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (parsed.status == "error" || !parsed.source) {
+            throw new IllegalArgumentException("Cannot read ${type} ID ${itemId}: ${parsed.errorMessage ?: 'no source returned'}")
+        }
+        sourceCode = parsed.source
+    } else if (args.sourceFile) {
+        // Source file mode: read source from File Manager (avoids cloud size limits)
+        sourceMode = "sourceFile"
+        mcpLog("info", "hub-admin", "Reading ${type} source from File Manager: ${args.sourceFile}")
+        def bytes = downloadHubFile(args.sourceFile)
+        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        sourceCode = new String(bytes, "UTF-8")
+        mcpLog("info", "hub-admin", "Read ${sourceCode.length()} chars from ${args.sourceFile}")
+    } else if (args.source) {
+        // Direct source mode
+        sourceMode = "source"
+        sourceCode = args.source
+    } else {
+        throw new IllegalArgumentException("One of 'source', 'sourceFile', or 'resave' is required")
+    }
 
     // Back up current source and get version (serves dual purpose: safety backup + optimistic locking)
-    def itemBackup = backupItemSource("app", args.appId.toString())
+    def itemBackup = backupItemSource(type, itemId.toString())
     def currentVersion = itemBackup.version
 
     if (currentVersion == null) {
-        throw new IllegalArgumentException("Could not determine current version for app ID ${args.appId}. The app may not exist.")
+        throw new IllegalArgumentException("Could not determine current version for ${type} ID ${itemId}. The ${type} may not exist.")
     }
 
-    mcpLog("info", "hub-admin", "Updating app ID: ${args.appId} (current version: ${currentVersion})")
+    mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
-        def result = hubInternalPostForm("/app/ajax/update", [
-            id: args.appId,
+        def result = hubInternalPostForm(updatePath, [
+            id: itemId,
             version: currentVersion,
-            source: args.source
+            source: sourceCode
         ])
 
         def responseData = result?.data
@@ -4763,107 +4836,53 @@ def toolUpdateAppCode(args) {
 
         if (responseData) {
             try {
-                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
+                def responseStr = responseData?.toString()
+                def parsed = new groovy.json.JsonSlurper().parseText(responseStr)
                 success = parsed.status == "success"
                 errorMsg = parsed.errorMessage
             } catch (Exception parseErr) {
-                // Response was not JSON — cannot confirm success
-                mcpLog("warn", "hub-admin", "App update response was not JSON: ${responseData?.toString()?.take(200)}")
-                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the app in the Hubitat web UI."
+                mcpLog("warn", "hub-admin", "${type} update response was not JSON: ${responseData?.toString()?.take(200)}")
+                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the ${type} in the Hubitat web UI."
             }
         } else {
-            // No response body but no exception either — hub may return empty on success
             success = true
         }
 
         if (success) {
-            // Invalidate item backup manifest so next update fetches fresh version
-            if (state.itemBackupManifest) state.itemBackupManifest.remove("app_${args.appId}")
-            mcpLog("info", "hub-admin", "App ID ${args.appId} updated successfully")
-            return [
+            if (state.itemBackupManifest) state.itemBackupManifest.remove("${type}_${itemId}")
+            mcpLog("info", "hub-admin", "${type} ID ${itemId} updated successfully (mode: ${sourceMode})")
+            def successResult = [
                 success: true,
-                message: "App code updated successfully",
-                appId: args.appId,
+                message: "${type.capitalize()} code updated successfully",
+                (idParam): itemId,
                 previousVersion: currentVersion,
+                sourceMode: sourceMode,
+                sourceLength: sourceCode.length(),
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
+            if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
+            if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
+            return successResult
         } else {
             return [
                 success: false,
                 error: errorMsg ?: "Update failed - the hub returned an error",
-                appId: args.appId,
+                (idParam): itemId,
                 note: "Check the Groovy source code for syntax errors or compilation issues."
             ]
         }
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "App update failed: ${e.message}")
-        return [success: false, error: "App update failed: ${e.message}"]
+        mcpLog("error", "hub-admin", "${type} update failed: ${e.message}")
+        return [success: false, error: "${type.capitalize()} update failed: ${e.message}"]
     }
 }
 
+def toolUpdateAppCode(args) {
+    return toolUpdateItemCode("app", "appId", args)
+}
+
 def toolUpdateDriverCode(args) {
-    requireHubAdminWrite(args.confirm)
-    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
-    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
-
-    // Back up current source and get version (serves dual purpose: safety backup + optimistic locking)
-    def itemBackup = backupItemSource("driver", args.driverId.toString())
-    def currentVersion = itemBackup.version
-
-    if (currentVersion == null) {
-        throw new IllegalArgumentException("Could not determine current version for driver ID ${args.driverId}. The driver may not exist.")
-    }
-
-    mcpLog("info", "hub-admin", "Updating driver ID: ${args.driverId} (current version: ${currentVersion})")
-    try {
-        def result = hubInternalPostForm("/driver/ajax/update", [
-            id: args.driverId,
-            version: currentVersion,
-            source: args.source
-        ])
-
-        def responseData = result?.data
-        def success = false
-        def errorMsg = null
-
-        if (responseData) {
-            try {
-                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
-                success = parsed.status == "success"
-                errorMsg = parsed.errorMessage
-            } catch (Exception parseErr) {
-                // Response was not JSON — cannot confirm success
-                mcpLog("warn", "hub-admin", "Driver update response was not JSON: ${responseData?.toString()?.take(200)}")
-                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the driver in the Hubitat web UI."
-            }
-        } else {
-            // No response body but no exception either — hub may return empty on success
-            success = true
-        }
-
-        if (success) {
-            // Invalidate item backup manifest so next update fetches fresh version
-            if (state.itemBackupManifest) state.itemBackupManifest.remove("driver_${args.driverId}")
-            mcpLog("info", "hub-admin", "Driver ID ${args.driverId} updated successfully")
-            return [
-                success: true,
-                message: "Driver code updated successfully",
-                driverId: args.driverId,
-                previousVersion: currentVersion,
-                lastBackup: formatTimestamp(state.lastBackupTimestamp)
-            ]
-        } else {
-            return [
-                success: false,
-                error: errorMsg ?: "Update failed - the hub returned an error",
-                driverId: args.driverId,
-                note: "Check the Groovy source code for syntax errors or compilation issues."
-            ]
-        }
-    } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Driver update failed: ${e.message}")
-        return [success: false, error: "Driver update failed: ${e.message}"]
-    }
+    return toolUpdateItemCode("driver", "driverId", args)
 }
 
 def toolDeleteApp(args) {
@@ -4980,7 +4999,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.4"
+    return "0.4.5"
 }
 
 def isNewerVersion(String remote, String local) {
