@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.7 - Bug fixes: state persistence, auth retry, time parsing, locale, variable substitution, restore flash, delay overwrite
+ * Version: 0.4.8 - Fix Z-Wave/Zigbee endpoint compatibility for firmware 2.3.7.1+
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.7"
+                paragraph "<b>Version:</b> 0.4.8"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.7). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.8). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.7"
+        version: "0.4.8"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1911,7 +1911,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.7",
+        serverVersion: "0.4.8",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4097,7 +4097,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.7",
+        version: "0.4.8",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4118,7 +4118,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.7"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.8"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4285,7 +4285,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.7"
+    details.mcpServerVersion = "0.4.8"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4377,26 +4377,37 @@ def toolGetZwaveDetails(args) {
     try { result.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { result.zwaveVersion = "unavailable" }
 
     // Extended Z-Wave info via internal API
-    try {
-        def responseText = hubInternalGet("/hub2/zwaveInfo")
-        if (responseText) {
-            try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                result.zwaveData = parsed
-                result.source = "hub_api"
-            } catch (Exception parseErr) {
-                result.rawResponse = responseText?.take(3000)
-                result.source = "hub_api_raw"
-                result.note = "Response was not JSON format"
+    // Firmware 2.3.7.1+ uses /hub/zwaveDetails/json; older uses /hub2/zwaveInfo
+    def zwaveEndpoints = ["/hub/zwaveDetails/json", "/hub2/zwaveInfo"]
+    def zwaveSuccess = false
+    for (endpoint in zwaveEndpoints) {
+        try {
+            def responseText = hubInternalGet(endpoint)
+            if (responseText) {
+                try {
+                    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                    result.zwaveData = parsed
+                    result.source = "hub_api"
+                    result.endpoint = endpoint
+                    zwaveSuccess = true
+                } catch (Exception parseErr) {
+                    result.rawResponse = responseText?.take(3000)
+                    result.source = "hub_api_raw"
+                    result.endpoint = endpoint
+                    result.note = "Response was not JSON format"
+                    zwaveSuccess = true
+                }
             }
-        } else {
-            result.source = "hub_api"
-            result.note = "Empty response from Z-Wave info endpoint"
+            if (zwaveSuccess) break
+        } catch (Exception e) {
+            mcpLog("debug", "hub-admin", "Z-Wave endpoint ${endpoint} failed: ${e.message}")
+            // Try next endpoint
         }
-    } catch (Exception e) {
-        mcpLog("debug", "hub-admin", "Z-Wave info API call failed: ${e.message}")
+    }
+
+    if (!zwaveSuccess) {
         result.source = "sdk_only"
-        result.note = "Extended Z-Wave info unavailable (${e.message}). Showing basic info from hub SDK."
+        result.note = "Extended Z-Wave info unavailable from all endpoints. Showing basic info from hub SDK."
     }
 
     mcpLog("info", "hub-admin", "Retrieved Z-Wave details")
@@ -4414,26 +4425,37 @@ def toolGetZigbeeDetails(args) {
     try { result.zigbeeId = hub?.zigbeeId } catch (Exception e) { result.zigbeeId = "unavailable" }
 
     // Extended Zigbee info via internal API
-    try {
-        def responseText = hubInternalGet("/hub2/zigbeeInfo")
-        if (responseText) {
-            try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                result.zigbeeData = parsed
-                result.source = "hub_api"
-            } catch (Exception parseErr) {
-                result.rawResponse = responseText?.take(3000)
-                result.source = "hub_api_raw"
-                result.note = "Response was not JSON format"
+    // Firmware 2.3.7.1+ uses /hub/zigbeeDetails/json; older uses /hub2/zigbeeInfo
+    def zigbeeEndpoints = ["/hub/zigbeeDetails/json", "/hub2/zigbeeInfo"]
+    def zigbeeSuccess = false
+    for (endpoint in zigbeeEndpoints) {
+        try {
+            def responseText = hubInternalGet(endpoint)
+            if (responseText) {
+                try {
+                    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                    result.zigbeeData = parsed
+                    result.source = "hub_api"
+                    result.endpoint = endpoint
+                    zigbeeSuccess = true
+                } catch (Exception parseErr) {
+                    result.rawResponse = responseText?.take(3000)
+                    result.source = "hub_api_raw"
+                    result.endpoint = endpoint
+                    result.note = "Response was not JSON format"
+                    zigbeeSuccess = true
+                }
             }
-        } else {
-            result.source = "hub_api"
-            result.note = "Empty response from Zigbee info endpoint"
+            if (zigbeeSuccess) break
+        } catch (Exception e) {
+            mcpLog("debug", "hub-admin", "Zigbee endpoint ${endpoint} failed: ${e.message}")
+            // Try next endpoint
         }
-    } catch (Exception e) {
-        mcpLog("debug", "hub-admin", "Zigbee info API call failed: ${e.message}")
+    }
+
+    if (!zigbeeSuccess) {
         result.source = "sdk_only"
-        result.note = "Extended Zigbee info unavailable (${e.message}). Showing basic info from hub SDK."
+        result.note = "Extended Zigbee info unavailable from all endpoints. Showing basic info from hub SDK."
     }
 
     mcpLog("info", "hub-admin", "Retrieved Zigbee details")
@@ -5041,7 +5063,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.7"
+    return "0.4.8"
 }
 
 def isNewerVersion(String remote, String local) {

@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.8:**
+- **Z-Wave/Zigbee endpoint fix** — `get_zwave_details` and `get_zigbee_details` now work on firmware 2.3.7.1+ by trying the new `/hub/zwaveDetails/json` and `/hub/zigbeeDetails/json` endpoints first, with automatic fallback to legacy `/hub2/` endpoints for older firmware
+
 **New in v0.4.7:**
 - **10 bug fixes** from comprehensive code review — state persistence, auth retry, time parsing, locale handling, variable substitution, restore flash prevention, delay action reliability, and more
 
@@ -750,6 +753,9 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.8** - Fix Z-Wave and Zigbee endpoint compatibility (59 tools)
+  - Fix `get_zwave_details` returning 404 on firmware 2.3.7.1+ — tries `/hub/zwaveDetails/json` first, falls back to `/hub2/zwaveInfo`
+  - Fix `get_zigbee_details` returning 404 on firmware 2.3.7.1+ — tries `/hub/zigbeeDetails/json` first, falls back to `/hub2/zigbeeInfo`
 - **v0.4.7** - Comprehensive bug fixes from code review (59 tools)
   - Fix `mcpLog` nested state mutation — entries now persist reliably via top-level reassignment
   - Fix Hub Security auth retry — all `hubInternalGet`/`hubInternalPost`/`hubInternalPostForm` retry once on cookie expiry

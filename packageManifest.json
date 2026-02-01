@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.4.7",
+    "version": "0.4.8",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-02-01",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.4.7 - Comprehensive bug fixes from code review:\n\n- Fix state persistence: mcpLog nested mutation now reassigns top-level state\n- Fix Hub Security auth retry: all hub internal methods retry once on cookie expiry\n- Fix collectDeviceIds missing multi-device triggers (deviceIds plural array)\n- Fix time_range condition: handle bare HH:mm strings (toDateTime requires ISO 8601)\n- Fix days_of_week locale dependency: use Locale.US for consistent day names\n- Fix substituteVariables: now resolves rule engine variables, not just hub connector vars\n- Fix restore_state flash: devices restoring to 'off' no longer briefly flash on\n- Fix delay overwrite: multiple delays in same rule no longer clobber each other\n- Fix parameter conversion: handles edge cases gracefully with try-catch\n- Fix HSM previousStatus: captured before sendLocationEvent instead of after\n\nv0.4.6 - Fix version mismatch bug in optimistic locking\nv0.4.5 - Smart large-file handling (chunked reading, resave mode, sourceFile mode)",
+    "releaseNotes": "v0.4.8 - Fix Z-Wave and Zigbee endpoint compatibility:\n\n- Fix get_zwave_details 404 on firmware 2.3.7.1+: try /hub/zwaveDetails/json first, fall back to /hub2/zwaveInfo\n- Fix get_zigbee_details 404 on firmware 2.3.7.1+: try /hub/zigbeeDetails/json first, fall back to /hub2/zigbeeInfo\n\nv0.4.7 - Comprehensive bug fixes from code review (10 fixes)\nv0.4.6 - Fix version mismatch bug in optimistic locking\nv0.4.5 - Smart large-file handling (chunked reading, resave mode, sourceFile mode)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
