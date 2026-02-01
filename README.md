@@ -71,6 +71,7 @@ Manage your automation rules directly in the Hubitat web interface:
 | **Debug/Diagnostics** (6) | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
 | **Hub Admin Read** (8) | `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source` |
 | **Hub Admin Write** (10) | `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` |
+| **Item Backups** (3) | `list_item_backups`, `get_item_backup`, `restore_item_backup` |
 
 ### Rule Engine
 
@@ -176,6 +177,38 @@ Additionally, tools that **modify or delete** existing apps/drivers automaticall
 | `update_driver_code` | Update an existing driver's source code (uses optimistic locking) |
 | `delete_app` | Permanently delete an installed app |
 | `delete_driver` | Permanently delete an installed driver |
+
+#### Item Backup & Restore Tools
+
+These tools let you view and restore the automatic source code backups that are created before any modify/delete operation. They work even if Hub Admin Read/Write is disabled (except `restore_item_backup` which needs write access).
+
+| Tool | Description |
+|------|-------------|
+| `list_item_backups` | List all saved source code backups with timestamps and sizes |
+| `get_item_backup` | Retrieve the full source code from a specific backup |
+| `restore_item_backup` | Restore an app/driver to its backed-up version |
+
+**How item backups work:**
+- When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes
+- Backups are stored in the MCP server app's internal state on the hub (max 20 entries, oldest pruned first)
+- Within a 1-hour window, the **first** backup is preserved — multiple edits won't overwrite the pre-edit original
+- Source code over 64KB is truncated (truncated backups cannot be restored)
+
+**How to restore if something goes wrong:**
+
+Via MCP:
+1. Call `list_item_backups` to see available backups
+2. Call `restore_item_backup` with the backup key (e.g., `app_123`) and `confirm=true`
+
+Via MCP (for deleted items):
+1. Call `get_item_backup` to retrieve the source code
+2. Call `install_app` or `install_driver` with that source code to re-install it
+
+Manually (without MCP):
+1. Call `get_item_backup` to retrieve the source code, or go to the Hubitat web UI > Apps > MCP Rule Server > App State and find `itemBackups`
+2. Copy the source code
+3. Go to Hubitat > Apps Code (or Drivers Code) > select the app/driver (or click "New App"/"New Driver" for deleted items)
+4. Paste the source code and click Save
 
 #### Hub Security Support
 
@@ -571,7 +604,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.4.3** - Comprehensive bug fixes (null safety, race conditions, memory leaks, validation)
+- **v0.4.3** - Comprehensive bug fixes + item backup tools (55 tools total)
   - **CRITICAL**: Fixed `evaluateComparison()` NullPointerException when device attribute returns null — numeric comparisons now fail closed instead of crashing
   - **CRITICAL**: Migrated `durationTimers` and `durationFired` from `state` to `atomicState` — fixes race condition where scheduled callbacks could read stale duration data
   - **CRITICAL**: Fixed unbounded `cancelledDelayIds` memory leak — now cleared on initialize/disable when scheduled callbacks are cancelled
@@ -590,6 +623,8 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **MEDIUM**: Added `textParser: true` to `hubInternalPostForm` — handles non-JSON responses without parse exceptions
   - **MEDIUM**: Install tools now warn when new app/driver ID cannot be extracted from hub response
   - **LOW**: Fixed comment/code mismatch in `backupItemSource` (said 100KB, code used 64KB)
+  - **NEW**: 3 item backup tools — `list_item_backups`, `get_item_backup`, `restore_item_backup` — view and restore automatic pre-edit source code backups
+  - **NEW**: Backup tools include manual restore instructions in every response, so users can recover even if MCP is unavailable
 - **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
   - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
   - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub
@@ -604,7 +639,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **Two-tier backup system**: Full hub backup required within 24 hours (was 1 hour); individual item source code automatically backed up before any modify/delete operation (1-hour window preserves pre-edit original)
   - **Backup timeout** increased to 300 seconds (5 minutes) for larger hubs
   - **SKILL.md**: Claude Code development skill documenting all project conventions and architecture
-- **v0.4.0** - Hub Admin Tools with Hub Security support (52 tools total)
+- **v0.4.0** - Hub Admin Tools with Hub Security support (55 tools total)
   - **18 new Hub Admin tools**: Full hub administration through MCP
   - **Hub Admin Read Tools** (8): `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source`
   - **Hub Admin Write Tools** (10): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`

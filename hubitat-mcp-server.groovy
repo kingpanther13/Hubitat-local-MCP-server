@@ -1176,6 +1176,62 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 ],
                 required: ["driverId", "confirm"]
             ]
+        ],
+
+        // ==================== Item Backup Tools ====================
+        [
+            name: "list_item_backups",
+            description: """Lists all automatically-created source code backups.
+
+When you use update_app_code, update_driver_code, delete_app, or delete_driver, the MCP server automatically saves the ORIGINAL source code before making changes. These backups let you restore code to its pre-edit state.
+
+Each backup shows: item type (app/driver), ID, version at time of backup, timestamp, source code size, and whether it was truncated (sources over 64KB are capped).
+
+Backups are stored in the MCP Rule Server app's internal state on the hub. A maximum of 20 backups are kept; the oldest is pruned when the limit is exceeded. Backups within the last hour are preserved (a series of rapid edits won't overwrite the original).
+
+Does NOT require Hub Admin Read/Write to be enabled — backup viewing is always available.""",
+            inputSchema: [
+                type: "object",
+                properties: [:],
+                required: []
+            ]
+        ],
+        [
+            name: "get_item_backup",
+            description: """Retrieves the full source code from a specific item backup.
+
+Use list_item_backups first to see available backups, then use this tool with the backup key (e.g., "app_123" or "driver_456") to retrieve the actual source code.
+
+The source code can be used to manually restore by pasting it into the Hubitat code editor, or passed to update_app_code / update_driver_code / install_app / install_driver to restore via MCP.
+
+Does NOT require Hub Admin Read/Write to be enabled.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123' or 'driver_456')"]
+                ],
+                required: ["backupKey"]
+            ]
+        ],
+        [
+            name: "restore_item_backup",
+            description: """⚠️ Restores an app or driver to its backed-up source code version.
+
+This calls update_app_code or update_driver_code using the source code saved in the backup. The backup must exist (use list_item_backups to check).
+
+If the item was DELETED, this tool cannot restore it — use install_app or install_driver with the backup source instead, then update any device associations manually.
+
+IMPORTANT: Always tell the user what you're about to restore and get confirmation before proceeding.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123' or 'driver_456')"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the restore."]
+                ],
+                required: ["backupKey", "confirm"]
+            ]
         ]
     ]
 }
@@ -1253,6 +1309,11 @@ def executeTool(toolName, args) {
         case "update_driver_code": return toolUpdateDriverCode(args)
         case "delete_app": return toolDeleteApp(args)
         case "delete_driver": return toolDeleteDriver(args)
+
+        // Item Backup Tools
+        case "list_item_backups": return toolListItemBackups()
+        case "get_item_backup": return toolGetItemBackup(args)
+        case "restore_item_backup": return toolRestoreItemBackup(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -3066,6 +3127,188 @@ def backupItemSource(String type, String id) {
 
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code (version ${parsed.version})")
     return backup
+}
+
+// ==================== ITEM BACKUP TOOLS ====================
+
+/**
+ * Lists all item backups stored in state.itemBackups.
+ * Does not require Hub Admin Read/Write — always available.
+ */
+def toolListItemBackups() {
+    def backups = state.itemBackups ?: [:]
+
+    if (backups.isEmpty()) {
+        return [
+            backups: [],
+            total: 0,
+            message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, delete_app, or delete_driver.",
+            maxBackups: 20,
+            howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore. For deleted items, use 'install_app' or 'install_driver' with the backup source."
+        ]
+    }
+
+    def backupList = backups.collect { key, entry ->
+        def info = [
+            backupKey: key,
+            type: entry.type,
+            id: entry.id,
+            version: entry.version,
+            timestamp: formatTimestamp(entry.timestamp),
+            age: formatAge(entry.timestamp),
+            sourceLength: entry.fullLength ?: entry.source?.length() ?: 0
+        ]
+        if (entry.truncated) {
+            info.truncated = true
+            info.storedLength = entry.source?.length() ?: 0
+            info.warning = "Source was truncated from ${entry.fullLength} to ${info.storedLength} chars (64KB limit). Restoring from this backup will result in incomplete code."
+        }
+        return info
+    }.sort { a, b -> (b.timestamp <=> a.timestamp) } // Newest first
+
+    return [
+        backups: backupList,
+        total: backupList.size(),
+        maxBackups: 20,
+        howToRestore: "Use 'get_item_backup' with a backupKey to retrieve source code, then 'restore_item_backup' to push it back to the hub. For deleted items, use 'install_app' or 'install_driver' with the source from 'get_item_backup'.",
+        manualRestore: "You can also restore manually: go to Hubitat > Apps Code (or Drivers Code) > select the app/driver > paste the source code from 'get_item_backup' > click Save."
+    ]
+}
+
+/**
+ * Retrieves the full source code from a specific item backup.
+ * Does not require Hub Admin Read/Write.
+ */
+def toolGetItemBackup(args) {
+    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
+
+    def backups = state.itemBackups ?: [:]
+    def backup = backups[args.backupKey]
+
+    if (!backup) {
+        def availableKeys = backups.keySet().sort()
+        return [
+            error: "No backup found for key '${args.backupKey}'",
+            availableBackups: availableKeys.isEmpty() ? "None — no backups exist yet" : availableKeys.join(", "),
+            hint: "Use 'list_item_backups' to see all available backups with details"
+        ]
+    }
+
+    def result = [
+        backupKey: args.backupKey,
+        type: backup.type,
+        id: backup.id,
+        version: backup.version,
+        timestamp: formatTimestamp(backup.timestamp),
+        age: formatAge(backup.timestamp),
+        sourceLength: backup.source?.length() ?: 0,
+        source: backup.source
+    ]
+
+    if (backup.truncated) {
+        result.truncated = true
+        result.fullLength = backup.fullLength
+        result.warning = "This backup is INCOMPLETE — source was truncated from ${backup.fullLength} to ${result.sourceLength} chars due to the 64KB storage limit. Restoring will produce broken code."
+    }
+
+    result.howToRestore = (backup.type == "app")
+        ? "To restore: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. Or manually paste this source into Hubitat > Apps Code > app ID ${backup.id} > Save."
+        : "To restore: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. Or manually paste this source into Hubitat > Drivers Code > driver ID ${backup.id} > Save."
+
+    return result
+}
+
+/**
+ * Restores an app or driver to its backed-up source code by calling update_app_code or update_driver_code.
+ * Requires Hub Admin Write access.
+ */
+def toolRestoreItemBackup(args) {
+    requireHubAdminWrite(args.confirm)
+
+    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
+
+    def backups = state.itemBackups ?: [:]
+    def backup = backups[args.backupKey]
+
+    if (!backup) {
+        def availableKeys = backups.keySet().sort()
+        return [
+            success: false,
+            error: "No backup found for key '${args.backupKey}'",
+            availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
+        ]
+    }
+
+    if (backup.truncated) {
+        return [
+            success: false,
+            error: "Cannot restore from truncated backup — source was cut from ${backup.fullLength} to ${backup.source?.length()} chars. Restoring would produce broken code.",
+            backupKey: args.backupKey,
+            suggestion: "Use 'create_hub_backup' to create a full hub backup, then restore from the Hubitat web UI: Settings > Backup and Restore."
+        ]
+    }
+
+    if (!backup.source) {
+        return [
+            success: false,
+            error: "Backup exists but contains no source code",
+            backupKey: args.backupKey
+        ]
+    }
+
+    mcpLog("info", "hub-admin", "Restoring ${backup.type} ID ${backup.id} from backup (version ${backup.version}, ${formatTimestamp(backup.timestamp)})")
+
+    // Remove the backup entry BEFORE restoring so backupItemSource creates a fresh backup of the CURRENT state
+    def backupCopy = backup.clone()
+    backups.remove(args.backupKey)
+    state.itemBackups = backups
+
+    try {
+        def result
+        if (backupCopy.type == "app") {
+            result = toolUpdateAppCode([appId: backupCopy.id, source: backupCopy.source, confirm: true])
+        } else {
+            result = toolUpdateDriverCode([driverId: backupCopy.id, source: backupCopy.source, confirm: true])
+        }
+
+        if (result?.success) {
+            return [
+                success: true,
+                message: "Restored ${backupCopy.type} ID ${backupCopy.id} to version ${backupCopy.version} (backup from ${formatTimestamp(backupCopy.timestamp)})",
+                type: backupCopy.type,
+                id: backupCopy.id,
+                restoredVersion: backupCopy.version,
+                updateResult: result
+            ]
+        } else {
+            // Restore failed — put the backup back so user can try again
+            if (!state.itemBackups) state.itemBackups = [:]
+            state.itemBackups[args.backupKey] = backupCopy
+            return [
+                success: false,
+                error: "Restore failed: ${result?.error ?: 'unknown error'}",
+                backupKey: args.backupKey,
+                message: "The backup has been preserved — you can try again or restore manually."
+            ]
+        }
+    } catch (Exception e) {
+        // Restore failed — put the backup back
+        if (!state.itemBackups) state.itemBackups = [:]
+        state.itemBackups[args.backupKey] = backupCopy
+        throw e
+    }
+}
+
+/**
+ * Formats an epoch timestamp into a human-readable age string (e.g., "5 minutes ago").
+ */
+def formatAge(Long timestamp) {
+    if (!timestamp) return "unknown"
+    def elapsed = now() - timestamp
+    if (elapsed < 60000) return "just now"
+    if (elapsed < 3600000) return "${(elapsed / 60000) as Integer} minutes ago"
+    if (elapsed < 86400000) return "${(elapsed / 3600000) as Integer} hours ago"
+    return "${(elapsed / 86400000) as Integer} days ago"
 }
 
 def jsonRpcResult(id, result) {

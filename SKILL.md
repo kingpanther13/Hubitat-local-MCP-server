@@ -182,7 +182,14 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Fetches current source code and stores in `state.itemBackups` keyed by `"app_<id>"` or `"driver_<id>"`
 - 1-hour window: if a backup of the same item exists within the last hour, it is kept (preserves the pre-edit original across a series of edits)
 - Prunes to max 20 entries to limit state size
+- Truncates sources over 64KB (truncated backups cannot be restored via `restore_item_backup`)
 - Not needed for install tools (nothing to lose when creating new)
+
+**Item Backup Tools** (3 tools, always available without Hub Admin Read/Write):
+- `list_item_backups` — lists all backups with metadata (type, id, version, age, size, truncation status)
+- `get_item_backup` — retrieves full source code from a backup by key (e.g., `app_123`)
+- `restore_item_backup` — pushes backup source back to the hub via `update_app_code`/`update_driver_code` (requires Hub Admin Write); removes backup first so the current code gets backed up during restore; on failure, puts the backup back
+- Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
 
 ### Hub Internal API Helpers
 
