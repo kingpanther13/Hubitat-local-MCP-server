@@ -710,10 +710,14 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - **Official dashboard support preferred** — ideally interact with Hubitat's native dashboard system so dashboards appear on the home screen and mobile app; if not feasible, explore alternative dashboard solutions that can be set as defaults
 
 ### Rule Machine Interoperability
-- **Read native Rule Machine rules** — since RM rules support export/import/clone in the UI, investigate whether there's an API to read their configuration
-- **Create rules in Rule Machine format** — research whether MCP-created rules could be exported in a format that Rule Machine can import, giving users native RM rules created through natural language
-- **Import into Rule Machine** — if RM's import mechanism is API-accessible, allow direct creation of native RM rules from MCP
-- **Bidirectional sync** — long-shot idea to keep MCP rules and RM rules in sync or allow migration between the two engines
+> **Feasibility researched** — programmatically creating or modifying Rule Machine rules is **not possible**. RM is closed-source, the export format is an undocumented internal data dump (not guaranteed valid JSON), and the Groovy sandbox prevents cross-app state access. However, controlling existing RM rules IS feasible via `RMUtils` and internal endpoints.
+
+- **List all RM rules** — enumerate Rule Machine rules with name, ID, and enabled/disabled status via `/hub2/appsList` or `RMUtils.getRuleList("5.0")`
+- **Enable/disable RM rules** — programmatically enable or disable individual RM rules via `/installedapp/disable?id={ID}&disable={true|false}`
+- **Trigger RM rule actions** — execute an existing RM rule's actions via `RMUtils.sendAction()` with `runRuleAct`
+- **Pause/resume RM rules** — pause or resume existing RM rules via `RMUtils.sendAction()` with `pauseRule`/`resumeRule`
+- **Set RM Private Booleans** — set a rule's Private Boolean true/false via `RMUtils.sendAction()` with `setRuleBooleanTrue`/`setRuleBooleanFalse`
+- **Hub variable bridge** — set hub variables that RM rules react to, and vice versa, enabling cross-engine coordination between MCP rules and RM rules
 
 ### Integration & Streaming
 - **MQTT client** — publish and subscribe to MQTT topics from within rules or as a standalone tool (connect to an external MQTT broker for bridging to Node-RED, Home Assistant, etc.)
