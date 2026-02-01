@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.4.3",
+    "version": "0.4.4",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-02-01",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.4.3 - Comprehensive bug fixes:\n\n- CRITICAL: Fix NullPointerException in evaluateComparison when device attribute is null\n- CRITICAL: Fix race conditions in duration timers by migrating to atomicState\n- CRITICAL: Fix unbounded cancelledDelayIds memory leak\n- HIGH: Fix lost event context after delay actions (preserves %device%/%value% substitution)\n- HIGH: Fix sunrise/sunset rescheduling drift using getSunriseAndSunset()\n- HIGH: Fix applyDeviceMapping missing multi-device (deviceIds) arrays on rule import\n- HIGH: Fix response size guard to use byte count instead of char count\n- HIGH: Fix non-JSON update response incorrectly assumed success\n- HIGH: Invalidate item backup cache after successful code updates\n- HIGH: Wrap all action types in try-catch to prevent one failure from aborting remaining actions\n- HIGH: Migrate item backups from app state to hub File Manager (no truncation, survives MCP uninstall)\n- MEDIUM: Add range validation for set_level, set_color, delay, and repeat actions\n- MEDIUM: Fix formatTimeInput validation to prevent malformed cron expressions\n- MEDIUM: Fix device_was event window with 2-second margin\n- MEDIUM: Fix Elvis operator on limit:0 for get_device_events\n- MEDIUM: Add textParser to hubInternalPostForm for non-JSON responses\n- MEDIUM: Warn when install tools cannot extract new app/driver ID\n- LOW: Fix comment/code mismatches in backupItemSource\n- NEW: 4 File Manager tools (list_files, read_file, write_file, delete_file) with auto-backup safeguards\n- NEW: 3 item backup tools (list_item_backups, get_item_backup, restore_item_backup)",
+    "releaseNotes": "v0.4.4 - Fix bugs found during live testing:\n\n- CRITICAL: Fix hubInternalGet/hubInternalPostForm not reading InputStreamReader (textParser:true returns Reader, must call .text)\n- MAJOR: Fix delete_app/delete_driver status parsing to handle both boolean and string 'true'\n- MAJOR: Fix list_files returning empty array (rewritten with multi-endpoint fallback)\n- DESIGN: Prevent infinite backup chain when deleting backup files\n- Add debug logging for delete responses and file manager operations\n\nv0.4.3 - Comprehensive bug fixes + item backup & file manager tools (59 tools)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

@@ -17,6 +17,10 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.4:**
+- **Critical bug fixes** from live testing — InputStreamReader handling, delete response parsing, list_files reliability
+- **Backup chain prevention** — deleting backup files no longer creates infinite backup-of-backup chains
+
 **New in v0.4.3:**
 - **Comprehensive bug fixes** — null safety, race conditions, memory leaks, validation improvements
 - **File-based backups** — source code backups stored in hub's File Manager (no truncation, survives MCP uninstall)
@@ -664,6 +668,12 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.4** - Fix bugs found during live Claude.ai testing (59 tools)
+  - **CRITICAL**: Fixed `hubInternalGet`/`hubInternalPostForm` not reading `InputStreamReader` — `textParser: true` returns a Reader/InputStream that must be read with `.text`, not `.toString()`
+  - **MAJOR**: Fixed `list_files` returning empty array — rewritten with multi-endpoint fallback and multi-format parsing (JSON list, JSON object, HTML href extraction)
+  - **MAJOR**: Fixed `delete_app`/`delete_driver` returning `status: false` when deletion succeeded — now handles both boolean and string status values
+  - **DESIGN**: Prevent infinite backup chain — `delete_file` now detects backup files (`_backup_`, `mcp-backup-`, `mcp-prerestore-`) and skips auto-backup for them
+  - Added debug logging for delete responses and file manager operations
 - **v0.4.3** - Comprehensive bug fixes + item backup & file manager tools (59 tools total)
   - **CRITICAL**: Fixed `evaluateComparison()` NullPointerException when device attribute returns null — numeric comparisons now fail closed instead of crashing
   - **CRITICAL**: Migrated `durationTimers` and `durationFired` from `state` to `atomicState` — fixes race condition where scheduled callbacks could read stale duration data

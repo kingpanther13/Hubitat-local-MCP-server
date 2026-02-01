@@ -1,4 +1,4 @@
-I need you to thoroughly test the MCP Rule Server v0.4.3 new features: the backup system, file manager tools, and app/driver management. Run through each section below in order, reporting results at each step. Start by setting the log level to debug.
+I need you to thoroughly test the MCP Rule Server v0.4.4 new features and bug fixes: the backup system, file manager tools, and app/driver management. Run through each section below in order, reporting results at each step. Start by setting the log level to debug.
 
 ## Setup
 1. Call `set_log_level` with level "debug"
