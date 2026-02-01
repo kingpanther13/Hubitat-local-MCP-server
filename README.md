@@ -571,6 +571,25 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.3** - Comprehensive bug fixes (null safety, race conditions, memory leaks, validation)
+  - **CRITICAL**: Fixed `evaluateComparison()` NullPointerException when device attribute returns null — numeric comparisons now fail closed instead of crashing
+  - **CRITICAL**: Migrated `durationTimers` and `durationFired` from `state` to `atomicState` — fixes race condition where scheduled callbacks could read stale duration data
+  - **CRITICAL**: Fixed unbounded `cancelledDelayIds` memory leak — now cleared on initialize/disable when scheduled callbacks are cancelled
+  - **HIGH**: Fixed lost event context after delay actions — `%device%`, `%value%`, `%name%` substitutions now work after delays by serializing event fields
+  - **HIGH**: Fixed sunrise/sunset rescheduling drift — now uses `getSunriseAndSunset()` for accurate next-day times instead of +24h
+  - **HIGH**: Fixed `applyDeviceMapping` missing `deviceIds` arrays — multi-device triggers are now properly remapped during rule import
+  - **HIGH**: Fixed response size guard using char count instead of byte count — now uses `getBytes("UTF-8").length` for accurate sizing
+  - **HIGH**: Fixed non-JSON update responses incorrectly assumed successful — now warns instead of silently assuming success
+  - **HIGH**: Item backup cache invalidated after successful code updates — prevents stale version numbers for optimistic locking
+  - **HIGH**: Wrapped all action types in outer try-catch — one action failure no longer aborts remaining actions in the chain
+  - **HIGH**: Truncated backup warning added to delete results — caller informed when pre-deletion backup is incomplete
+  - **MEDIUM**: Added range validation for `set_level` (0-100), `set_color` hue/saturation/level (0-100), `delay` (1-86400s), `repeat` (1-100)
+  - **MEDIUM**: Fixed `formatTimeInput` to validate HH:mm format — prevents malformed cron expressions from invalid time strings
+  - **MEDIUM**: Fixed `device_was` event window with 2-second margin — accounts for event timestamp vs wall-clock differences
+  - **MEDIUM**: Fixed Elvis operator on `limit:0` for `get_device_events` — passing `limit=0` now correctly returns 0 events
+  - **MEDIUM**: Added `textParser: true` to `hubInternalPostForm` — handles non-JSON responses without parse exceptions
+  - **MEDIUM**: Install tools now warn when new app/driver ID cannot be extracted from hub response
+  - **LOW**: Fixed comment/code mismatch in `backupItemSource` (said 100KB, code used 64KB)
 - **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
   - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
   - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub

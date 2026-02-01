@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.4.2
+ * Version: 0.4.3
  */
 
 definition(
@@ -73,6 +73,8 @@ def uninstalled() {
 def initialize() {
     // Clear any stale duration timer state (timers were canceled by unschedule() in updated())
     clearDurationState()
+    // Clear stale cancelled delay IDs (scheduled callbacks were cancelled by unschedule())
+    atomicState.cancelledDelayIds = [:]
 
     // Initialize previousMode so mode_change triggers with fromMode work on first event
     state.previousMode = location.mode
@@ -87,13 +89,13 @@ def initialize() {
  * Should be called during initialization and when rule is disabled.
  */
 def clearDurationState() {
-    if (state.durationTimers) {
-        log.debug "Clearing ${state.durationTimers.size()} stale duration timer entries"
-        state.remove("durationTimers")
+    if (atomicState.durationTimers) {
+        log.debug "Clearing ${atomicState.durationTimers.size()} stale duration timer entries"
+        atomicState.remove("durationTimers")
     }
-    if (state.durationFired) {
-        log.debug "Clearing ${state.durationFired.size()} stale durationFired entries"
-        state.remove("durationFired")
+    if (atomicState.durationFired) {
+        log.debug "Clearing ${atomicState.durationFired.size()} stale durationFired entries"
+        atomicState.remove("durationFired")
     }
 }
 
@@ -538,18 +540,33 @@ def clearAllSubPageSettings() {
 
 def formatTimeInput(timeInput) {
     try {
+        def result
         if (timeInput instanceof Date) {
-            return timeInput.format("HH:mm")
+            result = timeInput.format("HH:mm")
         } else if (timeInput instanceof String) {
             if (timeInput.contains("T")) {
                 def date = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", timeInput)
-                return date.format("HH:mm")
+                result = date.format("HH:mm")
+            } else {
+                result = timeInput
             }
-            return timeInput
+        } else {
+            result = timeInput.toString()
         }
-        return timeInput.toString()
+        // Validate HH:mm format to prevent malformed cron expressions
+        if (result && result =~ /^\d{1,2}:\d{2}$/) {
+            def parts = result.split(":")
+            def hour = parts[0] as Integer
+            def minute = parts[1] as Integer
+            if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+                return result
+            }
+        }
+        ruleLog("warn", "Invalid time format '${result}', defaulting to 00:00")
+        return "00:00"
     } catch (Exception e) {
-        return timeInput.toString()
+        ruleLog("warn", "Error parsing time input '${timeInput}': ${e.message}, defaulting to 00:00")
+        return "00:00"
     }
 }
 
@@ -2739,20 +2756,23 @@ def handleDeviceEvent(evt) {
             def triggerKey = "duration_${triggerDeviceKey}_${matchingTrigger.attribute}"
 
             // Initialize state maps if needed
-            if (!state.durationTimers) state.durationTimers = [:]
-            if (!state.durationFired) state.durationFired = [:]
+            if (!atomicState.durationTimers) atomicState.durationTimers = [:]
+            if (!atomicState.durationFired) atomicState.durationFired = [:]
 
             // Check if this trigger already fired and is waiting for condition to go false
-            if (state.durationFired[triggerKey]) {
+            def firedMap = atomicState.durationFired ?: [:]
+            if (firedMap[triggerKey]) {
                 log.debug "Duration trigger: already fired, waiting for condition to go false before re-arming"
                 return
             }
 
-            if (!state.durationTimers[triggerKey]) {
+            def timers = atomicState.durationTimers ?: [:]
+            if (!timers[triggerKey]) {
                 // First time condition met - start the timer
                 def durationDisplay = formatDurationForDisplay(matchingTrigger)
                 log.debug "Duration trigger: condition met, starting ${durationDisplay} timer for ${evt.device.label} ${evt.name}"
-                state.durationTimers[triggerKey] = [startTime: now(), trigger: matchingTrigger]
+                timers[triggerKey] = [startTime: now(), trigger: matchingTrigger]
+                atomicState.durationTimers = timers
                 runIn(matchingTrigger.duration, "checkDurationTrigger", [data: [triggerKey: triggerKey, deviceLabel: evt.device.label, attribute: evt.name]])
             }
             // If timer already running, just let it continue
@@ -2769,28 +2789,39 @@ def handleDeviceEvent(evt) {
             t.duration && t.duration > 0
         }
 
+        def timers = atomicState.durationTimers ?: [:]
+        def fired = atomicState.durationFired ?: [:]
+        def timersChanged = false
+        def firedChanged = false
+
         triggersForDevice?.each { t ->
             def tDeviceKey = t.deviceId ?: (t.deviceIds?.sort()?.join("_") ?: "unknown")
             def triggerKey = "duration_${tDeviceKey}_${t.attribute}"
-            if (state.durationTimers?.get(triggerKey)) {
+            if (timers.get(triggerKey)) {
                 log.debug "Duration trigger: condition no longer met, canceling timer for ${evt.device.label} ${evt.name}"
-                state.durationTimers.remove(triggerKey)
+                timers.remove(triggerKey)
+                timersChanged = true
                 // Note: We don't call unschedule("checkDurationTrigger") here because:
                 // 1. It would cancel ALL duration trigger timers, not just this one
                 // 2. checkDurationTrigger already handles missing timer data gracefully
             }
             // Reset the fired flag so it can trigger again next time condition is met
-            if (state.durationFired?.get(triggerKey)) {
+            if (fired.get(triggerKey)) {
                 log.debug "Duration trigger: condition false, re-arming trigger for ${evt.device.label} ${evt.name}"
-                state.durationFired.remove(triggerKey)
+                fired.remove(triggerKey)
+                firedChanged = true
             }
         }
+
+        if (timersChanged) atomicState.durationTimers = timers
+        if (firedChanged) atomicState.durationFired = fired
     }
 }
 
 def checkDurationTrigger(data) {
     def triggerKey = data.triggerKey
-    def timerData = state.durationTimers?.get(triggerKey)
+    def timers = atomicState.durationTimers ?: [:]
+    def timerData = timers.get(triggerKey)
 
     if (!timerData) {
         log.debug "Duration trigger: timer was canceled for ${triggerKey}"
@@ -2817,7 +2848,8 @@ def checkDurationTrigger(data) {
     } else {
         def device = parent.findDevice(trigger.deviceId)
         if (!device) {
-            state.durationTimers.remove(triggerKey)
+            timers.remove(triggerKey)
+            atomicState.durationTimers = timers
             return
         }
         def currentValue = device.currentValue(trigger.attribute)
@@ -2827,14 +2859,17 @@ def checkDurationTrigger(data) {
     if (stillMet) {
         def durationDisplay = formatDurationForDisplay(trigger)
         log.debug "Duration trigger: condition still met after ${durationDisplay}, executing rule"
-        state.durationTimers.remove(triggerKey)
+        timers.remove(triggerKey)
+        atomicState.durationTimers = timers
         // Mark as fired - won't fire again until condition goes false
-        if (!state.durationFired) state.durationFired = [:]
-        state.durationFired[triggerKey] = true
+        def fired = atomicState.durationFired ?: [:]
+        fired[triggerKey] = true
+        atomicState.durationFired = fired
         executeRule("device_event: ${data.deviceLabel} ${data.attribute} (held for ${durationDisplay})")
     } else {
         log.debug "Duration trigger: condition no longer met at check time"
-        state.durationTimers.remove(triggerKey)
+        timers.remove(triggerKey)
+        atomicState.durationTimers = timers
     }
 }
 
@@ -2886,11 +2921,16 @@ def handleSunsetEvent() {
 def rescheduleSunriseTrigger() {
     atomicState.triggers?.findAll { it.type == "time" && it.sunrise }?.each { trigger ->
         try {
-            if (location.sunrise) {
+            // Use getSunriseAndSunset() for accurate next-day times (avoids drift from +24h)
+            def tomorrow = new Date(now() + 86400000)
+            def sunTimes = getSunriseAndSunset(date: tomorrow)
+            def sunriseTime = sunTimes?.sunrise ?: location.sunrise
+            if (sunriseTime) {
                 def offset = trigger.offset ?: 0
-                def sunriseDate = new Date(location.sunrise.time + (offset * 60000))
+                def sunriseDate = new Date(sunriseTime.time + (offset * 60000))
+                // Safety: if calculated time is still in the past, fall back to +24h from now
                 if (sunriseDate.time <= now()) {
-                    sunriseDate = new Date(sunriseDate.time + 86400000)
+                    sunriseDate = new Date(now() + 86400000)
                 }
                 runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
             }
@@ -2903,11 +2943,16 @@ def rescheduleSunriseTrigger() {
 def rescheduleSunsetTrigger() {
     atomicState.triggers?.findAll { it.type == "time" && it.sunset }?.each { trigger ->
         try {
-            if (location.sunset) {
+            // Use getSunriseAndSunset() for accurate next-day times (avoids drift from +24h)
+            def tomorrow = new Date(now() + 86400000)
+            def sunTimes = getSunriseAndSunset(date: tomorrow)
+            def sunsetTime = sunTimes?.sunset ?: location.sunset
+            if (sunsetTime) {
                 def offset = trigger.offset ?: 0
-                def sunsetDate = new Date(location.sunset.time + (offset * 60000))
+                def sunsetDate = new Date(sunsetTime.time + (offset * 60000))
+                // Safety: if calculated time is still in the past, fall back to +24h from now
                 if (sunsetDate.time <= now()) {
-                    sunsetDate = new Date(sunsetDate.time + 86400000)
+                    sunsetDate = new Date(now() + 86400000)
                 }
                 runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
             }
@@ -3038,12 +3083,14 @@ def evaluateCondition(condition) {
             def device = parent.findDevice(condition.deviceId)
             if (!device) return false
             if (condition.forSeconds == null) return false
-            def forSeconds = condition.forSeconds as Integer
+            def forSeconds = Math.max(1, condition.forSeconds as Integer)
             def currentValue = device.currentValue(condition.attribute)
             if (currentValue?.toString() != condition.value?.toString()) return false
             // Check how long it's been in this state — filter by attribute to avoid
-            // chatty devices exhausting the event limit with irrelevant attributes
-            def events = device.eventsSince(new Date(now() - (forSeconds * 1000)), [max: 100])
+            // chatty devices exhausting the event limit with irrelevant attributes.
+            // Add 2-second margin to account for event timestamp vs wall-clock differences
+            def lookbackMs = (forSeconds * 1000L) + 2000L
+            def events = device.eventsSince(new Date(now() - lookbackMs), [max: 100])
                 ?.findAll { it.name == condition.attribute }
             def recentChange = events?.find { it.value?.toString() != condition.value?.toString() }
             return recentChange == null
@@ -3093,27 +3140,42 @@ def evaluateCondition(condition) {
 }
 
 def evaluateComparison(current, operator, target) {
+    // Null-safe: if current is null, only equality checks are meaningful
+    if (current == null) {
+        switch (operator) {
+            case "equals":
+            case "==":
+                return target == null || target?.toString() == "null"
+            case "not_equals":
+            case "!=":
+                return target != null && target?.toString() != "null"
+            default:
+                // Numeric comparisons with null are always false (fail closed)
+                return false
+        }
+    }
     try {
         switch (operator) {
             case "equals":
             case "==":
-                return current?.toString() == target?.toString()
+                return current.toString() == target?.toString()
             case "not_equals":
             case "!=":
-                return current?.toString() != target?.toString()
+                return current.toString() != target?.toString()
             case ">":
-                return current?.toBigDecimal() > target?.toBigDecimal()
+                return current.toBigDecimal() > target?.toBigDecimal()
             case "<":
-                return current?.toBigDecimal() < target?.toBigDecimal()
+                return current.toBigDecimal() < target?.toBigDecimal()
             case ">=":
-                return current?.toBigDecimal() >= target?.toBigDecimal()
+                return current.toBigDecimal() >= target?.toBigDecimal()
             case "<=":
-                return current?.toBigDecimal() <= target?.toBigDecimal()
+                return current.toBigDecimal() <= target?.toBigDecimal()
             default:
-                return current?.toString() == target?.toString()
+                return current.toString() == target?.toString()
         }
     } catch (Exception e) {
-        return current?.toString() == target?.toString()
+        // Numeric conversion failed — fall back to string comparison
+        return current.toString() == target?.toString()
     }
 }
 
@@ -3181,18 +3243,26 @@ def executeActionsFromIndex(startIndex, evt = null) {
 
 def resumeDelayedActions(data) {
     // Check if this specific delay was cancelled
-    if (data.delayId && state.cancelledDelayIds?.containsKey(data.delayId)) {
+    def cancelledIds = atomicState.cancelledDelayIds ?: [:]
+    if (data.delayId && cancelledIds.containsKey(data.delayId)) {
         log.debug "Delay '${data.delayId}' was cancelled, skipping execution"
-        state.cancelledDelayIds.remove(data.delayId) // Clean up
+        cancelledIds.remove(data.delayId)
+        atomicState.cancelledDelayIds = cancelledIds
         return
     }
     log.debug "Resuming actions from index ${data.nextIndex} (delayId: ${data.delayId})"
-    executeActionsFromIndex(data.nextIndex)
+    // Reconstruct a pseudo-event from serialized fields so %device%/%value%/%name% substitutions work
+    def pseudoEvt = null
+    if (data.evtDisplayName || data.evtValue || data.evtName) {
+        pseudoEvt = [displayName: data.evtDisplayName, value: data.evtValue, name: data.evtName]
+    }
+    executeActionsFromIndex(data.nextIndex, pseudoEvt)
 }
 
 def executeAction(action, actionIndex = null, evt = null) {
     log.debug "Executing action: ${describeAction(action)}"
 
+    try {
     switch (action.type) {
         case "device_command":
             def device = parent.findDevice(action.deviceId)
@@ -3234,10 +3304,11 @@ def executeAction(action, actionIndex = null, evt = null) {
         case "set_level":
             def device = parent.findDevice(action.deviceId)
             if (device) {
+                def level = Math.max(0, Math.min(100, (action.level as Integer) ?: 0))
                 if (action.duration) {
-                    device.setLevel(action.level, action.duration)
+                    device.setLevel(level, action.duration)
                 } else {
-                    device.setLevel(action.level)
+                    device.setLevel(level)
                 }
             } else {
                 ruleLog("warn", "Action 'set_level' skipped: device not found (ID: ${action.deviceId})")
@@ -3258,10 +3329,18 @@ def executeAction(action, actionIndex = null, evt = null) {
 
         case "delay":
             if (actionIndex != null) {
+                def delaySeconds = Math.max(1, Math.min(86400, (action.seconds as Integer) ?: 1)) // 1s to 24h max
                 def delayId = action.delayId ?: "delay_${now()}"
                 def handlerName = "resumeDelayedActions"
-                log.debug "Scheduling delayed continuation in ${action.seconds} seconds (delayId: ${delayId})"
-                runIn(action.seconds, handlerName, [data: [nextIndex: actionIndex + 1, delayId: delayId]])
+                log.debug "Scheduling delayed continuation in ${delaySeconds} seconds (delayId: ${delayId})"
+                // Serialize key event fields so %device%/%value% substitutions work after delay
+                def delayData = [nextIndex: actionIndex + 1, delayId: delayId]
+                if (evt) {
+                    delayData.evtDisplayName = evt.displayName ?: ""
+                    delayData.evtValue = evt.value?.toString() ?: ""
+                    delayData.evtName = evt.name ?: ""
+                }
+                runIn(delaySeconds, handlerName, [data: delayData])
                 return "delayed" // Signal to stop current execution, will resume via scheduled handler
             } else {
                 ruleLog("warn", "Delay action skipped: delays inside if_then_else or repeat blocks are not supported (no actionIndex context)")
@@ -3301,12 +3380,13 @@ def executeAction(action, actionIndex = null, evt = null) {
             if (action.delayId == "all") {
                 // Cancel all pending delayed actions
                 unschedule("resumeDelayedActions")
-                state.cancelledDelayIds = [:] // Clear cancelled IDs since we cancelled everything
+                atomicState.cancelledDelayIds = [:] // Clear cancelled IDs since we cancelled everything
                 log.debug "Cancelled all delayed actions"
             } else if (action.delayId) {
                 // Mark this specific delay ID as cancelled - will be checked in resumeDelayedActions
-                if (!state.cancelledDelayIds) state.cancelledDelayIds = [:]
-                state.cancelledDelayIds[action.delayId] = true
+                def cancelIds = atomicState.cancelledDelayIds ?: [:]
+                cancelIds[action.delayId] = true
+                atomicState.cancelledDelayIds = cancelIds
                 log.debug "Marked delay '${action.delayId}' for cancellation"
             }
             break
@@ -3330,9 +3410,9 @@ def executeAction(action, actionIndex = null, evt = null) {
             def colorDevice = parent.findDevice(action.deviceId)
             if (colorDevice) {
                 def colorMap = [:]
-                if (action.hue != null) colorMap.hue = action.hue
-                if (action.saturation != null) colorMap.saturation = action.saturation
-                if (action.level != null) colorMap.level = action.level
+                if (action.hue != null) colorMap.hue = Math.max(0, Math.min(100, action.hue as Integer))
+                if (action.saturation != null) colorMap.saturation = Math.max(0, Math.min(100, action.saturation as Integer))
+                if (action.level != null) colorMap.level = Math.max(0, Math.min(100, action.level as Integer))
                 colorDevice.setColor(colorMap)
             } else {
                 ruleLog("warn", "Action 'set_color' skipped: device not found (ID: ${action.deviceId})")
@@ -3439,7 +3519,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             break
 
         case "repeat":
-            def repeatCount = action.times ?: action.count ?: 1
+            def repeatCount = Math.max(1, Math.min(100, (action.times ?: action.count ?: 1) as Integer)) // 1 to 100 max
             def repeatActions = action.actions ?: []
             for (int r = 0; r < repeatCount; r++) {
                 for (int i = 0; i < repeatActions.size(); i++) {
@@ -3595,6 +3675,9 @@ def executeAction(action, actionIndex = null, evt = null) {
         default:
             ruleLog("warn", "Unknown action type '${action.type}', skipping")
             break
+    }
+    } catch (Exception e) {
+        ruleLog("error", "Unhandled error in action '${action.type}': ${e.message}")
     }
 
     return true // Continue execution

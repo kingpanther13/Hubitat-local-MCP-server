@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.2 - Source size safety limit to prevent hub memory issues
+ * Version: 0.4.3 - Comprehensive bug fixes (null safety, race conditions, memory leaks, validation)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -285,14 +285,15 @@ def handleMcpRequest() {
 
     def jsonResponse = groovy.json.JsonOutput.toJson(response)
 
-    // Safety guard: hub enforces 128KB response limit — truncate oversized responses
+    // Safety guard: hub enforces 128KB response limit — use byte length for accurate sizing
     def maxResponseSize = 124000 // Leave 4KB headroom under 128KB limit
-    if (jsonResponse.length() > maxResponseSize) {
-        mcpLog("error", "system", "MCP response too large: ${jsonResponse.length()} bytes (limit ${maxResponseSize}). Returning error instead.")
+    def responseBytes = jsonResponse.getBytes("UTF-8").length
+    if (responseBytes > maxResponseSize) {
+        mcpLog("error", "system", "MCP response too large: ${responseBytes} bytes (limit ${maxResponseSize}). Returning error instead.")
         def errResp = jsonRpcError(
             (response instanceof Map) ? response.id : null,
             -32603,
-            "Response too large (${jsonResponse.length()} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
+            "Response too large (${responseBytes} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
         )
         jsonResponse = groovy.json.JsonOutput.toJson(errResp)
     }
@@ -1184,7 +1185,7 @@ def executeTool(toolName, args) {
         case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0)
         case "get_device": return toolGetDevice(args.deviceId)
         case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
-        case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit ?: 10)
+        case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
         case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
 
         // Rule Management - now using child apps
@@ -1948,6 +1949,15 @@ def applyDeviceMapping(data, Map mapping) {
             if (key == "deviceId" && value != null) {
                 def mappedId = mapping[value.toString()]
                 result[key] = mappedId != null ? mappedId.toString() : value
+            } else if (key == "deviceIds" && value instanceof List) {
+                // Map each device ID in multi-device trigger/action arrays
+                result[key] = value.collect { id ->
+                    if (id != null) {
+                        def mappedId = mapping[id.toString()]
+                        return mappedId != null ? mappedId.toString() : id
+                    }
+                    return id
+                }
             } else {
                 result[key] = applyDeviceMapping(value, mapping)
             }
@@ -2939,6 +2949,7 @@ def hubInternalPostForm(String path, Map body, int timeout = 420) {
         uri: "http://127.0.0.1:8080",
         path: path,
         requestContentType: "application/x-www-form-urlencoded",
+        textParser: true, // Accept any content type without parse errors
         headers: [
             "Connection": "keep-alive"
         ],
@@ -3025,7 +3036,7 @@ def backupItemSource(String type, String id) {
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
     }
 
-    // Cap stored source at 100KB to prevent state size issues on the hub
+    // Cap stored source at 64KB to prevent state size issues on the hub
     def maxBackupSize = 64000
     def sourceToStore = parsed.source
     def truncated = false
@@ -3950,12 +3961,16 @@ def toolInstallApp(args) {
         }
 
         mcpLog("info", "hub-admin", "App installed successfully${newAppId ? ' (ID: ' + newAppId + ')' : ''}")
-        return [
+        def installResult = [
             success: true,
             message: "App installed successfully",
             appId: newAppId,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
+        if (!newAppId) {
+            installResult.warning = "Could not extract new app ID from hub response. The app was installed but you may need to check the Hubitat web UI to find it."
+        }
+        return installResult
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "App installation failed: ${e.message}")
         return [
@@ -3985,12 +4000,16 @@ def toolInstallDriver(args) {
         }
 
         mcpLog("info", "hub-admin", "Driver installed successfully${newDriverId ? ' (ID: ' + newDriverId + ')' : ''}")
-        return [
+        def installResult = [
             success: true,
             message: "Driver installed successfully",
             driverId: newDriverId,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
+        if (!newDriverId) {
+            installResult.warning = "Could not extract new driver ID from hub response. The driver was installed but you may need to check the Hubitat web UI to find it."
+        }
+        return installResult
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Driver installation failed: ${e.message}")
         return [
@@ -4032,14 +4051,18 @@ def toolUpdateAppCode(args) {
                 success = parsed.status == "success"
                 errorMsg = parsed.errorMessage
             } catch (Exception parseErr) {
-                // Response was not JSON
-                success = true // Assume success if no error thrown
+                // Response was not JSON — cannot confirm success
+                mcpLog("warn", "hub-admin", "App update response was not JSON: ${responseData?.toString()?.take(200)}")
+                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the app in the Hubitat web UI."
             }
         } else {
+            // No response body but no exception either — hub may return empty on success
             success = true
         }
 
         if (success) {
+            // Invalidate item backup cache so next update fetches fresh version
+            if (state.itemBackups) state.itemBackups.remove("app_${args.appId}")
             mcpLog("info", "hub-admin", "App ID ${args.appId} updated successfully")
             return [
                 success: true,
@@ -4093,13 +4116,18 @@ def toolUpdateDriverCode(args) {
                 success = parsed.status == "success"
                 errorMsg = parsed.errorMessage
             } catch (Exception parseErr) {
-                success = true
+                // Response was not JSON — cannot confirm success
+                mcpLog("warn", "hub-admin", "Driver update response was not JSON: ${responseData?.toString()?.take(200)}")
+                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the driver in the Hubitat web UI."
             }
         } else {
+            // No response body but no exception either — hub may return empty on success
             success = true
         }
 
         if (success) {
+            // Invalidate item backup cache so next update fetches fresh version
+            if (state.itemBackups) state.itemBackups.remove("driver_${args.driverId}")
             mcpLog("info", "hub-admin", "Driver ID ${args.driverId} updated successfully")
             return [
                 success: true,
@@ -4127,7 +4155,8 @@ def toolDeleteApp(args) {
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
     // Back up source code before deletion so it can be restored if needed
-    backupItemSource("app", args.appId.toString())
+    def itemBackup = backupItemSource("app", args.appId.toString())
+    def backupTruncated = itemBackup?.truncated ?: false
 
     mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
     try {
@@ -4145,12 +4174,16 @@ def toolDeleteApp(args) {
 
         if (success) {
             mcpLog("info", "hub-admin", "App ID ${args.appId} deleted successfully")
-            return [
+            def result = [
                 success: true,
                 message: "App deleted successfully",
                 appId: args.appId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
+            if (backupTruncated) {
+                result.warning = "Pre-deletion backup was truncated (source exceeded 64KB). The backup in state.itemBackups may be incomplete."
+            }
+            return result
         } else {
             return [
                 success: false,
@@ -4170,7 +4203,8 @@ def toolDeleteDriver(args) {
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
     // Back up source code before deletion so it can be restored if needed
-    backupItemSource("driver", args.driverId.toString())
+    def itemBackup = backupItemSource("driver", args.driverId.toString())
+    def backupTruncated = itemBackup?.truncated ?: false
 
     mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
     try {
@@ -4187,12 +4221,16 @@ def toolDeleteDriver(args) {
 
         if (success) {
             mcpLog("info", "hub-admin", "Driver ID ${args.driverId} deleted successfully")
-            return [
+            def result = [
                 success: true,
                 message: "Driver deleted successfully",
                 driverId: args.driverId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
+            if (backupTruncated) {
+                result.warning = "Pre-deletion backup was truncated (source exceeded 64KB). The backup in state.itemBackups may be incomplete."
+            }
+            return result
         } else {
             return [
                 success: false,
@@ -4210,7 +4248,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.2"
+    return "0.4.3"
 }
 
 def isNewerVersion(String remote, String local) {
