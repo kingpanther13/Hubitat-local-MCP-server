@@ -3022,7 +3022,8 @@ def hubInternalGet(String path, Map query = null, int timeout = 30) {
     def responseText = null
     try {
         httpGet(params) { resp ->
-            if (resp.data instanceof java.io.Reader || resp.data instanceof java.io.InputStream) {
+            def dataClassName = resp.data?.getClass()?.name ?: ""
+            if (dataClassName.contains("Reader") || dataClassName.contains("InputStream")) {
                 // textParser: true returns a Reader/InputStream — read it fully
                 responseText = resp.data.text
             } else {
@@ -3105,7 +3106,8 @@ def hubInternalPostForm(String path, Map body, int timeout = 420) {
     try {
         httpPost(params) { resp ->
             def responseData = resp.data
-            if (responseData instanceof java.io.Reader || responseData instanceof java.io.InputStream) {
+            def rdClassName = responseData?.getClass()?.name ?: ""
+            if (rdClassName.contains("Reader") || rdClassName.contains("InputStream")) {
                 // textParser: true returns a Reader/InputStream — read it fully
                 responseData = responseData.text
             }
