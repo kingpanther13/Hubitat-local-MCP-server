@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.5 - Chunked reading for large sources/files, resave and sourceFile update modes
+ * Version: 0.4.6 - Fix version mismatch bug in update_app_code/update_driver_code optimistic locking
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.5"
+                paragraph "<b>Version:</b> 0.4.6"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.5). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.6). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.5"
+        version: "0.4.6"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1907,7 +1907,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.5",
+        serverVersion: "0.4.6",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4073,7 +4073,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.5",
+        version: "0.4.6",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4094,7 +4094,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.5"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.6"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4261,7 +4261,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.5"
+    details.mcpServerVersion = "0.4.6"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4786,6 +4786,7 @@ def toolUpdateItemCode(String type, String idParam, args) {
     // Resolve source from one of three modes: source, sourceFile, or resave
     def sourceCode = null
     def sourceMode = null
+    def freshVersion = null  // Track version from fresh fetch (not from backup cache)
 
     if (args.resave) {
         // Resave mode: fetch current source locally and re-save it (no cloud round-trip)
@@ -4798,6 +4799,7 @@ def toolUpdateItemCode(String type, String idParam, args) {
             throw new IllegalArgumentException("Cannot read ${type} ID ${itemId}: ${parsed.errorMessage ?: 'no source returned'}")
         }
         sourceCode = parsed.source
+        freshVersion = parsed.version  // Capture fresh version for optimistic locking
     } else if (args.sourceFile) {
         // Source file mode: read source from File Manager (avoids cloud size limits)
         sourceMode = "sourceFile"
@@ -4814,9 +4816,25 @@ def toolUpdateItemCode(String type, String idParam, args) {
         throw new IllegalArgumentException("One of 'source', 'sourceFile', or 'resave' is required")
     }
 
-    // Back up current source and get version (serves dual purpose: safety backup + optimistic locking)
+    // Back up current source for safety (may use 1-hour cache — that's fine for backup purposes)
     def itemBackup = backupItemSource(type, itemId.toString())
-    def currentVersion = itemBackup.version
+
+    // For optimistic locking, use fresh version if available (resave mode already fetched it).
+    // Otherwise fetch current version fresh from hub — backup cache may have stale version.
+    def currentVersion = freshVersion
+    if (currentVersion == null) {
+        try {
+            def versionResponse = hubInternalGet(ajaxPath, [id: itemId])
+            if (versionResponse) {
+                def versionParsed = new groovy.json.JsonSlurper().parseText(versionResponse)
+                currentVersion = versionParsed.version
+            }
+        } catch (Exception vErr) {
+            mcpLog("warn", "hub-admin", "Could not fetch fresh version for ${type} ID ${itemId}, falling back to backup version: ${vErr.message}")
+        }
+        // Fall back to backup version if fresh fetch failed
+        if (currentVersion == null) currentVersion = itemBackup.version
+    }
 
     if (currentVersion == null) {
         throw new IllegalArgumentException("Could not determine current version for ${type} ID ${itemId}. The ${type} may not exist.")
@@ -4999,7 +5017,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.5"
+    return "0.4.6"
 }
 
 def isNewerVersion(String remote, String local) {

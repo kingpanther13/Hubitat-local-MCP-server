@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.6:**
+- **Fix version mismatch bug** — `update_app_code`/`update_driver_code` now fetch fresh version for optimistic locking instead of relying on potentially stale backup cache
+
 **New in v0.4.5:**
 - **Chunked reading** — `get_app_source`, `get_driver_source`, and `read_file` support `offset`/`length` for reading large sources in segments
 - **Smart large-source handling** — sources over 64KB are auto-saved to File Manager, enabling cloud-free updates
@@ -674,6 +677,8 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.6** - Fix version mismatch bug in optimistic locking (59 tools)
+  - `update_app_code`/`update_driver_code` now fetch fresh version from hub instead of using potentially stale backup cache
 - **v0.4.5** - Smart large-file handling (59 tools)
   - Chunked reading for `get_app_source`, `get_driver_source`, `read_file` via `offset`/`length` parameters
   - Large sources (>64KB) auto-saved to File Manager as `mcp-source-{type}-{id}.groovy`
