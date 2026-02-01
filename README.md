@@ -17,8 +17,11 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
-**New in v0.4.2:**
-- **Response size safety limits** — source truncated at 64KB + global 128KB response guard to prevent hub lag/crash
+**New in v0.4.3:**
+- **Comprehensive bug fixes** — null safety, race conditions, memory leaks, validation improvements
+- **File-based backups** — source code backups stored in hub's File Manager (no truncation, survives MCP uninstall)
+- **3 backup tools** — `list_item_backups`, `get_item_backup`, `restore_item_backup`
+- **4 File Manager tools** — `list_files`, `read_file`, `write_file`, `delete_file` with auto-backup safeguards
 
 **New in v0.4.1:**
 - **Bug fixes** for `get_app_source`, `get_driver_source`, and `create_hub_backup` — all Hub Admin tools now functional
@@ -60,7 +63,7 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (52 total)
+### MCP Tools (59 total)
 
 | Category | Tools |
 |----------|-------|
@@ -71,6 +74,8 @@ Manage your automation rules directly in the Hubitat web interface:
 | **Debug/Diagnostics** (6) | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
 | **Hub Admin Read** (8) | `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source` |
 | **Hub Admin Write** (10) | `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` |
+| **Item Backups** (3) | `list_item_backups`, `get_item_backup`, `restore_item_backup` |
+| **File Manager** (4) | `list_files`, `read_file`, `write_file`, `delete_file` |
 
 ### Rule Engine
 
@@ -176,6 +181,60 @@ Additionally, tools that **modify or delete** existing apps/drivers automaticall
 | `update_driver_code` | Update an existing driver's source code (uses optimistic locking) |
 | `delete_app` | Permanently delete an installed app |
 | `delete_driver` | Permanently delete an installed driver |
+
+#### Item Backup & Restore Tools
+
+These tools let you view and restore the automatic source code backups that are created before any modify/delete operation. They work even if Hub Admin Read/Write is disabled (except `restore_item_backup` which needs write access).
+
+| Tool | Description |
+|------|-------------|
+| `list_item_backups` | List all saved source code backups with timestamps and sizes |
+| `get_item_backup` | Retrieve the full source code from a specific backup |
+| `restore_item_backup` | Restore an app/driver to its backed-up version |
+
+**How item backups work:**
+- When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes
+- Backups are stored as `.groovy` files in the hub's local **File Manager** — no cloud involvement, no size limits
+- Files are named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`
+- Backups persist even if the MCP app is uninstalled or deleted — they live in the hub's file system
+- Files are directly downloadable at `http://<your-hub-ip>/local/<filename>`
+- Max 20 backups kept; oldest file is automatically deleted when the limit is exceeded
+- Within a 1-hour window, the **first** backup is preserved — multiple edits won't overwrite the pre-edit original
+
+**How to restore if something goes wrong:**
+
+Via MCP:
+1. Call `list_item_backups` to see available backups
+2. Call `restore_item_backup` with the backup key (e.g., `app_123`) and `confirm=true`
+
+Via MCP (for deleted items):
+1. Call `get_item_backup` to retrieve the source code
+2. Call `install_app` or `install_driver` with that source code to re-install it
+
+Manually (without MCP — backups survive even if MCP is deleted):
+1. Go to your Hubitat web UI > **Settings** > **File Manager**
+2. Find the backup file (e.g., `mcp-backup-app-123.groovy`) and download it
+3. Or navigate directly to `http://<your-hub-ip>/local/mcp-backup-app-123.groovy`
+4. Go to Hubitat > **Apps Code** (or **Drivers Code**) > select the app/driver (or click "New App"/"New Driver" for deleted items)
+5. Paste the source code and click **Save**
+
+#### File Manager Tools
+
+These tools provide direct read/write access to the hub's local File Manager — the same storage area accessible via Hubitat > Settings > File Manager. Files are stored locally on the hub (~1GB capacity) and accessible at `http://<your-hub-ip>/local/<filename>`.
+
+| Tool | Description |
+|------|-------------|
+| `list_files` | List all files in File Manager with sizes and download URLs |
+| `read_file` | Read the contents of a file (returns text inline or download URL for large files) |
+| `write_file` | Create or update a file (auto-backs up existing file before overwriting) |
+| `delete_file` | Delete a file (auto-backs up file before deletion) |
+
+**Safety features:**
+- `write_file` on an existing file automatically creates a backup copy first (named `<original>_backup_<timestamp>.<ext>`)
+- `delete_file` automatically creates a backup copy before deletion
+- Both `write_file` and `delete_file` require Hub Admin Write access and `confirm=true`
+- `list_files` and `read_file` are always available (no access gates)
+- File name validation: only letters, numbers, hyphens, underscores, and periods allowed
 
 #### Hub Security Support
 
@@ -569,12 +628,68 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - Time triggers use Hubitat's `schedule()` which has some limitations
 - Sunrise/sunset times are recalculated daily
 
+## Future Plans
+
+> **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to. They represent potential directions the project could go.
+
+### HPM Integration
+- **Search HPM repositories** — tool to search Hubitat Package Manager for available packages by keyword
+- **Install via HPM** — trigger HPM to install a package (app + driver bundles) without manual UI steps
+- **Uninstall via HPM** — remove packages cleanly through HPM's uninstall process
+- **Check for updates** — query HPM for available updates across all installed packages
+
+### App/Integration Discovery & Install (Outside HPM)
+- **Search for official integrations** — find and install built-in Hubitat apps and integrations that aren't yet enabled
+- **Search for custom apps** — discover and install community apps/drivers from sources outside HPM (GitHub repos, community forums, etc.)
+- **Browse available integrations** — list official integrations available on the hub that haven't been activated yet
+
+### Dashboard Management
+- **Create dashboards** — programmatically create new dashboards with device tiles and layouts
+- **Modify dashboards** — add/remove/rearrange tiles, change tile templates, update dashboard settings
+- **Delete dashboards** — remove dashboards that are no longer needed
+- **Official dashboard support preferred** — ideally interact with Hubitat's native dashboard system so dashboards appear on the home screen and mobile app; if not feasible, explore alternative dashboard solutions that can be set as defaults
+
+### Rule Machine Interoperability
+- **Read native Rule Machine rules** — since RM rules support export/import/clone in the UI, investigate whether there's an API to read their configuration
+- **Create rules in Rule Machine format** — research whether MCP-created rules could be exported in a format that Rule Machine can import, giving users native RM rules created through natural language
+- **Import into Rule Machine** — if RM's import mechanism is API-accessible, allow direct creation of native RM rules from MCP
+- **Bidirectional sync** — long-shot idea to keep MCP rules and RM rules in sync or allow migration between the two engines
+
+### Additional Ideas
+- **Device creation/pairing assistance** — help users through the device pairing process for Z-Wave, Zigbee, and cloud-connected devices
+- **Notification/alert management** — more granular control over hub notifications and alert routing
+- **Scene management** — create, modify, and manage scenes (device state groups) beyond the current `activate_scene`
+- **Energy monitoring dashboard** — aggregate power/energy data from devices into summary reports
+- **Scheduled report generation** — periodic automated reports on hub health, device status, rule execution history
+
 ## Version History
 
+- **v0.4.3** - Comprehensive bug fixes + item backup & file manager tools (59 tools total)
+  - **CRITICAL**: Fixed `evaluateComparison()` NullPointerException when device attribute returns null — numeric comparisons now fail closed instead of crashing
+  - **CRITICAL**: Migrated `durationTimers` and `durationFired` from `state` to `atomicState` — fixes race condition where scheduled callbacks could read stale duration data
+  - **CRITICAL**: Fixed unbounded `cancelledDelayIds` memory leak — now cleared on initialize/disable when scheduled callbacks are cancelled
+  - **HIGH**: Fixed lost event context after delay actions — `%device%`, `%value%`, `%name%` substitutions now work after delays by serializing event fields
+  - **HIGH**: Fixed sunrise/sunset rescheduling drift — now uses `getSunriseAndSunset()` for accurate next-day times instead of +24h
+  - **HIGH**: Fixed `applyDeviceMapping` missing `deviceIds` arrays — multi-device triggers are now properly remapped during rule import
+  - **HIGH**: Fixed response size guard using char count instead of byte count — now uses `getBytes("UTF-8").length` for accurate sizing
+  - **HIGH**: Fixed non-JSON update responses incorrectly assumed successful — now warns instead of silently assuming success
+  - **HIGH**: Item backup cache invalidated after successful code updates — prevents stale version numbers for optimistic locking
+  - **HIGH**: Wrapped all action types in outer try-catch — one action failure no longer aborts remaining actions in the chain
+  - **HIGH**: Migrated item backups from app state to hub File Manager — full source stored as .groovy files, no truncation, survives MCP uninstall
+  - **MEDIUM**: Added range validation for `set_level` (0-100), `set_color` hue/saturation/level (0-100), `delay` (1-86400s), `repeat` (1-100)
+  - **MEDIUM**: Fixed `formatTimeInput` to validate HH:mm format — prevents malformed cron expressions from invalid time strings
+  - **MEDIUM**: Fixed `device_was` event window with 2-second margin — accounts for event timestamp vs wall-clock differences
+  - **MEDIUM**: Fixed Elvis operator on `limit:0` for `get_device_events` — passing `limit=0` now correctly returns 0 events
+  - **MEDIUM**: Added `textParser: true` to `hubInternalPostForm` — handles non-JSON responses without parse exceptions
+  - **MEDIUM**: Install tools now warn when new app/driver ID cannot be extracted from hub response
+  - **LOW**: Fixed comment/code mismatch in `backupItemSource` (said 100KB, code used 64KB)
+  - **NEW**: 3 item backup tools — `list_item_backups`, `get_item_backup`, `restore_item_backup` — view and restore automatic pre-edit source code backups stored in File Manager
+  - **NEW**: Backup tools include manual restore instructions and direct download URLs in every response, so users can recover even if MCP is unavailable
+  - **NEW**: 4 File Manager tools — `list_files`, `read_file`, `write_file`, `delete_file` — full read/write access to the hub's local file system with automatic backup-before-modify safeguards
 - **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
   - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
   - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub
-  - **Item-level backups** capped at 64KB to protect hub state storage
+  - **Item-level backups** introduced — automatic pre-edit source backup for modify/delete operations
   - **Debug log truncation** — large responses no longer spam the debug log (capped at 500 chars)
   - Returns `sourceLength`, `truncated` flag, and warning when output is incomplete
 - **v0.4.1** - Bug fixes for Hub Admin tools + two-tier backup system

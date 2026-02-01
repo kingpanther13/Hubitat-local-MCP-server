@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 52+ tools for device control, rule automation, hub admin, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 59 tools for device control, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -27,7 +27,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 52 tool definitions + dispatch         │  │
+│  │  - 59 tool definitions + dispatch         │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -179,10 +179,28 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 
 **`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
 - Called by `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` before making changes
-- Fetches current source code and stores in `state.itemBackups` keyed by `"app_<id>"` or `"driver_<id>"`
+- Fetches current source code and saves as a `.groovy` file in the hub's local File Manager via `uploadHubFile()`
+- Metadata (type, id, version, timestamp, fileName, sourceLength) stored in `state.itemBackupManifest` keyed by `"app_<id>"` or `"driver_<id>"`
 - 1-hour window: if a backup of the same item exists within the last hour, it is kept (preserves the pre-edit original across a series of edits)
-- Prunes to max 20 entries to limit state size
+- Prunes to max 20 entries; oldest file deleted via `deleteHubFile()` when limit exceeded
+- No size limit — full source always stored (File Manager has ~1GB capacity)
 - Not needed for install tools (nothing to lose when creating new)
+- Files persist even if MCP app is uninstalled; accessible at `http://<HUB_IP>/local/<filename>`
+- Requires firmware ≥2.3.4.132 for `uploadHubFile()` support
+
+**Item Backup Tools** (3 tools, always available without Hub Admin Read/Write):
+- `list_item_backups` — lists all backups with metadata (type, id, version, age, size) and direct download URLs
+- `get_item_backup` — retrieves full source code from a backup via `downloadHubFile()` by key (e.g., `app_123`); returns source inline for files ≤60KB, otherwise provides download URL
+- `restore_item_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `update_app_code`/`update_driver_code` (requires Hub Admin Write); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
+- Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
+- All operations are fully local — no cloud involvement
+
+**File Manager Tools** (4 tools):
+- `list_files` — lists all files via `/hub/fileManager/json` internal API endpoint; always available, no access gate
+- `read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; always available
+- `write_file` — writes via `uploadHubFile()`; requires Hub Admin Write + confirm; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
+- `delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
+- File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
 ### Hub Internal API Helpers
 
@@ -227,10 +245,16 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 | `hubSecurityCookie` | String | Cached auth cookie |
 | `hubSecurityCookieExpiry` | Long | Cookie expiry epoch ms |
 | `lastBackupTimestamp` | Long | Last hub backup epoch ms (24-hour write safety gate) |
-| `itemBackups` | Map | Source code backups keyed by `"app_<id>"` / `"driver_<id>"`, max 20 entries |
+| `itemBackupManifest` | Map | Metadata for source code backups stored in File Manager, keyed by `"app_<id>"` / `"driver_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
 
-**Child app uses `atomicState`** for `triggers`, `conditions`, `actions` arrays. This is critical — `atomicState` provides immediate persistence and prevents race conditions when the parent creates a rule and immediately enables it. Regular `state` is used for counters and timestamps.
+**Child app uses `atomicState`** for `triggers`, `conditions`, `actions`, `localVariables`, `durationTimers`, `durationFired`, and `cancelledDelayIds`. This is critical — `atomicState` provides immediate persistence and prevents race conditions when scheduled callbacks (`runIn`) fire in separate execution contexts. Always use read-modify-write pattern with atomicState maps:
+```groovy
+def timers = atomicState.durationTimers ?: [:]
+timers[key] = value
+atomicState.durationTimers = timers  // Write back entire map
+```
+Direct nested mutation (`atomicState.map[key] = value`) silently fails to persist. Regular `state` is used for UI editor state, counters, and timestamps. `cancelledDelayIds` is cleared on `initialize()` since `unschedule()` in `updated()` cancels all pending callbacks.
 
 ### Parent-Child Communication
 
@@ -316,6 +340,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
 | `/driver/ajax/code` with query `id=<id>` | Driver source code (JSON: source, version, status) |
 | `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
+| `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |
@@ -348,9 +373,40 @@ The server implements MCP protocol version `2024-11-05`:
 
 1. **Don't forget trailing commas** in `getToolDefinitions()` — it's a Groovy list literal, so every tool definition except the last needs a trailing comma after its closing `]`
 2. **Device IDs are strings in MCP but integers internally** — always use `.toString()` for comparison and return values
-3. **`state` vs `atomicState`** — use `atomicState` in the child app for rule data (triggers, conditions, actions) to prevent race conditions; use `state` for simple counters and timestamps
+3. **`state` vs `atomicState`** — use `atomicState` in the child app for rule data (triggers, conditions, actions) and cross-execution state (durationTimers, durationFired, cancelledDelayIds, localVariables); always use read-modify-write pattern for nested maps; use `state` only for UI editor state, counters, and timestamps
 4. **Hub properties can throw** — always wrap `hub?.propertyName` in try/catch with `"unavailable"` fallback
 5. **Hub internal API responses vary by firmware** — always handle both JSON and non-JSON responses with nested try/catch for parsing
 6. **Numeric parsing of API responses** — hub endpoints like `/hub/advanced/freeOSMemory` return text that might not be numeric; wrap `as Integer` / `as Double` conversions in try/catch
 7. **OAuth token** — created once in `initialize()` via `createAccessToken()` and stored in `state.accessToken`; never regenerate it or users lose their MCP endpoint URL
 8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations
+
+## Future Plans (Blue-Sky — Needs Research)
+
+These are speculative feature ideas that need feasibility research before implementation. When the user asks "what should I work on next?" or similar, reference this list.
+
+### HPM Integration
+- Search HPM repositories for packages by keyword
+- Install/uninstall packages via HPM programmatically
+- Check for updates across all installed packages
+
+### App/Integration Discovery (Outside HPM)
+- Search for and install official Hubitat integrations not yet enabled
+- Discover and install community apps/drivers from GitHub, forums, etc.
+
+### Dashboard Management
+- Create, modify, delete dashboards programmatically
+- Prefer official Hubitat dashboards (home screen + mobile app visibility)
+- If official API isn't available, explore alternatives that can be set as defaults
+
+### Rule Machine Interoperability
+- Read native RM rules via their export/import/clone UI mechanism (API unknown)
+- Export MCP rules in RM-importable format
+- Import directly into native Rule Machine if API exists
+- Bidirectional sync between MCP rules and RM rules (long-shot)
+
+### Additional Ideas
+- Device creation/pairing assistance (Z-Wave, Zigbee, cloud)
+- Notification/alert management (granular routing)
+- Scene management (create/modify/manage beyond activate_scene)
+- Energy monitoring aggregation and reports
+- Scheduled automated reports (hub health, device status, rule history)

@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.2 - Source size safety limit to prevent hub memory issues
+ * Version: 0.4.3 - Comprehensive bug fixes (null safety, race conditions, memory leaks, validation)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.2"
+                paragraph "<b>Version:</b> 0.4.3"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -285,14 +285,16 @@ def handleMcpRequest() {
 
     def jsonResponse = groovy.json.JsonOutput.toJson(response)
 
-    // Safety guard: hub enforces 128KB response limit — truncate oversized responses
+    // Safety guard: hub enforces 128KB response limit — use byte length for accurate sizing
     def maxResponseSize = 124000 // Leave 4KB headroom under 128KB limit
-    if (jsonResponse.length() > maxResponseSize) {
-        mcpLog("error", "system", "MCP response too large: ${jsonResponse.length()} bytes (limit ${maxResponseSize}). Returning error instead.")
+    // Only compute byte length for responses that might exceed the limit (avoid allocation for small responses)
+    def responseBytes = jsonResponse.length() > (maxResponseSize - 4000) ? jsonResponse.getBytes("UTF-8").length : jsonResponse.length()
+    if (responseBytes > maxResponseSize) {
+        mcpLog("error", "system", "MCP response too large: ${responseBytes} bytes (limit ${maxResponseSize}). Returning error instead.")
         def errResp = jsonRpcError(
             (response instanceof Map) ? response.id : null,
             -32603,
-            "Response too large (${jsonResponse.length()} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
+            "Response too large (${responseBytes} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
         )
         jsonResponse = groovy.json.JsonOutput.toJson(errResp)
     }
@@ -347,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.2"
+        version: "0.4.3"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1174,6 +1176,129 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 ],
                 required: ["driverId", "confirm"]
             ]
+        ],
+
+        // ==================== Item Backup Tools ====================
+        [
+            name: "list_item_backups",
+            description: """Lists all automatically-created source code backups.
+
+When you use update_app_code, update_driver_code, delete_app, or delete_driver, the MCP server automatically saves the ORIGINAL source code before making changes. These backups let you restore code to its pre-edit state.
+
+Each backup shows: item type (app/driver), ID, version at time of backup, timestamp, source code size, and a direct download URL for the backup file.
+
+Backups are stored as .groovy files in the hub's local File Manager (accessible at http://<HUB_IP>/local/<filename>). This means backups persist even if the MCP app is uninstalled, and can be downloaded directly from the hub without MCP. A maximum of 20 backups are kept; the oldest is pruned when the limit is exceeded. Backups within the last hour are preserved (a series of rapid edits won't overwrite the original).
+
+Does NOT require Hub Admin Read/Write to be enabled — backup viewing is always available.""",
+            inputSchema: [
+                type: "object",
+                properties: [:],
+                required: []
+            ]
+        ],
+        [
+            name: "get_item_backup",
+            description: """Retrieves the full source code from a specific item backup stored in the hub's File Manager.
+
+Use list_item_backups first to see available backups, then use this tool with the backup key (e.g., "app_123" or "driver_456") to retrieve the actual source code.
+
+For small files (≤60KB), the source code is returned directly. For larger files, a direct download URL is provided instead (http://<HUB_IP>/local/<filename>).
+
+The source code can be used to manually restore by pasting it into the Hubitat code editor, or passed to update_app_code / update_driver_code / install_app / install_driver to restore via MCP.
+
+Does NOT require Hub Admin Read/Write to be enabled.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123' or 'driver_456')"]
+                ],
+                required: ["backupKey"]
+            ]
+        ],
+        [
+            name: "restore_item_backup",
+            description: """⚠️ Restores an app or driver to its backed-up source code version.
+
+Reads the backup source code from the hub's File Manager and pushes it via update_app_code or update_driver_code. All operations are local — no cloud involvement. The backup must exist (use list_item_backups to check).
+
+If the item was DELETED, this tool cannot restore it — use install_app or install_driver with the backup source instead, then update any device associations manually.
+
+IMPORTANT: Always tell the user what you're about to restore and get confirmation before proceeding.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123' or 'driver_456')"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the restore."]
+                ],
+                required: ["backupKey", "confirm"]
+            ]
+        ],
+        // File Manager Tools
+        [
+            name: "list_files",
+            description: """Lists all files in the hub's local File Manager.
+
+Returns file names, sizes, and direct download URLs. Files in File Manager are stored locally on the hub and accessible at http://<HUB_IP>/local/<filename>.
+
+Does not require Hub Admin Read/Write — always available.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "read_file",
+            description: """Reads the contents of a file from the hub's local File Manager.
+
+Returns the file contents as text. For binary files or files larger than 60KB, provides a direct download URL instead. Files are read locally via downloadHubFile() — no cloud involvement.
+
+Does not require Hub Admin Read/Write — always available.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"]
+                ],
+                required: ["fileName"]
+            ]
+        ],
+        [
+            name: "write_file",
+            description: """⚠️ Writes or creates a file in the hub's local File Manager.
+
+If the file already exists, a backup copy is automatically created first (named <original>_backup_<timestamp>.<ext>). The backup ensures the original can be recovered.
+
+File names may only contain letters, numbers, hyphens, underscores, and periods. No spaces allowed. Period cannot be the first character.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    fileName: [type: "string", description: "The file name to write (e.g., 'my-config.json'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."],
+                    content: [type: "string", description: "The text content to write to the file"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
+                ],
+                required: ["fileName", "content", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_file",
+            description: """⚠️ Deletes a file from the hub's local File Manager.
+
+A backup copy of the file is automatically created before deletion (named <original>_backup_<timestamp>.<ext>) so the contents can be recovered if needed.
+
+IMPORTANT: Always tell the user what file you're about to delete and get confirmation before proceeding.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    fileName: [type: "string", description: "The exact file name to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
+                ],
+                required: ["fileName", "confirm"]
+            ]
         ]
     ]
 }
@@ -1184,7 +1309,7 @@ def executeTool(toolName, args) {
         case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0)
         case "get_device": return toolGetDevice(args.deviceId)
         case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
-        case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit ?: 10)
+        case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
         case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
 
         // Rule Management - now using child apps
@@ -1251,6 +1376,17 @@ def executeTool(toolName, args) {
         case "update_driver_code": return toolUpdateDriverCode(args)
         case "delete_app": return toolDeleteApp(args)
         case "delete_driver": return toolDeleteDriver(args)
+
+        // Item Backup Tools
+        case "list_item_backups": return toolListItemBackups()
+        case "get_item_backup": return toolGetItemBackup(args)
+        case "restore_item_backup": return toolRestoreItemBackup(args)
+
+        // File Manager Tools
+        case "list_files": return toolListFiles()
+        case "read_file": return toolReadFile(args)
+        case "write_file": return toolWriteFile(args)
+        case "delete_file": return toolDeleteFile(args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -1737,7 +1873,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.2",
+        serverVersion: "0.4.3",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -1948,6 +2084,15 @@ def applyDeviceMapping(data, Map mapping) {
             if (key == "deviceId" && value != null) {
                 def mappedId = mapping[value.toString()]
                 result[key] = mappedId != null ? mappedId.toString() : value
+            } else if (key == "deviceIds" && value instanceof List) {
+                // Map each device ID in multi-device trigger/action arrays
+                result[key] = value.collect { id ->
+                    if (id != null) {
+                        def mappedId = mapping[id.toString()]
+                        return mappedId != null ? mappedId.toString() : id
+                    }
+                    return id
+                }
             } else {
                 result[key] = applyDeviceMapping(value, mapping)
             }
@@ -2939,6 +3084,7 @@ def hubInternalPostForm(String path, Map body, int timeout = 420) {
         uri: "http://127.0.0.1:8080",
         path: path,
         requestContentType: "application/x-www-form-urlencoded",
+        textParser: true, // Accept any content type without parse errors
         headers: [
             "Connection": "keep-alive"
         ],
@@ -2997,15 +3143,17 @@ def requireHubAdminWrite(Boolean confirmParam) {
 
 /**
  * Automatically back up an individual item's source code before modifying or deleting it.
- * Stores in state.itemBackups keyed by "app_<id>" or "driver_<id>".
+ * Saves the source code as a .groovy file in the hub's local File Manager using uploadHubFile().
+ * Metadata (timestamp, version, etc.) is stored in state.itemBackupManifest.
+ * Files are accessible at http://<HUB_IP>/local/<filename> even if MCP fails.
  * If a backup of this item already exists within the last hour, skips (preserves the pre-edit original).
- * Returns the backup entry on success, or throws if the source cannot be retrieved.
+ * Returns the manifest entry on success, or throws if the source cannot be retrieved.
  */
 def backupItemSource(String type, String id) {
-    if (!state.itemBackups) state.itemBackups = [:]
+    if (!state.itemBackupManifest) state.itemBackupManifest = [:]
 
     def key = "${type}_${id}"
-    def existing = state.itemBackups[key]
+    def existing = state.itemBackupManifest[key]
 
     // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
@@ -3025,35 +3173,529 @@ def backupItemSource(String type, String id) {
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
     }
 
-    // Cap stored source at 100KB to prevent state size issues on the hub
-    def maxBackupSize = 64000
-    def sourceToStore = parsed.source
-    def truncated = false
-    if (sourceToStore.length() > maxBackupSize) {
-        mcpLog("warn", "hub-admin", "${type} ID ${id} source is ${sourceToStore.length()} chars, truncating backup to ${maxBackupSize}")
-        sourceToStore = sourceToStore.take(maxBackupSize)
-        truncated = true
+    // Save full source code to hub's local File Manager (no cloud, no size limit)
+    def fileName = "mcp-backup-${type}-${id}.groovy"
+    try {
+        uploadHubFile(fileName, parsed.source.getBytes("UTF-8"))
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to save backup file '${fileName}': ${e.message}")
+        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: file upload failed — ${e.message}")
     }
 
-    def backup = [
+    def manifest = [
         type: type,
         id: id,
-        source: sourceToStore,
+        fileName: fileName,
         version: parsed.version,
         timestamp: now(),
-        fullLength: parsed.source.length()
+        sourceLength: parsed.source.length()
     ]
-    if (truncated) backup.truncated = true
-    state.itemBackups[key] = backup
+    state.itemBackupManifest[key] = manifest
 
     // Prune old backups — keep at most 20 entries, remove oldest if over limit
-    if (state.itemBackups.size() > 20) {
-        def oldest = state.itemBackups.min { it.value.timestamp }
-        if (oldest) state.itemBackups.remove(oldest.key)
+    if (state.itemBackupManifest.size() > 20) {
+        def oldest = state.itemBackupManifest.min { it.value.timestamp }
+        if (oldest) {
+            mcpLog("debug", "hub-admin", "Pruning oldest backup: ${oldest.key} (${oldest.value.fileName}, from ${formatTimestamp(oldest.value.timestamp)})")
+            try { deleteHubFile(oldest.value.fileName) } catch (Exception e) {
+                mcpLog("warn", "hub-admin", "Could not delete pruned backup file '${oldest.value.fileName}': ${e.message}")
+            }
+            state.itemBackupManifest.remove(oldest.key)
+        }
     }
 
-    mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code (version ${parsed.version})")
-    return backup
+    mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+    return manifest
+}
+
+// ==================== ITEM BACKUP TOOLS ====================
+
+/**
+ * Lists all item backups stored in the hub's local File Manager.
+ * Metadata is in state.itemBackupManifest; actual source files are in File Manager.
+ * Does not require Hub Admin Read/Write — always available.
+ */
+def toolListItemBackups() {
+    def manifest = state.itemBackupManifest ?: [:]
+
+    if (manifest.isEmpty()) {
+        return [
+            backups: [],
+            total: 0,
+            message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, delete_app, or delete_driver.",
+            maxBackups: 20,
+            storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
+            howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore. For deleted items, use 'install_app' or 'install_driver' with the backup source."
+        ]
+    }
+
+    def backupList = manifest.collect { key, entry ->
+        [
+            backupKey: key,
+            type: entry.type,
+            id: entry.id,
+            fileName: entry.fileName,
+            version: entry.version,
+            timestampEpoch: entry.timestamp ?: 0,
+            timestamp: formatTimestamp(entry.timestamp),
+            age: formatAge(entry.timestamp),
+            sourceLength: entry.sourceLength ?: 0,
+            directDownload: "http://<HUB_IP>/local/${entry.fileName}"
+        ]
+    }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) } // Newest first
+
+    return [
+        backups: backupList,
+        total: backupList.size(),
+        maxBackups: 20,
+        storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
+        howToRestore: "Use 'restore_item_backup' with a backupKey to restore via MCP. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code manually.",
+        manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code) > select the app/driver > paste the source > click Save."
+    ]
+}
+
+/**
+ * Retrieves the full source code from a specific item backup.
+ * Reads the file from the hub's local File Manager using downloadHubFile().
+ * Does not require Hub Admin Read/Write.
+ */
+def toolGetItemBackup(args) {
+    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
+
+    def manifest = state.itemBackupManifest ?: [:]
+    def entry = manifest[args.backupKey]
+
+    if (!entry) {
+        mcpLog("debug", "hub-admin", "Backup key '${args.backupKey}' not found in manifest")
+        def availableKeys = manifest.keySet().sort()
+        return [
+            error: "No backup found for key '${args.backupKey}'",
+            availableBackups: availableKeys.isEmpty() ? "None — no backups exist yet" : availableKeys.join(", "),
+            hint: "Use 'list_item_backups' to see all available backups with details"
+        ]
+    }
+
+    // Read source code from hub's local File Manager
+    def source
+    try {
+        def bytes = downloadHubFile(entry.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
+        source = new String(bytes, "UTF-8")
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to read backup file '${entry.fileName}': ${e.message}")
+        return [
+            error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
+            backupKey: args.backupKey,
+            suggestion: "The file may have been deleted from File Manager. Check Hubitat > Settings > File Manager.",
+            directDownload: "http://<HUB_IP>/local/${entry.fileName}"
+        ]
+    }
+
+    def result = [
+        backupKey: args.backupKey,
+        type: entry.type,
+        id: entry.id,
+        fileName: entry.fileName,
+        version: entry.version,
+        timestamp: formatTimestamp(entry.timestamp),
+        age: formatAge(entry.timestamp),
+        sourceLength: source.length(),
+        directDownload: "http://<HUB_IP>/local/${entry.fileName}"
+    ]
+
+    // Only include source in response if it fits within the hub's response limit
+    // For large files, direct the user to download from File Manager instead
+    if (source.length() <= 60000) {
+        result.source = source
+    } else {
+        result.sourceTooLargeForResponse = true
+        result.message = "Source code is ${source.length()} chars — too large for an MCP response. Download it directly from File Manager instead."
+        result.manualDownload = "Go to http://<HUB_IP>/local/${entry.fileName} in your browser, or find it in Hubitat > Settings > File Manager."
+    }
+
+    result.howToRestore = (entry.type == "app")
+        ? "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
+        : "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Drivers Code > driver ID ${entry.id} > paste source > Save."
+
+    return result
+}
+
+/**
+ * Restores an app or driver to its backed-up source code.
+ * Reads the backup from File Manager and calls update_app_code or update_driver_code.
+ * Both the read (downloadHubFile) and write (hubInternalPostForm) are local — no cloud involvement.
+ * Requires Hub Admin Write access.
+ */
+def toolRestoreItemBackup(args) {
+    requireHubAdminWrite(args.confirm)
+
+    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
+
+    def manifest = state.itemBackupManifest ?: [:]
+    def entry = manifest[args.backupKey]
+
+    if (!entry) {
+        mcpLog("debug", "hub-admin", "Restore: backup key '${args.backupKey}' not found in manifest")
+        def availableKeys = manifest.keySet().sort()
+        return [
+            success: false,
+            error: "No backup found for key '${args.backupKey}'",
+            availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
+        ]
+    }
+
+    // Read the backup source from File Manager
+    def source
+    try {
+        def bytes = downloadHubFile(entry.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
+        source = new String(bytes, "UTF-8")
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to read backup file '${entry.fileName}' for restore: ${e.message}")
+        return [
+            success: false,
+            error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
+            backupKey: args.backupKey,
+            suggestion: "The file may have been deleted from File Manager. Check Hubitat > Settings > File Manager."
+        ]
+    }
+
+    if (!source) {
+        mcpLog("warn", "hub-admin", "Backup file '${entry.fileName}' is empty — cannot restore")
+        return [
+            success: false,
+            error: "Backup file exists but is empty",
+            backupKey: args.backupKey
+        ]
+    }
+
+    mcpLog("info", "hub-admin", "Restoring ${entry.type} ID ${entry.id} from backup file ${entry.fileName} (version ${entry.version}, ${formatTimestamp(entry.timestamp)})")
+
+    // Save a copy of the entry before modifying manifest
+    def entryCopy = entry.clone()
+
+    // Before restoring, back up the CURRENT source under a different filename so it's not overwritten
+    // (the original backup file uses the same deterministic name, so backupItemSource would overwrite it)
+    def preRestoreFileName = "mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy"
+    def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
+    try {
+        def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+        def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
+        if (responseText) {
+            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            if (parsed.source) {
+                uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
+                if (!state.itemBackupManifest) state.itemBackupManifest = [:]
+                state.itemBackupManifest[preRestoreBackupKey] = [
+                    type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
+                    version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
+                ]
+                mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+            }
+        }
+    } catch (Exception preBackupErr) {
+        mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} — proceeding with restore anyway")
+    }
+
+    // Now push the backup source directly via the hub internal API (bypass toolUpdateAppCode to avoid
+    // its backupItemSource call which would overwrite our original backup file)
+    try {
+        // Fetch current version for optimistic locking
+        def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+        def versionResp = hubInternalGet(ajaxPath, [id: entryCopy.id])
+        def currentVersion = null
+        if (versionResp) {
+            try {
+                def vParsed = new groovy.json.JsonSlurper().parseText(versionResp)
+                currentVersion = vParsed.version
+            } catch (Exception vErr) { /* proceed without version */ }
+        }
+
+        def updatePath = (entryCopy.type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
+        def result = hubInternalPostForm(updatePath, [
+            id: entryCopy.id,
+            version: currentVersion ?: entryCopy.version,
+            source: source
+        ])
+
+        def responseData = result?.data
+        def success = false
+        def errorMsg = null
+        if (responseData) {
+            try {
+                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
+            } catch (Exception parseErr) {
+                mcpLog("warn", "hub-admin", "Restore update response was not JSON: ${responseData?.toString()?.take(200)}")
+                errorMsg = "Unexpected response format — restore may have succeeded but could not be confirmed."
+            }
+        } else {
+            success = true
+        }
+
+        if (success) {
+            // Remove the original backup manifest entry (the pre-restore backup has its own entry)
+            if (state.itemBackupManifest) state.itemBackupManifest.remove(args.backupKey)
+            mcpLog("info", "hub-admin", "Restore succeeded: ${entryCopy.type} ID ${entryCopy.id} restored to version ${entryCopy.version}")
+            return [
+                success: true,
+                message: "Restored ${entryCopy.type} ID ${entryCopy.id} to version ${entryCopy.version} (backup from ${formatTimestamp(entryCopy.timestamp)})",
+                type: entryCopy.type,
+                id: entryCopy.id,
+                restoredVersion: entryCopy.version,
+                preRestoreBackup: preRestoreBackupKey,
+                preRestoreFile: preRestoreFileName,
+                undoHint: "To undo this restore, use 'restore_item_backup' with backupKey='${preRestoreBackupKey}'"
+            ]
+        } else {
+            mcpLog("error", "hub-admin", "Restore failed for ${entryCopy.type} ID ${entryCopy.id}: ${errorMsg ?: 'unknown error'}")
+            return [
+                success: false,
+                error: "Restore failed: ${errorMsg ?: 'unknown error'}",
+                backupKey: args.backupKey,
+                message: "The backup has been preserved — you can try again or restore manually.",
+                directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Restore failed with exception for ${entryCopy.type} ID ${entryCopy.id}: ${e.message}")
+        return [
+            success: false,
+            error: "Restore failed: ${e.message}",
+            backupKey: args.backupKey,
+            message: "The backup has been preserved — you can try again or restore manually.",
+            directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
+        ]
+    }
+}
+
+// ==================== FILE MANAGER TOOLS ====================
+
+/**
+ * Lists all files in the hub's local File Manager.
+ * Uses the hub internal API to query the file list.
+ */
+def toolListFiles() {
+    mcpLog("debug", "file-manager", "Listing files in File Manager")
+    try {
+        def responseText = hubInternalGet("/hub/fileManager/json")
+        if (!responseText) {
+            return [
+                files: [],
+                total: 0,
+                message: "File Manager returned empty response. It may be empty or the endpoint may not be available on this firmware.",
+                manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
+            ]
+        }
+
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        def fileList = []
+
+        if (parsed instanceof List) {
+            fileList = parsed.collect { f ->
+                def entry = [
+                    name: f.name ?: f.toString(),
+                    directDownload: "http://<HUB_IP>/local/${f.name ?: f.toString()}"
+                ]
+                if (f.size != null) entry.size = f.size
+                if (f.date) entry.lastModified = f.date
+                return entry
+            }.sort { a, b -> (a.name <=> b.name) }
+        }
+
+        mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager")
+        return [
+            files: fileList,
+            total: fileList.size(),
+            storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to list files: ${e.message}")
+        return [
+            files: [],
+            total: 0,
+            error: "Could not list files: ${e.message}",
+            manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
+        ]
+    }
+}
+
+/**
+ * Reads the contents of a file from the hub's local File Manager.
+ * Uses downloadHubFile() — fully local, no cloud involvement.
+ */
+def toolReadFile(args) {
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+
+    mcpLog("debug", "file-manager", "Reading file: ${args.fileName}")
+    def content
+    try {
+        def bytes = downloadHubFile(args.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
+        content = new String(bytes, "UTF-8")
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to read file '${args.fileName}': ${e.message}")
+        return [
+            success: false,
+            error: "File '${args.fileName}' could not be read: ${e.message}",
+            suggestion: "Check that the file name is correct. Go to Hubitat > Settings > File Manager to see available files.",
+            directDownload: "http://<HUB_IP>/local/${args.fileName}"
+        ]
+    }
+
+    def result = [
+        success: true,
+        fileName: args.fileName,
+        contentLength: content.length(),
+        directDownload: "http://<HUB_IP>/local/${args.fileName}"
+    ]
+
+    // Include content in response if it fits within the hub's response size limit
+    if (content.length() <= 60000) {
+        result.content = content
+    } else {
+        result.contentTooLargeForResponse = true
+        result.message = "File is ${content.length()} chars — too large for an MCP response. Download it directly from the URL below."
+        result.manualDownload = "Go to http://<HUB_IP>/local/${args.fileName} in your browser, or find it in Hubitat > Settings > File Manager."
+    }
+
+    mcpLog("info", "file-manager", "Read file '${args.fileName}' (${content.length()} chars)")
+    return result
+}
+
+/**
+ * Writes or creates a file in the hub's local File Manager.
+ * If the file already exists, automatically creates a backup copy first.
+ * Requires Hub Admin Write access.
+ */
+def toolWriteFile(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (args.content == null) throw new IllegalArgumentException("content is required")
+
+    // Validate file name — only A-Za-z0-9, hyphens, underscores, periods allowed
+    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
+        throw new IllegalArgumentException("Invalid file name '${args.fileName}'. Only letters, numbers, hyphens, underscores, and periods are allowed. Cannot start with a period.")
+    }
+
+    // If file already exists, back it up first
+    def backedUp = false
+    def backupFileName = null
+    try {
+        def existingBytes = downloadHubFile(args.fileName)
+        if (existingBytes != null) {
+            // File exists — create a backup before overwriting
+            def dotIndex = args.fileName.lastIndexOf('.')
+            def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
+            def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
+            def ts = new Date().format("yyyyMMdd-HHmmss")
+            backupFileName = "${baseName}_backup_${ts}${ext}"
+            uploadHubFile(backupFileName, existingBytes)
+            backedUp = true
+            mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
+        }
+    } catch (Exception e) {
+        // File doesn't exist or can't be read — that's fine, proceed with write
+        mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
+    }
+
+    // Write the file
+    try {
+        uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
+        mcpLog("info", "file-manager", "Wrote file '${args.fileName}' (${args.content.length()} chars)")
+
+        def result = [
+            success: true,
+            message: backedUp
+                ? "File '${args.fileName}' updated. Previous version backed up as '${backupFileName}'."
+                : "File '${args.fileName}' created.",
+            fileName: args.fileName,
+            contentLength: args.content.length(),
+            directDownload: "http://<HUB_IP>/local/${args.fileName}"
+        ]
+        if (backedUp) {
+            result.backupFile = backupFileName
+            result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+        }
+        return result
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to write file '${args.fileName}': ${e.message}")
+        return [
+            success: false,
+            error: "Failed to write file '${args.fileName}': ${e.message}"
+        ]
+    }
+}
+
+/**
+ * Deletes a file from the hub's local File Manager.
+ * Automatically creates a backup copy before deletion.
+ * Requires Hub Admin Write access.
+ */
+def toolDeleteFile(args) {
+    requireHubAdminWrite(args.confirm)
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+
+    // Back up the file before deleting
+    def backedUp = false
+    def backupFileName = null
+    try {
+        def bytes = downloadHubFile(args.fileName)
+        if (bytes == null) throw new Exception("File not found")
+        def dotIndex = args.fileName.lastIndexOf('.')
+        def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
+        def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
+        def ts = new Date().format("yyyyMMdd-HHmmss")
+        backupFileName = "${baseName}_backup_${ts}${ext}"
+        uploadHubFile(backupFileName, bytes)
+        backedUp = true
+        mcpLog("info", "file-manager", "Backed up '${args.fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
+    } catch (Exception e) {
+        mcpLog("warn", "file-manager", "Could not back up '${args.fileName}' before deletion: ${e.message}")
+    }
+
+    // Delete the file
+    try {
+        deleteHubFile(args.fileName)
+        mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
+
+        def result = [
+            success: true,
+            message: backedUp
+                ? "File '${args.fileName}' deleted. Backup saved as '${backupFileName}'."
+                : "File '${args.fileName}' deleted. WARNING: Could not create backup before deletion.",
+            fileName: args.fileName
+        ]
+        if (backedUp) {
+            result.backupFile = backupFileName
+            result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+            result.undoHint = "To recover: use 'read_file' on '${backupFileName}' to view contents, or 'write_file' to recreate '${args.fileName}' from the backup."
+        }
+        if (!backedUp) {
+            result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
+        }
+        return result
+    } catch (Exception e) {
+        mcpLog("error", "file-manager", "Failed to delete file '${args.fileName}': ${e.message}")
+        return [
+            success: false,
+            error: "Failed to delete '${args.fileName}': ${e.message}",
+            suggestion: "Check that the file exists. Use 'list_files' to see available files."
+        ]
+    }
+}
+
+/**
+ * Formats an epoch timestamp into a human-readable age string (e.g., "5 minutes ago").
+ */
+def formatAge(Long timestamp) {
+    if (!timestamp) return "unknown"
+    def elapsed = now() - timestamp
+    if (elapsed < 60000) return "just now"
+    if (elapsed < 3600000) return "${(elapsed / 60000) as Integer} minutes ago"
+    if (elapsed < 86400000) return "${(elapsed / 3600000) as Integer} hours ago"
+    return "${(elapsed / 86400000) as Integer} days ago"
 }
 
 def jsonRpcResult(id, result) {
@@ -3303,7 +3945,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.2",
+        version: "0.4.3",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -3324,7 +3966,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.2"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.3"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -3491,7 +4133,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.2"
+    details.mcpServerVersion = "0.4.3"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -3950,12 +4592,16 @@ def toolInstallApp(args) {
         }
 
         mcpLog("info", "hub-admin", "App installed successfully${newAppId ? ' (ID: ' + newAppId + ')' : ''}")
-        return [
+        def installResult = [
             success: true,
             message: "App installed successfully",
             appId: newAppId,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
+        if (!newAppId) {
+            installResult.warning = "Could not extract new app ID from hub response. The app was installed but you may need to check the Hubitat web UI to find it."
+        }
+        return installResult
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "App installation failed: ${e.message}")
         return [
@@ -3985,12 +4631,16 @@ def toolInstallDriver(args) {
         }
 
         mcpLog("info", "hub-admin", "Driver installed successfully${newDriverId ? ' (ID: ' + newDriverId + ')' : ''}")
-        return [
+        def installResult = [
             success: true,
             message: "Driver installed successfully",
             driverId: newDriverId,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
+        if (!newDriverId) {
+            installResult.warning = "Could not extract new driver ID from hub response. The driver was installed but you may need to check the Hubitat web UI to find it."
+        }
+        return installResult
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Driver installation failed: ${e.message}")
         return [
@@ -4032,14 +4682,18 @@ def toolUpdateAppCode(args) {
                 success = parsed.status == "success"
                 errorMsg = parsed.errorMessage
             } catch (Exception parseErr) {
-                // Response was not JSON
-                success = true // Assume success if no error thrown
+                // Response was not JSON — cannot confirm success
+                mcpLog("warn", "hub-admin", "App update response was not JSON: ${responseData?.toString()?.take(200)}")
+                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the app in the Hubitat web UI."
             }
         } else {
+            // No response body but no exception either — hub may return empty on success
             success = true
         }
 
         if (success) {
+            // Invalidate item backup manifest so next update fetches fresh version
+            if (state.itemBackupManifest) state.itemBackupManifest.remove("app_${args.appId}")
             mcpLog("info", "hub-admin", "App ID ${args.appId} updated successfully")
             return [
                 success: true,
@@ -4093,13 +4747,18 @@ def toolUpdateDriverCode(args) {
                 success = parsed.status == "success"
                 errorMsg = parsed.errorMessage
             } catch (Exception parseErr) {
-                success = true
+                // Response was not JSON — cannot confirm success
+                mcpLog("warn", "hub-admin", "Driver update response was not JSON: ${responseData?.toString()?.take(200)}")
+                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the driver in the Hubitat web UI."
             }
         } else {
+            // No response body but no exception either — hub may return empty on success
             success = true
         }
 
         if (success) {
+            // Invalidate item backup manifest so next update fetches fresh version
+            if (state.itemBackupManifest) state.itemBackupManifest.remove("driver_${args.driverId}")
             mcpLog("info", "hub-admin", "Driver ID ${args.driverId} updated successfully")
             return [
                 success: true,
@@ -4126,8 +4785,14 @@ def toolDeleteApp(args) {
     requireHubAdminWrite(args.confirm)
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
-    // Back up source code before deletion so it can be restored if needed
-    backupItemSource("app", args.appId.toString())
+    // Back up source code to File Manager before deletion so it can be restored if needed
+    def backupSucceeded = true
+    try {
+        backupItemSource("app", args.appId.toString())
+    } catch (Exception backupErr) {
+        backupSucceeded = false
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for app ${args.appId}: ${backupErr.message} — proceeding with delete")
+    }
 
     mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
     try {
@@ -4145,12 +4810,17 @@ def toolDeleteApp(args) {
 
         if (success) {
             mcpLog("info", "hub-admin", "App ID ${args.appId} deleted successfully")
-            return [
+            def backupEntry = state.itemBackupManifest?.get("app_${args.appId}")
+            def result = [
                 success: true,
-                message: "App deleted successfully",
+                message: backupSucceeded ? "App deleted successfully. Source code backed up to File Manager." : "App deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
                 appId: args.appId,
-                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                backupFile: backupEntry?.fileName,
+                restoreHint: backupEntry ? "To restore: use 'install_app' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
             ]
+            if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
+            return result
         } else {
             return [
                 success: false,
@@ -4169,8 +4839,14 @@ def toolDeleteDriver(args) {
     requireHubAdminWrite(args.confirm)
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
-    // Back up source code before deletion so it can be restored if needed
-    backupItemSource("driver", args.driverId.toString())
+    // Back up source code to File Manager before deletion so it can be restored if needed
+    def backupSucceeded = true
+    try {
+        backupItemSource("driver", args.driverId.toString())
+    } catch (Exception backupErr) {
+        backupSucceeded = false
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for driver ${args.driverId}: ${backupErr.message} — proceeding with delete")
+    }
 
     mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
     try {
@@ -4187,12 +4863,17 @@ def toolDeleteDriver(args) {
 
         if (success) {
             mcpLog("info", "hub-admin", "Driver ID ${args.driverId} deleted successfully")
-            return [
+            def backupEntry = state.itemBackupManifest?.get("driver_${args.driverId}")
+            def result = [
                 success: true,
-                message: "Driver deleted successfully",
+                message: backupSucceeded ? "Driver deleted successfully. Source code backed up to File Manager." : "Driver deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
                 driverId: args.driverId,
-                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                backupFile: backupEntry?.fileName,
+                restoreHint: backupEntry ? "To restore: use 'install_driver' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
             ]
+            if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
+            return result
         } else {
             return [
                 success: false,
@@ -4210,7 +4891,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.2"
+    return "0.4.3"
 }
 
 def isNewerVersion(String remote, String local) {
