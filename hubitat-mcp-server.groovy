@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.3 - Comprehensive bug fixes (null safety, race conditions, memory leaks, validation)
+ * Version: 0.4.4 - Fix InputStreamReader handling, delete response parsing, backup chain prevention
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.3"
+                paragraph "<b>Version:</b> 0.4.4"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.4). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.3"
+        version: "0.4.4"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1873,7 +1873,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.3",
+        serverVersion: "0.4.4",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -3022,7 +3022,12 @@ def hubInternalGet(String path, Map query = null, int timeout = 30) {
     def responseText = null
     try {
         httpGet(params) { resp ->
-            responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+            if (resp.data instanceof java.io.Reader || resp.data instanceof java.io.InputStream) {
+                // textParser: true returns a Reader/InputStream — read it fully
+                responseText = resp.data.text
+            } else {
+                responseText = resp.data?.text?.toString() ?: resp.data?.toString()
+            }
         }
     } catch (Exception e) {
         // Clear cached cookie on auth failures so next call re-authenticates
@@ -3099,10 +3104,15 @@ def hubInternalPostForm(String path, Map body, int timeout = 420) {
     def result = null
     try {
         httpPost(params) { resp ->
+            def responseData = resp.data
+            if (responseData instanceof java.io.Reader || responseData instanceof java.io.InputStream) {
+                // textParser: true returns a Reader/InputStream — read it fully
+                responseData = responseData.text
+            }
             result = [
                 status: resp.status,
                 location: resp.headers?."Location"?.toString(),
-                data: resp.data
+                data: responseData
             ]
         }
     } catch (Exception e) {
@@ -3478,44 +3488,107 @@ def toolRestoreItemBackup(args) {
  */
 def toolListFiles() {
     mcpLog("debug", "file-manager", "Listing files in File Manager")
-    try {
-        def responseText = hubInternalGet("/hub/fileManager/json")
-        if (!responseText) {
-            return [
-                files: [],
-                total: 0,
-                message: "File Manager returned empty response. It may be empty or the endpoint may not be available on this firmware.",
-                manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
-            ]
-        }
 
+    // Try known File Manager API endpoints (varies by firmware version)
+    def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
+    def responseText = null
+    def endpointUsed = null
+
+    for (endpoint in endpoints) {
+        try {
+            responseText = hubInternalGet(endpoint)
+            if (responseText) {
+                endpointUsed = endpoint
+                mcpLog("debug", "file-manager", "Got response from ${endpoint} (${responseText.length()} chars): ${responseText.take(300)}")
+                break
+            }
+        } catch (Exception e) {
+            mcpLog("debug", "file-manager", "Endpoint ${endpoint} failed: ${e.message}")
+        }
+    }
+
+    if (!responseText) {
+        return [
+            files: [],
+            total: 0,
+            message: "File Manager API not available on this firmware. Use Hubitat > Settings > File Manager to view files.",
+            manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
+        ]
+    }
+
+    try {
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
         def fileList = []
 
         if (parsed instanceof List) {
+            // Direct list response: [{name: "file.txt", size: 123}, ...]
             fileList = parsed.collect { f ->
-                def entry = [
-                    name: f.name ?: f.toString(),
-                    directDownload: "http://<HUB_IP>/local/${f.name ?: f.toString()}"
-                ]
-                if (f.size != null) entry.size = f.size
-                if (f.date) entry.lastModified = f.date
+                def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
+                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
+                if (f instanceof Map) {
+                    if (f.size != null) entry.size = f.size
+                    if (f.date) entry.lastModified = f.date
+                }
                 return entry
-            }.sort { a, b -> (a.name <=> b.name) }
+            }
+        } else if (parsed instanceof Map) {
+            // Object response: {files: [...]} or {type: [...]}
+            def files = parsed.files ?: parsed.values()?.flatten()
+            if (files instanceof List) {
+                fileList = files.collect { f ->
+                    def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
+                    def entry = [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
+                    if (f instanceof Map) {
+                        if (f.size != null) entry.size = f.size
+                        if (f.date) entry.lastModified = f.date
+                    }
+                    return entry
+                }
+            }
         }
 
-        mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager")
+        fileList = fileList.sort { a, b -> (a.name <=> b.name) }
+
+        mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager (via ${endpointUsed})")
         return [
             files: fileList,
             total: fileList.size(),
             storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
         ]
-    } catch (Exception e) {
-        mcpLog("error", "file-manager", "Failed to list files: ${e.message}")
+    } catch (Exception jsonErr) {
+        // Response wasn't JSON — might be HTML File Manager page
+        mcpLog("debug", "file-manager", "Response from ${endpointUsed} was not JSON: ${jsonErr.message}")
+
+        // Try to extract file names from HTML response
+        def fileList = []
+        try {
+            def matcher = responseText =~ /(?i)href=["']?\/local\/([^"'\s>]+)/
+            while (matcher.find()) {
+                def name = java.net.URLDecoder.decode(matcher.group(1), "UTF-8")
+                if (!fileList.any { it.name == name }) {
+                    fileList << [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
+                }
+            }
+        } catch (Exception htmlErr) {
+            mcpLog("debug", "file-manager", "HTML parsing also failed: ${htmlErr.message}")
+        }
+
+        if (fileList) {
+            fileList = fileList.sort { a, b -> (a.name <=> b.name) }
+            mcpLog("info", "file-manager", "Listed ${fileList.size()} files from File Manager HTML page")
+            return [
+                files: fileList,
+                total: fileList.size(),
+                note: "File list extracted from File Manager HTML page. Sizes not available. Use Hubitat > Settings > File Manager for full details.",
+                storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
+            ]
+        }
+
         return [
             files: [],
             total: 0,
-            error: "Could not list files: ${e.message}",
+            error: "Could not parse File Manager response. The API format may have changed.",
+            rawResponsePreview: responseText.take(500),
             manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
         ]
     }
@@ -3637,22 +3710,29 @@ def toolDeleteFile(args) {
     requireHubAdminWrite(args.confirm)
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
 
-    // Back up the file before deleting
+    // Skip auto-backup for files that are already backups (prevent infinite backup chains)
+    def isBackupFile = args.fileName.contains("_backup_") || args.fileName.startsWith("mcp-backup-") || args.fileName.startsWith("mcp-prerestore-")
+
+    // Back up the file before deleting (unless it's already a backup file)
     def backedUp = false
     def backupFileName = null
-    try {
-        def bytes = downloadHubFile(args.fileName)
-        if (bytes == null) throw new Exception("File not found")
-        def dotIndex = args.fileName.lastIndexOf('.')
-        def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
-        def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
-        def ts = new Date().format("yyyyMMdd-HHmmss")
-        backupFileName = "${baseName}_backup_${ts}${ext}"
-        uploadHubFile(backupFileName, bytes)
-        backedUp = true
-        mcpLog("info", "file-manager", "Backed up '${args.fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
-    } catch (Exception e) {
-        mcpLog("warn", "file-manager", "Could not back up '${args.fileName}' before deletion: ${e.message}")
+    if (!isBackupFile) {
+        try {
+            def bytes = downloadHubFile(args.fileName)
+            if (bytes == null) throw new Exception("File not found")
+            def dotIndex = args.fileName.lastIndexOf('.')
+            def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
+            def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
+            def ts = new Date().format("yyyyMMdd-HHmmss")
+            backupFileName = "${baseName}_backup_${ts}${ext}"
+            uploadHubFile(backupFileName, bytes)
+            backedUp = true
+            mcpLog("info", "file-manager", "Backed up '${args.fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
+        } catch (Exception e) {
+            mcpLog("warn", "file-manager", "Could not back up '${args.fileName}' before deletion: ${e.message}")
+        }
+    } else {
+        mcpLog("debug", "file-manager", "Skipping auto-backup for '${args.fileName}' — file is itself a backup")
     }
 
     // Delete the file
@@ -3664,7 +3744,9 @@ def toolDeleteFile(args) {
             success: true,
             message: backedUp
                 ? "File '${args.fileName}' deleted. Backup saved as '${backupFileName}'."
-                : "File '${args.fileName}' deleted. WARNING: Could not create backup before deletion.",
+                : isBackupFile
+                    ? "Backup file '${args.fileName}' deleted permanently (no backup-of-backup created)."
+                    : "File '${args.fileName}' deleted. WARNING: Could not create backup before deletion.",
             fileName: args.fileName
         ]
         if (backedUp) {
@@ -3672,7 +3754,7 @@ def toolDeleteFile(args) {
             result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
             result.undoHint = "To recover: use 'read_file' on '${backupFileName}' to view contents, or 'write_file' to recreate '${args.fileName}' from the backup."
         }
-        if (!backedUp) {
+        if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
         return result
@@ -3945,7 +4027,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.3",
+        version: "0.4.4",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -3966,7 +4048,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.3"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.4"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4133,7 +4215,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.3"
+    details.mcpServerVersion = "0.4.4"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4797,14 +4879,16 @@ def toolDeleteApp(args) {
     mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
     try {
         def responseText = hubInternalGet("/app/edit/deleteJsonSafe/${args.appId}")
+        mcpLog("debug", "hub-admin", "Delete app ${args.appId} response: ${responseText?.take(200)}")
         def success = false
         if (responseText) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                success = parsed.status == true
+                // Handle both boolean true and string "true" from hub
+                success = parsed.status?.toString() == "true"
             } catch (Exception parseErr) {
                 // If not JSON, check if it contains error indicators
-                success = !responseText.contains("error")
+                success = !responseText.toLowerCase().contains("error")
             }
         }
 
@@ -4851,13 +4935,15 @@ def toolDeleteDriver(args) {
     mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
     try {
         def responseText = hubInternalGet("/driver/editor/deleteJson/${args.driverId}")
+        mcpLog("debug", "hub-admin", "Delete driver ${args.driverId} response: ${responseText?.take(200)}")
         def success = false
         if (responseText) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                success = parsed.status == true
+                // Handle both boolean true and string "true" from hub
+                success = parsed.status?.toString() == "true"
             } catch (Exception parseErr) {
-                success = !responseText.contains("error")
+                success = !responseText.toLowerCase().contains("error")
             }
         }
 
@@ -4891,7 +4977,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.3"
+    return "0.4.4"
 }
 
 def isNewerVersion(String remote, String local) {
