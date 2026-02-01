@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.5.4:**
+- **Fix BigDecimal arithmetic** — replace all floating-point division with pure integer math in `device_health_check` and `delete_device` to avoid Hubitat Groovy's `BigDecimal` incompatibilities
+
 **New in v0.5.3:**
 - **Fix `device_health_check`** — use `Math.round()` instead of `BigDecimal.round()` for Hubitat Groovy compatibility
 
@@ -770,6 +773,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.5.4** - Fix BigDecimal arithmetic with pure integer math in `device_health_check` and `delete_device` (64 tools)
 - **v0.5.3** - Fix `BigDecimal.round()` in `device_health_check` (64 tools)
 - **v0.5.2** - Fix `device_health_check` error handling (64 tools)
 - **v0.5.1** - Fix `get_hub_logs` JSON array parsing (64 tools)

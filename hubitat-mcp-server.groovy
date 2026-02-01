@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.5.3 - Fix BigDecimal.round() in device_health_check
+ * Version: 0.5.4 - Fix BigDecimal arithmetic in device_health_check and delete_device using pure integer math
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.5.3"
+                paragraph "<b>Version:</b> 0.5.4"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.5.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.5.4). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.5.3"
+        version: "0.5.4"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2035,7 +2035,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.5.3",
+        serverVersion: "0.5.4",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4221,7 +4221,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.5.3",
+        version: "0.5.4",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4242,7 +4242,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.5.3"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.5.4"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4409,7 +4409,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.5.3"
+    details.mcpServerVersion = "0.5.4"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4947,7 +4947,7 @@ def toolDeviceHealthCheck(args) {
                 try {
                     entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
                     def activityTime = lastActivity.getTime()
-                    entry.hoursAgo = Math.round(((now() - activityTime) / 3600000.0) * 10) / 10.0
+                    entry.hoursAgo = (int)((now() - activityTime) / 360000) / 10.0
 
                     if (activityTime < staleThreshold) {
                         stale << entry
@@ -5546,7 +5546,7 @@ def toolDeleteDevice(args) {
         if (selectedDevice) {
             def lastActivity = selectedDevice.lastActivity
             if (lastActivity) {
-                def hoursAgo = ((now() - lastActivity.time) / 3600000.0).round(1)
+                def hoursAgo = (int)((now() - lastActivity.time) / 360000) / 10.0
                 if (hoursAgo < 24) {
                     warnings << "ACTIVE DEVICE: Last activity was ${hoursAgo} hours ago at ${lastActivity.format("yyyy-MM-dd'T'HH:mm:ss")}. This device may still be functional."
                 }
@@ -5709,7 +5709,7 @@ def toolDeleteDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.5.3"
+    return "0.5.4"
 }
 
 def isNewerVersion(String remote, String local) {
