@@ -17,6 +17,12 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.5:**
+- **Chunked reading** — `get_app_source`, `get_driver_source`, and `read_file` support `offset`/`length` for reading large sources in segments
+- **Smart large-source handling** — sources over 64KB are auto-saved to File Manager, enabling cloud-free updates
+- **`resave` mode** — re-save current source entirely on-hub (no cloud round-trip needed)
+- **`sourceFile` mode** — read source from a File Manager file (bypasses 64KB cloud limit)
+
 **New in v0.4.4:**
 - **Critical bug fixes** from live testing — InputStreamReader handling, delete response parsing, list_files reliability
 - **Backup chain prevention** — deleting backup files no longer creates infinite backup-of-backup chains
@@ -668,6 +674,12 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.5** - Smart large-file handling (59 tools)
+  - Chunked reading for `get_app_source`, `get_driver_source`, `read_file` via `offset`/`length` parameters
+  - Large sources (>64KB) auto-saved to File Manager as `mcp-source-{type}-{id}.groovy`
+  - New `resave` mode for `update_app_code`/`update_driver_code` — re-saves current source entirely on-hub, no cloud round-trip
+  - New `sourceFile` mode — reads source from File Manager file, bypasses 64KB cloud response limit
+  - Refactored get/update source tools into shared `toolGetItemSource`/`toolUpdateItemCode` helpers
 - **v0.4.4** - Fix bugs found during live Claude.ai testing (59 tools)
   - **CRITICAL**: Fixed `hubInternalGet`/`hubInternalPostForm` not reading `InputStreamReader` — `textParser: true` returns a Reader/InputStream that must be read with `.text`, not `.toString()`
   - **MAJOR**: Fixed `list_files` returning empty array — rewritten with multi-endpoint fallback and multi-format parsing (JSON list, JSON object, HTML href extraction)
