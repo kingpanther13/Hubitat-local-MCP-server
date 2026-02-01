@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.5.1 - Fix get_hub_logs JSON array parsing
+ * Version: 0.5.2 - Fix device_health_check error handling
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.5.1"
+                paragraph "<b>Version:</b> 0.5.2"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.5.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.5.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.5.1"
+        version: "0.5.2"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2035,7 +2035,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.5.1",
+        serverVersion: "0.5.2",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4221,7 +4221,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.5.1",
+        version: "0.5.2",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4242,7 +4242,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.5.1"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.5.2"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4409,7 +4409,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.5.1"
+    details.mcpServerVersion = "0.5.2"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4929,32 +4929,43 @@ def toolDeviceHealthCheck(args) {
     def unknown = []
 
     settings.selectedDevices.each { device ->
-        def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
-        def entry = [
-            id: device.id.toString(),
-            name: deviceLabel
-        ]
-
-        def lastActivity = null
         try {
-            lastActivity = device.lastActivity
-        } catch (Exception e) {
-            // Some device types may not support lastActivity
-        }
+            def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
+            def entry = [
+                id: device.id.toString(),
+                name: deviceLabel
+            ]
 
-        if (lastActivity) {
-            entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
-            entry.hoursAgo = ((now() - lastActivity.time) / 3600000.0).round(1)
-
-            if (lastActivity.time < staleThreshold) {
-                stale << entry
-            } else {
-                healthy << entry
+            def lastActivity = null
+            try {
+                lastActivity = device.lastActivity
+            } catch (Exception e) {
+                // Some device types may not support lastActivity
             }
-        } else {
-            entry.lastActivity = "never"
-            entry.hoursAgo = null
-            unknown << entry
+
+            if (lastActivity) {
+                try {
+                    entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+                    def activityTime = lastActivity.getTime()
+                    entry.hoursAgo = ((now() - activityTime) / 3600000.0).round(1)
+
+                    if (activityTime < staleThreshold) {
+                        stale << entry
+                    } else {
+                        healthy << entry
+                    }
+                } catch (Exception e) {
+                    entry.lastActivity = "error: ${e.message}"
+                    unknown << entry
+                }
+            } else {
+                entry.lastActivity = "never"
+                entry.hoursAgo = null
+                unknown << entry
+            }
+        } catch (Exception e) {
+            // Skip device entirely if we can't even get basic info
+            unknown << [id: device.id?.toString() ?: "unknown", name: "Error: ${e.message}", lastActivity: "error"]
         }
     }
 
@@ -5698,7 +5709,7 @@ def toolDeleteDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.5.1"
+    return "0.5.2"
 }
 
 def isNewerVersion(String remote, String local) {

@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.5.2:**
+- **Fix `device_health_check`** — robust error handling for devices with unusual lastActivity values
+
 **New in v0.5.1:**
 - **Fix `get_hub_logs`** — correctly parse JSON array response from hub's `/logs/past/json` endpoint
 
@@ -764,6 +767,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.5.2** - Fix `device_health_check` error handling (64 tools)
 - **v0.5.1** - Fix `get_hub_logs` JSON array parsing (64 tools)
 - **v0.5.0** - Monitoring tools and device management (64 tools)
   - New `get_hub_logs` — access Hubitat's built-in system logs with level and source filtering
