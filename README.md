@@ -17,8 +17,10 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
-**New in v0.4.2:**
-- **Response size safety limits** — source truncated at 64KB + global 128KB response guard to prevent hub lag/crash
+**New in v0.4.3:**
+- **Comprehensive bug fixes** — null safety, race conditions, memory leaks, validation improvements
+- **File-based backups** — source code backups stored in hub's File Manager (no truncation, survives MCP uninstall)
+- **3 backup tools** — `list_item_backups`, `get_item_backup`, `restore_item_backup`
 
 **New in v0.4.1:**
 - **Bug fixes** for `get_app_source`, `get_driver_source`, and `create_hub_backup` — all Hub Admin tools now functional
@@ -190,9 +192,12 @@ These tools let you view and restore the automatic source code backups that are 
 
 **How item backups work:**
 - When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes
-- Backups are stored in the MCP server app's internal state on the hub (max 20 entries, oldest pruned first)
+- Backups are stored as `.groovy` files in the hub's local **File Manager** — no cloud involvement, no size limits
+- Files are named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`
+- Backups persist even if the MCP app is uninstalled or deleted — they live in the hub's file system
+- Files are directly downloadable at `http://<your-hub-ip>/local/<filename>`
+- Max 20 backups kept; oldest file is automatically deleted when the limit is exceeded
 - Within a 1-hour window, the **first** backup is preserved — multiple edits won't overwrite the pre-edit original
-- Source code over 64KB is truncated (truncated backups cannot be restored)
 
 **How to restore if something goes wrong:**
 
@@ -204,11 +209,12 @@ Via MCP (for deleted items):
 1. Call `get_item_backup` to retrieve the source code
 2. Call `install_app` or `install_driver` with that source code to re-install it
 
-Manually (without MCP):
-1. Call `get_item_backup` to retrieve the source code, or go to the Hubitat web UI > Apps > MCP Rule Server > App State and find `itemBackups`
-2. Copy the source code
-3. Go to Hubitat > Apps Code (or Drivers Code) > select the app/driver (or click "New App"/"New Driver" for deleted items)
-4. Paste the source code and click Save
+Manually (without MCP — backups survive even if MCP is deleted):
+1. Go to your Hubitat web UI > **Settings** > **File Manager**
+2. Find the backup file (e.g., `mcp-backup-app-123.groovy`) and download it
+3. Or navigate directly to `http://<your-hub-ip>/local/mcp-backup-app-123.groovy`
+4. Go to Hubitat > **Apps Code** (or **Drivers Code**) > select the app/driver (or click "New App"/"New Driver" for deleted items)
+5. Paste the source code and click **Save**
 
 #### Hub Security Support
 
@@ -615,7 +621,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **HIGH**: Fixed non-JSON update responses incorrectly assumed successful — now warns instead of silently assuming success
   - **HIGH**: Item backup cache invalidated after successful code updates — prevents stale version numbers for optimistic locking
   - **HIGH**: Wrapped all action types in outer try-catch — one action failure no longer aborts remaining actions in the chain
-  - **HIGH**: Truncated backup warning added to delete results — caller informed when pre-deletion backup is incomplete
+  - **HIGH**: Migrated item backups from app state to hub File Manager — full source stored as .groovy files, no truncation, survives MCP uninstall
   - **MEDIUM**: Added range validation for `set_level` (0-100), `set_color` hue/saturation/level (0-100), `delay` (1-86400s), `repeat` (1-100)
   - **MEDIUM**: Fixed `formatTimeInput` to validate HH:mm format — prevents malformed cron expressions from invalid time strings
   - **MEDIUM**: Fixed `device_was` event window with 2-second margin — accounts for event timestamp vs wall-clock differences
@@ -623,12 +629,12 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
   - **MEDIUM**: Added `textParser: true` to `hubInternalPostForm` — handles non-JSON responses without parse exceptions
   - **MEDIUM**: Install tools now warn when new app/driver ID cannot be extracted from hub response
   - **LOW**: Fixed comment/code mismatch in `backupItemSource` (said 100KB, code used 64KB)
-  - **NEW**: 3 item backup tools — `list_item_backups`, `get_item_backup`, `restore_item_backup` — view and restore automatic pre-edit source code backups
-  - **NEW**: Backup tools include manual restore instructions in every response, so users can recover even if MCP is unavailable
+  - **NEW**: 3 item backup tools — `list_item_backups`, `get_item_backup`, `restore_item_backup` — view and restore automatic pre-edit source code backups stored in File Manager
+  - **NEW**: Backup tools include manual restore instructions and direct download URLs in every response, so users can recover even if MCP is unavailable
 - **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
   - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
   - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub
-  - **Item-level backups** capped at 64KB to protect hub state storage
+  - **Item-level backups** introduced — automatic pre-edit source backup for modify/delete operations
   - **Debug log truncation** — large responses no longer spam the debug log (capped at 500 chars)
   - Returns `sourceLength`, `truncated` flag, and warning when output is incomplete
 - **v0.4.1** - Bug fixes for Hub Admin tools + two-tier backup system

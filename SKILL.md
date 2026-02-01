@@ -179,17 +179,21 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 
 **`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
 - Called by `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` before making changes
-- Fetches current source code and stores in `state.itemBackups` keyed by `"app_<id>"` or `"driver_<id>"`
+- Fetches current source code and saves as a `.groovy` file in the hub's local File Manager via `uploadHubFile()`
+- Metadata (type, id, version, timestamp, fileName, sourceLength) stored in `state.itemBackupManifest` keyed by `"app_<id>"` or `"driver_<id>"`
 - 1-hour window: if a backup of the same item exists within the last hour, it is kept (preserves the pre-edit original across a series of edits)
-- Prunes to max 20 entries to limit state size
-- Truncates sources over 64KB (truncated backups cannot be restored via `restore_item_backup`)
+- Prunes to max 20 entries; oldest file deleted via `deleteHubFile()` when limit exceeded
+- No size limit — full source always stored (File Manager has ~1GB capacity)
 - Not needed for install tools (nothing to lose when creating new)
+- Files persist even if MCP app is uninstalled; accessible at `http://<HUB_IP>/local/<filename>`
+- Requires firmware ≥2.3.4.132 for `uploadHubFile()` support
 
 **Item Backup Tools** (3 tools, always available without Hub Admin Read/Write):
-- `list_item_backups` — lists all backups with metadata (type, id, version, age, size, truncation status)
-- `get_item_backup` — retrieves full source code from a backup by key (e.g., `app_123`)
-- `restore_item_backup` — pushes backup source back to the hub via `update_app_code`/`update_driver_code` (requires Hub Admin Write); removes backup first so the current code gets backed up during restore; on failure, puts the backup back
+- `list_item_backups` — lists all backups with metadata (type, id, version, age, size) and direct download URLs
+- `get_item_backup` — retrieves full source code from a backup via `downloadHubFile()` by key (e.g., `app_123`); returns source inline for files ≤60KB, otherwise provides download URL
+- `restore_item_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `update_app_code`/`update_driver_code` (requires Hub Admin Write); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
 - Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
+- All operations are fully local — no cloud involvement
 
 ### Hub Internal API Helpers
 

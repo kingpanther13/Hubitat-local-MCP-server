@@ -1185,9 +1185,9 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
 
 When you use update_app_code, update_driver_code, delete_app, or delete_driver, the MCP server automatically saves the ORIGINAL source code before making changes. These backups let you restore code to its pre-edit state.
 
-Each backup shows: item type (app/driver), ID, version at time of backup, timestamp, source code size, and whether it was truncated (sources over 64KB are capped).
+Each backup shows: item type (app/driver), ID, version at time of backup, timestamp, source code size, and a direct download URL for the backup file.
 
-Backups are stored in the MCP Rule Server app's internal state on the hub. A maximum of 20 backups are kept; the oldest is pruned when the limit is exceeded. Backups within the last hour are preserved (a series of rapid edits won't overwrite the original).
+Backups are stored as .groovy files in the hub's local File Manager (accessible at http://<HUB_IP>/local/<filename>). This means backups persist even if the MCP app is uninstalled, and can be downloaded directly from the hub without MCP. A maximum of 20 backups are kept; the oldest is pruned when the limit is exceeded. Backups within the last hour are preserved (a series of rapid edits won't overwrite the original).
 
 Does NOT require Hub Admin Read/Write to be enabled — backup viewing is always available.""",
             inputSchema: [
@@ -1198,9 +1198,11 @@ Does NOT require Hub Admin Read/Write to be enabled — backup viewing is always
         ],
         [
             name: "get_item_backup",
-            description: """Retrieves the full source code from a specific item backup.
+            description: """Retrieves the full source code from a specific item backup stored in the hub's File Manager.
 
 Use list_item_backups first to see available backups, then use this tool with the backup key (e.g., "app_123" or "driver_456") to retrieve the actual source code.
+
+For small files (≤60KB), the source code is returned directly. For larger files, a direct download URL is provided instead (http://<HUB_IP>/local/<filename>).
 
 The source code can be used to manually restore by pasting it into the Hubitat code editor, or passed to update_app_code / update_driver_code / install_app / install_driver to restore via MCP.
 
@@ -1217,7 +1219,7 @@ Does NOT require Hub Admin Read/Write to be enabled.""",
             name: "restore_item_backup",
             description: """⚠️ Restores an app or driver to its backed-up source code version.
 
-This calls update_app_code or update_driver_code using the source code saved in the backup. The backup must exist (use list_item_backups to check).
+Reads the backup source code from the hub's File Manager and pushes it via update_app_code or update_driver_code. All operations are local — no cloud involvement. The backup must exist (use list_item_backups to check).
 
 If the item was DELETED, this tool cannot restore it — use install_app or install_driver with the backup source instead, then update any device associations manually.
 
@@ -3070,15 +3072,17 @@ def requireHubAdminWrite(Boolean confirmParam) {
 
 /**
  * Automatically back up an individual item's source code before modifying or deleting it.
- * Stores in state.itemBackups keyed by "app_<id>" or "driver_<id>".
+ * Saves the source code as a .groovy file in the hub's local File Manager using uploadHubFile().
+ * Metadata (timestamp, version, etc.) is stored in state.itemBackupManifest.
+ * Files are accessible at http://<HUB_IP>/local/<filename> even if MCP fails.
  * If a backup of this item already exists within the last hour, skips (preserves the pre-edit original).
- * Returns the backup entry on success, or throws if the source cannot be retrieved.
+ * Returns the manifest entry on success, or throws if the source cannot be retrieved.
  */
 def backupItemSource(String type, String id) {
-    if (!state.itemBackups) state.itemBackups = [:]
+    if (!state.itemBackupManifest) state.itemBackupManifest = [:]
 
     def key = "${type}_${id}"
-    def existing = state.itemBackups[key]
+    def existing = state.itemBackupManifest[key]
 
     // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
@@ -3098,95 +3102,96 @@ def backupItemSource(String type, String id) {
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
     }
 
-    // Cap stored source at 64KB to prevent state size issues on the hub
-    def maxBackupSize = 64000
-    def sourceToStore = parsed.source
-    def truncated = false
-    if (sourceToStore.length() > maxBackupSize) {
-        mcpLog("warn", "hub-admin", "${type} ID ${id} source is ${sourceToStore.length()} chars, truncating backup to ${maxBackupSize}")
-        sourceToStore = sourceToStore.take(maxBackupSize)
-        truncated = true
+    // Save full source code to hub's local File Manager (no cloud, no size limit)
+    def fileName = "mcp-backup-${type}-${id}.groovy"
+    try {
+        uploadHubFile(fileName, parsed.source.getBytes("UTF-8"))
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to save backup file '${fileName}': ${e.message}")
+        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: file upload failed — ${e.message}")
     }
 
-    def backup = [
+    def manifest = [
         type: type,
         id: id,
-        source: sourceToStore,
+        fileName: fileName,
         version: parsed.version,
         timestamp: now(),
-        fullLength: parsed.source.length()
+        sourceLength: parsed.source.length()
     ]
-    if (truncated) backup.truncated = true
-    state.itemBackups[key] = backup
+    state.itemBackupManifest[key] = manifest
 
     // Prune old backups — keep at most 20 entries, remove oldest if over limit
-    if (state.itemBackups.size() > 20) {
-        def oldest = state.itemBackups.min { it.value.timestamp }
-        if (oldest) state.itemBackups.remove(oldest.key)
+    if (state.itemBackupManifest.size() > 20) {
+        def oldest = state.itemBackupManifest.min { it.value.timestamp }
+        if (oldest) {
+            try { deleteHubFile(oldest.value.fileName) } catch (Exception e) { /* file may already be gone */ }
+            state.itemBackupManifest.remove(oldest.key)
+        }
     }
 
-    mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code (version ${parsed.version})")
-    return backup
+    mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+    return manifest
 }
 
 // ==================== ITEM BACKUP TOOLS ====================
 
 /**
- * Lists all item backups stored in state.itemBackups.
+ * Lists all item backups stored in the hub's local File Manager.
+ * Metadata is in state.itemBackupManifest; actual source files are in File Manager.
  * Does not require Hub Admin Read/Write — always available.
  */
 def toolListItemBackups() {
-    def backups = state.itemBackups ?: [:]
+    def manifest = state.itemBackupManifest ?: [:]
 
-    if (backups.isEmpty()) {
+    if (manifest.isEmpty()) {
         return [
             backups: [],
             total: 0,
             message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, delete_app, or delete_driver.",
             maxBackups: 20,
+            storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
             howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore. For deleted items, use 'install_app' or 'install_driver' with the backup source."
         ]
     }
 
-    def backupList = backups.collect { key, entry ->
-        def info = [
+    def backupList = manifest.collect { key, entry ->
+        [
             backupKey: key,
             type: entry.type,
             id: entry.id,
+            fileName: entry.fileName,
             version: entry.version,
             timestamp: formatTimestamp(entry.timestamp),
             age: formatAge(entry.timestamp),
-            sourceLength: entry.fullLength ?: entry.source?.length() ?: 0
+            sourceLength: entry.sourceLength ?: 0,
+            directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
-        if (entry.truncated) {
-            info.truncated = true
-            info.storedLength = entry.source?.length() ?: 0
-            info.warning = "Source was truncated from ${entry.fullLength} to ${info.storedLength} chars (64KB limit). Restoring from this backup will result in incomplete code."
-        }
-        return info
     }.sort { a, b -> (b.timestamp <=> a.timestamp) } // Newest first
 
     return [
         backups: backupList,
         total: backupList.size(),
         maxBackups: 20,
-        howToRestore: "Use 'get_item_backup' with a backupKey to retrieve source code, then 'restore_item_backup' to push it back to the hub. For deleted items, use 'install_app' or 'install_driver' with the source from 'get_item_backup'.",
-        manualRestore: "You can also restore manually: go to Hubitat > Apps Code (or Drivers Code) > select the app/driver > paste the source code from 'get_item_backup' > click Save."
+        storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
+        howToRestore: "Use 'restore_item_backup' with a backupKey to restore via MCP. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code manually.",
+        manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code) > select the app/driver > paste the source > click Save."
     ]
 }
 
 /**
  * Retrieves the full source code from a specific item backup.
+ * Reads the file from the hub's local File Manager using downloadHubFile().
  * Does not require Hub Admin Read/Write.
  */
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
 
-    def backups = state.itemBackups ?: [:]
-    def backup = backups[args.backupKey]
+    def manifest = state.itemBackupManifest ?: [:]
+    def entry = manifest[args.backupKey]
 
-    if (!backup) {
-        def availableKeys = backups.keySet().sort()
+    if (!entry) {
+        def availableKeys = manifest.keySet().sort()
         return [
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None — no backups exist yet" : availableKeys.join(", "),
@@ -3194,32 +3199,53 @@ def toolGetItemBackup(args) {
         ]
     }
 
-    def result = [
-        backupKey: args.backupKey,
-        type: backup.type,
-        id: backup.id,
-        version: backup.version,
-        timestamp: formatTimestamp(backup.timestamp),
-        age: formatAge(backup.timestamp),
-        sourceLength: backup.source?.length() ?: 0,
-        source: backup.source
-    ]
-
-    if (backup.truncated) {
-        result.truncated = true
-        result.fullLength = backup.fullLength
-        result.warning = "This backup is INCOMPLETE — source was truncated from ${backup.fullLength} to ${result.sourceLength} chars due to the 64KB storage limit. Restoring will produce broken code."
+    // Read source code from hub's local File Manager
+    def source
+    try {
+        def bytes = downloadHubFile(entry.fileName)
+        source = new String(bytes, "UTF-8")
+    } catch (Exception e) {
+        return [
+            error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
+            backupKey: args.backupKey,
+            suggestion: "The file may have been deleted from File Manager. Check Hubitat > Settings > File Manager.",
+            directDownload: "http://<HUB_IP>/local/${entry.fileName}"
+        ]
     }
 
-    result.howToRestore = (backup.type == "app")
-        ? "To restore: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. Or manually paste this source into Hubitat > Apps Code > app ID ${backup.id} > Save."
-        : "To restore: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. Or manually paste this source into Hubitat > Drivers Code > driver ID ${backup.id} > Save."
+    def result = [
+        backupKey: args.backupKey,
+        type: entry.type,
+        id: entry.id,
+        fileName: entry.fileName,
+        version: entry.version,
+        timestamp: formatTimestamp(entry.timestamp),
+        age: formatAge(entry.timestamp),
+        sourceLength: source.length(),
+        directDownload: "http://<HUB_IP>/local/${entry.fileName}"
+    ]
+
+    // Only include source in response if it fits within the hub's response limit
+    // For large files, direct the user to download from File Manager instead
+    if (source.length() <= 60000) {
+        result.source = source
+    } else {
+        result.sourceTooLargeForResponse = true
+        result.message = "Source code is ${source.length()} chars — too large for an MCP response. Download it directly from File Manager instead."
+        result.manualDownload = "Go to http://<HUB_IP>/local/${entry.fileName} in your browser, or find it in Hubitat > Settings > File Manager."
+    }
+
+    result.howToRestore = (entry.type == "app")
+        ? "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
+        : "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Drivers Code > driver ID ${entry.id} > paste source > Save."
 
     return result
 }
 
 /**
- * Restores an app or driver to its backed-up source code by calling update_app_code or update_driver_code.
+ * Restores an app or driver to its backed-up source code.
+ * Reads the backup from File Manager and calls update_app_code or update_driver_code.
+ * Both the read (downloadHubFile) and write (hubInternalPostForm) are local — no cloud involvement.
  * Requires Hub Admin Write access.
  */
 def toolRestoreItemBackup(args) {
@@ -3227,11 +3253,11 @@ def toolRestoreItemBackup(args) {
 
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
 
-    def backups = state.itemBackups ?: [:]
-    def backup = backups[args.backupKey]
+    def manifest = state.itemBackupManifest ?: [:]
+    def entry = manifest[args.backupKey]
 
-    if (!backup) {
-        def availableKeys = backups.keySet().sort()
+    if (!entry) {
+        def availableKeys = manifest.keySet().sort()
         return [
             success: false,
             error: "No backup found for key '${args.backupKey}'",
@@ -3239,62 +3265,70 @@ def toolRestoreItemBackup(args) {
         ]
     }
 
-    if (backup.truncated) {
+    // Read the backup source from File Manager
+    def source
+    try {
+        def bytes = downloadHubFile(entry.fileName)
+        source = new String(bytes, "UTF-8")
+    } catch (Exception e) {
         return [
             success: false,
-            error: "Cannot restore from truncated backup — source was cut from ${backup.fullLength} to ${backup.source?.length()} chars. Restoring would produce broken code.",
+            error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
             backupKey: args.backupKey,
-            suggestion: "Use 'create_hub_backup' to create a full hub backup, then restore from the Hubitat web UI: Settings > Backup and Restore."
+            suggestion: "The file may have been deleted from File Manager. Check Hubitat > Settings > File Manager."
         ]
     }
 
-    if (!backup.source) {
+    if (!source) {
         return [
             success: false,
-            error: "Backup exists but contains no source code",
+            error: "Backup file exists but is empty",
             backupKey: args.backupKey
         ]
     }
 
-    mcpLog("info", "hub-admin", "Restoring ${backup.type} ID ${backup.id} from backup (version ${backup.version}, ${formatTimestamp(backup.timestamp)})")
+    mcpLog("info", "hub-admin", "Restoring ${entry.type} ID ${entry.id} from backup file ${entry.fileName} (version ${entry.version}, ${formatTimestamp(entry.timestamp)})")
 
-    // Remove the backup entry BEFORE restoring so backupItemSource creates a fresh backup of the CURRENT state
-    def backupCopy = backup.clone()
-    backups.remove(args.backupKey)
-    state.itemBackups = backups
+    // Remove the manifest entry BEFORE restoring so backupItemSource creates a fresh backup of the CURRENT state
+    def entryCopy = entry.clone()
+    manifest.remove(args.backupKey)
+    state.itemBackupManifest = manifest
 
     try {
         def result
-        if (backupCopy.type == "app") {
-            result = toolUpdateAppCode([appId: backupCopy.id, source: backupCopy.source, confirm: true])
+        if (entryCopy.type == "app") {
+            result = toolUpdateAppCode([appId: entryCopy.id, source: source, confirm: true])
         } else {
-            result = toolUpdateDriverCode([driverId: backupCopy.id, source: backupCopy.source, confirm: true])
+            result = toolUpdateDriverCode([driverId: entryCopy.id, source: source, confirm: true])
         }
 
         if (result?.success) {
+            // Clean up the old backup file since restore succeeded (a new backup of pre-restore state now exists)
+            try { deleteHubFile(entryCopy.fileName) } catch (Exception e) { /* file cleanup is best-effort */ }
             return [
                 success: true,
-                message: "Restored ${backupCopy.type} ID ${backupCopy.id} to version ${backupCopy.version} (backup from ${formatTimestamp(backupCopy.timestamp)})",
-                type: backupCopy.type,
-                id: backupCopy.id,
-                restoredVersion: backupCopy.version,
+                message: "Restored ${entryCopy.type} ID ${entryCopy.id} to version ${entryCopy.version} (backup from ${formatTimestamp(entryCopy.timestamp)})",
+                type: entryCopy.type,
+                id: entryCopy.id,
+                restoredVersion: entryCopy.version,
                 updateResult: result
             ]
         } else {
-            // Restore failed — put the backup back so user can try again
-            if (!state.itemBackups) state.itemBackups = [:]
-            state.itemBackups[args.backupKey] = backupCopy
+            // Restore failed — put the manifest entry back so user can try again
+            if (!state.itemBackupManifest) state.itemBackupManifest = [:]
+            state.itemBackupManifest[args.backupKey] = entryCopy
             return [
                 success: false,
                 error: "Restore failed: ${result?.error ?: 'unknown error'}",
                 backupKey: args.backupKey,
-                message: "The backup has been preserved — you can try again or restore manually."
+                message: "The backup has been preserved — you can try again or restore manually.",
+                directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
             ]
         }
     } catch (Exception e) {
-        // Restore failed — put the backup back
-        if (!state.itemBackups) state.itemBackups = [:]
-        state.itemBackups[args.backupKey] = backupCopy
+        // Restore failed — put the manifest entry back
+        if (!state.itemBackupManifest) state.itemBackupManifest = [:]
+        state.itemBackupManifest[args.backupKey] = entryCopy
         throw e
     }
 }
@@ -4305,8 +4339,8 @@ def toolUpdateAppCode(args) {
         }
 
         if (success) {
-            // Invalidate item backup cache so next update fetches fresh version
-            if (state.itemBackups) state.itemBackups.remove("app_${args.appId}")
+            // Invalidate item backup manifest so next update fetches fresh version
+            if (state.itemBackupManifest) state.itemBackupManifest.remove("app_${args.appId}")
             mcpLog("info", "hub-admin", "App ID ${args.appId} updated successfully")
             return [
                 success: true,
@@ -4370,8 +4404,8 @@ def toolUpdateDriverCode(args) {
         }
 
         if (success) {
-            // Invalidate item backup cache so next update fetches fresh version
-            if (state.itemBackups) state.itemBackups.remove("driver_${args.driverId}")
+            // Invalidate item backup manifest so next update fetches fresh version
+            if (state.itemBackupManifest) state.itemBackupManifest.remove("driver_${args.driverId}")
             mcpLog("info", "hub-admin", "Driver ID ${args.driverId} updated successfully")
             return [
                 success: true,
@@ -4398,9 +4432,8 @@ def toolDeleteApp(args) {
     requireHubAdminWrite(args.confirm)
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
-    // Back up source code before deletion so it can be restored if needed
-    def itemBackup = backupItemSource("app", args.appId.toString())
-    def backupTruncated = itemBackup?.truncated ?: false
+    // Back up source code to File Manager before deletion so it can be restored if needed
+    backupItemSource("app", args.appId.toString())
 
     mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
     try {
@@ -4418,16 +4451,15 @@ def toolDeleteApp(args) {
 
         if (success) {
             mcpLog("info", "hub-admin", "App ID ${args.appId} deleted successfully")
-            def result = [
+            def backupEntry = state.itemBackupManifest?.get("app_${args.appId}")
+            return [
                 success: true,
-                message: "App deleted successfully",
+                message: "App deleted successfully. Source code backed up to File Manager.",
                 appId: args.appId,
-                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                backupFile: backupEntry?.fileName,
+                restoreHint: backupEntry ? "To restore: use 'restore_item_backup' with backupKey='app_${args.appId}', or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install via install_app." : null
             ]
-            if (backupTruncated) {
-                result.warning = "Pre-deletion backup was truncated (source exceeded 64KB). The backup in state.itemBackups may be incomplete."
-            }
-            return result
         } else {
             return [
                 success: false,
@@ -4446,9 +4478,8 @@ def toolDeleteDriver(args) {
     requireHubAdminWrite(args.confirm)
     if (!args.driverId) throw new IllegalArgumentException("driverId is required")
 
-    // Back up source code before deletion so it can be restored if needed
-    def itemBackup = backupItemSource("driver", args.driverId.toString())
-    def backupTruncated = itemBackup?.truncated ?: false
+    // Back up source code to File Manager before deletion so it can be restored if needed
+    backupItemSource("driver", args.driverId.toString())
 
     mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
     try {
@@ -4465,16 +4496,15 @@ def toolDeleteDriver(args) {
 
         if (success) {
             mcpLog("info", "hub-admin", "Driver ID ${args.driverId} deleted successfully")
-            def result = [
+            def backupEntry = state.itemBackupManifest?.get("driver_${args.driverId}")
+            return [
                 success: true,
-                message: "Driver deleted successfully",
+                message: "Driver deleted successfully. Source code backed up to File Manager.",
                 driverId: args.driverId,
-                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                backupFile: backupEntry?.fileName,
+                restoreHint: backupEntry ? "To restore: use 'restore_item_backup' with backupKey='driver_${args.driverId}', or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install via install_driver." : null
             ]
-            if (backupTruncated) {
-                result.warning = "Pre-deletion backup was truncated (source exceeded 64KB). The backup in state.itemBackups may be incomplete."
-            }
-            return result
         } else {
             return [
                 success: false,
