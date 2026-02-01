@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.4.7:**
+- **10 bug fixes** from comprehensive code review — state persistence, auth retry, time parsing, locale handling, variable substitution, restore flash prevention, delay action reliability, and more
+
 **New in v0.4.6:**
 - **Fix version mismatch bug** — `update_app_code`/`update_driver_code` now fetch fresh version for optimistic locking instead of relying on potentially stale backup cache
 
@@ -677,6 +680,17 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.4.7** - Comprehensive bug fixes from code review (59 tools)
+  - Fix `mcpLog` nested state mutation — entries now persist reliably via top-level reassignment
+  - Fix Hub Security auth retry — all `hubInternalGet`/`hubInternalPost`/`hubInternalPostForm` retry once on cookie expiry
+  - Fix `collectDeviceIds` — now handles `deviceIds` plural array (multi-device triggers, capture_state)
+  - Fix `time_range` condition — handles bare "HH:mm" strings that `toDateTime()` rejects
+  - Fix `days_of_week` condition — uses `Locale.US` for consistent English day names
+  - Fix `substituteVariables` — resolves rule engine variables, not just hub connector globals
+  - Fix `restore_state` flash — devices restoring to "off" no longer briefly flash on from setLevel
+  - Fix delay action overwrite — multiple delays in same rule no longer clobber each other via runIn
+  - Fix parameter conversion — handles edge cases (overflow, scientific notation) with try-catch
+  - Fix HSM `previousStatus` — captured before `sendLocationEvent` instead of after
 - **v0.4.6** - Fix version mismatch bug in optimistic locking (59 tools)
   - `update_app_code`/`update_driver_code` now fetch fresh version from hub instead of using potentially stale backup cache
 - **v0.4.5** - Smart large-file handling (59 tools)

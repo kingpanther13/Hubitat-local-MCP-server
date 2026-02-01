@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.4.6
+ * Version: 0.4.7
  */
 
 definition(
@@ -3026,6 +3026,27 @@ def evaluateConditions() {
     }
 }
 
+/**
+ * Parse a time string into a Date object. Handles bare "HH:mm" format (which toDateTime() rejects)
+ * by constructing today's date, as well as full ISO 8601 strings via toDateTime().
+ */
+private Date parseTimeString(timeStr) {
+    if (!timeStr) throw new IllegalArgumentException("Time string is null or empty")
+    def s = timeStr.toString()
+    // Bare HH:mm format — construct today's date with that time
+    if (s =~ /^\d{1,2}:\d{2}$/) {
+        def parts = s.split(":")
+        def cal = Calendar.getInstance()
+        cal.set(Calendar.HOUR_OF_DAY, parts[0] as Integer)
+        cal.set(Calendar.MINUTE, parts[1] as Integer)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.time
+    }
+    // Full date/time string — delegate to toDateTime()
+    return toDateTime(s)
+}
+
 def evaluateCondition(condition) {
     switch (condition.type) {
         case "device_state":
@@ -3046,14 +3067,17 @@ def evaluateCondition(condition) {
             def startTime = condition.start ?: condition.startTime
             def endTime = condition.end ?: condition.endTime
             try {
-                return timeOfDayIsBetween(toDateTime(startTime), toDateTime(endTime), new Date())
+                // toDateTime() requires ISO 8601 — bare "HH:mm" strings must be converted to today's date
+                def startDate = parseTimeString(startTime)
+                def endDate = parseTimeString(endTime)
+                return timeOfDayIsBetween(startDate, endDate, new Date())
             } catch (Exception e) {
                 ruleLog("warn", "time_range condition failed to parse times (start=${startTime}, end=${endTime}): ${e.message}")
                 return false
             }
 
         case "days_of_week":
-            def today = new Date().format("EEEE")
+            def today = new Date().format("EEEE", Locale.US)
             return condition.days ? condition.days.contains(today) : false
 
         case "sun_position":
@@ -3206,7 +3230,7 @@ def substituteVariables(String text, evt = null) {
         result = result.replace("%${name}%", value?.toString() ?: "")
     }
 
-    // Global hub variables
+    // Global hub variables and rule engine variables (via parent.getVariableValue)
     def varPattern = /%([^%]+)%/
     def matcher = result =~ varPattern
     while (matcher.find()) {
@@ -3215,6 +3239,12 @@ def substituteVariables(String text, evt = null) {
             def hubVar = getGlobalVar(varName)
             if (hubVar != null) {
                 result = result.replace("%${varName}%", hubVar.value?.toString() ?: "")
+            } else {
+                // Fall back to rule engine variables managed by the parent server
+                def ruleVar = parent.getVariableValue(varName)
+                if (ruleVar != null) {
+                    result = result.replace("%${varName}%", ruleVar.toString())
+                }
             }
         } catch (e) {
             // Variable not found, leave placeholder
@@ -3340,7 +3370,7 @@ def executeAction(action, actionIndex = null, evt = null) {
                     delayData.evtValue = evt.value?.toString() ?: ""
                     delayData.evtName = evt.name ?: ""
                 }
-                runIn(delaySeconds, handlerName, [data: delayData])
+                runIn(delaySeconds, handlerName, [data: delayData, overwrite: false])
                 return "delayed" // Signal to stop current execution, will resume via scheduled handler
             } else {
                 ruleLog("warn", "Delay action skipped: delays inside if_then_else or repeat blocks are not supported (no actionIndex context)")
@@ -3488,18 +3518,22 @@ def executeAction(action, actionIndex = null, evt = null) {
                 savedStates.each { deviceId, devState ->
                     def dev = parent.findDevice(deviceId)
                     if (dev) {
-                        if (devState.hue != null && devState.saturation != null) {
-                            dev.setColor([hue: devState.hue, saturation: devState.saturation, level: devState.level ?: 100])
-                        } else if (devState.colorTemperature != null) {
-                            dev.setColorTemperature(devState.colorTemperature)
-                        }
-                        if (devState.level != null && devState.hue == null) {
-                            dev.setLevel(devState.level)
-                        }
-                        if (devState.switch == "on") {
-                            dev.on()
-                        } else if (devState.switch == "off") {
+                        // If restoring to "off", just turn off — don't set level/color first (causes flash)
+                        if (devState.switch == "off") {
                             dev.off()
+                        } else {
+                            // Restore color/level attributes before turning on
+                            if (devState.hue != null && devState.saturation != null) {
+                                dev.setColor([hue: devState.hue, saturation: devState.saturation, level: devState.level ?: 100])
+                            } else if (devState.colorTemperature != null) {
+                                dev.setColorTemperature(devState.colorTemperature)
+                            }
+                            if (devState.level != null && devState.hue == null) {
+                                dev.setLevel(devState.level)
+                            }
+                            if (devState.switch == "on") {
+                                dev.on()
+                            }
                         }
                     }
                 }

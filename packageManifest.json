@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.4.6",
+    "version": "0.4.7",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-02-01",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.4.6 - Fix version mismatch bug in update_app_code/update_driver_code optimistic locking (backup cache returned stale version)\n\nv0.4.5 - Smart large-file handling:\n\n- Chunked reading for get_app_source, get_driver_source, and read_file (offset/length params)\n- Large sources auto-saved to File Manager for cloud-free updates\n- New 'resave' mode: re-save current source entirely on-hub (no cloud round-trip)\n- New 'sourceFile' mode: read source from File Manager file (bypasses 64KB cloud limit)\n- Refactored get/update tools into shared helpers\n\nv0.4.4 - Fix bugs from live testing (InputStreamReader, delete status, backup chain)\nv0.4.3 - Comprehensive bug fixes + item backup & file manager tools (59 tools)",
+    "releaseNotes": "v0.4.7 - Comprehensive bug fixes from code review:\n\n- Fix state persistence: mcpLog nested mutation now reassigns top-level state\n- Fix Hub Security auth retry: all hub internal methods retry once on cookie expiry\n- Fix collectDeviceIds missing multi-device triggers (deviceIds plural array)\n- Fix time_range condition: handle bare HH:mm strings (toDateTime requires ISO 8601)\n- Fix days_of_week locale dependency: use Locale.US for consistent day names\n- Fix substituteVariables: now resolves rule engine variables, not just hub connector vars\n- Fix restore_state flash: devices restoring to 'off' no longer briefly flash on\n- Fix delay overwrite: multiple delays in same rule no longer clobber each other\n- Fix parameter conversion: handles edge cases gracefully with try-catch\n- Fix HSM previousStatus: captured before sendLocationEvent instead of after\n\nv0.4.6 - Fix version mismatch bug in optimistic locking\nv0.4.5 - Smart large-file handling (chunked reading, resave mode, sourceFile mode)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.4.6 - Fix version mismatch bug in update_app_code/update_driver_code optimistic locking
+ * Version: 0.4.7 - Bug fixes: state persistence, auth retry, time parsing, locale, variable substitution, restore flash, delay overwrite
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.4.6"
+                paragraph "<b>Version:</b> 0.4.7"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.6). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.4.7). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.4.6"
+        version: "0.4.7"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1568,8 +1568,12 @@ def toolSendCommand(deviceId, command, parameters) {
     if (parameters && parameters.size() > 0) {
         def convertedParams = parameters.collect { param ->
             def s = param.toString()
-            if (s.isNumber()) {
-                return s.contains(".") ? s.toDouble() : s.toInteger()
+            try {
+                if (s.isNumber()) {
+                    return s.contains(".") ? s.toDouble() : s.toInteger()
+                }
+            } catch (Exception e) {
+                // If numeric conversion fails (e.g., overflow, scientific notation), pass as string
             }
             return param
         }
@@ -1907,7 +1911,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.4.6",
+        serverVersion: "0.4.7",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -2068,13 +2072,24 @@ def buildDeviceManifest(ruleData) {
 private void collectDeviceIds(component, String section, Map deviceUsage) {
     if (!component) return
 
-    // Check for deviceId field
+    // Check for deviceId field (singular)
     if (component.deviceId) {
         def id = component.deviceId.toString()
         if (!deviceUsage.containsKey(id)) {
             deviceUsage[id] = new LinkedHashSet()
         }
         deviceUsage[id] << section
+    }
+
+    // Check for deviceIds field (plural — multi-device triggers, capture_state, etc.)
+    if (component.deviceIds) {
+        component.deviceIds.each { did ->
+            def id = did.toString()
+            if (!deviceUsage.containsKey(id)) {
+                deviceUsage[id] = new LinkedHashSet()
+            }
+            deviceUsage[id] << section
+        }
     }
 
     // Check nested structures in if_then_else actions
@@ -2375,11 +2390,13 @@ def toolSetHsm(mode) {
         throw new IllegalArgumentException("Invalid HSM mode: ${mode}. Valid modes: ${validModes}")
     }
 
+    // Capture current status BEFORE sending the change event
+    def previousStatus = location.hsmStatus
     sendLocationEvent(name: "hsmSetArm", value: mode)
 
     return [
         success: true,
-        previousStatus: location.hsmStatus,
+        previousStatus: previousStatus,
         newMode: mode
     ]
 }
@@ -3037,7 +3054,7 @@ def getHubSecurityCookie() {
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
-def hubInternalGet(String path, Map query = null, int timeout = 30) {
+def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     def cookie = getHubSecurityCookie()
     def params = [
         uri: "http://127.0.0.1:8080",
@@ -3065,11 +3082,12 @@ def hubInternalGet(String path, Map query = null, int timeout = 30) {
             }
         }
     } catch (Exception e) {
-        // Clear cached cookie on auth failures so next call re-authenticates
-        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+        // On auth failure, clear stale cookie and retry once with fresh credentials
+        if (!isRetry && settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
             state.hubSecurityCookie = null
             state.hubSecurityCookieExpiry = null
-            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on GET ${path}")
+            return hubInternalGet(path, query, timeout, true)
         }
         throw e
     }
@@ -3081,7 +3099,7 @@ def hubInternalGet(String path, Map query = null, int timeout = 30) {
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
-def hubInternalPost(String path, Map body = null) {
+def hubInternalPost(String path, Map body = null, boolean isRetry = false) {
     def cookie = getHubSecurityCookie()
     def params = [
         uri: "http://127.0.0.1:8080",
@@ -3103,11 +3121,12 @@ def hubInternalPost(String path, Map body = null) {
             responseText = resp.data?.text?.toString() ?: resp.data?.toString()
         }
     } catch (Exception e) {
-        // Clear cached cookie on auth failures so next call re-authenticates
-        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+        // On auth failure, clear stale cookie and retry once with fresh credentials
+        if (!isRetry && settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
             state.hubSecurityCookie = null
             state.hubSecurityCookieExpiry = null
-            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST ${path}")
+            return hubInternalPost(path, body, true)
         }
         throw e
     }
@@ -3118,7 +3137,7 @@ def hubInternalPost(String path, Map body = null) {
  * Make an authenticated POST request to the hub's internal API with form-encoded body.
  * Used for app/driver management endpoints that require application/x-www-form-urlencoded.
  */
-def hubInternalPostForm(String path, Map body, int timeout = 420) {
+def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
     def cookie = getHubSecurityCookie()
     def params = [
         uri: "http://127.0.0.1:8080",
@@ -3153,10 +3172,12 @@ def hubInternalPostForm(String path, Map body, int timeout = 420) {
             ]
         }
     } catch (Exception e) {
-        if (settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+        // On auth failure, clear stale cookie and retry once with fresh credentials
+        if (!isRetry && settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
             state.hubSecurityCookie = null
             state.hubSecurityCookieExpiry = null
-            mcpLog("debug", "hub-admin", "Cleared stale Hub Security cookie after auth failure on ${path}")
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST-form ${path}")
+            return hubInternalPostForm(path, body, timeout, true)
         }
         throw e
     }
@@ -3915,6 +3936,9 @@ def mcpLog(String level, String component, String message, String ruleId = null,
         state.debugLogs.entries.remove((int)0)
     }
 
+    // Force top-level state reassignment to ensure nested mutations are persisted
+    state.debugLogs = state.debugLogs
+
     // Also log to Hubitat logs
     switch (level) {
         case "debug": log.debug "[${component}] ${message}"; break
@@ -4073,7 +4097,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.4.6",
+        version: "0.4.7",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4094,7 +4118,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.4.6"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.4.7"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4261,7 +4285,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.4.6"
+    details.mcpServerVersion = "0.4.7"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -5017,7 +5041,7 @@ def toolDeleteDriver(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.4.6"
+    return "0.4.7"
 }
 
 def isNewerVersion(String remote, String local) {
