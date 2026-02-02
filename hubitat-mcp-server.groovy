@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.4 - Fix update_device room assignment (extract device data from nested fullJson response)
+ * Version: 0.6.5 - Fix room assignment: use deviceTypeId field from fullJson.device
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.4"
+                paragraph "<b>Version:</b> 0.6.5"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.4). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.5). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.4"
+        version: "0.6.5"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2167,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.4",
+        serverVersion: "0.6.5",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.4",
+        version: "0.6.5",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.4"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.5"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.4"
+    details.mcpServerVersion = "0.6.5"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6128,7 +6128,7 @@ def toolUpdateDevice(args) {
                         def fullJson = new groovy.json.JsonSlurper().parseText(responseText)
                         // Device data is nested under the "device" key in fullJson response
                         deviceJson = fullJson?.device ?: fullJson
-                        mcpLog("debug", "device", "update_device room: fullJson top-level keys=${fullJson?.keySet()}, device keys=${deviceJson?.keySet()}, typeId=${deviceJson?.typeId}, roomId=${deviceJson?.roomId}")
+                        mcpLog("debug", "device", "update_device room: fullJson top-level keys=${fullJson?.keySet()}, device keys=${deviceJson?.keySet()}, deviceTypeId=${deviceJson?.deviceTypeId}, typeId=${deviceJson?.typeId}, roomId=${deviceJson?.roomId}")
                     }
                 } catch (Exception e) {
                     throw new RuntimeException("Could not fetch device details: ${e.message}")
@@ -6171,10 +6171,10 @@ def toolUpdateDevice(args) {
                 }
 
                 // POST to /device/save with flat field names (Grails convention)
-                // type.id is the numeric driver type ID from the device's nested JSON
-                def typeId = deviceJson.typeId?.toString() ?: deviceJson.type?.id?.toString() ?: ""
+                // The device JSON uses "deviceTypeId" for the driver type ID
+                def typeId = deviceJson.deviceTypeId?.toString() ?: deviceJson.typeId?.toString() ?: deviceJson.type?.id?.toString() ?: ""
                 if (!typeId) {
-                    mcpLog("warn", "device", "update_device room: could not determine typeId from device JSON, room save may fail")
+                    mcpLog("warn", "device", "update_device room: could not determine typeId from device JSON (checked deviceTypeId, typeId, type.id), room save may fail")
                 }
                 def formBody = [
                     id: deviceId.toString(),
@@ -6246,7 +6246,7 @@ def toolUpdateDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.4"
+    return "0.6.5"
 }
 
 def isNewerVersion(String remote, String local) {
