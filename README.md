@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.6:**
+- **Room assignment diagnostic build** — dumps full device JSON fields for debugging `/device/save` requirements. Also tries `device.*` prefixed form fields.
+
 **New in v0.6.5:**
 - **Fix room assignment (still 500 in v0.6.4)** — the device JSON field is `deviceTypeId`, not `typeId`. Was still null after the v0.6.4 nesting fix.
 
@@ -802,6 +805,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.6** - Room assignment: diagnostic build with device JSON dump
 - **v0.6.5** - Fix room assignment: use `deviceTypeId` field (not `typeId`)
 - **v0.6.4** - Fix room assignment: extract device data from nested `fullJson.device`
 - **v0.6.3** - Fix `update_device` room assignment (500) and enable/disable (404) bugs + debug logging
