@@ -17,6 +17,14 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.0:**
+- **3 new tools** (67 total) — virtual device creation and management
+- **`create_virtual_device`** — create virtual switches, buttons, contact sensors, motion sensors, and 11 other types as MCP-managed child devices
+- **`list_virtual_devices`** — list all MCP-managed virtual devices with current states
+- **`delete_virtual_device`** — remove MCP-managed virtual devices
+- **Auto-accessible** — virtual devices work with all MCP device tools (`send_command`, `get_device`, etc.) without manual device selection
+- **Shareable** — virtual devices appear in Hubitat's device list for use with Maker API, Dashboard, Rule Machine, Home Assistant, etc.
+
 **New in v0.5.4:**
 - **Fix BigDecimal arithmetic** — replace all floating-point division with pure integer math in `device_health_check` and `delete_device` to avoid Hubitat Groovy's `BigDecimal` incompatibilities
 
@@ -102,17 +110,20 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (59 total)
+### MCP Tools (67 total)
 
 | Category | Tools |
 |----------|-------|
 | **Devices** (5) | `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events` |
+| **Virtual Devices** (3) | `create_virtual_device`, `list_virtual_devices`, `delete_virtual_device` |
 | **Rules** (11) | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule`, `export_rule`, `import_rule`, `clone_rule` |
 | **System** (9) | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable`, `check_for_update` |
 | **State Capture** (3) | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
 | **Debug/Diagnostics** (6) | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
+| **Monitoring** (4) | `get_hub_logs`, `get_device_history`, `get_hub_performance`, `device_health_check` |
 | **Hub Admin Read** (8) | `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source` |
 | **Hub Admin Write** (10) | `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` |
+| **Device Admin** (1) | `delete_device` |
 | **Item Backups** (3) | `list_item_backups`, `get_item_backup`, `restore_item_backup` |
 | **File Manager** (4) | `list_files`, `read_file`, `write_file`, `delete_file` |
 
@@ -766,13 +777,19 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - **Notification routing** — different notification targets per severity or event type (e.g., critical alerts to Pushover, informational to email)
 
 ### Additional Ideas
-- **Device creation/pairing assistance** — help users through the device pairing process for Z-Wave, Zigbee, and cloud-connected devices
+- **Device creation** — *partially implemented in v0.6.0* (MCP-managed child virtual devices via `create_virtual_device`). Future: create standalone virtual devices that appear in the regular Devices section independent of the MCP app, and support device pairing for Z-Wave, Zigbee, and cloud-connected devices
 - **Scene management** — create, modify, and manage scenes (device state groups) beyond the current `activate_scene`
 - **Energy monitoring dashboard** — aggregate power/energy data from devices into summary reports
 - **Scheduled report generation** — periodic automated reports on hub health, device status, rule execution history
 
 ## Version History
 
+- **v0.6.0** - Virtual device creation and management (67 tools)
+  - New `create_virtual_device` — create virtual switches, buttons, sensors, and more as MCP-managed child devices using `addChildDevice()`
+  - New `list_virtual_devices` — list all MCP-managed virtual devices with current states and capabilities
+  - New `delete_virtual_device` — remove MCP-managed virtual devices
+  - `findDevice()` and `list_devices` now include MCP-managed child devices automatically
+  - Supports 15 virtual device types: Switch, Button, Contact Sensor, Motion Sensor, Presence Sensor, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Opener, Water Sensor, Omni Sensor, Fan Controller
 - **v0.5.4** - Fix BigDecimal arithmetic with pure integer math in `device_health_check` and `delete_device` (64 tools)
 - **v0.5.3** - Fix `BigDecimal.round()` in `device_health_check` (64 tools)
 - **v0.5.2** - Fix `device_health_check` error handling (64 tools)
