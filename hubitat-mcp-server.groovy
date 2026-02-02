@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.0 - Add virtual device creation/management (create_virtual_device, list_virtual_devices, delete_virtual_device)
+ * Version: 0.6.1 - Fix BigDecimal.round() crash in daily version update checker
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.0"
+                paragraph "<b>Version:</b> 0.6.1"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.0"
+        version: "0.6.1"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2128,7 +2128,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.0",
+        serverVersion: "0.6.1",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4319,7 +4319,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.0",
+        version: "0.6.1",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4340,7 +4340,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.0"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.1"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4507,7 +4507,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.0"
+    details.mcpServerVersion = "0.6.1"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -5981,7 +5981,7 @@ def toolDeleteVirtualDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.0"
+    return "0.6.1"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -6006,9 +6006,10 @@ def checkForUpdate() {
     try {
         // Skip if checked within last 24 hours (unless forced)
         if (state.updateCheck?.checkedAt) {
-            def hoursSinceCheck = (now() - state.updateCheck.checkedAt) / (1000 * 60 * 60)
-            if (hoursSinceCheck < 24) {
-                logDebug("Version check skipped - last checked ${hoursSinceCheck.round(1)} hours ago")
+            def msSinceCheck = now() - state.updateCheck.checkedAt
+            if (msSinceCheck < 24 * 60 * 60 * 1000) {
+                def hoursSinceCheck = (int)(msSinceCheck / (1000 * 60 * 60))
+                logDebug("Version check skipped - last checked ${hoursSinceCheck} hours ago")
                 return
             }
         }

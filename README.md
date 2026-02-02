@@ -17,6 +17,10 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.1:**
+- **Fix BigDecimal.round() crash** — daily version update checker was crashing nightly at 3 AM due to `BigDecimal.round(1)` in Hubitat's Groovy sandbox. Replaced with pure integer math.
+- **Rule app version sync** — `hubitat-mcp-rule.groovy` version updated from 0.4.7 to 0.6.1 to stay in sync with the server
+
 **New in v0.6.0:**
 - **3 new tools** (67 total) — virtual device creation and management
 - **`create_virtual_device`** — create virtual switches, buttons, contact sensors, motion sensors, and 11 other types as MCP-managed child devices
@@ -784,6 +788,10 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.1** - Fix BigDecimal.round() crash in version update checker (67 tools)
+  - Fix `checkForUpdate()` crashing nightly at 3 AM — `BigDecimal.round(1)` replaced with pure integer math
+  - Full audit of all division/rounding patterns across both apps — no other instances found
+  - Sync `hubitat-mcp-rule.groovy` version from 0.4.7 to 0.6.1
 - **v0.6.0** - Virtual device creation and management (67 tools)
   - New `create_virtual_device` — create virtual switches, buttons, sensors, and more as MCP-managed child devices using `addChildDevice()`
   - New `list_virtual_devices` — list all MCP-managed virtual devices with current states and capabilities
