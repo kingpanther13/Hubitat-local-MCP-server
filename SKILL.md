@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 59 tools for device control, rule automation, hub admin, file management, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 67 tools for device control, virtual device management, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -27,10 +27,11 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 59 tool definitions + dispatch         │  │
+│  │  - 67 tool definitions + dispatch         │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
+│  │  - Virtual device mgmt (child devices)    │  │
 │  │  - Debug logging system                   │  │
 │  │  - Version update checker                 │  │
 │  ├───────────────────────────────────────────┤  │
@@ -68,6 +69,8 @@ The server file is organized with prominent section delimiters:
 // ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
 // ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
 // ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
+// ==================== DEVICE ADMIN TOOL IMPLEMENTATIONS ====================
+// ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
 // ==================== VERSION UPDATE CHECK ====================
 ```
 
@@ -166,7 +169,7 @@ Conventions:
 
 Three tiers of access control:
 
-**No gate** — Device tools, rule tools, system tools. These operate only on user-selected devices and MCP-managed rules.
+**No gate** — Device tools, rule tools, system tools, `list_virtual_devices`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), and MCP-managed rules.
 
 **`requireHubAdminRead()`** — Checks `settings.enableHubAdminRead` is true. Used for tools that read hub system info (hub details, health, app/driver lists, source code).
 
@@ -276,26 +279,49 @@ All device access goes through `findDevice(deviceId)`:
 ```groovy
 def findDevice(deviceId) {
     if (!deviceId) return null
-    return settings.selectedDevices?.find { it.id.toString() == deviceId.toString() }
+    // Search selected devices first, then MCP-managed child devices (virtual devices)
+    def device = settings.selectedDevices?.find { it.id.toString() == deviceId.toString() }
+    if (!device) {
+        device = getChildDevices()?.find { it.id.toString() == deviceId.toString() }
+    }
+    return device
 }
 ```
 
-Only devices in `settings.selectedDevices` are accessible. This is the security boundary — the user explicitly selects which devices to expose to MCP.
+Devices are accessible from two sources:
+1. **`settings.selectedDevices`** — the user explicitly selects which physical/existing devices to expose to MCP (security boundary)
+2. **`getChildDevices()`** — MCP-managed virtual devices created via `create_virtual_device` are automatically accessible without manual selection
+
+`list_devices` also combines both sources (deduplicating by ID) and marks child devices with `mcpManaged: true`.
+
+### Virtual Device Management
+
+Virtual devices are created as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
+
+- **`addChildDevice("hubitat", driverName, dni, [name: ..., label: ..., isComponent: false])`** — creates a device using a built-in Hubitat driver
+- **`isComponent: false`** — device appears independently in the Hubitat UI, can be edited/deleted, and can be shared with other apps (Maker API, Dashboard, Rule Machine, HA, etc.)
+- **`getChildDevices()`** returns only child *devices* (not child apps/rules — those use `getChildApps()`)
+- **`deleteChildDevice(dni)`** removes by device network ID
+- Auto-generated DNIs use format `mcp-virtual-XXXXXXXX` (hex timestamp suffix)
+- Supports 15 built-in virtual device types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller
+- Requires Hub Admin Write access (with backup verification) for create/delete operations
 
 ### Version Management
 
 Version strings appear in multiple locations. When bumping the version, update ALL of these:
-- File header comment
-- `mainPage()` display paragraphs (2 locations)
+- File header comment (`hubitat-mcp-server.groovy` line 7)
+- `mainPage()` display paragraphs (2 locations: version display + update banner)
 - `handleInitialize()` response
 - `toolExportRule()` serverVersion field
 - `toolGetLoggingStatus()` version field
 - `toolGenerateBugReport()` version variable
 - `toolGetHubDetails()` mcpServerVersion field
 - `currentVersion()` return value
-- `packageManifest.json` version field
+- `packageManifest.json` version field + releaseNotes
+- `README.md` — "New in vX.Y.Z" section + Version History table
+- `SKILL.md` — description frontmatter + architecture diagram tool count
 
-Search for the current version string to find all locations.
+Search for the current version string across all files to find all locations.
 
 ### Groovy/Hubitat Idioms
 
@@ -378,7 +404,7 @@ The server implements MCP protocol version `2024-11-05`:
 5. **Hub internal API responses vary by firmware** — always handle both JSON and non-JSON responses with nested try/catch for parsing
 6. **Numeric parsing of API responses** — hub endpoints like `/hub/advanced/freeOSMemory` return text that might not be numeric; wrap `as Integer` / `as Double` conversions in try/catch
 7. **OAuth token** — created once in `initialize()` via `createAccessToken()` and stored in `state.accessToken`; never regenerate it or users lose their MCP endpoint URL
-8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations
+8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations across `hubitat-mcp-server.groovy`, `packageManifest.json`, `README.md`, and `SKILL.md`
 
 ## Future Plans (Blue-Sky — Needs Research)
 
@@ -405,7 +431,8 @@ These are speculative feature ideas that need feasibility research before implem
 - Bidirectional sync between MCP rules and RM rules (long-shot)
 
 ### Additional Ideas
-- Device creation/pairing assistance (Z-Wave, Zigbee, cloud)
+- ~~Device creation~~ — **DONE in v0.6.0** (virtual device creation via `addChildDevice()`)
+- Device pairing assistance (Z-Wave inclusion, Zigbee pairing, cloud device setup)
 - Notification/alert management (granular routing)
 - Scene management (create/modify/manage beyond activate_scene)
 - Energy monitoring aggregation and reports
