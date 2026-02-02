@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 67 tools for device control, virtual device management, rule automation, hub admin, file management, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 68 tools for device control, virtual device management, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -306,6 +306,20 @@ Virtual devices are created as **child devices** of the MCP Rule Server app usin
 - Supports 15 built-in virtual device types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller
 - Requires Hub Admin Write access (with backup verification) for create/delete operations
 
+#### update_device Tool
+
+The `update_device` tool modifies properties on any accessible device (selected or MCP-managed). It accepts all parameters as optional — only specified fields are changed:
+
+- **label** — `device.setLabel(value)` (official API)
+- **name** — `device.setName(value)` (official API)
+- **deviceNetworkId** — `device.setDeviceNetworkId(value)` (official API)
+- **dataValues** — `device.updateDataValue(key, value)` for each entry (official API)
+- **preferences** — `device.updateSetting(key, [type: type, value: value])` for each entry (official API, requires `type` field: `bool`, `number`, `decimal`, `text`, `enum`, `time`, `hub`)
+- **room** — resolves room name → ID via `getRooms()`, then POSTs to `/device/save` internal endpoint with `id` and `roomId` (undocumented API, requires Hub Admin Write)
+- **enabled** — GETs `/device/disable?id=<deviceId>&disable=<true|false>` internal endpoint (undocumented API, requires Hub Admin Write)
+
+Room assignment and enable/disable use the hub's internal API at `http://127.0.0.1:8080` and require Hub Admin Write safety gate confirmation. All other properties use the official Hubitat Groovy API and work on any accessible device. Driver type cannot be changed — must delete and recreate the device.
+
 ### Version Management
 
 Version strings appear in multiple locations. When bumping the version, update ALL of these:
@@ -379,6 +393,12 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/app/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update app code |
 | `/driver/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update driver code |
 | `/login` | `username=<u>, password=<p>, submit=Login` | Hub Security login |
+| `/device/save` | `id=<deviceId>, roomId=<roomId>` | Assign device to a room |
+
+**Device management endpoints (GET):**
+| Path | Purpose |
+|------|---------|
+| `/device/disable` with query `id=<id>&disable=<true\|false>` | Enable or disable a device |
 
 **Delete endpoints (GET):**
 | Path | Purpose |
