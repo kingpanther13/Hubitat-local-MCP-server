@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.5.4 - Fix BigDecimal arithmetic in device_health_check and delete_device using pure integer math
+ * Version: 0.6.0 - Add virtual device creation/management (create_virtual_device, list_virtual_devices, delete_virtual_device)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.5.4"
+                paragraph "<b>Version:</b> 0.6.0"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.5.4). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.5.4"
+        version: "0.6.0"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1108,6 +1108,79 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             ]
         ],
 
+        // Virtual Device Management
+        [
+            name: "create_virtual_device",
+            description: """Create a virtual device on the Hubitat hub as an MCP-managed child device.
+
+Virtual devices are useful as triggers, boolean flags, or bridges to share state with other systems (e.g., Home Assistant via Maker API).
+
+MCP-managed virtual devices are automatically accessible to all MCP device tools (send_command, get_device, get_attribute, etc.) WITHOUT needing to be manually added to the MCP device selection list. They also appear in the Hubitat device list and can be shared with other apps like Maker API, Dashboard, or Rule Machine.
+
+Supported device types:
+- Virtual Switch — on/off toggle, great for boolean flags and triggers
+- Virtual Button — pushable button for triggering automations
+- Virtual Contact Sensor — open/closed state (e.g., simulate door/window)
+- Virtual Motion Sensor — active/inactive state
+- Virtual Presence Sensor — present/not present state
+- Virtual Lock — lock/unlock state
+- Virtual Temperature Sensor — numeric temperature value
+- Virtual Humidity Sensor — numeric humidity value
+- Virtual Dimmer — switch with level control (0-100)
+- Virtual RGBW Light — color-controllable light
+- Virtual Shade — window shade open/close with position
+- Virtual Garage Door Opener — open/close garage door state
+- Virtual Water Sensor — wet/dry state
+- Virtual Omni Sensor — multi-purpose sensor (presence, contact, motion, temperature, humidity, etc.)
+- Virtual Fan Controller — fan speed control
+
+The deviceNetworkId must be unique across all devices on the hub. If not provided, one will be auto-generated using the format 'mcp-virtual-XXXX'.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceType: [type: "string", description: "The virtual device driver type. Must be one of: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller",
+                        enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
+                    deviceLabel: [type: "string", description: "Display label for the device (e.g., 'MCP Automation Trigger', 'HA Bridge Switch')"],
+                    deviceNetworkId: [type: "string", description: "Optional unique network ID. Auto-generated if omitted. Must be unique across all hub devices."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user has approved creation of this virtual device."]
+                ],
+                required: ["deviceType", "deviceLabel", "confirm"]
+            ]
+        ],
+        [
+            name: "list_virtual_devices",
+            description: """List all MCP-managed virtual devices (child devices created by MCP Rule Server).
+
+Returns device details including ID, label, type, current state, and capabilities. These devices are automatically accessible to all MCP device tools without needing manual selection.""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "delete_virtual_device",
+            description: """Delete an MCP-managed virtual device.
+
+This removes a virtual device that was created by the MCP Rule Server. Only MCP-managed child devices can be deleted with this tool — use delete_device for other devices.
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Use list_virtual_devices to identify the device
+2. Confirm with the user before deleting
+3. Set confirm=true
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceNetworkId: [type: "string", description: "The device network ID (DNI) of the MCP-managed virtual device to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved deletion."]
+                ],
+                required: ["deviceNetworkId", "confirm"]
+            ]
+        ],
+
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
@@ -1525,6 +1598,11 @@ def executeTool(toolName, args) {
         // Device Admin
         case "delete_device": return toolDeleteDevice(args)
 
+        // Virtual Device Management
+        case "create_virtual_device": return toolCreateVirtualDevice(args)
+        case "list_virtual_devices": return toolListVirtualDevices(args)
+        case "delete_virtual_device": return toolDeleteVirtualDevice(args)
+
         // Hub Admin App/Driver Management
         case "get_app_source": return toolGetAppSource(args)
         case "get_driver_source": return toolGetDriverSource(args)
@@ -1554,11 +1632,21 @@ def executeTool(toolName, args) {
 // ==================== DEVICE TOOLS ====================
 
 def toolListDevices(detailed, offset, limit) {
-    if (!selectedDevices) {
-        return [devices: [], message: "No devices selected for MCP access", total: 0]
+    // Combine selected devices and MCP-managed child devices (virtual devices)
+    def allDevices = (selectedDevices ?: []).toList()
+    def childDevs = getChildDevices() ?: []
+    // Add child devices that aren't already in the selected list (avoid duplicates)
+    def selectedIds = allDevices.collect { it.id.toString() } as Set
+    childDevs.each { cd ->
+        if (!selectedIds.contains(cd.id.toString())) {
+            allDevices.add(cd)
+        }
     }
 
-    def allDevices = selectedDevices.toList()
+    if (!allDevices) {
+        return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices", total: 0]
+    }
+
     def totalCount = allDevices.size()
 
     // Apply pagination
@@ -1581,14 +1669,19 @@ def toolListDevices(detailed, offset, limit) {
     }
 
     def pagedDevices = allDevices.subList(startIndex, endIndex)
+    def childDeviceIds = (getChildDevices() ?: []).collect { it.id.toString() } as Set
 
     def devices = pagedDevices.collect { device ->
+        def deviceIdStr = device.id.toString()
         def info = [
-            id: device.id.toString(),
+            id: deviceIdStr,
             name: device.name,
             label: device.label ?: device.name,
             room: device.roomName
         ]
+        if (childDeviceIds.contains(deviceIdStr)) {
+            info.mcpManaged = true
+        }
 
         if (detailed) {
             info.capabilities = device.capabilities?.collect { it.name }
@@ -2035,7 +2128,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.5.4",
+        serverVersion: "0.6.0",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -3116,7 +3209,12 @@ def validateAction(action) {
 
 def findDevice(deviceId) {
     if (!deviceId) return null
-    return settings.selectedDevices?.find { it.id.toString() == deviceId.toString() }
+    // Search selected devices first, then MCP-managed child devices (virtual devices)
+    def device = settings.selectedDevices?.find { it.id.toString() == deviceId.toString() }
+    if (!device) {
+        device = getChildDevices()?.find { it.id.toString() == deviceId.toString() }
+    }
+    return device
 }
 
 // Expose devices to child apps
@@ -4221,7 +4319,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.5.4",
+        version: "0.6.0",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4242,7 +4340,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.5.4"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.0"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4409,7 +4507,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.5.4"
+    details.mcpServerVersion = "0.6.0"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -5706,10 +5804,176 @@ def toolDeleteDevice(args) {
     ]
 }
 
+// ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
+
+def toolCreateVirtualDevice(args) {
+    requireHubAdminWrite(args.confirm)
+
+    def deviceType = args.deviceType
+    def deviceLabel = args.deviceLabel
+    def dni = args.deviceNetworkId
+
+    if (!deviceType) throw new IllegalArgumentException("deviceType is required")
+    if (!deviceLabel) throw new IllegalArgumentException("deviceLabel is required")
+
+    // Validate device type against supported list
+    def supportedTypes = [
+        "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
+        "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock",
+        "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
+        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
+        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
+    ]
+    if (!supportedTypes.contains(deviceType)) {
+        throw new IllegalArgumentException("Unsupported device type: '${deviceType}'. Supported types: ${supportedTypes.join(', ')}")
+    }
+
+    // Auto-generate DNI if not provided
+    if (!dni) {
+        def suffix = Long.toHexString(now()).toUpperCase().takeLast(8)
+        dni = "mcp-virtual-${suffix}"
+    }
+
+    // Validate DNI uniqueness against existing child devices
+    def existingChild = getChildDevices()?.find { it.deviceNetworkId == dni }
+    if (existingChild) {
+        throw new IllegalArgumentException("A device with network ID '${dni}' already exists: '${existingChild.label ?: existingChild.name}' (ID: ${existingChild.id})")
+    }
+
+    mcpLog("info", "device", "Creating virtual device: type='${deviceType}', label='${deviceLabel}', dni='${dni}'")
+
+    def newDevice = null
+    try {
+        newDevice = addChildDevice("hubitat", deviceType, dni, [
+            name: deviceType,
+            label: deviceLabel,
+            isComponent: false
+        ])
+    } catch (Exception e) {
+        mcpLog("error", "device", "Failed to create virtual device '${deviceLabel}': ${e.message}")
+        if (e.message?.contains("UnknownDeviceTypeException") || e.message?.contains("not found")) {
+            throw new RuntimeException("Failed to create virtual device: Driver '${deviceType}' not found on this hub. The hub firmware may not include this built-in driver.")
+        }
+        if (e.message?.contains("already exists") || e.message?.contains("unique")) {
+            throw new RuntimeException("Failed to create virtual device: Network ID '${dni}' already exists on the hub. Try again with a different deviceNetworkId.")
+        }
+        throw new RuntimeException("Failed to create virtual device: ${e.message}")
+    }
+
+    if (!newDevice) {
+        throw new RuntimeException("Failed to create virtual device - addChildDevice returned null")
+    }
+
+    // Read back device info
+    def deviceInfo = [
+        id: newDevice.id.toString(),
+        name: newDevice.name,
+        label: newDevice.label ?: newDevice.name,
+        deviceNetworkId: newDevice.deviceNetworkId,
+        typeName: deviceType,
+        capabilities: newDevice.capabilities?.collect { it.name } ?: [],
+        commands: newDevice.supportedCommands?.collect { it.name } ?: [],
+        attributes: newDevice.supportedAttributes?.collect { attr ->
+            [name: attr.name, value: newDevice.currentValue(attr.name)]
+        } ?: []
+    ]
+
+    mcpLog("info", "device", "Virtual device created successfully: '${deviceLabel}' (ID: ${newDevice.id}, DNI: ${dni})")
+
+    return [
+        success: true,
+        message: "Virtual device '${deviceLabel}' created successfully. It is now accessible via all MCP device tools (send_command, get_device, etc.) without needing to be added to the device selection list. It also appears in the Hubitat device list and can be shared with other apps like Maker API.",
+        device: deviceInfo,
+        tips: [
+            "Use send_command with deviceId '${newDevice.id}' to control this device",
+            "The device is visible in Hubitat web UI under Devices for sharing with other apps",
+            "To add it to Maker API: open Maker API app settings and select this device"
+        ]
+    ]
+}
+
+def toolListVirtualDevices(args) {
+    def childDevs = getChildDevices() ?: []
+
+    if (!childDevs) {
+        return [
+            devices: [],
+            count: 0,
+            message: "No MCP-managed virtual devices found. Use create_virtual_device to create one."
+        ]
+    }
+
+    def devices = childDevs.collect { device ->
+        def info = [
+            id: device.id.toString(),
+            name: device.name,
+            label: device.label ?: device.name,
+            deviceNetworkId: device.deviceNetworkId,
+            typeName: device.typeName ?: device.name,
+            capabilities: device.capabilities?.collect { it.name } ?: [],
+            commands: device.supportedCommands?.collect { it.name } ?: [],
+            currentStates: [:]
+        ]
+        // Gather common attribute values
+        ["switch", "level", "contact", "motion", "temperature", "humidity",
+         "presence", "lock", "water", "button", "speed", "position"].each { attr ->
+            def val = device.currentValue(attr)
+            if (val != null) info.currentStates[attr] = val
+        }
+        return info
+    }
+
+    return [
+        devices: devices,
+        count: devices.size(),
+        message: "Found ${devices.size()} MCP-managed virtual device(s). These are automatically accessible to all MCP device tools."
+    ]
+}
+
+def toolDeleteVirtualDevice(args) {
+    requireHubAdminWrite(args.confirm)
+
+    def dni = args.deviceNetworkId
+    if (!dni) throw new IllegalArgumentException("deviceNetworkId is required")
+
+    def childDevice = getChildDevices()?.find { it.deviceNetworkId == dni }
+    if (!childDevice) {
+        throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use list_virtual_devices to see available devices.")
+    }
+
+    def deviceLabel = childDevice.label ?: childDevice.name ?: "Unknown"
+    def deviceId = childDevice.id.toString()
+
+    mcpLog("warn", "device", "DELETE VIRTUAL DEVICE: Deleting '${deviceLabel}' (ID: ${deviceId}, DNI: ${dni})")
+
+    try {
+        deleteChildDevice(dni)
+    } catch (Exception e) {
+        mcpLog("error", "device", "Failed to delete virtual device '${deviceLabel}' (DNI: ${dni}): ${e.message}")
+        throw new RuntimeException("Failed to delete virtual device: ${e.message}")
+    }
+
+    // Verify deletion
+    def stillExists = getChildDevices()?.find { it.deviceNetworkId == dni }
+    def verified = !stillExists
+
+    mcpLog(verified ? "info" : "warn", "device", "Virtual device delete ${verified ? 'VERIFIED' : 'UNVERIFIED'}: '${deviceLabel}' (DNI: ${dni})")
+
+    return [
+        success: verified,
+        deviceId: deviceId,
+        deviceNetworkId: dni,
+        deviceLabel: deviceLabel,
+        message: verified
+            ? "Virtual device '${deviceLabel}' (DNI: ${dni}) has been permanently deleted."
+            : "Delete command was sent but device may still exist. Check Hubitat web UI to verify."
+    ]
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.5.4"
+    return "0.6.0"
 }
 
 def isNewerVersion(String remote, String local) {
