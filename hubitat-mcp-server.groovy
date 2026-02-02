@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.7 - Fix room assignment: add Grails version field for optimistic locking
+ * Version: 0.6.8 - Room assignment: capture 500 error response body for diagnosis
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.7"
+                paragraph "<b>Version:</b> 0.6.8"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.7). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.8). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.7"
+        version: "0.6.8"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2167,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.7",
+        serverVersion: "0.6.8",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.7",
+        version: "0.6.8",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.7"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.8"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.7"
+    details.mcpServerVersion = "0.6.8"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6196,11 +6196,45 @@ def toolUpdateDevice(args) {
 
                 mcpLog("debug", "device", "update_device room: POSTing to /device/save with body=${formBody}")
 
-                def result = hubInternalPostForm("/device/save", formBody, 30)
-                mcpLog("debug", "device", "update_device room: /device/save response status=${result?.status}, location=${result?.location}, data=${result?.data?.take(500)}")
-                def oldRoom = deviceJson.roomName ?: deviceJson.room?.name ?: "none"
-                changes << [property: "room", oldValue: oldRoom, newValue: args.room]
-                mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoom} -> ${args.room}")
+                // Use direct httpPost to capture error response body (hubInternalPostForm loses it on 500)
+                def cookie = getHubSecurityCookie()
+                def postParams = [
+                    uri: "http://127.0.0.1:8080",
+                    path: "/device/save",
+                    requestContentType: "application/x-www-form-urlencoded",
+                    textParser: true,
+                    headers: ["Connection": "keep-alive"],
+                    body: formBody,
+                    timeout: 30,
+                    ignoreSSLIssues: true
+                ]
+                if (cookie) { postParams.headers["Cookie"] = cookie }
+
+                def saveSuccess = false
+                def saveError = null
+                try {
+                    httpPost(postParams) { resp ->
+                        def respData = null
+                        try { respData = resp.data?.text } catch (e2) { respData = resp.data?.toString() }
+                        mcpLog("debug", "device", "update_device room: /device/save response status=${resp.status}, data=${respData?.take(1000)}")
+                        saveSuccess = true
+                    }
+                } catch (Exception httpErr) {
+                    // Try to extract the response body from the exception
+                    def errBody = null
+                    try { errBody = httpErr.response?.data?.text } catch (e3) {}
+                    if (!errBody) { try { errBody = httpErr.response?.data?.toString() } catch (e4) {} }
+                    mcpLog("debug", "device", "update_device room: /device/save HTTP error: ${httpErr.message}, response body=${errBody?.take(1000)}")
+                    saveError = httpErr.message
+                }
+
+                if (saveSuccess) {
+                    def oldRoom = deviceJson.roomName ?: deviceJson.room?.name ?: "none"
+                    changes << [property: "room", oldValue: oldRoom, newValue: args.room]
+                    mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoom} -> ${args.room}")
+                } else {
+                    throw new RuntimeException("Failed to save device room: ${saveError}")
+                }
             } catch (Exception e) {
                 mcpLog("debug", "device", "update_device room: error: ${e.message}")
                 errors << [property: "room", error: e.message]
@@ -6256,7 +6290,7 @@ def toolUpdateDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.7"
+    return "0.6.8"
 }
 
 def isNewerVersion(String remote, String local) {
