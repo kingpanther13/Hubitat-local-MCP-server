@@ -315,8 +315,8 @@ The `update_device` tool modifies properties on any accessible device (selected 
 - **deviceNetworkId** — `device.setDeviceNetworkId(value)` (official API)
 - **dataValues** — `device.updateDataValue(key, value)` for each entry (official API)
 - **preferences** — `device.updateSetting(key, [type: type, value: value])` for each entry (official API, requires `type` field: `bool`, `number`, `decimal`, `text`, `enum`, `time`, `hub`)
-- **room** — resolves room name → ID via `getRooms()`, then POSTs to `/device/save` internal endpoint with `id` and `roomId` (undocumented API, requires Hub Admin Write)
-- **enabled** — GETs `/device/disable?id=<deviceId>&disable=<true|false>` internal endpoint (undocumented API, requires Hub Admin Write)
+- **room** — resolves room name → ID via `getRooms()` (case-insensitive), then POSTs to `/device/save` with flat field names: `id`, `label`, `name`, `deviceNetworkId`, `type.id`, `roomId` (undocumented API, Grails convention — no `device.` prefix; requires Hub Admin Write)
+- **enabled** — POSTs to `/device/disable` with `id` and `disable` as body params (undocumented API, must be POST not GET; requires Hub Admin Write)
 
 Room assignment and enable/disable use the hub's internal API at `http://127.0.0.1:8080` and require Hub Admin Write safety gate confirmation. All other properties use the official Hubitat Groovy API and work on any accessible device. Driver type cannot be changed — must delete and recreate the device.
 
@@ -393,12 +393,8 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/app/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update app code |
 | `/driver/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update driver code |
 | `/login` | `username=<u>, password=<p>, submit=Login` | Hub Security login |
-| `/device/save` | `id=<deviceId>, roomId=<roomId>` | Assign device to a room |
-
-**Device management endpoints (GET):**
-| Path | Purpose |
-|------|---------|
-| `/device/disable` with query `id=<id>&disable=<true\|false>` | Enable or disable a device |
+| `/device/save` | `id=<deviceId>, label=<label>, name=<name>, deviceNetworkId=<dni>, type.id=<typeId>, roomId=<roomId>` | Update device properties (flat field names, Grails convention) |
+| `/device/disable` | `id=<deviceId>, disable=<true\|false>` | Enable or disable a device (MUST be POST, not GET) |
 
 **Delete endpoints (GET):**
 | Path | Purpose |
