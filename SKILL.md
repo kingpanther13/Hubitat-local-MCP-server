@@ -431,7 +431,7 @@ These are speculative feature ideas that need feasibility research before implem
 - Bidirectional sync between MCP rules and RM rules (long-shot)
 
 ### Additional Ideas
-- ~~Device creation~~ — **DONE in v0.6.0** (virtual device creation via `addChildDevice()`)
+- Device creation — *partially implemented in v0.6.0* (MCP-managed child virtual devices via `addChildDevice()`). Future: create standalone virtual devices via hub internal API (`POST /device/save`) that appear in the regular Devices section independent of the MCP app
 - Device pairing assistance (Z-Wave inclusion, Zigbee pairing, cloud device setup)
 - Notification/alert management (granular routing)
 - Scene management (create/modify/manage beyond activate_scene)

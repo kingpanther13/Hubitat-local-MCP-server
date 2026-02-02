@@ -777,8 +777,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - **Notification routing** — different notification targets per severity or event type (e.g., critical alerts to Pushover, informational to email)
 
 ### Additional Ideas
-- ~~**Device creation**~~ — **DONE in v0.6.0** (virtual device creation via `create_virtual_device`)
-- **Device pairing assistance** — help users through the device pairing process for Z-Wave, Zigbee, and cloud-connected devices
+- **Device creation** — *partially implemented in v0.6.0* (MCP-managed child virtual devices via `create_virtual_device`). Future: create standalone virtual devices that appear in the regular Devices section independent of the MCP app, and support device pairing for Z-Wave, Zigbee, and cloud-connected devices
 - **Scene management** — create, modify, and manage scenes (device state groups) beyond the current `activate_scene`
 - **Energy monitoring dashboard** — aggregate power/energy data from devices into summary reports
 - **Scheduled report generation** — periodic automated reports on hub health, device status, rule execution history
