@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.10:**
+- **Fix room assignment** — diagnostic revealed device edit page is a Vue.js SPA with zero HTML form fields. Now fetches device data from `/device/fullJson/<id>`, builds proper POST body with all required fields (id, version, name, label, deviceNetworkId, deviceTypeId, roomId, etc.), and tries 4 different save strategies (form-encoded flat, JSON POST, /device/updateRoom, Grails device.* prefix).
+
 **New in v0.6.9:**
 - **Room assignment: new approach** — instead of guessing form fields, now fetches the actual device edit page HTML (`/device/edit/<id>`), scrapes all form `<input>` and `<select>` fields, overrides the room field, and resubmits exactly what the browser would submit.
 
@@ -814,6 +817,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.10** - Fix room assignment: use fullJson device data for /device/save (Vue.js SPA has no HTML forms)
 - **v0.6.9** - Room assignment: scrape device edit page HTML for correct form fields
 - **v0.6.8** - Room assignment: capture 500 error response body for diagnosis
 - **v0.6.7** - Fix room assignment: add Grails `version` field for optimistic locking

@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.9 - Room assignment: comprehensive diagnostic (HTML + JSON + Vue.js SPA + alt endpoints)
+ * Version: 0.6.10 - Fix room assignment: use fullJson device data for /device/save (Vue.js SPA has no HTML forms)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.9"
+                paragraph "<b>Version:</b> 0.6.10"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.9). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.10). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.9"
+        version: "0.6.10"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2167,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.9",
+        serverVersion: "0.6.10",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.9",
+        version: "0.6.10",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.9"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.10"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.9"
+    details.mcpServerVersion = "0.6.10"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6151,210 +6151,50 @@ def toolUpdateDevice(args) {
                     }
                 }
 
-                // ========== COMPREHENSIVE DIAGNOSTIC DATA PULL ==========
-                // Pull HTML, JSON, and Vue.js SPA data for both target and reference devices
-                // to definitively determine what /device/save needs
+                // The device edit page is a Vue.js SPA — no HTML form fields exist.
+                // The SPA loads device data via /device/fullJson/<id> and saves via
+                // POST to /device/save with the device JSON fields as form-encoded data.
+                // We replicate what the Vue.js app does: fetch fullJson, modify roomId, POST all fields.
 
-                // --- 1. FETCH TARGET DEVICE JSON (fullJson) ---
-                def targetJson = null
+                // Fetch current device data from the JSON API
+                def deviceData = null
                 try {
-                    def targetJsonRaw = hubInternalGet("/device/fullJson/${deviceId}")
-                    mcpLog("debug", "device", "update_device room: TARGET JSON raw length=${targetJsonRaw?.length() ?: 0}")
-                    mcpLog("debug", "device", "update_device room: TARGET JSON (first 2000): ${targetJsonRaw?.take(2000)}")
-                    mcpLog("debug", "device", "update_device room: TARGET JSON (2000-4000): ${targetJsonRaw?.length() > 2000 ? targetJsonRaw[2000..Math.min(3999, targetJsonRaw.length()-1)] : 'N/A'}")
-                    if (targetJsonRaw) {
-                        targetJson = new groovy.json.JsonSlurper().parseText(targetJsonRaw)
+                    def jsonRaw = hubInternalGet("/device/fullJson/${deviceId}")
+                    if (jsonRaw) {
+                        def parsed = new groovy.json.JsonSlurper().parseText(jsonRaw)
+                        // fullJson nests device data under a "device" key
+                        deviceData = parsed?.device ?: parsed
+                        mcpLog("debug", "device", "update_device room: fetched device JSON with ${deviceData?.size() ?: 0} keys: ${deviceData?.keySet()}")
                     }
                 } catch (Exception jsonErr) {
-                    mcpLog("debug", "device", "update_device room: TARGET JSON fetch error: ${jsonErr.message}")
+                    mcpLog("debug", "device", "update_device room: JSON fetch error: ${jsonErr.message}")
                 }
 
-                // --- 2. FETCH TARGET DEVICE EDIT PAGE HTML ---
-                def editHtml = hubInternalGet("/device/edit/${deviceId}")
-                if (!editHtml) {
-                    throw new RuntimeException("Could not fetch device edit page")
-                }
-                mcpLog("debug", "device", "update_device room: TARGET HTML length=${editHtml.length()}")
-                // Log HTML in chunks so we can see the FULL page
-                def htmlChunkSize = 1500
-                def htmlChunks = Math.ceil(editHtml.length() / htmlChunkSize).intValue()
-                for (int ci = 0; ci < Math.min(htmlChunks, 8); ci++) {
-                    def startIdx = ci * htmlChunkSize
-                    def endIdx = Math.min(startIdx + htmlChunkSize, editHtml.length())
-                    mcpLog("debug", "device", "update_device room: TARGET HTML chunk ${ci+1}/${htmlChunks}: ${editHtml[startIdx..endIdx-1]}")
+                if (!deviceData) {
+                    throw new RuntimeException("Could not fetch device data from /device/fullJson/${deviceId}")
                 }
 
-                // --- 3. SCAN FOR VUE.JS / SPA / AJAX ENDPOINTS ---
-                // Look for script tags and their content
-                editHtml.findAll(/(?s)<script[^>]*>(.*?)<\/script>/) { fullMatch, scriptContent ->
-                    if (scriptContent?.trim()) {
-                        mcpLog("debug", "device", "update_device room: TARGET <script> block (${scriptContent.length()} chars): ${scriptContent.take(1500)}")
-                        if (scriptContent.length() > 1500) {
-                            mcpLog("debug", "device", "update_device room: TARGET <script> block continued: ${scriptContent[1500..Math.min(2999, scriptContent.length()-1)]}")
-                        }
-                    }
-                }
-                // Look for script src references (external JS files)
-                editHtml.findAll(/<script[^>]+src=["']([^"']+)["']/) { fullMatch, src ->
-                    mcpLog("debug", "device", "update_device room: TARGET external script src: ${src}")
-                }
-                // Look for Vue.js, axios, fetch, or API patterns
-                def spaPatterns = [
-                    /Vue\s*[\.\({\[]/, /new\s+Vue/, /createApp/,
-                    /axios\s*[\.\(]/, /\$\.ajax/, /fetch\s*\(/,
-                    /\/api\//, /\/device\//, /\/hub\//,
-                    /saveDevice/, /updateDevice/, /deviceSave/,
-                    /\$http/, /XMLHttpRequest/
+                // Build the form body from the device JSON — include the fields that /device/save expects
+                // These are the flat field names the Grails controller binds to the Device domain object
+                def formFields = [
+                    id:              deviceData.id?.toString() ?: deviceId,
+                    "device.id":     deviceData.id?.toString() ?: deviceId,
+                    version:         deviceData.version?.toString() ?: "0",
+                    name:            deviceData.name?.toString() ?: "",
+                    label:           deviceData.label?.toString() ?: "",
+                    deviceNetworkId: deviceData.deviceNetworkId?.toString() ?: "",
+                    deviceTypeId:    deviceData.deviceTypeId?.toString() ?: "",
+                    roomId:          targetRoomId,
+                    hubId:           deviceData.hubId?.toString() ?: "1",
+                    locationId:      deviceData.locationId?.toString() ?: "1"
                 ]
-                spaPatterns.each { pattern ->
-                    editHtml.findAll(pattern) { match ->
-                        // Find surrounding context (50 chars each side)
-                        def idx = editHtml.indexOf(match)
-                        if (idx >= 0) {
-                            def ctxStart = Math.max(0, idx - 80)
-                            def ctxEnd = Math.min(editHtml.length(), idx + match.length() + 80)
-                            mcpLog("debug", "device", "update_device room: TARGET SPA pattern '${pattern}' found: ...${editHtml[ctxStart..ctxEnd-1]}...")
-                        }
-                    }
-                }
+                mcpLog("debug", "device", "update_device room: built form body: ${formFields}")
 
-                // --- 4. EXTRACT ALL FORMS from target HTML ---
-                editHtml.findAll(/(?s)<form[^>]*>/) { formTag ->
-                    mcpLog("debug", "device", "update_device room: TARGET <form> tag: ${formTag}")
-                }
-
-                // --- 5. FETCH REFERENCE DEVICE DATA (device with room already assigned) ---
-                def refDevice = settings.selectedDevices?.find { it.roomName }
-                if (refDevice) {
-                    mcpLog("debug", "device", "update_device room: REFERENCE device '${refDevice.label ?: refDevice.name}' (ID:${refDevice.id}, room:${refDevice.roomName})")
-                    try {
-                        // Reference JSON
-                        def refJsonRaw = hubInternalGet("/device/fullJson/${refDevice.id}")
-                        mcpLog("debug", "device", "update_device room: REFERENCE JSON (first 2000): ${refJsonRaw?.take(2000)}")
-                        mcpLog("debug", "device", "update_device room: REFERENCE JSON (2000-4000): ${refJsonRaw?.length() > 2000 ? refJsonRaw[2000..Math.min(3999, refJsonRaw.length()-1)] : 'N/A'}")
-                    } catch (Exception refJsonErr) {
-                        mcpLog("debug", "device", "update_device room: REFERENCE JSON error: ${refJsonErr.message}")
-                    }
-                    try {
-                        // Reference HTML
-                        def refHtml = hubInternalGet("/device/edit/${refDevice.id}")
-                        if (refHtml) {
-                            mcpLog("debug", "device", "update_device room: REFERENCE HTML length=${refHtml.length()}")
-                            // Log reference HTML in chunks too
-                            def refChunks = Math.ceil(refHtml.length() / htmlChunkSize).intValue()
-                            for (int ci = 0; ci < Math.min(refChunks, 8); ci++) {
-                                def startIdx = ci * htmlChunkSize
-                                def endIdx = Math.min(startIdx + htmlChunkSize, refHtml.length())
-                                mcpLog("debug", "device", "update_device room: REFERENCE HTML chunk ${ci+1}/${refChunks}: ${refHtml[startIdx..endIdx-1]}")
-                            }
-
-                            // Reference form fields
-                            def refFields = [:]
-                            refHtml.findAll(/<input[^>]+>/) { inputTag ->
-                                def nm = (inputTag =~ /\bname=["']([^"']+)["']/)
-                                def vl = (inputTag =~ /\bvalue=["']([^"']*?)["']/)
-                                if (nm.find()) {
-                                    refFields[nm.group(1)] = vl.find() ? vl.group(1) : ""
-                                }
-                            }
-                            refHtml.findAll(/(?s)<select[^>]+name=["']([^"']+)["'][^>]*>.*?<\/select>/) { selectBlock ->
-                                def selectName = (selectBlock =~ /name=["']([^"']+)["']/)[0][1]
-                                def selectedVal = (selectBlock =~ /(?s)<option[^>]+selected[^>]*value=["']([^"']*?)["']/)
-                                if (!selectedVal.find()) {
-                                    selectedVal = (selectBlock =~ /(?s)<option[^>]*value=["']([^"']*?)["'][^>]*selected/)
-                                }
-                                if (selectedVal.find()) {
-                                    refFields[selectName] = selectedVal.group(1)
-                                }
-                            }
-                            mcpLog("debug", "device", "update_device room: REFERENCE form fields (${refFields.size()}): ${refFields}")
-
-                            // Reference script blocks
-                            refHtml.findAll(/(?s)<script[^>]*>(.*?)<\/script>/) { fullMatch, scriptContent ->
-                                if (scriptContent?.trim()) {
-                                    mcpLog("debug", "device", "update_device room: REFERENCE <script> block (${scriptContent.length()} chars): ${scriptContent.take(1500)}")
-                                }
-                            }
-                        }
-                    } catch (Exception refErr) {
-                        mcpLog("debug", "device", "update_device room: REFERENCE HTML error: ${refErr.message}")
-                    }
-                } else {
-                    mcpLog("debug", "device", "update_device room: no reference device with room found in selected devices")
-                }
-
-                // --- 6. TRY ALTERNATIVE API ENDPOINTS ---
-                // Check if there's a REST API for room assignment
-                def altEndpoints = [
-                    "/device/setRoom/${deviceId}/${targetRoomId}",
-                    "/api/devices/${deviceId}",
-                    "/device/updateRoom/${deviceId}"
-                ]
-                altEndpoints.each { endpoint ->
-                    try {
-                        def altResp = hubInternalGet(endpoint)
-                        mcpLog("debug", "device", "update_device room: ALT endpoint GET ${endpoint} response (${altResp?.length() ?: 0} chars): ${altResp?.take(500)}")
-                    } catch (Exception altErr) {
-                        mcpLog("debug", "device", "update_device room: ALT endpoint GET ${endpoint} error: ${altErr.message}")
-                    }
-                }
-
-                // --- 7. EXTRACT FORM FIELDS AND ATTEMPT SAVE ---
-                def formFields = [:]
-                editHtml.findAll(/<input[^>]+>/) { inputTag ->
-                    def nm = (inputTag =~ /\bname=["']([^"']+)["']/)
-                    def vl = (inputTag =~ /\bvalue=["']([^"']*?)["']/)
-                    if (nm.find()) {
-                        formFields[nm.group(1)] = vl.find() ? vl.group(1) : ""
-                    }
-                }
-                editHtml.findAll(/(?s)<select[^>]+name=["']([^"']+)["'][^>]*>.*?<\/select>/) { selectBlock ->
-                    def selectName = (selectBlock =~ /name=["']([^"']+)["']/)[0][1]
-                    def selectedVal = (selectBlock =~ /(?s)<option[^>]+selected[^>]*value=["']([^"']*?)["']/)
-                    if (!selectedVal.find()) {
-                        selectedVal = (selectBlock =~ /(?s)<option[^>]*value=["']([^"']*?)["'][^>]*selected/)
-                    }
-                    if (selectedVal.find()) {
-                        formFields[selectName] = selectedVal.group(1)
-                    }
-                }
-                mcpLog("debug", "device", "update_device room: extracted form fields (${formFields.size()}): ${formFields}")
-
-                // Also extract textarea values
-                editHtml.findAll(/(?s)<textarea[^>]+name=["']([^"']+)["'][^>]*>(.*?)<\/textarea>/) { fullMatch, taName, taValue ->
-                    formFields[taName] = taValue ?: ""
-                    mcpLog("debug", "device", "update_device room: textarea field '${taName}' = '${taValue?.take(100)}'")
-                }
-
-                // Find the form action URL
-                def formAction = "/device/save"
-                def actionMatch = (editHtml =~ /(?s)<form[^>]+action=["']([^"']+)["']/)
-                if (actionMatch.find()) {
-                    formAction = actionMatch.group(1)
-                }
-                mcpLog("debug", "device", "update_device room: form action=${formAction}")
-
-                // Override the room field
-                def roomFieldSet = false
-                ["roomId", "device.roomId", "room.id", "device.room.id"].each { fieldName ->
-                    if (formFields.containsKey(fieldName)) {
-                        formFields[fieldName] = targetRoomId
-                        roomFieldSet = true
-                        mcpLog("debug", "device", "update_device room: overriding existing field '${fieldName}' -> ${targetRoomId}")
-                    }
-                }
-                if (!roomFieldSet) {
-                    formFields["roomId"] = targetRoomId
-                    mcpLog("debug", "device", "update_device room: adding roomId=${targetRoomId} (field not found in form)")
-                }
-
-                mcpLog("debug", "device", "update_device room: POSTing to ${formAction} with ${formFields.size()} fields: ${formFields}")
-
-                // POST using direct httpPost
+                // POST to /device/save as form-encoded (what the Vue.js SPA does)
                 def cookie = getHubSecurityCookie()
                 def postParams = [
                     uri: "http://127.0.0.1:8080",
-                    path: formAction,
+                    path: "/device/save",
                     requestContentType: "application/x-www-form-urlencoded",
                     textParser: true,
                     headers: ["Connection": "keep-alive"],
@@ -6366,30 +6206,95 @@ def toolUpdateDevice(args) {
 
                 def saveSuccess = false
                 def saveError = null
+
+                // Attempt 1: form-encoded POST with flat field names
                 try {
                     httpPost(postParams) { resp ->
-                        mcpLog("debug", "device", "update_device room: save response status=${resp.status}")
-                        // Try to log the response body
-                        try {
-                            def respBody = resp.data?.text ?: resp.data?.toString()
-                            mcpLog("debug", "device", "update_device room: save response body (first 1000): ${respBody?.take(1000)}")
-                        } catch (Exception respErr) { /* ignore */ }
+                        mcpLog("debug", "device", "update_device room: attempt 1 (form-encoded) status=${resp.status}")
                         saveSuccess = true
                     }
-                } catch (Exception httpErr) {
-                    def errBody = null
-                    try { errBody = httpErr.response?.data?.text } catch (e3) {}
-                    if (!errBody) { try { errBody = httpErr.response?.data?.toString() } catch (e4) {} }
-                    mcpLog("debug", "device", "update_device room: HTTP error: ${httpErr.message}")
-                    mcpLog("debug", "device", "update_device room: HTTP error response body (first 1500): ${errBody?.take(1500)}")
-                    mcpLog("debug", "device", "update_device room: HTTP error response status: ${httpErr.response?.status}")
-                    // Log response headers if available
+                } catch (Exception httpErr1) {
+                    mcpLog("debug", "device", "update_device room: attempt 1 (form-encoded) failed: ${httpErr1.message}")
+                    saveError = httpErr1.message
+                }
+
+                // Attempt 2: if form-encoded failed, try JSON POST (some Hubitat versions may use JSON)
+                if (!saveSuccess) {
                     try {
-                        httpErr.response?.headers?.each { hdr ->
-                            mcpLog("debug", "device", "update_device room: HTTP error response header: ${hdr.name}=${hdr.value}")
+                        // Build JSON body — set roomId in the device data and POST as JSON
+                        deviceData.roomId = targetRoomId as Integer
+                        def jsonBody = groovy.json.JsonOutput.toJson(deviceData)
+                        mcpLog("debug", "device", "update_device room: attempt 2 (JSON) body length=${jsonBody.length()}")
+
+                        def jsonPostParams = [
+                            uri: "http://127.0.0.1:8080",
+                            path: "/device/save",
+                            requestContentType: "application/json",
+                            textParser: true,
+                            headers: ["Connection": "keep-alive"],
+                            body: jsonBody,
+                            timeout: 30,
+                            ignoreSSLIssues: true
+                        ]
+                        if (cookie) { jsonPostParams.headers["Cookie"] = cookie }
+
+                        httpPost(jsonPostParams) { resp ->
+                            mcpLog("debug", "device", "update_device room: attempt 2 (JSON) status=${resp.status}")
+                            saveSuccess = true
                         }
-                    } catch (Exception hdrErr) { /* ignore */ }
-                    saveError = httpErr.message
+                    } catch (Exception httpErr2) {
+                        mcpLog("debug", "device", "update_device room: attempt 2 (JSON) failed: ${httpErr2.message}")
+                    }
+                }
+
+                // Attempt 3: try POST to /device/updateRoom (seen in some Hubitat firmware)
+                if (!saveSuccess) {
+                    try {
+                        hubInternalPost("/device/updateRoom", [id: deviceId, roomId: targetRoomId])
+                        mcpLog("debug", "device", "update_device room: attempt 3 (/device/updateRoom POST) succeeded")
+                        saveSuccess = true
+                    } catch (Exception httpErr3) {
+                        mcpLog("debug", "device", "update_device room: attempt 3 (/device/updateRoom POST) failed: ${httpErr3.message}")
+                    }
+                }
+
+                // Attempt 4: try form-encoded with "device." prefixed fields (Grails domain binding)
+                if (!saveSuccess) {
+                    try {
+                        def grailsFields = [
+                            "device.id":              deviceData.id?.toString() ?: deviceId,
+                            "device.version":         deviceData.version?.toString() ?: "0",
+                            "device.name":            deviceData.name?.toString() ?: "",
+                            "device.label":           deviceData.label?.toString() ?: "",
+                            "device.deviceNetworkId": deviceData.deviceNetworkId?.toString() ?: "",
+                            "device.deviceTypeId":    deviceData.deviceTypeId?.toString() ?: "",
+                            "device.roomId":          targetRoomId,
+                            "device.hubId":           deviceData.hubId?.toString() ?: "1",
+                            "device.locationId":      deviceData.locationId?.toString() ?: "1",
+                            id:                       deviceData.id?.toString() ?: deviceId,
+                            version:                  deviceData.version?.toString() ?: "0"
+                        ]
+                        mcpLog("debug", "device", "update_device room: attempt 4 (Grails device.* prefix) fields: ${grailsFields}")
+
+                        def grailsParams = [
+                            uri: "http://127.0.0.1:8080",
+                            path: "/device/save",
+                            requestContentType: "application/x-www-form-urlencoded",
+                            textParser: true,
+                            headers: ["Connection": "keep-alive"],
+                            body: grailsFields,
+                            timeout: 30,
+                            ignoreSSLIssues: true
+                        ]
+                        if (cookie) { grailsParams.headers["Cookie"] = cookie }
+
+                        httpPost(grailsParams) { resp ->
+                            mcpLog("debug", "device", "update_device room: attempt 4 (Grails prefix) status=${resp.status}")
+                            saveSuccess = true
+                        }
+                    } catch (Exception httpErr4) {
+                        mcpLog("debug", "device", "update_device room: attempt 4 (Grails prefix) failed: ${httpErr4.message}")
+                    }
                 }
 
                 if (saveSuccess) {
@@ -6397,7 +6302,7 @@ def toolUpdateDevice(args) {
                     changes << [property: "room", oldValue: oldRoom, newValue: args.room]
                     mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoom} -> ${args.room}")
                 } else {
-                    throw new RuntimeException("Room assignment failed: ${saveError}. Check debug logs for full HTML/JSON/SPA diagnostic data.")
+                    throw new RuntimeException("Room assignment failed after 4 attempts. Last error: ${saveError}")
                 }
             } catch (Exception e) {
                 mcpLog("debug", "device", "update_device room: error: ${e.message}")
@@ -6454,7 +6359,7 @@ def toolUpdateDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.9"
+    return "0.6.10"
 }
 
 def isNewerVersion(String remote, String local) {
