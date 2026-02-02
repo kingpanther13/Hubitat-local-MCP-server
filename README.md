@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.9:**
+- **Room assignment: new approach** — instead of guessing form fields, now fetches the actual device edit page HTML (`/device/edit/<id>`), scrapes all form `<input>` and `<select>` fields, overrides the room field, and resubmits exactly what the browser would submit.
+
 **New in v0.6.8:**
 - **Room assignment diagnostic** — capture the actual HTTP 500 response body from `/device/save` to see the Grails error/stack trace instead of just "500 Server Error"
 
@@ -811,6 +814,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.9** - Room assignment: scrape device edit page HTML for correct form fields
 - **v0.6.8** - Room assignment: capture 500 error response body for diagnosis
 - **v0.6.7** - Fix room assignment: add Grails `version` field for optimistic locking
 - **v0.6.6** - Room assignment: diagnostic build with device JSON dump
