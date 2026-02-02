@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.7:**
+- **Fix room assignment** — add Grails `version` field for optimistic locking. The `/device/save` endpoint requires the current device version number to prevent stale object exceptions.
+
 **New in v0.6.6:**
 - **Room assignment diagnostic build** — dumps full device JSON fields for debugging `/device/save` requirements. Also tries `device.*` prefixed form fields.
 
@@ -805,6 +808,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.7** - Fix room assignment: add Grails `version` field for optimistic locking
 - **v0.6.6** - Room assignment: diagnostic build with device JSON dump
 - **v0.6.5** - Fix room assignment: use `deviceTypeId` field (not `typeId`)
 - **v0.6.4** - Fix room assignment: extract device data from nested `fullJson.device`
