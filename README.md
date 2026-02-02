@@ -17,6 +17,11 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.3:**
+- **Fix `update_device` room assignment and enable/disable** — room assignment was returning HTTP 500 (wrong form field names for Hubitat's Grails backend), enable/disable was returning HTTP 404 (endpoint requires POST, not GET). Both fixed.
+- **Case-insensitive room matching** — room names no longer need to match exact case
+- **Debug logging** — comprehensive debug logs throughout `update_device` for troubleshooting
+
 **New in v0.6.2:**
 - **New `update_device` tool** (68 total) — modify label, name, room, enable/disable, preferences, data values, and DNI on any accessible device. Works on both selected devices and MCP-managed virtual devices. Room and enable/disable use hub internal API; all other properties use official Hubitat API.
 
@@ -791,6 +796,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.3** - Fix `update_device` room assignment (500) and enable/disable (404) bugs + debug logging
 - **v0.6.2** - Add `update_device` tool (68 tools)
   - New `update_device` — modify label, name, room, enable/disable, preferences, data values, and DNI on any accessible device
   - Room assignment via hub internal `/device/save` endpoint with room ID resolution via `getRooms()`

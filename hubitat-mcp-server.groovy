@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.2 - Add update_device tool for modifying device properties (label, name, room, enable/disable, preferences, data values, DNI)
+ * Version: 0.6.3 - Fix update_device room assignment and enable/disable bugs + debug logging
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.2"
+                paragraph "<b>Version:</b> 0.6.3"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.2"
+        version: "0.6.3"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2167,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.2",
+        serverVersion: "0.6.3",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.2",
+        version: "0.6.3",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.2"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.3"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.2"
+    details.mcpServerVersion = "0.6.3"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6030,13 +6030,26 @@ def toolUpdateDevice(args) {
     def changes = []
     def errors = []
 
+    def requestedProps = []
+    if (args.label != null) requestedProps << "label"
+    if (args.name != null) requestedProps << "name"
+    if (args.deviceNetworkId != null) requestedProps << "deviceNetworkId"
+    if (args.dataValues) requestedProps << "dataValues(${args.dataValues.size()})"
+    if (args.preferences) requestedProps << "preferences(${args.preferences.size()})"
+    if (args.room != null) requestedProps << "room"
+    if (args.enabled != null) requestedProps << "enabled"
+    mcpLog("debug", "device", "update_device called for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
+
     // Label (official API)
     if (args.label != null) {
         try {
+            def oldLabel = deviceLabel
             device.setLabel(args.label)
-            changes << [property: "label", oldValue: deviceLabel, newValue: args.label]
+            changes << [property: "label", oldValue: oldLabel, newValue: args.label]
             deviceLabel = args.label
+            mcpLog("debug", "device", "update_device label: '${oldLabel}' -> '${args.label}'")
         } catch (Exception e) {
+            mcpLog("debug", "device", "update_device label: error: ${e.message}")
             errors << [property: "label", error: e.message]
         }
     }
@@ -6047,7 +6060,9 @@ def toolUpdateDevice(args) {
             def oldName = device.name
             device.setName(args.name)
             changes << [property: "name", oldValue: oldName, newValue: args.name]
+            mcpLog("debug", "device", "update_device name: '${oldName}' -> '${args.name}'")
         } catch (Exception e) {
+            mcpLog("debug", "device", "update_device name: error: ${e.message}")
             errors << [property: "name", error: e.message]
         }
     }
@@ -6058,7 +6073,9 @@ def toolUpdateDevice(args) {
             def oldDni = device.deviceNetworkId
             device.setDeviceNetworkId(args.deviceNetworkId)
             changes << [property: "deviceNetworkId", oldValue: oldDni, newValue: args.deviceNetworkId]
+            mcpLog("debug", "device", "update_device DNI: '${oldDni}' -> '${args.deviceNetworkId}'")
         } catch (Exception e) {
+            mcpLog("debug", "device", "update_device DNI: error: ${e.message}")
             errors << [property: "deviceNetworkId", error: e.message]
         }
     }
@@ -6069,7 +6086,9 @@ def toolUpdateDevice(args) {
             try {
                 device.updateDataValue(key.toString(), value?.toString())
                 changes << [property: "dataValue.${key}", newValue: value?.toString()]
+                mcpLog("debug", "device", "update_device dataValue: ${key}='${value}'")
             } catch (Exception e) {
+                mcpLog("debug", "device", "update_device dataValue ${key}: error: ${e.message}")
                 errors << [property: "dataValue.${key}", error: e.message]
             }
         }
@@ -6081,11 +6100,14 @@ def toolUpdateDevice(args) {
             try {
                 if (setting instanceof Map && setting.type && setting.containsKey("value")) {
                     device.updateSetting(key.toString(), [type: setting.type.toString(), value: setting.value])
+                    mcpLog("debug", "device", "update_device preference: ${key}={type:${setting.type}, value:${setting.value}}")
                 } else {
                     device.updateSetting(key.toString(), setting?.toString())
+                    mcpLog("debug", "device", "update_device preference: ${key}='${setting}'")
                 }
                 changes << [property: "preference.${key}", newValue: setting]
             } catch (Exception e) {
+                mcpLog("debug", "device", "update_device preference ${key}: error: ${e.message}")
                 errors << [property: "preference.${key}", error: e.message]
             }
         }
@@ -6097,12 +6119,14 @@ def toolUpdateDevice(args) {
             errors << [property: "room", error: "Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
+                mcpLog("debug", "device", "update_device room: fetching fullJson for device ${deviceId}")
                 // Fetch device's full JSON to get current room and required fields for /device/save
                 def deviceJson = null
                 try {
                     def responseText = hubInternalGet("/device/fullJson/${deviceId}")
                     if (responseText) {
                         deviceJson = new groovy.json.JsonSlurper().parseText(responseText)
+                        mcpLog("debug", "device", "update_device room: fullJson keys=${deviceJson?.keySet()}, typeId=${deviceJson?.typeId}, roomId=${deviceJson?.roomId}")
                     }
                 } catch (Exception e) {
                     throw new RuntimeException("Could not fetch device details: ${e.message}")
@@ -6114,64 +6138,73 @@ def toolUpdateDevice(args) {
 
                 // Find room ID by name
                 def targetRoomId = null
-                try {
-                    def rooms = getRooms()
-                    if (rooms) {
-                        def targetRoom = rooms.find { it.name == args.room }
-                        if (targetRoom) {
-                            targetRoomId = targetRoom.id
+                if (args.room == "" || args.room == "none" || args.room == "null") {
+                    // Empty string / "none" = unassign from room (roomId 0 or empty)
+                    targetRoomId = "0"
+                    mcpLog("debug", "device", "update_device room: unassigning device from room")
+                } else {
+                    try {
+                        def rooms = getRooms()
+                        mcpLog("debug", "device", "update_device room: getRooms() returned ${rooms?.size() ?: 0} rooms")
+                        if (rooms) {
+                            def targetRoom = rooms.find { it.name?.toString()?.toLowerCase() == args.room?.toString()?.toLowerCase() }
+                            if (targetRoom) {
+                                targetRoomId = targetRoom.id?.toString()
+                                mcpLog("debug", "device", "update_device room: resolved '${args.room}' -> roomId=${targetRoomId}")
+                            }
                         }
+                    } catch (Exception e) {
+                        mcpLog("debug", "device", "update_device room: getRooms() failed: ${e.message}")
                     }
-                } catch (Exception e) {
-                    // getRooms() may not be available on all firmware
+
+                    if (targetRoomId == null) {
+                        // Collect available room names for the error message
+                        def allRoomNames = []
+                        try {
+                            def rooms = getRooms()
+                            if (rooms) { allRoomNames = rooms.collect { it.name } }
+                        } catch (Exception e) { /* not available */ }
+                        throw new RuntimeException("Room '${args.room}' not found.${allRoomNames ? ' Available rooms: ' + allRoomNames.join(', ') : ''}")
+                    }
                 }
 
-                if (targetRoomId == null) {
-                    // Try to find room from all devices if getRooms() failed
-                    def allRoomNames = []
-                    try { allRoomNames = getAllRoomNames() ?: [] } catch (Exception e) { /* not available */ }
-                    if (allRoomNames && !allRoomNames.contains(args.room)) {
-                        throw new RuntimeException("Room '${args.room}' not found. Available rooms: ${allRoomNames.join(', ')}")
-                    }
-                }
-
-                // POST to /device/save with room assignment
+                // POST to /device/save with flat field names (Grails convention)
                 def formBody = [
-                    id: deviceId,
-                    "device.id": deviceId,
-                    "device.label": args.label ?: (device.label ?: ""),
-                    "device.name": args.name ?: (device.name ?: ""),
-                    "device.networkId": device.deviceNetworkId ?: "",
-                    "device.typeName": deviceJson.typeName ?: "",
-                    "device.roomId": targetRoomId ?: ""
+                    id: deviceId.toString(),
+                    label: device.label ?: "",
+                    name: device.name ?: "",
+                    deviceNetworkId: device.deviceNetworkId ?: "",
+                    "type.id": deviceJson.typeId?.toString() ?: "",
+                    roomId: targetRoomId
                 ]
-
-                // If we couldn't resolve room ID, try passing just the room name
-                if (targetRoomId == null) {
-                    formBody["device.roomId"] = args.room
-                }
+                mcpLog("debug", "device", "update_device room: POSTing to /device/save with body=${formBody}")
 
                 def result = hubInternalPostForm("/device/save", formBody, 30)
-                def oldRoom = device.roomName ?: "none"
+                mcpLog("debug", "device", "update_device room: /device/save response status=${result?.status}, location=${result?.location}")
+                def oldRoom = deviceJson.roomName ?: "none"
                 changes << [property: "room", oldValue: oldRoom, newValue: args.room]
                 mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoom} -> ${args.room}")
             } catch (Exception e) {
+                mcpLog("debug", "device", "update_device room: error: ${e.message}")
                 errors << [property: "room", error: e.message]
             }
         }
     }
 
     // Enable/Disable (internal API — requires Hub Admin Write)
+    // Hubitat's /device/disable endpoint requires POST with body params, not GET with query params
     if (args.enabled != null) {
         if (!settings.enableHubAdminWrite) {
             errors << [property: "enabled", error: "Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
                 def disableValue = args.enabled ? "false" : "true"
-                hubInternalGet("/device/disable", [id: deviceId, disable: disableValue])
+                mcpLog("debug", "device", "update_device enabled: POSTing to /device/disable with id=${deviceId}, disable=${disableValue}")
+                hubInternalPost("/device/disable", [id: deviceId, disable: disableValue])
                 changes << [property: "enabled", newValue: args.enabled]
                 mcpLog("info", "device", "Device '${deviceLabel}' ${args.enabled ? 'enabled' : 'disabled'}")
             } catch (Exception e) {
+                mcpLog("debug", "device", "update_device enabled: error: ${e.message}")
                 errors << [property: "enabled", error: e.message]
             }
         }
@@ -6187,6 +6220,9 @@ def toolUpdateDevice(args) {
     }
 
     mcpLog("info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
+    if (errors) {
+        mcpLog("debug", "device", "update_device errors: ${errors.collect { "${it.property}: ${it.error}" }.join('; ')}")
+    }
 
     return [
         success: errors.isEmpty(),
@@ -6203,7 +6239,7 @@ def toolUpdateDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.2"
+    return "0.6.3"
 }
 
 def isNewerVersion(String remote, String local) {
