@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.5 - Fix room assignment: use deviceTypeId field from fullJson.device
+ * Version: 0.6.6 - Room assignment: diagnostic build with full device JSON dump + device.* prefix form body
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.5"
+                paragraph "<b>Version:</b> 0.6.6"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.5). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.6). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.5"
+        version: "0.6.6"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2167,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.5",
+        serverVersion: "0.6.6",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.5",
+        version: "0.6.6",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.5"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.6"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.5"
+    details.mcpServerVersion = "0.6.6"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6122,13 +6122,23 @@ def toolUpdateDevice(args) {
                 mcpLog("debug", "device", "update_device room: fetching fullJson for device ${deviceId}")
                 // Fetch device's full JSON to get current room and required fields for /device/save
                 def deviceJson = null
+                def fullJson = null
                 try {
                     def responseText = hubInternalGet("/device/fullJson/${deviceId}")
                     if (responseText) {
-                        def fullJson = new groovy.json.JsonSlurper().parseText(responseText)
+                        fullJson = new groovy.json.JsonSlurper().parseText(responseText)
                         // Device data is nested under the "device" key in fullJson response
                         deviceJson = fullJson?.device ?: fullJson
-                        mcpLog("debug", "device", "update_device room: fullJson top-level keys=${fullJson?.keySet()}, device keys=${deviceJson?.keySet()}, deviceTypeId=${deviceJson?.deviceTypeId}, typeId=${deviceJson?.typeId}, roomId=${deviceJson?.roomId}")
+                        // Log all device fields for debugging /device/save requirements
+                        def deviceFields = deviceJson?.collectEntries { k, v ->
+                            // Truncate long values, skip complex nested objects
+                            if (v instanceof Map || v instanceof List) {
+                                [(k): "(${v instanceof Map ? 'Map' : 'List'}:${v instanceof Map ? v.size() : v.size()})"]
+                            } else {
+                                [(k): v?.toString()?.take(80)]
+                            }
+                        }
+                        mcpLog("debug", "device", "update_device room: device fields=${deviceFields}")
                     }
                 } catch (Exception e) {
                     throw new RuntimeException("Could not fetch device details: ${e.message}")
@@ -6170,24 +6180,23 @@ def toolUpdateDevice(args) {
                     }
                 }
 
-                // POST to /device/save with flat field names (Grails convention)
-                // The device JSON uses "deviceTypeId" for the driver type ID
-                def typeId = deviceJson.deviceTypeId?.toString() ?: deviceJson.typeId?.toString() ?: deviceJson.type?.id?.toString() ?: ""
-                if (!typeId) {
-                    mcpLog("warn", "device", "update_device room: could not determine typeId from device JSON (checked deviceTypeId, typeId, type.id), room save may fail")
-                }
+                // POST to /device/save — use device.* prefixed field names for Grails domain binding
+                // Include all fields the controller likely requires to avoid 500 errors
+                def typeId = deviceJson.deviceTypeId?.toString() ?: deviceJson.typeId?.toString() ?: ""
                 def formBody = [
                     id: deviceId.toString(),
-                    label: device.label ?: "",
-                    name: device.name ?: "",
-                    deviceNetworkId: device.deviceNetworkId ?: "",
-                    "type.id": typeId,
-                    roomId: targetRoomId
+                    "device.id": deviceId.toString(),
+                    "device.label": device.label ?: "",
+                    "device.name": device.name ?: "",
+                    "device.deviceNetworkId": device.deviceNetworkId ?: "",
+                    "device.deviceTypeId": typeId,
+                    "device.roomId": targetRoomId
                 ]
+
                 mcpLog("debug", "device", "update_device room: POSTing to /device/save with body=${formBody}")
 
                 def result = hubInternalPostForm("/device/save", formBody, 30)
-                mcpLog("debug", "device", "update_device room: /device/save response status=${result?.status}, location=${result?.location}, data=${result?.data?.take(200)}")
+                mcpLog("debug", "device", "update_device room: /device/save response status=${result?.status}, location=${result?.location}, data=${result?.data?.take(500)}")
                 def oldRoom = deviceJson.roomName ?: deviceJson.room?.name ?: "none"
                 changes << [property: "room", oldValue: oldRoom, newValue: args.room]
                 mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoom} -> ${args.room}")
@@ -6246,7 +6255,7 @@ def toolUpdateDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.5"
+    return "0.6.6"
 }
 
 def isNewerVersion(String remote, String local) {
