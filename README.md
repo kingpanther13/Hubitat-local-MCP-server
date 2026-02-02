@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.2:**
+- **New `update_device` tool** (68 total) — modify label, name, room, enable/disable, preferences, data values, and DNI on any accessible device. Works on both selected devices and MCP-managed virtual devices. Room and enable/disable use hub internal API; all other properties use official Hubitat API.
+
 **New in v0.6.1:**
 - **Fix BigDecimal.round() crash** — daily version update checker was crashing nightly at 3 AM due to `BigDecimal.round(1)` in Hubitat's Groovy sandbox. Replaced with pure integer math.
 - **Rule app version sync** — `hubitat-mcp-rule.groovy` version updated from 0.4.7 to 0.6.1 to stay in sync with the server
@@ -114,12 +117,12 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (67 total)
+### MCP Tools (68 total)
 
 | Category | Tools |
 |----------|-------|
 | **Devices** (5) | `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events` |
-| **Virtual Devices** (3) | `create_virtual_device`, `list_virtual_devices`, `delete_virtual_device` |
+| **Virtual Devices** (4) | `create_virtual_device`, `list_virtual_devices`, `delete_virtual_device`, `update_device` |
 | **Rules** (11) | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule`, `export_rule`, `import_rule`, `clone_rule` |
 | **System** (9) | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable`, `check_for_update` |
 | **State Capture** (3) | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
@@ -788,6 +791,11 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.2** - Add `update_device` tool (68 tools)
+  - New `update_device` — modify label, name, room, enable/disable, preferences, data values, and DNI on any accessible device
+  - Room assignment via hub internal `/device/save` endpoint with room ID resolution via `getRooms()`
+  - Enable/disable via hub internal `/device/disable` endpoint
+  - Label, name, DNI, data values, preferences via official Hubitat API (`setLabel`, `setName`, `setDeviceNetworkId`, `updateDataValue`, `updateSetting`)
 - **v0.6.1** - Fix BigDecimal.round() crash in version update checker (67 tools)
   - Fix `checkForUpdate()` crashing nightly at 3 AM — `BigDecimal.round(1)` replaced with pure integer math
   - Full audit of all division/rounding patterns across both apps — no other instances found

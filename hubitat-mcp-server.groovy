@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.1 - Fix BigDecimal.round() crash in daily version update checker
+ * Version: 0.6.2 - Add update_device tool for modifying device properties (label, name, room, enable/disable, preferences, data values, DNI)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.1"
+                paragraph "<b>Version:</b> 0.6.2"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.1"
+        version: "0.6.2"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1180,6 +1180,44 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 required: ["deviceNetworkId", "confirm"]
             ]
         ],
+        [
+            name: "update_device",
+            description: """Update properties of any accessible device (selected devices OR MCP-managed virtual devices).
+
+Can modify one or more properties in a single call — only provide the fields you want to change.
+
+Modifiable properties:
+- label — Display name shown in Hubitat UI (official API: setLabel)
+- name — Device name / driver instance name (official API: setName)
+- deviceNetworkId — Unique network identifier; must be unique across all hub devices (official API: setDeviceNetworkId)
+- room — Room assignment; use room name string (uses hub internal API)
+- enabled — Enable or disable the device; disabled devices do not generate events (uses hub internal API)
+- dataValues — Key-value pairs stored in the device's Data section; values are always strings (official API: updateDataValue)
+- preferences — Device preference settings; use the Map form with type and value (official API: updateSetting)
+
+For room assignment, use the exact room name as it appears in Hubitat (case-sensitive). You can list available rooms by checking existing devices with get_device.
+
+For preferences, each entry should specify type and value:
+  preferences: {"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}
+Valid preference types: bool, number, string, enum, decimal, text
+
+Requires 'Enable Hub Admin Write Tools' for room and enabled changes. Label, name, DNI, data values, and preferences can be changed without Hub Admin Write.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "The device ID to update (from list_devices or list_virtual_devices)"],
+                    label: [type: "string", description: "New display label for the device"],
+                    name: [type: "string", description: "New device name"],
+                    deviceNetworkId: [type: "string", description: "New device network ID (must be unique across all hub devices)"],
+                    room: [type: "string", description: "Room name to assign the device to (case-sensitive, must match an existing room)"],
+                    enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
+                    dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
+                        additionalProperties: [type: "string"]],
+                    preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"]
+                ],
+                required: ["deviceId"]
+            ]
+        ],
 
         // Hub Admin App/Driver Source Read Tools
         [
@@ -1602,6 +1640,7 @@ def executeTool(toolName, args) {
         case "create_virtual_device": return toolCreateVirtualDevice(args)
         case "list_virtual_devices": return toolListVirtualDevices(args)
         case "delete_virtual_device": return toolDeleteVirtualDevice(args)
+        case "update_device": return toolUpdateDevice(args)
 
         // Hub Admin App/Driver Management
         case "get_app_source": return toolGetAppSource(args)
@@ -2128,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.1",
+        serverVersion: "0.6.2",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4319,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.1",
+        version: "0.6.2",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4340,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.1"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.2"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4507,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.1"
+    details.mcpServerVersion = "0.6.2"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -5978,10 +6017,193 @@ def toolDeleteVirtualDevice(args) {
     ]
 }
 
+def toolUpdateDevice(args) {
+    def deviceId = args.deviceId
+    if (!deviceId) throw new IllegalArgumentException("deviceId is required")
+
+    def device = findDevice(deviceId)
+    if (!device) {
+        throw new IllegalArgumentException("Device not found: ${deviceId}. The device must be in your selected devices or be an MCP-managed virtual device.")
+    }
+
+    def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
+    def changes = []
+    def errors = []
+
+    // Label (official API)
+    if (args.label != null) {
+        try {
+            device.setLabel(args.label)
+            changes << [property: "label", oldValue: deviceLabel, newValue: args.label]
+            deviceLabel = args.label
+        } catch (Exception e) {
+            errors << [property: "label", error: e.message]
+        }
+    }
+
+    // Name (official API)
+    if (args.name != null) {
+        try {
+            def oldName = device.name
+            device.setName(args.name)
+            changes << [property: "name", oldValue: oldName, newValue: args.name]
+        } catch (Exception e) {
+            errors << [property: "name", error: e.message]
+        }
+    }
+
+    // Device Network ID (official API)
+    if (args.deviceNetworkId != null) {
+        try {
+            def oldDni = device.deviceNetworkId
+            device.setDeviceNetworkId(args.deviceNetworkId)
+            changes << [property: "deviceNetworkId", oldValue: oldDni, newValue: args.deviceNetworkId]
+        } catch (Exception e) {
+            errors << [property: "deviceNetworkId", error: e.message]
+        }
+    }
+
+    // Data Values (official API)
+    if (args.dataValues) {
+        args.dataValues.each { key, value ->
+            try {
+                device.updateDataValue(key.toString(), value?.toString())
+                changes << [property: "dataValue.${key}", newValue: value?.toString()]
+            } catch (Exception e) {
+                errors << [property: "dataValue.${key}", error: e.message]
+            }
+        }
+    }
+
+    // Preferences (official API)
+    if (args.preferences) {
+        args.preferences.each { key, setting ->
+            try {
+                if (setting instanceof Map && setting.type && setting.containsKey("value")) {
+                    device.updateSetting(key.toString(), [type: setting.type.toString(), value: setting.value])
+                } else {
+                    device.updateSetting(key.toString(), setting?.toString())
+                }
+                changes << [property: "preference.${key}", newValue: setting]
+            } catch (Exception e) {
+                errors << [property: "preference.${key}", error: e.message]
+            }
+        }
+    }
+
+    // Room (internal API — requires Hub Admin Write)
+    if (args.room != null) {
+        if (!settings.enableHubAdminWrite) {
+            errors << [property: "room", error: "Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings"]
+        } else {
+            try {
+                // Fetch device's full JSON to get current room and required fields for /device/save
+                def deviceJson = null
+                try {
+                    def responseText = hubInternalGet("/device/fullJson/${deviceId}")
+                    if (responseText) {
+                        deviceJson = new groovy.json.JsonSlurper().parseText(responseText)
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException("Could not fetch device details: ${e.message}")
+                }
+
+                if (!deviceJson) {
+                    throw new RuntimeException("Could not fetch device details for room assignment")
+                }
+
+                // Find room ID by name
+                def targetRoomId = null
+                try {
+                    def rooms = getRooms()
+                    if (rooms) {
+                        def targetRoom = rooms.find { it.name == args.room }
+                        if (targetRoom) {
+                            targetRoomId = targetRoom.id
+                        }
+                    }
+                } catch (Exception e) {
+                    // getRooms() may not be available on all firmware
+                }
+
+                if (targetRoomId == null) {
+                    // Try to find room from all devices if getRooms() failed
+                    def allRoomNames = []
+                    try { allRoomNames = getAllRoomNames() ?: [] } catch (Exception e) { /* not available */ }
+                    if (allRoomNames && !allRoomNames.contains(args.room)) {
+                        throw new RuntimeException("Room '${args.room}' not found. Available rooms: ${allRoomNames.join(', ')}")
+                    }
+                }
+
+                // POST to /device/save with room assignment
+                def formBody = [
+                    id: deviceId,
+                    "device.id": deviceId,
+                    "device.label": args.label ?: (device.label ?: ""),
+                    "device.name": args.name ?: (device.name ?: ""),
+                    "device.networkId": device.deviceNetworkId ?: "",
+                    "device.typeName": deviceJson.typeName ?: "",
+                    "device.roomId": targetRoomId ?: ""
+                ]
+
+                // If we couldn't resolve room ID, try passing just the room name
+                if (targetRoomId == null) {
+                    formBody["device.roomId"] = args.room
+                }
+
+                def result = hubInternalPostForm("/device/save", formBody, 30)
+                def oldRoom = device.roomName ?: "none"
+                changes << [property: "room", oldValue: oldRoom, newValue: args.room]
+                mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoom} -> ${args.room}")
+            } catch (Exception e) {
+                errors << [property: "room", error: e.message]
+            }
+        }
+    }
+
+    // Enable/Disable (internal API — requires Hub Admin Write)
+    if (args.enabled != null) {
+        if (!settings.enableHubAdminWrite) {
+            errors << [property: "enabled", error: "Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings"]
+        } else {
+            try {
+                def disableValue = args.enabled ? "false" : "true"
+                hubInternalGet("/device/disable", [id: deviceId, disable: disableValue])
+                changes << [property: "enabled", newValue: args.enabled]
+                mcpLog("info", "device", "Device '${deviceLabel}' ${args.enabled ? 'enabled' : 'disabled'}")
+            } catch (Exception e) {
+                errors << [property: "enabled", error: e.message]
+            }
+        }
+    }
+
+    if (!changes && !errors) {
+        return [
+            success: true,
+            device: deviceLabel,
+            deviceId: deviceId,
+            message: "No properties were provided to update. Specify at least one property: label, name, deviceNetworkId, room, enabled, dataValues, or preferences."
+        ]
+    }
+
+    mcpLog("info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
+
+    return [
+        success: errors.isEmpty(),
+        device: deviceLabel,
+        deviceId: deviceId,
+        changes: changes,
+        errors: errors.isEmpty() ? null : errors,
+        message: errors.isEmpty()
+            ? "Successfully updated ${changes.size()} property/properties on device '${deviceLabel}'."
+            : "Updated ${changes.size()} property/properties with ${errors.size()} error(s) on device '${deviceLabel}'."
+    ]
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.1"
+    return "0.6.2"
 }
 
 def isNewerVersion(String remote, String local) {
