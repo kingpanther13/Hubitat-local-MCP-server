@@ -1134,7 +1134,7 @@ Supported device types:
 - Virtual Omni Sensor — multi-purpose sensor (presence, contact, motion, temperature, humidity, etc.)
 - Virtual Fan Controller — fan speed control
 
-The deviceNetworkId must be unique across all devices on the hub. If not provided, one will be auto-generated using the format 'mcp-virtual-XXXX'.
+The deviceNetworkId must be unique across all devices on the hub. If not provided, one will be auto-generated.
 
 Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
             inputSchema: [
@@ -1669,7 +1669,7 @@ def toolListDevices(detailed, offset, limit) {
     }
 
     def pagedDevices = allDevices.subList(startIndex, endIndex)
-    def childDeviceIds = (getChildDevices() ?: []).collect { it.id.toString() } as Set
+    def childDeviceIds = childDevs.collect { it.id.toString() } as Set
 
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
@@ -5828,10 +5828,18 @@ def toolCreateVirtualDevice(args) {
         throw new IllegalArgumentException("Unsupported device type: '${deviceType}'. Supported types: ${supportedTypes.join(', ')}")
     }
 
-    // Auto-generate DNI if not provided
+    // Auto-generate DNI if not provided, with uniqueness retry
     if (!dni) {
-        def suffix = Long.toHexString(now()).toUpperCase().takeLast(8)
-        dni = "mcp-virtual-${suffix}"
+        def existingDnis = (getChildDevices() ?: []).collect { it.deviceNetworkId } as Set
+        def attempts = 0
+        while (attempts < 5) {
+            def timestamp = Long.toString(now(), 16).toUpperCase()
+            def rand = Integer.toString(new Random().nextInt(0xFFFF), 16).toUpperCase().padLeft(4, '0')
+            dni = "mcp-virtual-${timestamp}-${rand}"
+            if (!existingDnis.contains(dni)) break
+            attempts++
+            pauseExecution(1) // ensure different now() on retry
+        }
     }
 
     // Validate DNI uniqueness against existing child devices
@@ -5844,7 +5852,7 @@ def toolCreateVirtualDevice(args) {
 
     def newDevice = null
     try {
-        newDevice = addChildDevice("hubitat", deviceType, dni, [
+        newDevice = addChildDevice("hubitat", deviceType, dni, null, [
             name: deviceType,
             label: deviceLabel,
             isComponent: false

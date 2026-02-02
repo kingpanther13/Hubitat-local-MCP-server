@@ -298,11 +298,11 @@ Devices are accessible from two sources:
 
 Virtual devices are created as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
 
-- **`addChildDevice("hubitat", driverName, dni, [name: ..., label: ..., isComponent: false])`** — creates a device using a built-in Hubitat driver
+- **`addChildDevice("hubitat", driverName, dni, null, [name: ..., label: ..., isComponent: false])`** — creates a device using a built-in Hubitat driver (5-argument form with `null` hub ID for cross-firmware compatibility)
 - **`isComponent: false`** — device appears independently in the Hubitat UI, can be edited/deleted, and can be shared with other apps (Maker API, Dashboard, Rule Machine, HA, etc.)
 - **`getChildDevices()`** returns only child *devices* (not child apps/rules — those use `getChildApps()`)
 - **`deleteChildDevice(dni)`** removes by device network ID
-- Auto-generated DNIs use format `mcp-virtual-XXXXXXXX` (hex timestamp suffix)
+- Auto-generated DNIs use format `mcp-virtual-<hex-timestamp>-<hex-random>` with retry logic to avoid collisions
 - Supports 15 built-in virtual device types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller
 - Requires Hub Admin Write access (with backup verification) for create/delete operations
 
