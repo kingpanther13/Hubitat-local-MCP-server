@@ -1242,7 +1242,13 @@ Specify room by name (case-insensitive) or by ID.""",
             name: "create_room",
             description: """Create a new room on the hub.
 
-Room names must be unique. Optionally assign devices to the room at creation time by providing a list of device IDs.
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
+2. Confirm the room name with the user before creating
+3. Get EXPLICIT user confirmation to proceed
+4. Set confirm=true
+
+Room names must be unique (case-insensitive). Optionally assign devices to the room at creation time by providing a list of device IDs.
 
 Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
             inputSchema: [
@@ -1250,32 +1256,56 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 properties: [
                     name: [type: "string", description: "Name for the new room"],
                     deviceIds: [type: "array", description: "Optional list of device IDs to assign to the room", items: [type: "string"]],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved room creation."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["name", "confirm"]
             ]
         ],
         [
             name: "delete_room",
-            description: """⚠️ Delete a room from the hub.
+            description: """⚠️⚠️⚠️ CRITICAL WARNING — DESTRUCTIVE OPERATION ⚠️⚠️⚠️
 
-Devices in the room will become unassigned (not deleted). Specify room by name or ID.
+MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
+2. Use 'list_rooms' or 'get_room' to inspect the room and confirm it is the CORRECT one
+3. Tell the user: "I am about to DELETE room '[name]' from your hub. This will unassign ALL devices currently in this room."
+4. If the room contains devices, LIST the devices that will be affected so the user can review
+5. WARN the user that any dashboard tiles, automations, or rules that reference this room may be affected
+6. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
+7. Set confirm=true
+
+Effects:
+- The room is PERMANENTLY deleted from the hub
+- ALL devices in the room become unassigned (devices are NOT deleted, but lose their room assignment)
+- Dashboard layouts organized by room may be affected
+- Any automations or rules that filter by room may stop working correctly
+
+NEVER call this tool without completing ALL steps in the checklist above.
+NEVER call this tool unless the user specifically requested room deletion.
+If the backup failed, DO NOT proceed — inform the user instead.
 
 Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     room: [type: "string", description: "Room name (case-insensitive) or room ID"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved room deletion."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
                 ],
                 required: ["room", "confirm"]
             ]
         ],
         [
             name: "rename_room",
-            description: """Rename an existing room. Specify room by current name or ID.
+            description: """⚠️ Rename an existing room. Specify room by current name or ID.
+
+MANDATORY PRE-FLIGHT CHECKLIST:
+1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
+2. Tell the user which room you are about to rename and what the new name will be
+3. Get EXPLICIT user confirmation to proceed
+4. Set confirm=true
 
 The room's device assignments are preserved. New name must not conflict with an existing room.
+Note: Automations or dashboard tiles that reference the room by name may need to be updated after renaming.
 
 Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
             inputSchema: [
@@ -1283,7 +1313,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
                 properties: [
                     room: [type: "string", description: "Current room name (case-insensitive) or room ID"],
                     newName: [type: "string", description: "New name for the room"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved rename."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["room", "newName", "confirm"]
             ]
@@ -6510,12 +6540,7 @@ def toolGetRoom(String roomIdentifier) {
 }
 
 def toolCreateRoom(args) {
-    if (!settings.enableHubAdminWrite) {
-        throw new IllegalArgumentException("Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings")
-    }
-    if (!args.confirm) {
-        throw new IllegalArgumentException("confirm must be true to create a room")
-    }
+    requireHubAdminWrite(args.confirm)
     if (!args.name?.trim()) {
         throw new IllegalArgumentException("Room name is required")
     }
@@ -6583,12 +6608,7 @@ def toolCreateRoom(args) {
 }
 
 def toolDeleteRoom(args) {
-    if (!settings.enableHubAdminWrite) {
-        throw new IllegalArgumentException("Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings")
-    }
-    if (!args.confirm) {
-        throw new IllegalArgumentException("confirm must be true to delete a room")
-    }
+    requireHubAdminWrite(args.confirm)
     if (!args.room?.trim()) {
         throw new IllegalArgumentException("Room name or ID is required")
     }
@@ -6678,12 +6698,7 @@ def toolDeleteRoom(args) {
 }
 
 def toolRenameRoom(args) {
-    if (!settings.enableHubAdminWrite) {
-        throw new IllegalArgumentException("Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings")
-    }
-    if (!args.confirm) {
-        throw new IllegalArgumentException("confirm must be true to rename a room")
-    }
+    requireHubAdminWrite(args.confirm)
     if (!args.room?.trim()) {
         throw new IllegalArgumentException("Room name or ID is required")
     }
