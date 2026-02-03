@@ -546,12 +546,13 @@ Always verify rule created correctly after.""",
         ],
         [
             name: "delete_rule",
-            description: "DESTRUCTIVE: Permanently delete a rule. This action is IRREVERSIBLE. Requires confirm=true. Consider using export_rule first to save a backup.",
+            description: "DESTRUCTIVE: Permanently delete a rule. This action is IRREVERSIBLE. MANDATORY: You MUST call export_rule FIRST to create a backup before deletion. The backup must be within the last 24 hours. Use skipBackupCheck=true ONLY when intentionally deleting a backup copy or test rule.",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "string", description: "Rule ID"],
-                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion. Rule will be permanently deleted."]
+                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion. Rule will be permanently deleted."],
+                    skipBackupCheck: [type: "boolean", description: "Set to true ONLY when intentionally deleting a backup copy or test rule that doesn't need preservation. Default: false (backup required)."]
                 ],
                 required: ["ruleId", "confirm"]
             ]
@@ -2189,7 +2190,7 @@ def toolUpdateRule(ruleId, args) {
 def toolDeleteRule(args) {
     // Require explicit confirmation for destructive operation
     if (!args.confirm) {
-        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to delete a rule. This action is IRREVERSIBLE. Consider using export_rule first to save a backup of the rule.")
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to delete a rule. This action is IRREVERSIBLE.")
     }
 
     def childApp = getChildAppById(args.ruleId)
@@ -2198,8 +2199,34 @@ def toolDeleteRule(args) {
     }
 
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
+
+    // Check for recent backup unless explicitly skipped
+    if (!args.skipBackupCheck) {
+        def ruleBackups = state.ruleBackupTimestamps ?: [:]
+        def lastBackup = ruleBackups[args.ruleId.toString()]
+        def twentyFourHoursMs = 24 * 60 * 60 * 1000
+
+        if (!lastBackup) {
+            throw new IllegalArgumentException("BACKUP REQUIRED: You must call export_rule for rule '${ruleName}' (ID: ${args.ruleId}) BEFORE deleting it. No backup found for this rule. If this is a test rule or backup copy that doesn't need preservation, set skipBackupCheck=true.")
+        }
+
+        if ((now() - lastBackup) > twentyFourHoursMs) {
+            def hoursAgo = (int)((now() - lastBackup) / 3600000)
+            throw new IllegalArgumentException("BACKUP EXPIRED: The backup for rule '${ruleName}' is ${hoursAgo} hours old (must be within 24 hours). Call export_rule again before deleting. If this is a test rule or backup copy, set skipBackupCheck=true.")
+        }
+
+        mcpLog("info", "rules", "Backup verified for rule '${ruleName}' (backed up ${(int)((now() - lastBackup) / 60000)} minutes ago)")
+    } else {
+        mcpLog("warn", "rules", "Backup check skipped for rule '${ruleName}' - user set skipBackupCheck=true")
+    }
+
     mcpLog("warn", "rules", "Deleting rule '${ruleName}' (ID: ${args.ruleId}) - user confirmed deletion")
     deleteChildApp(childApp.id)
+
+    // Clean up the backup timestamp for this rule
+    def ruleBackups = state.ruleBackupTimestamps ?: [:]
+    ruleBackups.remove(args.ruleId.toString())
+    state.ruleBackupTimestamps = ruleBackups
 
     return [
         success: true,
@@ -2287,6 +2314,11 @@ def toolExportRule(args) {
     ]
 
     mcpLog("info", "server", "Exported rule '${ruleData.name}' (ID: ${args.ruleId}) with ${deviceManifest.size()} device references", args.ruleId)
+
+    // Track this backup for the delete_rule safety check
+    def ruleBackups = state.ruleBackupTimestamps ?: [:]
+    ruleBackups[args.ruleId.toString()] = now()
+    state.ruleBackupTimestamps = ruleBackups
 
     return exportData
 }

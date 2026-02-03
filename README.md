@@ -2,7 +2,7 @@
 
 A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub, with a built-in custom rule engine.
 
-> **ALPHA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress and may have bugs, edge cases, or issues. Use at your own risk. Contributions and bug reports welcome!
+> **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress and may have bugs, edge cases, or issues. Use at your own risk. Contributions and bug reports welcome!
 >
 > **Found a bug?** Please report issues at [GitHub Issues](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues). For easier bug reporting:
 > 1. Set debug log level: Settings → MCP Debug Log Level → "Debug", or ask your AI to `set_log_level` to "debug"
@@ -19,7 +19,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
 **New in v0.7.1:**
-- **Safety gate for `delete_rule`** — Now requires `confirm=true` parameter to prevent accidental rule deletion. Consider using `export_rule` first to save a backup.
+- **Mandatory backup for `delete_rule`** — Now requires `export_rule` to be called first (within 24 hours) before a rule can be deleted. Use `skipBackupCheck=true` only for test rules or backup copies that don't need preservation.
 - **Bug fixes and code quality improvements:**
   - Add bounds checking to time trigger format parsing (prevents crash on malformed HH:mm)
   - Add null validation for `set_mode` and `set_hsm` actions (log error instead of crash)
@@ -852,7 +852,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.7.1** - Safety gate for delete_rule (requires confirm=true), bug fixes for time triggers and button handlers
+- **v0.7.1** - Mandatory backup for delete_rule, bug fixes for time triggers and button handlers
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
 - **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object
