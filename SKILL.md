@@ -214,6 +214,13 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - This prevents accidentally controlling critical systems (HVAC, locks) when user meant a different device
 - The `delete_device` tool has its own extensive safety checklist (requires recent backup, explicit confirmation, audit logging)
 
+**Optimized Tool Descriptions** (v0.7.2+):
+- Tool descriptions reduced by ~387 lines for better token efficiency
+- Based on MCP best practices from Anthropic and modelcontextprotocol.io
+- All critical safety rules preserved: pre-flight checklists, confirm requirements, backup requirements
+- Descriptions follow "explain like to a new hire" principle — concise but complete
+- Reduces context consumption when 73 tools are loaded into AI context
+
 **Rule Deletion Safety** (delete_rule):
 - Automatically backs up rule to File Manager before deletion as `mcp_rule_backup_<name>_<timestamp>.json`
 - Backup includes full rule export (triggers, conditions, actions, device manifest)

@@ -23,7 +23,11 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
   - If user says "use virtual test switch" but no exact match exists, AI must suggest similar devices and **ask for confirmation** before using any of them
   - Exact name matches can be used directly without confirmation
   - Prevents AI from silently using wrong devices (e.g., accidentally controlling HVAC instead of a test switch)
-- **Simplified `create_virtual_device`** — Reduced redundancy in inputSchema descriptions for better MCP client compatibility
+- **Optimized tool descriptions** — ~387 lines reduced from tool definitions for better token efficiency
+  - Based on MCP best practices research from Anthropic and modelcontextprotocol.io
+  - Critical safety rules preserved (pre-flight checklists, confirm requirements, backup requirements)
+  - Reduces token consumption when tool definitions are loaded into AI context
+- **Simplified `create_virtual_device`** — Reduced redundancy in inputSchema descriptions
 
 **New in v0.7.1:**
 - **Automatic backup for `delete_rule`** — Rules are automatically backed up to File Manager (`mcp_rule_backup_*.json`) before deletion. Restore via `read_file` + `import_rule`.
@@ -860,7 +864,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.7.2** - Device authorization safety: require confirmation for non-exact device matches
+- **v0.7.2** - Device authorization safety + optimized tool descriptions (~387 lines reduced)
 - **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
