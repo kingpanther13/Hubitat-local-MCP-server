@@ -801,7 +801,7 @@ The deviceMapping is an object where keys are old device IDs and values are new 
         // ==================== HUB ADMIN READ TOOLS ====================
         [
             name: "get_hub_details",
-            description: "Extended hub info: model, firmware, memory, temperature, network, radios. Requires Hub Admin Read.",
+            description: "Extended hub info: model, firmware, memory, temperature, network, radios. Requires Hub Admin Read. If Hub Security enabled, configure credentials in app settings.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -957,10 +957,10 @@ Requires Hub Admin Write.""",
         // Device Admin
         [
             name: "delete_device",
-            description: """⚠️ MOST DESTRUCTIVE: Permanently deletes a device. NO UNDO. Intended for ghost/orphaned devices only.
+            description: """⚠️ MOST DESTRUCTIVE: Permanently deletes a device. NO UNDO. Intended for: ghost/orphaned devices, stale DB records, stuck virtual devices.
 
-PRE-FLIGHT: 1) Backup <24h 2) get_device to verify correct device 3) Tell user device name/ID 4) Warn if recent activity or Z-Wave/Zigbee 5) Get explicit confirmation 6) Set confirm=true
-Effects: Device + history permanently lost, automations referencing it will break.
+PRE-FLIGHT: 1) Backup <24h 2) get_device to verify 3) Tell user device name/ID 4) Warn if recent activity or Z-Wave/Zigbee (do exclusion first) 5) Get confirmation 6) Set confirm=true
+Effects: Device + history lost, automations break. Full details logged to MCP debug logs for audit.
 Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
@@ -975,7 +975,7 @@ Requires Hub Admin Write.""",
         // Virtual Device Management
         [
             name: "create_virtual_device",
-            description: """Create an MCP-managed virtual device. Auto-accessible to all MCP tools without manual selection.
+            description: """Create an MCP-managed virtual device. Auto-accessible to all MCP tools. Also appears in Hubitat UI for Maker API, Dashboard, Rule Machine.
 
 Types: Switch, Button, Contact/Motion/Presence/Water Sensor, Lock, Temp/Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door, Omni Sensor, Fan Controller.
 Requires Hub Admin Write + confirm.""",
@@ -1016,7 +1016,7 @@ Requires Hub Admin Write + confirm.""",
             description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
 
 Only modify devices user explicitly requested. Room/enabled require Hub Admin Write; others work without it.
-Preferences format: {"key": {"type": "bool|number|string", "value": X}}""",
+Preferences format: {"key": {"type": "TYPE", "value": X}} where TYPE is: bool, number, string, enum, decimal, text""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1081,7 +1081,7 @@ Requires Hub Admin Write.""",
         ],
         [
             name: "rename_room",
-            description: "Rename a room. Device assignments preserved. Requires Hub Admin Write + confirm + backup <24h.",
+            description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Hub Admin Write + confirm + backup <24h.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1096,7 +1096,7 @@ Requires Hub Admin Write.""",
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
-            description: "Get app Groovy source. Supports chunked reading (offset/length) for large files. Requires Hub Admin Read.",
+            description: "Get app Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_app_code sourceFile mode. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1109,7 +1109,7 @@ Requires Hub Admin Write.""",
         ],
         [
             name: "get_driver_source",
-            description: "Get driver Groovy source. Supports chunked reading (offset/length) for large files. Requires Hub Admin Read.",
+            description: "Get driver Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_driver_code sourceFile mode. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1125,7 +1125,7 @@ Requires Hub Admin Write.""",
             name: "install_app",
             description: """⚠️ Install new app from Groovy source. Show code to user and get confirmation first.
 
-Requires Hub Admin Write + confirm + backup <24h. Returns new app ID.""",
+Requires Hub Admin Write + confirm + backup <24h. Returns new app ID. After install, add via Apps > Add User App in Hubitat UI.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1187,7 +1187,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
         ],
         [
             name: "delete_app",
-            description: """⚠️ DESTRUCTIVE: Permanently delete an app. Auto-backs up before deletion.
+            description: """⚠️ DESTRUCTIVE: Permanently delete an app. Auto-backs up before deletion. Remove app instances via Hubitat UI first.
 
 Tell user app name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
@@ -1201,9 +1201,9 @@ Tell user app name/ID, warn it's permanent, get confirmation. Requires Hub Admin
         ],
         [
             name: "delete_driver",
-            description: """⚠️ DESTRUCTIVE: Permanently delete a driver. Auto-backs up before deletion.
+            description: """⚠️ DESTRUCTIVE: Permanently delete a driver. Auto-backs up before deletion. Devices using it must change drivers first.
 
-Tell user driver name/ID, warn about devices using it, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
+Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1217,7 +1217,7 @@ Tell user driver name/ID, warn about devices using it, get confirmation. Require
         // ==================== Item Backup Tools ====================
         [
             name: "list_item_backups",
-            description: "List auto-created source backups (from app/driver modifications). Stored in File Manager, max 20 kept.",
+            description: "List auto-created source backups (from app/driver modifications). Stored in File Manager (persist even if MCP uninstalled), max 20 kept, rapid edits preserve original.",
             inputSchema: [
                 type: "object",
                 properties: [:],
@@ -1237,7 +1237,7 @@ Tell user driver name/ID, warn about devices using it, get confirmation. Require
         ],
         [
             name: "restore_item_backup",
-            description: "⚠️ Restore app/driver to backed-up version. Tell user what you're restoring first. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use install_app/install_driver instead. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
