@@ -6228,68 +6228,74 @@ def toolUpdateDevice(args) {
                     }
                 }
 
-                // Room assignment: /device/save silently ignores roomId.
-                // /room/addDevice returns 405 on POST and 404 on GET.
-                // /room/save returns 500 on POST with form-encoded body — endpoint exists but format is wrong.
-                // The room page is a Vue.js SPA using vue-hub2.min.js — API likely expects JSON.
-                // Strategy: try POST /room/save with JSON, then form-encoded, then hub2/ prefix.
+                // Room assignment via POST /room/save with JSON body.
+                // API uses "roomId" field (not "id"). Content-Type must be application/json.
 
                 def saveSuccess = false
                 def saveError = null
                 def deviceIdLong = deviceId as Long
                 def deviceIdInt = deviceId as Integer
-                def deviceIdStr = deviceId.toString()
+
+                // Helper: POST JSON to /room/save and check for errors
+                def roomSavePost = { Map bodyMap ->
+                    def cookie = getHubSecurityCookie()
+                    def jsonStr = groovy.json.JsonOutput.toJson(bodyMap)
+                    def postParams = [
+                        uri: "http://127.0.0.1:8080",
+                        path: "/room/save",
+                        requestContentType: "application/json",
+                        body: jsonStr,
+                        textParser: true,
+                        timeout: 30,
+                        ignoreSSLIssues: true
+                    ]
+                    if (cookie) { postParams.headers = ["Cookie": cookie] }
+                    def respBody = null
+                    httpPost(postParams) { resp ->
+                        try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
+                    }
+                    // Parse JSON response to check for error field
+                    if (respBody) {
+                        try {
+                            def parsed = new groovy.json.JsonSlurper().parseText(respBody)
+                            if (parsed?.error) {
+                                throw new RuntimeException("Room API error: ${parsed.error}")
+                            }
+                        } catch (groovy.json.JsonException ignored) {
+                            // Non-JSON response — check raw text
+                            if (respBody.toLowerCase().contains("error")) {
+                                throw new RuntimeException("Room API error (non-JSON): ${respBody.take(500)}")
+                            }
+                        }
+                    }
+                    return respBody
+                }
+
+                // Helper: check if device is in a room's device list
+                def deviceInRoom = { room ->
+                    room?.deviceIds?.contains(deviceIdLong) || room?.deviceIds?.contains(deviceIdInt)
+                }
 
                 // Get current room data
-                def allRooms = null
-                try {
-                    allRooms = getRooms()
-                    mcpLog("debug", "device", "update_device room: getRooms() = ${allRooms}")
-                } catch (Exception e) {
-                    mcpLog("debug", "device", "update_device room: getRooms() failed: ${e.message}")
-                }
+                def allRooms = getRooms()
+                mcpLog("debug", "device", "update_device room: getRooms() returned ${allRooms?.size() ?: 0} rooms")
 
                 if (targetRoomId == "0") {
                     // --- UNASSIGN: remove device from its current room ---
-                    def currentRoom = allRooms?.find { room ->
-                        room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceIdInt)
-                    }
+                    def currentRoom = allRooms?.find { deviceInRoom(it) }
                     if (!currentRoom) {
                         saveSuccess = true
                         mcpLog("debug", "device", "update_device room: device not in any room, nothing to unassign")
                     } else {
                         mcpLog("debug", "device", "update_device room: removing device ${deviceId} from room '${currentRoom.name}' (${currentRoom.id})")
-                        def updatedDeviceIds = currentRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt } ?: []
-
-                        // Try removing device from room — use same approaches as assign
-                        def cookie = getHubSecurityCookie()
-                        // API expects "roomId" not "id" (discovered from response: {"roomId":null,"error":"Invalid room id"})
-                        def unassignRoomData = [roomId: currentRoom.id as Integer, name: currentRoom.name, deviceIds: updatedDeviceIds.collect { it as Integer }]
+                        def updatedDeviceIds = currentRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
+                        def body = [roomId: currentRoom.id as Integer, name: currentRoom.name, deviceIds: updatedDeviceIds]
+                        mcpLog("debug", "device", "update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(body)}")
                         try {
-                            def jsonStr = groovy.json.JsonOutput.toJson(unassignRoomData)
-                            mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) body: ${jsonStr}")
-                            def postParams = [
-                                uri: "http://127.0.0.1:8080",
-                                path: "/room/save",
-                                requestContentType: "application/json",
-                                body: jsonStr,
-                                textParser: true,
-                                timeout: 30,
-                                ignoreSSLIssues: true
-                            ]
-                            if (cookie) { postParams.headers = ["Cookie": cookie] }
-                            def respBody = null
-                            httpPost(postParams) { resp ->
-                                mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) status=${resp.status}")
-                                try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
-                            }
-                            mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) body=${respBody?.take(500)}")
-                            if (respBody?.contains('"error"')) {
-                                throw new RuntimeException("API returned error: ${respBody?.take(500)}")
-                            }
+                            roomSavePost(body)
                             saveSuccess = true
                         } catch (Exception e) {
-                            mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) failed: ${e.message}")
+                            mcpLog("debug", "device", "update_device room: remove failed: ${e.message}")
                             saveError = e.message
                         }
                     }
@@ -6297,95 +6303,46 @@ def toolUpdateDevice(args) {
                     // --- ASSIGN: add device to target room ---
                     mcpLog("debug", "device", "update_device room: assigning device ${deviceId} to room ${targetRoomId}")
 
-                    // Remove from old room first (best effort)
-                    def oldRoom = allRooms?.find { room ->
-                        (room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceIdInt)) && room.id?.toString() != targetRoomId
-                    }
-                    if (oldRoom) {
-                        mcpLog("debug", "device", "update_device room: moving from '${oldRoom.name}' (${oldRoom.id}) to room ${targetRoomId}")
-                        // Remove from old room first
-                        try {
-                            def oldCookie = getHubSecurityCookie()
-                            def oldDeviceIds = oldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
-                            def oldRoomBody = [roomId: oldRoom.id as Integer, name: oldRoom.name, deviceIds: oldDeviceIds]
-                            def oldJsonStr = groovy.json.JsonOutput.toJson(oldRoomBody)
-                            mcpLog("debug", "device", "update_device room: removing from old room body: ${oldJsonStr}")
-                            def oldParams = [
-                                uri: "http://127.0.0.1:8080",
-                                path: "/room/save",
-                                requestContentType: "application/json",
-                                body: oldJsonStr,
-                                textParser: true,
-                                timeout: 30,
-                                ignoreSSLIssues: true
-                            ]
-                            if (oldCookie) { oldParams.headers = ["Cookie": oldCookie] }
-                            httpPost(oldParams) { resp ->
-                                mcpLog("debug", "device", "update_device room: removed from old room '${oldRoom.name}' status=${resp.status}")
-                            }
-                        } catch (Exception oldErr) {
-                            mcpLog("debug", "device", "update_device room: failed to remove from old room: ${oldErr.message}")
-                        }
-                    }
-
-                    // Get target room's current device list
+                    // Check if device is already in the target room
                     def targetRoom = allRooms?.find { it.id?.toString() == targetRoomId }
-                    def targetDeviceIds = targetRoom?.deviceIds?.collect { it } ?: []
-                    if (!targetDeviceIds.contains(deviceIdLong) && !targetDeviceIds.contains(deviceIdInt)) {
-                        targetDeviceIds << deviceIdLong
-                    }
-
-                    // Try multiple approaches — /room/save returned 500 with form-encoded (endpoint exists, format wrong)
-                    def cookie = getHubSecurityCookie()
-
-                    // Helper to make JSON POST requests
-                    def jsonPost = { String path, Map bodyMap ->
-                        def jsonStr = groovy.json.JsonOutput.toJson(bodyMap)
-                        def postParams = [
-                            uri: "http://127.0.0.1:8080",
-                            path: path,
-                            requestContentType: "application/json",
-                            body: jsonStr,
-                            textParser: true,
-                            timeout: 30,
-                            ignoreSSLIssues: true
-                        ]
-                        if (cookie) { postParams.headers = ["Cookie": cookie] }
-                        def respStatus = null
-                        def respBody = null
-                        httpPost(postParams) { resp ->
-                            respStatus = resp.status
-                            try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
+                    if (targetRoom && deviceInRoom(targetRoom)) {
+                        mcpLog("debug", "device", "update_device room: device already in target room '${targetRoom.name}'")
+                        saveSuccess = true
+                    } else {
+                        // Remove from old room first (required, not best-effort)
+                        def oldRoom = allRooms?.find { room ->
+                            deviceInRoom(room) && room.id?.toString() != targetRoomId
                         }
-                        return [status: respStatus, body: respBody]
-                    }
-
-                    // Build room data — API response showed field is "roomId" not "id":
-                    // {"roomId":null,"error":"Invalid room id"}
-                    def roomData = [roomId: targetRoomId as Integer, name: targetRoom?.name ?: "", deviceIds: targetDeviceIds.collect { it as Integer }]
-
-                    def attempts = [
-                        // 1. POST /room/save with JSON body — got 200 + "Invalid room id" when using "id", now using "roomId"
-                        [desc: "POST /room/save JSON", method: "POST_SAVE_JSON"],
-                    ]
-
-                    for (def att : attempts) {
-                        if (saveSuccess) break
-                        try {
-                            switch (att.method) {
-                                case "POST_SAVE_JSON":
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${groovy.json.JsonOutput.toJson(roomData)}")
-                                    def result = jsonPost("/room/save", roomData)
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} status=${result.status} body=${result.body?.take(500)}")
-                                    // Check response body for error
-                                    if (result.body?.contains('"error"')) {
-                                        throw new RuntimeException("API returned error: ${result.body?.take(500)}")
-                                    }
-                                    saveSuccess = true
-                                    break
+                        if (oldRoom) {
+                            mcpLog("debug", "device", "update_device room: moving from '${oldRoom.name}' (${oldRoom.id}) to room ${targetRoomId}")
+                            def oldDeviceIds = oldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
+                            def oldBody = [roomId: oldRoom.id as Integer, name: oldRoom.name, deviceIds: oldDeviceIds]
+                            mcpLog("debug", "device", "update_device room: removing from old room: ${groovy.json.JsonOutput.toJson(oldBody)}")
+                            try {
+                                roomSavePost(oldBody)
+                                mcpLog("debug", "device", "update_device room: removed from old room '${oldRoom.name}'")
+                            } catch (Exception oldErr) {
+                                // Abort — don't add to new room if we can't remove from old (would create dual-room state)
+                                throw new RuntimeException("Failed to remove device from old room '${oldRoom.name}': ${oldErr.message}")
                             }
+                        }
+
+                        // Add to target room — re-fetch rooms to get fresh data after old room mutation
+                        def freshRooms = oldRoom ? getRooms() : allRooms
+                        def freshTarget = freshRooms?.find { it.id?.toString() == targetRoomId }
+                        def targetDeviceIds = freshTarget?.deviceIds?.collect { it as Integer } ?: []
+                        def devIdInt = deviceId as Integer
+                        if (!targetDeviceIds.contains(devIdInt)) {
+                            targetDeviceIds << devIdInt
+                        }
+
+                        def roomData = [roomId: targetRoomId as Integer, name: freshTarget?.name ?: targetRoom?.name ?: "", deviceIds: targetDeviceIds]
+                        mcpLog("debug", "device", "update_device room: POST /room/save (add) body: ${groovy.json.JsonOutput.toJson(roomData)}")
+                        try {
+                            roomSavePost(roomData)
+                            saveSuccess = true
                         } catch (Exception e) {
-                            mcpLog("debug", "device", "update_device room: ${att.desc} failed: ${e.message}")
+                            mcpLog("debug", "device", "update_device room: add to room failed: ${e.message}")
                             saveError = e.message
                         }
                     }
@@ -6397,16 +6354,23 @@ def toolUpdateDevice(args) {
                     try {
                         def verifyRooms = getRooms()
                         if (targetRoomId == "0") {
-                            def stillInRoom = verifyRooms?.find { room -> room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceIdInt) }
+                            def stillInRoom = verifyRooms?.find { room -> deviceInRoom(room) }
                             verified = (stillInRoom == null)
                             if (!verified) {
                                 mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device still in room '${stillInRoom?.name}'")
                             }
                         } else {
                             def tRoom = verifyRooms?.find { it.id?.toString() == targetRoomId }
-                            verified = tRoom?.deviceIds?.contains(deviceIdLong) || tRoom?.deviceIds?.contains(deviceIdInt)
+                            verified = deviceInRoom(tRoom)
                             if (!verified) {
-                                mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device not in room. Room '${tRoom?.name}' deviceIds: ${tRoom?.deviceIds}")
+                                mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device not in target room '${tRoom?.name}' deviceIds: ${tRoom?.deviceIds}")
+                            }
+                            // Also verify device is NOT still in the old room
+                            if (verified) {
+                                def dualRoom = verifyRooms?.find { room -> deviceInRoom(room) && room.id?.toString() != targetRoomId }
+                                if (dualRoom) {
+                                    mcpLog("warn", "device", "update_device room: WARNING - device also still in room '${dualRoom.name}' (dual-room state)")
+                                }
                             }
                         }
                     } catch (Exception verErr) {
@@ -6418,10 +6382,10 @@ def toolUpdateDevice(args) {
                         changes << [property: "room", oldValue: oldRoomName, newValue: args.room ?: "none"]
                         mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoomName} -> ${args.room ?: 'none'} (VERIFIED)")
                     } else {
-                        throw new RuntimeException("Room assignment endpoint returned success but room did not actually change. Check debug logs for /room/list HTML to discover correct endpoint.")
+                        throw new RuntimeException("Room assignment endpoint returned success but room did not actually change.")
                     }
                 } else {
-                    throw new RuntimeException("Room assignment failed after all attempts. Last error: ${saveError}. Check debug logs for /room/list HTML.")
+                    throw new RuntimeException("Room assignment failed. Last error: ${saveError}")
                 }
             } catch (Exception e) {
                 mcpLog("debug", "device", "update_device room: error: ${e.message}")
@@ -6510,7 +6474,7 @@ def toolGetRoom(String roomIdentifier) {
 
     // Get device details for each device in the room
     def devices = []
-    def allDevices = (selectedDevices ?: []).toList()
+    def allDevices = (settings.selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
     def selectedIds = allDevices.collect { it.id.toString() } as Set
     childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
@@ -6520,8 +6484,8 @@ def toolGetRoom(String roomIdentifier) {
         if (device) {
             def devInfo = [
                 id: device.id.toString(),
-                label: device.label ?: device.name,
-                name: device.name
+                label: device.label ?: device.name ?: "unknown",
+                name: device.name ?: "unknown"
             ]
             // Add common current states
             def states = [:]
@@ -6533,7 +6497,7 @@ def toolGetRoom(String roomIdentifier) {
             if (states) devInfo.currentStates = states
             devices << devInfo
         } else {
-            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown"]
+            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown", accessible: false]
         }
     }
 
@@ -6541,7 +6505,7 @@ def toolGetRoom(String roomIdentifier) {
         id: room.id?.toString(),
         name: room.name,
         deviceCount: devices.size(),
-        devices: devices.sort { it.label?.toLowerCase() }
+        devices: devices.sort { (it.label ?: "").toLowerCase() }
     ]
 }
 
@@ -6574,28 +6538,38 @@ def toolCreateRoom(args) {
     mcpLog("debug", "room", "create_room: POST /room/save body: ${jsonStr}")
 
     def respBody = null
-    def postParams = [
-        uri: "http://127.0.0.1:8080",
-        path: "/room/save",
-        requestContentType: "application/json",
-        body: jsonStr,
-        textParser: true,
-        timeout: 30,
-        ignoreSSLIssues: true
-    ]
-    if (cookie) { postParams.headers = ["Cookie": cookie] }
-    httpPost(postParams) { resp ->
-        try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
-        mcpLog("debug", "room", "create_room: response status=${resp.status} body=${respBody?.take(500)}")
+    try {
+        def postParams = [
+            uri: "http://127.0.0.1:8080",
+            path: "/room/save",
+            requestContentType: "application/json",
+            body: jsonStr,
+            textParser: true,
+            timeout: 30,
+            ignoreSSLIssues: true
+        ]
+        if (cookie) { postParams.headers = ["Cookie": cookie] }
+        httpPost(postParams) { resp ->
+            try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
+            mcpLog("debug", "room", "create_room: response status=${resp.status} body=${respBody?.take(500)}")
+        }
+    } catch (Exception httpErr) {
+        throw new RuntimeException("Failed to create room '${roomName}': ${httpErr.message}")
     }
 
-    if (respBody?.contains('"error"')) {
-        throw new RuntimeException("Failed to create room: ${respBody?.take(500)}")
+    // Parse JSON response to check for error
+    if (respBody) {
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(respBody)
+            if (parsed?.error) {
+                throw new RuntimeException("Failed to create room: ${parsed.error}")
+            }
+        } catch (groovy.json.JsonException ignored) {}
     }
 
-    // Verify creation
+    // Verify creation (case-insensitive to handle any normalization)
     def updatedRooms = getRooms()
-    def newRoom = updatedRooms?.find { it.name == roomName }
+    def newRoom = updatedRooms?.find { it.name?.toLowerCase() == roomName.toLowerCase() }
     if (!newRoom) {
         throw new RuntimeException("Room creation endpoint returned success but room '${roomName}' not found in rooms list")
     }
@@ -6657,8 +6631,19 @@ def toolDeleteRoom(args) {
                     ignoreSSLIssues: true
                 ]
                 if (cookie) { postParams.headers = ["Cookie": cookie] }
+                def postRespBody = null
                 httpPost(postParams) { resp ->
-                    mcpLog("debug", "room", "delete_room: ${att.desc} status=${resp.status}")
+                    try { postRespBody = resp.data?.text?.toString() } catch (Exception ignored) { postRespBody = resp.data?.toString() }
+                    mcpLog("debug", "room", "delete_room: ${att.desc} status=${resp.status} body=${postRespBody?.take(500)}")
+                }
+                // Check response for error
+                if (postRespBody) {
+                    try {
+                        def parsed = new groovy.json.JsonSlurper().parseText(postRespBody)
+                        if (parsed?.error) {
+                            throw new RuntimeException("API error: ${parsed.error}")
+                        }
+                    } catch (groovy.json.JsonException ignored) {}
                 }
                 deleteSuccess = true
             } else {
@@ -6733,23 +6718,33 @@ def toolRenameRoom(args) {
     mcpLog("debug", "room", "rename_room: POST /room/save body: ${jsonStr}")
 
     def respBody = null
-    def postParams = [
-        uri: "http://127.0.0.1:8080",
-        path: "/room/save",
-        requestContentType: "application/json",
-        body: jsonStr,
-        textParser: true,
-        timeout: 30,
-        ignoreSSLIssues: true
-    ]
-    if (cookie) { postParams.headers = ["Cookie": cookie] }
-    httpPost(postParams) { resp ->
-        try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
-        mcpLog("debug", "room", "rename_room: response status=${resp.status} body=${respBody?.take(500)}")
+    try {
+        def postParams = [
+            uri: "http://127.0.0.1:8080",
+            path: "/room/save",
+            requestContentType: "application/json",
+            body: jsonStr,
+            textParser: true,
+            timeout: 30,
+            ignoreSSLIssues: true
+        ]
+        if (cookie) { postParams.headers = ["Cookie": cookie] }
+        httpPost(postParams) { resp ->
+            try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
+            mcpLog("debug", "room", "rename_room: response status=${resp.status} body=${respBody?.take(500)}")
+        }
+    } catch (Exception httpErr) {
+        throw new RuntimeException("Failed to rename room '${oldName}': ${httpErr.message}")
     }
 
-    if (respBody?.contains('"error"')) {
-        throw new RuntimeException("Failed to rename room: ${respBody?.take(500)}")
+    // Parse JSON response to check for error
+    if (respBody) {
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(respBody)
+            if (parsed?.error) {
+                throw new RuntimeException("Failed to rename room: ${parsed.error}")
+            }
+        } catch (groovy.json.JsonException ignored) {}
     }
 
     // Verify rename
