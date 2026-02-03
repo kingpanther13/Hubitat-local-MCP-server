@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.0 - Room assignment: try PUT /room/<id>, probe /room/list for endpoint discovery
+ * Version: 0.7.1 - Bug fixes, code quality improvements, add safety gate to delete_rule
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.7.0"
+                paragraph "<b>Version:</b> 0.7.1"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.7.0"
+        version: "0.7.1"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -518,6 +518,7 @@ Always verify rule created correctly after.""",
                     name: [type: "string", description: "Rule name"],
                     description: [type: "string", description: "Rule description"],
                     enabled: [type: "boolean", description: "Enable rule immediately", default: true],
+                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion. Use for temporary/experimental rules.", default: false],
                     triggers: [type: "array", description: "List of triggers"],
                     conditions: [type: "array", description: "List of conditions"],
                     conditionLogic: [type: "string", enum: ["all", "any"], default: "all"],
@@ -536,6 +537,7 @@ Always verify rule created correctly after.""",
                     name: [type: "string"],
                     description: [type: "string"],
                     enabled: [type: "boolean"],
+                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
                     triggers: [type: "array"],
                     conditions: [type: "array"],
                     conditionLogic: [type: "string", enum: ["all", "any"]],
@@ -546,13 +548,15 @@ Always verify rule created correctly after.""",
         ],
         [
             name: "delete_rule",
-            description: "Delete a rule. Always verify deletion after.",
+            description: "DESTRUCTIVE: Permanently delete a rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Rules marked as testRule=true skip backup automatically.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
+                    ruleId: [type: "string", description: "Rule ID"],
+                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion."],
+                    skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules. Rarely needed since testRule flag handles this. Default: false."]
                 ],
-                required: ["ruleId"]
+                required: ["ruleId", "confirm"]
             ]
         ],
         [
@@ -1677,7 +1681,7 @@ def executeTool(toolName, args) {
         case "get_rule": return toolGetRule(args.ruleId)
         case "create_rule": return toolCreateRule(args)
         case "update_rule": return toolUpdateRule(args.ruleId, args)
-        case "delete_rule": return toolDeleteRule(args.ruleId)
+        case "delete_rule": return toolDeleteRule(args)
         case "enable_rule": return toolEnableRule(args.ruleId)
         case "disable_rule": return toolDisableRule(args.ruleId)
         case "test_rule": return toolTestRule(args.ruleId)
@@ -2092,7 +2096,8 @@ def toolCreateRule(args) {
         conditionLogic: args.conditionLogic ?: "all",
         actions: args.actions,
         localVariables: args.localVariables ?: [:],
-        enabled: args.enabled != false  // Set enabled AFTER data is stored
+        enabled: args.enabled != false,  // Set enabled AFTER data is stored
+        testRule: args.testRule ?: false  // Test rules skip backup on deletion
     ])
 
     // Verify data was stored correctly
@@ -2169,6 +2174,7 @@ def toolUpdateRule(ruleId, args) {
         childApp.updateSetting("ruleDescription", args.description)
     }
     if (args.enabled != null) updateData.enabled = args.enabled
+    if (args.testRule != null) updateData.testRule = args.testRule
     if (args.triggers != null) updateData.triggers = args.triggers
     if (args.conditions != null) updateData.conditions = args.conditions
     if (args.conditionLogic != null) updateData.conditionLogic = args.conditionLogic
@@ -2185,19 +2191,96 @@ def toolUpdateRule(ruleId, args) {
     ]
 }
 
-def toolDeleteRule(ruleId) {
-    def childApp = getChildAppById(ruleId)
+def toolDeleteRule(args) {
+    // Require explicit confirmation for destructive operation
+    if (!args.confirm) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to delete a rule. This action is IRREVERSIBLE.")
+    }
+
+    def childApp = getChildAppById(args.ruleId)
     if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${ruleId}")
+        throw new IllegalArgumentException("Rule not found: ${args.ruleId}")
     }
 
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
+    def backupFileName = null
+
+    // Check if rule is marked as a test rule
+    def ruleData = childApp.getRuleData()
+    def isTestRule = ruleData?.testRule ?: false
+
+    // Automatically create a backup to File Manager unless:
+    // 1. skipBackupCheck=true is passed, OR
+    // 2. The rule is marked as testRule=true
+    if (!args.skipBackupCheck && !isTestRule) {
+        try {
+            // Get the rule export data (already fetched above)
+            if (!ruleData) {
+                throw new IllegalArgumentException("Unable to read rule data for backup")
+            }
+
+            // Build the portable rule object
+            def ruleExport = [
+                name: ruleData.name,
+                description: ruleData.description ?: "",
+                enabled: ruleData.enabled,
+                conditionLogic: ruleData.conditionLogic ?: "all",
+                triggers: ruleData.triggers ?: [],
+                conditions: ruleData.conditions ?: [],
+                actions: ruleData.actions ?: [],
+                localVariables: ruleData.localVariables ?: [:]
+            ]
+
+            def deviceManifest = buildDeviceManifest(ruleData)
+
+            def exportData = [
+                exportVersion: "1.0",
+                exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+                serverVersion: "0.7.1",
+                deletedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+                originalRuleId: args.ruleId,
+                rule: ruleExport,
+                deviceManifest: deviceManifest
+            ]
+
+            // Create backup file name: sanitize rule name for file system
+            def safeName = ruleName.replaceAll(/[^A-Za-z0-9]/, '_').take(30)
+            def timestamp = new Date().format("yyyyMMdd-HHmmss")
+            backupFileName = "mcp_rule_backup_${safeName}_${timestamp}.json"
+
+            // Save to File Manager
+            def jsonContent = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(exportData))
+            uploadHubFile(backupFileName, jsonContent.getBytes("UTF-8"))
+
+            mcpLog("info", "rules", "Auto-backup created: '${backupFileName}' for rule '${ruleName}' before deletion")
+
+        } catch (Exception e) {
+            throw new IllegalArgumentException("BACKUP FAILED: Could not create backup for rule '${ruleName}' before deletion: ${e.message}. Fix the issue, mark the rule as testRule=true, or set skipBackupCheck=true.")
+        }
+    } else {
+        if (isTestRule) {
+            mcpLog("info", "rules", "Backup skipped for rule '${ruleName}' - marked as testRule")
+        } else {
+            mcpLog("warn", "rules", "Backup skipped for rule '${ruleName}' - user set skipBackupCheck=true")
+        }
+    }
+
+    mcpLog("warn", "rules", "Deleting rule '${ruleName}' (ID: ${args.ruleId}) - user confirmed deletion")
     deleteChildApp(childApp.id)
 
-    return [
+    def result = [
         success: true,
-        message: "Rule '${ruleName}' deleted successfully"
+        message: "Rule '${ruleName}' deleted permanently."
     ]
+
+    if (backupFileName) {
+        result.backupFile = backupFileName
+        result.message += " Backup saved to File Manager: ${backupFileName}"
+    } else if (isTestRule) {
+        result.message += " (No backup - test rule)"
+    }
+
+    return result
 }
 
 def toolEnableRule(ruleId) {
@@ -2274,7 +2357,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.7.0",
+        serverVersion: "0.7.1",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4465,7 +4548,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.7.0",
+        version: "0.7.1",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4486,7 +4569,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.7.0"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.7.1"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4653,7 +4736,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.7.0"
+    details.mcpServerVersion = "0.7.1"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6780,7 +6863,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.0"
+    return "0.7.1"
 }
 
 def isNewerVersion(String remote, String local) {
