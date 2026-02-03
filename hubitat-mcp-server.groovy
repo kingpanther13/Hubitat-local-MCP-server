@@ -468,13 +468,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "get_device_events",
-            description: """Get recent events for a device.
-
-PERFORMANCE WARNING:
-- Default limit is 10 events, which is optimal for most use cases
-- Requesting more than 50 events may slow hub response time
-- Very high limits (100+) can cause significant delays on busy devices
-- For historical analysis, make multiple smaller requests rather than one large request""",
+            description: "Get recent events for a device. Default limit 10; higher values (50+) may slow hub.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -487,9 +481,7 @@ PERFORMANCE WARNING:
         // Rule Management
         [
             name: "list_rules",
-            description: """List all custom automation rules.
-
-PERFORMANCE NOTE: Returns summary information for all rules. For hubs with many rules (50+), response time may be slightly longer. Use get_rule for detailed information about specific rules.""",
+            description: "List all MCP automation rules. Returns summary; use get_rule for details.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -676,7 +668,7 @@ Always verify rule created correctly after.""",
         // Captured State Management
         [
             name: "list_captured_states",
-            description: "List all captured device states with metadata (stateId, device count, timestamp). The storage limit is configurable in app settings (default: 20). When limit is reached, new captures automatically delete the oldest entry. Check the 'warning' field in response when approaching capacity. Use delete_captured_state or clear_captured_states to free up slots.",
+            description: "List captured device states. Storage limit configurable (default 20); oldest auto-deleted when full.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -699,9 +691,7 @@ Always verify rule created correctly after.""",
         // Debug Logging Tools
         [
             name: "get_debug_logs",
-            description: """Retrieve debug log entries from the MCP server. These logs are stored in app state and accessible via MCP, unlike Hubitat's built-in logs which require UI access.
-
-Use this to debug rule creation issues, execution failures, and timing problems. Logs include timestamps, severity levels, component info, and optional stack traces for errors.""",
+            description: "Get MCP debug logs (stored in app state). Useful for debugging rule issues.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -719,14 +709,7 @@ Use this to debug rule creation issues, execution failures, and timing problems.
         ],
         [
             name: "get_rule_diagnostics",
-            description: """Get comprehensive diagnostic information about a specific rule including:
-- Rule metadata and configuration
-- Execution history and last trigger time
-- Full trigger/condition/action structure
-- Recent log entries for this rule
-- Error history with stack traces
-
-Use this when a rule isn't working as expected to understand its state and recent activity.""",
+            description: "Get comprehensive diagnostics for a rule: config, execution history, triggers/conditions/actions, logs, errors.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -753,21 +736,7 @@ Use this when a rule isn't working as expected to understand its state and recen
         ],
         [
             name: "generate_bug_report",
-            description: """Generate a formatted bug report for submitting issues to the GitHub repository.
-
-This tool gathers diagnostic information and formats it into a complete bug report. Use this when:
-- Something isn't working as expected
-- You encounter an error
-- A rule or device command behaves unexpectedly
-
-The tool will:
-1. Collect system info (version, hub details, log level)
-2. Gather recent error logs
-3. Include the description of what should have happened vs what actually happened
-4. Format everything into a GitHub-ready issue report
-5. Provide a link to submit the issue
-
-After generating, provide the report to the user so they can submit it.""",
+            description: "Generate a formatted GitHub bug report with system info, error logs, and issue description.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -832,12 +801,7 @@ The deviceMapping is an object where keys are old device IDs and values are new 
         // ==================== HUB ADMIN READ TOOLS ====================
         [
             name: "get_hub_details",
-            description: """Get extended hub information including model, firmware, memory usage, internal temperature, network configuration, and radio details.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-If Hub Security is enabled on the hub, credentials must be configured in app settings.
-
-Returns more detailed information than get_hub_info, including live memory and temperature data from the hub's internal API.""",
+            description: "Extended hub info: model, firmware, memory, temperature, network, radios. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -845,11 +809,7 @@ Returns more detailed information than get_hub_info, including live memory and t
         ],
         [
             name: "list_hub_apps",
-            description: """List all installed apps on the Hubitat hub, not just MCP-managed rules.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Returns app names, IDs, and types. Uses the hub's internal API endpoint.
-Note: Results depend on hub firmware version. Some older firmware may not support this endpoint.""",
+            description: "List all installed apps on the hub (not just MCP rules). Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -857,11 +817,7 @@ Note: Results depend on hub firmware version. Some older firmware may not suppor
         ],
         [
             name: "list_hub_drivers",
-            description: """List all installed drivers on the Hubitat hub.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Returns driver names, IDs, and types. Uses the hub's internal API endpoint.
-Note: Results depend on hub firmware version. Some older firmware may not support this endpoint.""",
+            description: "List all installed drivers on the hub. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -869,11 +825,7 @@ Note: Results depend on hub firmware version. Some older firmware may not suppor
         ],
         [
             name: "get_zwave_details",
-            description: """Get Z-Wave radio information including firmware version, home ID, and device node details.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Uses the hub's internal API to fetch Z-Wave radio status and device table.
-Note: Results depend on hub firmware and Z-Wave radio availability.""",
+            description: "Get Z-Wave radio info: firmware, home ID, device nodes. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -881,11 +833,7 @@ Note: Results depend on hub firmware and Z-Wave radio availability.""",
         ],
         [
             name: "get_zigbee_details",
-            description: """Get Zigbee radio information including channel, PAN ID, firmware version, and device details.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Uses the hub's internal API to fetch Zigbee radio status.
-Note: Results depend on hub firmware and Zigbee radio availability.""",
+            description: "Get Zigbee radio info: channel, PAN ID, firmware, devices. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -893,10 +841,7 @@ Note: Results depend on hub firmware and Zigbee radio availability.""",
         ],
         [
             name: "get_hub_health",
-            description: """Get hub health metrics including free memory, internal temperature, uptime, and database size.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Provides a quick health check snapshot useful for diagnosing performance issues.""",
+            description: "Get hub health: memory, temperature, uptime, database size. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -906,16 +851,7 @@ Provides a quick health check snapshot useful for diagnosing performance issues.
         // ==================== MONITORING TOOLS ====================
         [
             name: "get_hub_logs",
-            description: """Access Hubitat's built-in system logs.
-
-Returns recent log entries from the hub's internal log endpoint. Supports filtering by log level and source/app name.
-
-PERFORMANCE WARNING:
-- Returns up to 'limit' entries (default 100, max 500)
-- Large log volumes may be truncated to fit the 128KB response limit
-- Use level and source filters to narrow results
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.""",
+            description: "Get Hubitat system logs. Filter by level/source. Default 100 entries, max 500. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -927,11 +863,7 @@ Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server ap
         ],
         [
             name: "get_device_history",
-            description: """Get event history for a device over a time range.
-
-Uses device.eventsSince() to retrieve historical events. More flexible than get_device_events which only gets the N most recent — allows time-range queries and attribute filtering.
-
-Does not require Hub Admin access — works on any MCP-selected device.""",
+            description: "Get device event history over a time range (up to 7 days). Supports attribute filtering.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -945,11 +877,7 @@ Does not require Hub Admin access — works on any MCP-selected device.""",
         ],
         [
             name: "get_hub_performance",
-            description: """Comprehensive hub performance snapshot with historical trend tracking.
-
-Extends get_hub_health with time-series data. Each call optionally records a snapshot to a CSV file in File Manager for trend analysis over time. Returns current metrics plus recent trend data if available.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.""",
+            description: "Hub performance snapshot with optional CSV trend tracking in File Manager. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -960,11 +888,7 @@ Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server ap
         ],
         [
             name: "device_health_check",
-            description: """Check device health across all MCP-selected devices.
-
-Iterates over all selected devices and flags any that have not reported activity within the specified threshold. Useful for identifying offline, dead-battery, or orphaned/ghost devices.
-
-Returns a summary with healthy vs stale device counts, plus details on stale devices.""",
+            description: "Check all MCP devices for stale/offline status based on last activity threshold.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -977,17 +901,9 @@ Returns a summary with healthy vs stale device counts, plus details on stale dev
         // ==================== HUB ADMIN WRITE TOOLS ====================
         [
             name: "create_hub_backup",
-            description: """Create a full backup of the Hubitat hub database.
+            description: """Create a full hub backup. REQUIRED before any Hub Admin Write operation (24h validity).
 
-Requires 'Enable Hub Admin Write Tools' to be turned on in the MCP Rule Server app settings.
-
-NOTE: This is the ONLY Hub Admin Write tool that does NOT require a prior backup (since it IS the backup tool).
-However, this tool still requires the confirm parameter to be true and Hub Admin Write to be enabled.
-
-⚠️ IMPORTANT: You MUST call this tool and verify success BEFORE using ANY other Hub Admin Write tool.
-A hub backup is required within the last 24 hours for any write operation. This backup may take a few minutes on larger hubs.
-
-Note: When modifying or deleting individual apps/drivers, those tools also automatically back up the specific item's source code before making changes.""",
+Requires Hub Admin Write + confirm. This is the only write tool that doesn't require a prior backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -998,25 +914,10 @@ Note: When modifying or deleting individual apps/drivers, those tools also autom
         ],
         [
             name: "reboot_hub",
-            description: """⚠️⚠️⚠️ CRITICAL WARNING — DESTRUCTIVE OPERATION ⚠️⚠️⚠️
+            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
 
-MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user: "I am about to reboot your Hubitat hub."
-3. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
-4. Set the 'confirm' parameter to true
-
-Reboots the Hubitat hub. Effects:
-- Hub will be UNREACHABLE for 1-3 minutes during reboot
-- ALL automations, rules, and device communications STOP during reboot
-- ALL scheduled jobs are lost and must be re-initialized
-- Z-Wave and Zigbee radios restart (devices may take additional time to reconnect)
-
-NEVER call this tool without completing ALL steps in the checklist above.
-NEVER call this tool unless the user specifically requested a reboot.
-If the backup failed, DO NOT proceed — inform the user instead.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
+Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1027,26 +928,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "shutdown_hub",
-            description: """⚠️⚠️⚠️ EXTREME CAUTION — THIS WILL POWER OFF THE HUB ⚠️⚠️⚠️
+            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.
 
-MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user: "I am about to SHUT DOWN your Hubitat hub. It will NOT restart automatically — you must physically unplug and replug the hub to restart it."
-3. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
-4. Set the 'confirm' parameter to true
-
-Shuts down the Hubitat hub COMPLETELY. Effects:
-- Hub will POWER OFF and will NOT restart automatically
-- ALL automations, rules, and device communications PERMANENTLY STOP until manually restarted
-- User must physically power-cycle the hub to bring it back online
-- ALL smart home functionality ceases until hub is restarted
-
-This is NOT a reboot — the hub stays off. Only use when user explicitly wants to shut down.
-NEVER call this tool without completing ALL steps in the checklist above.
-NEVER call this tool unless the user specifically requested a shutdown.
-If the backup failed, DO NOT proceed — inform the user instead.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true
+Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1057,24 +942,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "zwave_repair",
-            description: """⚠️ WARNING — NETWORK-DISRUPTIVE OPERATION ⚠️
+            description: """⚠️ DISRUPTIVE: Z-Wave network repair (5-30 min, devices may be unresponsive).
 
-MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user: "I am about to start a Z-Wave network repair. This can take 5-30 minutes depending on network size and may cause temporary device communication issues."
-3. Get EXPLICIT user confirmation to proceed
-4. Set the 'confirm' parameter to true
-
-Starts a Z-Wave network repair/optimization. Effects:
-- Takes 5-30+ minutes depending on Z-Wave network size
-- Z-Wave devices may be temporarily unresponsive during repair
-- Automations using Z-Wave devices may fail during the process
-- Best run during off-peak hours when device reliability is less critical
-
-NEVER call this tool without completing ALL steps in the checklist above.
-NEVER call this tool unless the user specifically requested a Z-Wave repair.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user about duration/impact 3) Get explicit confirmation 4) Set confirm=true
+Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1086,37 +957,11 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         // Device Admin
         [
             name: "delete_device",
-            description: """⚠️⚠️⚠️ EXTREME DANGER — PERMANENTLY DELETES A DEVICE FROM THE HUB ⚠️⚠️⚠️
+            description: """⚠️ MOST DESTRUCTIVE: Permanently deletes a device. NO UNDO. Intended for ghost/orphaned devices only.
 
-THIS IS THE MOST DESTRUCTIVE TOOL IN THE MCP SERVER. THERE IS NO UNDO.
-
-MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Use 'get_device' to inspect the device and confirm it is the CORRECT one
-3. Tell the user: "I am about to PERMANENTLY DELETE device '[name]' (ID [id]) from your hub. This CANNOT be undone. All event history for this device will be lost."
-4. If the device has recent activity, WARN the user it may still be functional — deletion is intended for ghost/orphaned devices
-5. If the device is on Z-Wave or Zigbee, WARN the user that proper exclusion should be done first to avoid creating ghost nodes on the mesh
-6. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
-7. Set confirm=true
-
-This tool uses the hub's internal forceDelete endpoint. It is intended ONLY for:
-- Ghost/orphaned devices left behind after failed Z-Wave/Zigbee exclusion
-- Stale database records for devices that no longer physically exist
-- Virtual devices that cannot be removed through normal means
-
-Effects:
-- Device is PERMANENTLY removed from the hub database
-- ALL device events and history are PERMANENTLY lost
-- ANY automations, rules, or apps referencing this device WILL BREAK
-- If the device is still physically on Z-Wave/Zigbee, it becomes an unmanaged ghost on the mesh
-- The device's full details are logged to MCP debug logs for audit purposes
-
-NEVER call this tool without completing ALL steps in the checklist above.
-NEVER call this tool unless the user specifically requested device deletion.
-NEVER use this tool for routine device management — use the Hubitat web UI instead.
-If the backup failed, DO NOT proceed — inform the user instead.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+PRE-FLIGHT: 1) Backup <24h 2) get_device to verify correct device 3) Tell user device name/ID 4) Warn if recent activity or Z-Wave/Zigbee 5) Get explicit confirmation 6) Set confirm=true
+Effects: Device + history permanently lost, automations referencing it will break.
+Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1130,32 +975,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         // Virtual Device Management
         [
             name: "create_virtual_device",
-            description: """Create a virtual device on the Hubitat hub as an MCP-managed child device.
+            description: """Create an MCP-managed virtual device. Auto-accessible to all MCP tools without manual selection.
 
-Virtual devices are useful as triggers, boolean flags, or bridges to share state with other systems (e.g., Home Assistant via Maker API).
-
-MCP-managed virtual devices are automatically accessible to all MCP device tools (send_command, get_device, get_attribute, etc.) WITHOUT needing to be manually added to the MCP device selection list. They also appear in the Hubitat device list and can be shared with other apps like Maker API, Dashboard, or Rule Machine.
-
-Supported device types:
-- Virtual Switch — on/off toggle, great for boolean flags and triggers
-- Virtual Button — pushable button for triggering automations
-- Virtual Contact Sensor — open/closed state (e.g., simulate door/window)
-- Virtual Motion Sensor — active/inactive state
-- Virtual Presence Sensor — present/not present state
-- Virtual Lock — lock/unlock state
-- Virtual Temperature Sensor — numeric temperature value
-- Virtual Humidity Sensor — numeric humidity value
-- Virtual Dimmer — switch with level control (0-100)
-- Virtual RGBW Light — color-controllable light
-- Virtual Shade — window shade open/close with position
-- Virtual Garage Door Opener — open/close garage door state
-- Virtual Water Sensor — wet/dry state
-- Virtual Omni Sensor — multi-purpose sensor (presence, contact, motion, temperature, humidity, etc.)
-- Virtual Fan Controller — fan speed control
-
-The deviceNetworkId must be unique across all devices on the hub. If not provided, one will be auto-generated.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+Types: Switch, Button, Contact/Motion/Presence/Water Sensor, Lock, Temp/Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door, Omni Sensor, Fan Controller.
+Requires Hub Admin Write + confirm.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1170,9 +993,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "list_virtual_devices",
-            description: """List all MCP-managed virtual devices (child devices created by MCP Rule Server).
-
-Returns device details including ID, label, type, current state, and capabilities. These devices are automatically accessible to all MCP device tools without needing manual selection.""",
+            description: "List MCP-managed virtual devices with IDs, labels, types, states, and capabilities.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -1180,16 +1001,7 @@ Returns device details including ID, label, type, current state, and capabilitie
         ],
         [
             name: "delete_virtual_device",
-            description: """Delete an MCP-managed virtual device.
-
-This removes a virtual device that was created by the MCP Rule Server. Only MCP-managed child devices can be deleted with this tool — use delete_device for other devices.
-
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Use list_virtual_devices to identify the device
-2. Confirm with the user before deleting
-3. Set confirm=true
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            description: "Delete an MCP-managed virtual device. Confirm with user first. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1201,28 +1013,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "update_device",
-            description: """Update properties of any accessible device (selected devices OR MCP-managed virtual devices).
+            description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
 
-IMPORTANT: Only modify devices the user has explicitly requested changes to. Never modify a device without clear user intent.
-
-Can modify one or more properties in a single call — only provide the fields you want to change.
-
-Modifiable properties:
-- label — Display name shown in Hubitat UI (official API: setLabel)
-- name — Device name / driver instance name (official API: setName)
-- deviceNetworkId — Unique network identifier; must be unique across all hub devices (official API: setDeviceNetworkId)
-- room — Room assignment; use room name string (uses hub internal API)
-- enabled — Enable or disable the device; disabled devices do not generate events (uses hub internal API)
-- dataValues — Key-value pairs stored in the device's Data section; values are always strings (official API: updateDataValue)
-- preferences — Device preference settings; use the Map form with type and value (official API: updateSetting)
-
-For room assignment, use the exact room name as it appears in Hubitat (case-sensitive). You can list available rooms by checking existing devices with get_device.
-
-For preferences, each entry should specify type and value:
-  preferences: {"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}
-Valid preference types: bool, number, string, enum, decimal, text
-
-Requires 'Enable Hub Admin Write Tools' for room and enabled changes. Label, name, DNI, data values, and preferences can be changed without Hub Admin Write.""",
+Only modify devices user explicitly requested. Room/enabled require Hub Admin Write; others work without it.
+Preferences format: {"key": {"type": "bool|number|string", "value": X}}""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1248,9 +1042,7 @@ Requires 'Enable Hub Admin Write Tools' for room and enabled changes. Label, nam
         ],
         [
             name: "get_room",
-            description: """Get detailed information about a specific room including all devices assigned to it with their current states.
-
-Specify room by name (case-insensitive) or by ID.""",
+            description: "Get room details with assigned devices and their states. Specify by name or ID.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1261,17 +1053,7 @@ Specify room by name (case-insensitive) or by ID.""",
         ],
         [
             name: "create_room",
-            description: """Create a new room on the hub.
-
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Confirm the room name with the user before creating
-3. Get EXPLICIT user confirmation to proceed
-4. Set confirm=true
-
-Room names must be unique (case-insensitive). Optionally assign devices to the room at creation time by providing a list of device IDs.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            description: "Create a new room. Optionally assign devices at creation. Requires Hub Admin Write + confirm + backup <24h.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1284,28 +1066,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "delete_room",
-            description: """⚠️⚠️⚠️ CRITICAL WARNING — DESTRUCTIVE OPERATION ⚠️⚠️⚠️
+            description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted).
 
-MANDATORY PRE-FLIGHT CHECKLIST — You MUST complete ALL steps IN ORDER before calling this tool:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Use 'list_rooms' or 'get_room' to inspect the room and confirm it is the CORRECT one
-3. Tell the user: "I am about to DELETE room '[name]' from your hub. This will unassign ALL devices currently in this room."
-4. If the room contains devices, LIST the devices that will be affected so the user can review
-5. WARN the user that any dashboard tiles, automations, or rules that reference this room may be affected
-6. Get EXPLICIT user confirmation to proceed (the user must say yes/confirm/proceed)
-7. Set confirm=true
-
-Effects:
-- The room is PERMANENTLY deleted from the hub
-- ALL devices in the room become unassigned (devices are NOT deleted, but lose their room assignment)
-- Dashboard layouts organized by room may be affected
-- Any automations or rules that filter by room may stop working correctly
-
-NEVER call this tool without completing ALL steps in the checklist above.
-NEVER call this tool unless the user specifically requested room deletion.
-If the backup failed, DO NOT proceed — inform the user instead.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true
+Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1317,18 +1081,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "rename_room",
-            description: """⚠️ Rename an existing room. Specify room by current name or ID.
-
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user which room you are about to rename and what the new name will be
-3. Get EXPLICIT user confirmation to proceed
-4. Set confirm=true
-
-The room's device assignments are preserved. New name must not conflict with an existing room.
-Note: Automations or dashboard tiles that reference the room by name may need to be updated after renaming.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            description: "Rename a room. Device assignments preserved. Requires Hub Admin Write + confirm + backup <24h.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1343,14 +1096,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
-            description: """Get the Groovy source code of an installed app by its ID.
-
-Supports chunked reading for large sources that exceed the 64KB response limit. On first call (no offset), returns source up to 64KB plus metadata with totalLength. If truncated, call again with offset to get subsequent chunks.
-
-Also saves the full source to File Manager as 'mcp-source-app-{id}.groovy' when truncated, so update_app_code can use sourceFile instead of requiring the source to round-trip through the cloud.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Use list_hub_apps to find app IDs first.""",
+            description: "Get app Groovy source. Supports chunked reading (offset/length) for large files. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1363,14 +1109,7 @@ Use list_hub_apps to find app IDs first.""",
         ],
         [
             name: "get_driver_source",
-            description: """Get the Groovy source code of an installed driver by its ID.
-
-Supports chunked reading for large sources that exceed the 64KB response limit. On first call (no offset), returns source up to 64KB plus metadata with totalLength. If truncated, call again with offset to get subsequent chunks.
-
-Also saves the full source to File Manager as 'mcp-source-driver-{id}.groovy' when truncated, so update_driver_code can use sourceFile instead of requiring the source to round-trip through the cloud.
-
-Requires 'Enable Hub Admin Read Tools' to be turned on in the MCP Rule Server app settings.
-Use list_hub_drivers to find driver IDs first.""",
+            description: "Get driver Groovy source. Supports chunked reading (offset/length) for large files. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1384,19 +1123,9 @@ Use list_hub_drivers to find driver IDs first.""",
         // Hub Admin App/Driver Management Write Tools
         [
             name: "install_app",
-            description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
+            description: """⚠️ Install new app from Groovy source. Show code to user and get confirmation first.
 
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user what app you are about to install and show them the source code
-3. Get EXPLICIT user confirmation to proceed
-4. Set confirm=true
-
-Installs a new Groovy app on the Hubitat hub from source code. The source code must be valid Hubitat app Groovy code.
-
-Returns the new app ID on success. After installation, the app still needs to be added via Apps > Add User App in the Hubitat web UI.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+Requires Hub Admin Write + confirm + backup <24h. Returns new app ID.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1408,19 +1137,9 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "install_driver",
-            description: """⚠️ WARNING — INSTALLS CODE ON THE HUB ⚠️
+            description: """⚠️ Install new driver from Groovy source. Show code to user and get confirmation first.
 
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user what driver you are about to install and show them the source code
-3. Get EXPLICIT user confirmation to proceed
-4. Set confirm=true
-
-Installs a new Groovy driver on the Hubitat hub from source code. The source code must be valid Hubitat driver Groovy code.
-
-Returns the new driver ID on success. After installation, devices can be assigned to use this driver.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+Requires Hub Admin Write + confirm + backup <24h. Returns new driver ID.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1432,29 +1151,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "update_app_code",
-            description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING APP CODE ⚠️⚠️⚠️
+            description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
 
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Use get_app_source to read the CURRENT code first
-3. Tell the user what changes you are making
-4. Get EXPLICIT user confirmation to proceed
-5. Set confirm=true
-
-Updates the Groovy source code of an existing app. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
-
-Three modes:
-- **source**: Provide the full new source code directly (for small apps under 64KB)
-- **sourceFile**: Read source from a File Manager file (for large apps — avoids cloud size limits). Use with get_app_source which auto-saves large sources to File Manager.
-- **resave**: Re-save the current source code without changes (entirely local, no cloud round-trip). Useful for recompiling or triggering a backup.
-
-Only one of source/sourceFile/resave should be provided.
-
-The app's current source code is automatically backed up before modification. If the same app is modified multiple times within an hour, the original pre-edit source is preserved.
-
-WARNING: Incorrect code can break the app and any automations depending on it.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+Modes: source (direct), sourceFile (from File Manager), resave (recompile without changes).
+Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1469,29 +1169,10 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "update_driver_code",
-            description: """⚠️⚠️⚠️ CRITICAL WARNING — MODIFIES EXISTING DRIVER CODE ⚠️⚠️⚠️
+            description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
 
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Use get_driver_source to read the CURRENT code first
-3. Tell the user what changes you are making
-4. Get EXPLICIT user confirmation to proceed
-5. Set confirm=true
-
-Updates the Groovy source code of an existing driver. Uses optimistic locking — the current version is fetched automatically to prevent conflicts.
-
-Three modes:
-- **source**: Provide the full new source code directly (for small drivers under 64KB)
-- **sourceFile**: Read source from a File Manager file (for large drivers — avoids cloud size limits). Use with get_driver_source which auto-saves large sources to File Manager.
-- **resave**: Re-save the current source code without changes (entirely local, no cloud round-trip). Useful for recompiling or triggering a backup.
-
-Only one of source/sourceFile/resave should be provided.
-
-The driver's current source code is automatically backed up before modification. If the same driver is modified multiple times within an hour, the original pre-edit source is preserved.
-
-WARNING: Incorrect code can break the driver and all devices using it.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+Modes: source (direct), sourceFile (from File Manager), resave (recompile without changes).
+Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1506,20 +1187,9 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "delete_app",
-            description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES AN APP ⚠️⚠️⚠️
+            description: """⚠️ DESTRUCTIVE: Permanently delete an app. Auto-backs up before deletion.
 
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user which app (by name and ID) you are about to delete
-3. Warn that this is PERMANENT and cannot be undone
-4. Get EXPLICIT user confirmation to proceed
-5. Set confirm=true
-
-Permanently deletes an installed app from the hub. This removes the app code — any app instances using this code must be removed first via the Hubitat web UI.
-
-The app's source code is automatically backed up before deletion so it can be re-installed if needed.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+Tell user app name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1531,20 +1201,9 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "delete_driver",
-            description: """⚠️⚠️⚠️ CRITICAL WARNING — PERMANENTLY DELETES A DRIVER ⚠️⚠️⚠️
+            description: """⚠️ DESTRUCTIVE: Permanently delete a driver. Auto-backs up before deletion.
 
-MANDATORY PRE-FLIGHT CHECKLIST:
-1. Ensure a hub backup exists within the last 24 hours (call 'create_hub_backup' if needed)
-2. Tell the user which driver (by name and ID) you are about to delete
-3. Warn that this is PERMANENT and cannot be undone — all devices using this driver will be affected
-4. Get EXPLICIT user confirmation to proceed
-5. Set confirm=true
-
-Permanently deletes an installed driver from the hub. Devices using this driver must be changed to a different driver first.
-
-The driver's source code is automatically backed up before deletion so it can be re-installed if needed.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+Tell user driver name/ID, warn about devices using it, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1558,15 +1217,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         // ==================== Item Backup Tools ====================
         [
             name: "list_item_backups",
-            description: """Lists all automatically-created source code backups.
-
-When you use update_app_code, update_driver_code, delete_app, or delete_driver, the MCP server automatically saves the ORIGINAL source code before making changes. These backups let you restore code to its pre-edit state.
-
-Each backup shows: item type (app/driver), ID, version at time of backup, timestamp, source code size, and a direct download URL for the backup file.
-
-Backups are stored as .groovy files in the hub's local File Manager (accessible at http://<HUB_IP>/local/<filename>). This means backups persist even if the MCP app is uninstalled, and can be downloaded directly from the hub without MCP. A maximum of 20 backups are kept; the oldest is pruned when the limit is exceeded. Backups within the last hour are preserved (a series of rapid edits won't overwrite the original).
-
-Does NOT require Hub Admin Read/Write to be enabled — backup viewing is always available.""",
+            description: "List auto-created source backups (from app/driver modifications). Stored in File Manager, max 20 kept.",
             inputSchema: [
                 type: "object",
                 properties: [:],
@@ -1575,15 +1226,7 @@ Does NOT require Hub Admin Read/Write to be enabled — backup viewing is always
         ],
         [
             name: "get_item_backup",
-            description: """Retrieves the full source code from a specific item backup stored in the hub's File Manager.
-
-Use list_item_backups first to see available backups, then use this tool with the backup key (e.g., "app_123" or "driver_456") to retrieve the actual source code.
-
-For small files (≤60KB), the source code is returned directly. For larger files, a direct download URL is provided instead (http://<HUB_IP>/local/<filename>).
-
-The source code can be used to manually restore by pasting it into the Hubitat code editor, or passed to update_app_code / update_driver_code / install_app / install_driver to restore via MCP.
-
-Does NOT require Hub Admin Read/Write to be enabled.""",
+            description: "Get source code from a backup. Use list_item_backups to find backup keys (e.g., 'app_123').",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1594,15 +1237,7 @@ Does NOT require Hub Admin Read/Write to be enabled.""",
         ],
         [
             name: "restore_item_backup",
-            description: """⚠️ Restores an app or driver to its backed-up source code version.
-
-Reads the backup source code from the hub's File Manager and pushes it via update_app_code or update_driver_code. All operations are local — no cloud involvement. The backup must exist (use list_item_backups to check).
-
-If the item was DELETED, this tool cannot restore it — use install_app or install_driver with the backup source instead, then update any device associations manually.
-
-IMPORTANT: Always tell the user what you're about to restore and get confirmation before proceeding.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            description: "⚠️ Restore app/driver to backed-up version. Tell user what you're restoring first. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1615,11 +1250,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         // File Manager Tools
         [
             name: "list_files",
-            description: """Lists all files in the hub's local File Manager.
-
-Returns file names, sizes, and direct download URLs. Files in File Manager are stored locally on the hub and accessible at http://<HUB_IP>/local/<filename>.
-
-Does not require Hub Admin Read/Write — always available.""",
+            description: "List files in hub's File Manager. Returns names, sizes, download URLs.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -1627,13 +1258,7 @@ Does not require Hub Admin Read/Write — always available.""",
         ],
         [
             name: "read_file",
-            description: """Reads the contents of a file from the hub's local File Manager.
-
-Returns the file contents as text. Supports chunked reading for large files — use offset and length to read in segments that fit within the response size limit.
-
-Files are read locally via downloadHubFile() — no cloud involvement for the read itself, but the response travels through the cloud so each chunk must be under ~60KB.
-
-Does not require Hub Admin Read/Write — always available.""",
+            description: "Read file from File Manager. Supports chunked reading (offset/length) for large files.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1646,13 +1271,7 @@ Does not require Hub Admin Read/Write — always available.""",
         ],
         [
             name: "write_file",
-            description: """⚠️ Writes or creates a file in the hub's local File Manager.
-
-If the file already exists, a backup copy is automatically created first (named <original>_backup_<timestamp>.<ext>). The backup ensures the original can be recovered.
-
-File names may only contain letters, numbers, hyphens, underscores, and periods. No spaces allowed. Period cannot be the first character.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            description: "⚠️ Write file to File Manager. Auto-backs up existing files. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1665,13 +1284,7 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         ],
         [
             name: "delete_file",
-            description: """⚠️ Deletes a file from the hub's local File Manager.
-
-A backup copy of the file is automatically created before deletion (named <original>_backup_<timestamp>.<ext>) so the contents can be recovered if needed.
-
-IMPORTANT: Always tell the user what file you're about to delete and get confirmation before proceeding.
-
-Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            description: "⚠️ Delete file from File Manager. Auto-backs up before deletion. Tell user first. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
