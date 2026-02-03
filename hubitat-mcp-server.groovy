@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.1 - Bug fixes and code quality improvements in rule app
+ * Version: 0.7.1 - Bug fixes, code quality improvements, add safety gate to delete_rule
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -546,13 +546,14 @@ Always verify rule created correctly after.""",
         ],
         [
             name: "delete_rule",
-            description: "Delete a rule. Always verify deletion after.",
+            description: "DESTRUCTIVE: Permanently delete a rule. This action is IRREVERSIBLE. Requires confirm=true. Consider using export_rule first to save a backup.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
+                    ruleId: [type: "string", description: "Rule ID"],
+                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion. Rule will be permanently deleted."]
                 ],
-                required: ["ruleId"]
+                required: ["ruleId", "confirm"]
             ]
         ],
         [
@@ -1677,7 +1678,7 @@ def executeTool(toolName, args) {
         case "get_rule": return toolGetRule(args.ruleId)
         case "create_rule": return toolCreateRule(args)
         case "update_rule": return toolUpdateRule(args.ruleId, args)
-        case "delete_rule": return toolDeleteRule(args.ruleId)
+        case "delete_rule": return toolDeleteRule(args)
         case "enable_rule": return toolEnableRule(args.ruleId)
         case "disable_rule": return toolDisableRule(args.ruleId)
         case "test_rule": return toolTestRule(args.ruleId)
@@ -2185,18 +2186,24 @@ def toolUpdateRule(ruleId, args) {
     ]
 }
 
-def toolDeleteRule(ruleId) {
-    def childApp = getChildAppById(ruleId)
+def toolDeleteRule(args) {
+    // Require explicit confirmation for destructive operation
+    if (!args.confirm) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to delete a rule. This action is IRREVERSIBLE. Consider using export_rule first to save a backup of the rule.")
+    }
+
+    def childApp = getChildAppById(args.ruleId)
     if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${ruleId}")
+        throw new IllegalArgumentException("Rule not found: ${args.ruleId}")
     }
 
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
+    mcpLog("warn", "rules", "Deleting rule '${ruleName}' (ID: ${args.ruleId}) - user confirmed deletion")
     deleteChildApp(childApp.id)
 
     return [
         success: true,
-        message: "Rule '${ruleName}' deleted successfully"
+        message: "Rule '${ruleName}' deleted permanently. This action cannot be undone."
     ]
 }
 
