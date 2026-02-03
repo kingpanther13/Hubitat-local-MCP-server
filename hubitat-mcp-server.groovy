@@ -414,7 +414,8 @@ DEVICE MATCHING:
 PERFORMANCE:
 - Use detailed=false for initial discovery
 - With detailed=true, paginate: 20-30 devices per request
-- Make MCP tool calls sequentially, not in parallel""",
+
+See TOOL_GUIDE.md for detailed reference on all tools.""",
             inputSchema: [
                 type: "object",
                 properties: [

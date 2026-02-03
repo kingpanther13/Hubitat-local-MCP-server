@@ -27,6 +27,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
   - Based on MCP best practices research from Anthropic and modelcontextprotocol.io
   - Critical safety rules preserved (pre-flight checklists, confirm requirements, backup requirements)
   - Reduces token consumption when tool definitions are loaded into AI context
+- **New `TOOL_GUIDE.md`** — Detailed reference document for all tools, covering device authorization, pre-flight checklists, virtual device types, rule structure, and more. AI can consult this when tool descriptions need clarification.
 - **Simplified `create_virtual_device`** — Reduced redundancy in inputSchema descriptions
 
 **New in v0.7.1:**

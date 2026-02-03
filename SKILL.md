@@ -17,6 +17,11 @@ The server exposes an OAuth-secured HTTP endpoint that speaks JSON-RPC 2.0 per t
 
 There are **no external dependencies, build steps, or test frameworks**. Everything runs inside the Hubitat Groovy sandbox. The two Groovy files plus `packageManifest.json` and `repository.json` (for Hubitat Package Manager distribution) are the entire project.
 
+**Documentation files:**
+- `README.md` — User-facing documentation
+- `SKILL.md` — Developer reference (this file)
+- `TOOL_GUIDE.md` — Detailed tool reference for AI assistants (device authorization, pre-flight checklists, virtual device types, rule structure, etc.)
+
 ## Architecture
 
 ```
