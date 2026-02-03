@@ -17,8 +17,11 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.13:**
+- **Room assignment** — new approach: tries `PUT /room/<id>` (Grails RESTful update), `POST /room/save`, `POST /room/update`, plus GET fallback. Probes `/room/list` HTML and logs its JavaScript to discover the actual room management endpoints. Post-save verification via `getRooms()`.
+
 **New in v0.6.12:**
-- **Fix room assignment** — `/room/addDevice` returns 405 on POST (Method Not Allowed), confirming it's a GET endpoint. Now tries 7 GET parameter combinations (Grails convention: path param as `id`, query params for remaining args) plus 3 POST fallbacks. Adds post-save **verification** via `getRooms()` to detect silent failures — no more false "success" reports.
+- **Fix room assignment** — tried 7 GET parameter combinations for `/room/addDevice` plus 3 POST fallbacks. Added post-save verification via `getRooms()`.
 
 **New in v0.6.11:**
 - **Fix room assignment** — `/device/save` returns 200 but silently ignores roomId. Rooms in Hubitat are managed from the room side (a room has a device list). Now uses `/room/` controller endpoints.
@@ -823,6 +826,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.13** - Room assignment: try PUT /room (Grails RESTful update), POST /room/save, POST /room/update, probe /room/list for endpoint discovery
 - **v0.6.12** - Fix room assignment: use GET /room/addDevice with query params + verification
 - **v0.6.11** - Fix room assignment: use /room/ controller endpoints (add device to room)
 - **v0.6.10** - Fix room assignment: use fullJson device data for /device/save (Vue.js SPA has no HTML forms)

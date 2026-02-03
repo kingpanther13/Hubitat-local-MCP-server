@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.12 - Fix room assignment: use GET /room/addDevice with query params + verification
+ * Version: 0.6.13 - Room assignment: try PUT /room/<id>, probe /room/list for endpoint discovery
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.12"
+                paragraph "<b>Version:</b> 0.6.13"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.12). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.13). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.12"
+        version: "0.6.13"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2167,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.12",
+        serverVersion: "0.6.13",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.12",
+        version: "0.6.13",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.12"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.13"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.12"
+    details.mcpServerVersion = "0.6.13"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6152,166 +6152,239 @@ def toolUpdateDevice(args) {
                 }
 
                 // Room assignment: /device/save silently ignores roomId.
-                // The /room/addDevice endpoint exists (returns 405 on POST = wrong HTTP method).
-                // It's a GET endpoint. In Grails, URL pattern is /controller/action/$id with query params.
-                // We try various GET param combinations to find the right one.
+                // /room/addDevice returns 405 on POST and 404 on GET — it's likely not a real action.
+                // In Grails RESTful URL mappings: PUT /room/<id> is the standard update mechanism.
+                // Strategy: get room data via getRooms(), modify deviceIds, try multiple save approaches.
+                // Also probe /room/list to discover the actual room controller structure.
 
                 def saveSuccess = false
                 def saveError = null
                 def deviceIdLong = deviceId as Long
+                def deviceIdInt = deviceId as Integer
                 def deviceIdStr = deviceId.toString()
+
+                // First, probe the room controller to discover its structure
+                try {
+                    def roomListHtml = hubInternalGet("/room/list")
+                    mcpLog("debug", "device", "update_device room: /room/list HTML (${roomListHtml?.length() ?: 0} chars)")
+                    // Log in chunks
+                    if (roomListHtml) {
+                        for (int ci = 0; ci < Math.min(8, Math.ceil(roomListHtml.length() / 1500).intValue()); ci++) {
+                            def s = ci * 1500
+                            def e2 = Math.min(s + 1500, roomListHtml.length())
+                            mcpLog("debug", "device", "update_device room: /room/list chunk ${ci+1}: ${roomListHtml[s..e2-1]}")
+                        }
+                        // Look for any API endpoints in the JavaScript
+                        roomListHtml.findAll(/(?s)<script[^>]*>(.*?)<\/script>/) { fullMatch, scriptContent ->
+                            if (scriptContent?.trim()) {
+                                mcpLog("debug", "device", "update_device room: /room/list <script> (${scriptContent.length()} chars): ${scriptContent.take(2000)}")
+                            }
+                        }
+                        roomListHtml.findAll(/<script[^>]+src=["']([^"']+)["']/) { fullMatch, src ->
+                            mcpLog("debug", "device", "update_device room: /room/list external JS: ${src}")
+                        }
+                    }
+                } catch (Exception listErr) {
+                    mcpLog("debug", "device", "update_device room: /room/list fetch error: ${listErr.message}")
+                }
+
+                // Get current room data
+                def allRooms = null
+                try {
+                    allRooms = getRooms()
+                    mcpLog("debug", "device", "update_device room: getRooms() = ${allRooms}")
+                } catch (Exception e) {
+                    mcpLog("debug", "device", "update_device room: getRooms() failed: ${e.message}")
+                }
 
                 if (targetRoomId == "0") {
                     // --- UNASSIGN: remove device from its current room ---
-                    def currentRoomId = null
-                    try {
-                        def rooms = getRooms()
-                        rooms?.each { room ->
-                            if (room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceId as Integer)) {
-                                currentRoomId = room.id
-                            }
-                        }
-                    } catch (Exception e) { /* ignore */ }
-
-                    if (currentRoomId) {
-                        mcpLog("debug", "device", "update_device room: removing device ${deviceId} from room ${currentRoomId}")
-                        // Try GET-based remove endpoints with various param combinations
-                        def removeAttempts = [
-                            [path: "/room/removeDevice/${currentRoomId}", query: [id: deviceIdStr]],
-                            [path: "/room/removeDevice/${deviceIdStr}", query: [roomId: currentRoomId.toString()]],
-                            [path: "/room/removeDevice", query: [id: currentRoomId.toString(), deviceId: deviceIdStr]],
-                            [path: "/room/removeDevice", query: [roomId: currentRoomId.toString(), deviceId: deviceIdStr]],
-                            [path: "/room/removeDevice", query: [id: deviceIdStr, roomId: currentRoomId.toString()]],
-                        ]
-                        for (def attempt : removeAttempts) {
-                            if (saveSuccess) break
-                            try {
-                                def resp = hubInternalGet(attempt.path, attempt.query)
-                                mcpLog("debug", "device", "update_device room: remove GET ${attempt.path} ${attempt.query} response: ${resp?.take(300)}")
-                                saveSuccess = true
-                            } catch (Exception e) {
-                                mcpLog("debug", "device", "update_device room: remove GET ${attempt.path} ${attempt.query} failed: ${e.message}")
-                            }
-                        }
-                        if (!saveSuccess) {
-                            saveError = "Could not remove device from room"
-                        }
-                    } else {
+                    def currentRoom = allRooms?.find { room ->
+                        room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceIdInt)
+                    }
+                    if (!currentRoom) {
                         saveSuccess = true
                         mcpLog("debug", "device", "update_device room: device not in any room, nothing to unassign")
+                    } else {
+                        mcpLog("debug", "device", "update_device room: removing device ${deviceId} from room '${currentRoom.name}' (${currentRoom.id})")
+                        def updatedDeviceIds = currentRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt } ?: []
+
+                        // Try various remove/update approaches
+                        def attempts = [
+                            // Grails RESTful: PUT /room/<id>
+                            [desc: "PUT /room/${currentRoom.id}", method: "PUT", path: "/room/${currentRoom.id}", body: [id: currentRoom.id, name: currentRoom.name, deviceIds: updatedDeviceIds]],
+                            // GET with query params
+                            [desc: "GET /room/removeDevice", method: "GET", path: "/room/removeDevice", query: [id: currentRoom.id.toString(), deviceId: deviceIdStr]],
+                        ]
+                        for (def att : attempts) {
+                            if (saveSuccess) break
+                            try {
+                                if (att.method == "PUT") {
+                                    def cookie = getHubSecurityCookie()
+                                    def putParams = [
+                                        uri: "http://127.0.0.1:8080",
+                                        path: att.path,
+                                        requestContentType: "application/json",
+                                        body: groovy.json.JsonOutput.toJson(att.body),
+                                        textParser: true,
+                                        timeout: 30,
+                                        ignoreSSLIssues: true
+                                    ]
+                                    if (cookie) { putParams.headers = ["Cookie": cookie] }
+                                    httpPut(putParams) { resp ->
+                                        mcpLog("debug", "device", "update_device room: ${att.desc} status=${resp.status}")
+                                        saveSuccess = true
+                                    }
+                                } else {
+                                    def resp = hubInternalGet(att.path, att.query)
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} response: ${resp?.take(300)}")
+                                    saveSuccess = true
+                                }
+                            } catch (Exception e) {
+                                mcpLog("debug", "device", "update_device room: ${att.desc} failed: ${e.message}")
+                                saveError = e.message
+                            }
+                        }
                     }
                 } else {
                     // --- ASSIGN: add device to target room ---
                     mcpLog("debug", "device", "update_device room: assigning device ${deviceId} to room ${targetRoomId}")
 
-                    // First, remove from old room if needed (best effort)
-                    try {
-                        def rooms = getRooms()
-                        rooms?.each { room ->
-                            if (room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceId as Integer)) {
-                                if (room.id?.toString() != targetRoomId) {
-                                    mcpLog("debug", "device", "update_device room: device currently in room '${room.name}' (${room.id}), will move to ${targetRoomId}")
-                                    // Try GET-based remove (best effort, don't block if it fails)
-                                    try {
-                                        hubInternalGet("/room/removeDevice/${room.id}", [id: deviceIdStr])
-                                    } catch (Exception e) {
-                                        try {
-                                            hubInternalGet("/room/removeDevice", [id: room.id.toString(), deviceId: deviceIdStr])
-                                        } catch (Exception e2) { /* best effort */ }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (Exception e) { /* ignore */ }
-
-                    // Try GET-based addDevice with various Grails URL param combinations
-                    // The endpoint exists (405 on POST means it's GET-only)
-                    // Grails convention: /room/addDevice/$id maps first path segment to params.id
-                    def addAttempts = [
-                        // id=roomId in path, deviceId as query param
-                        [path: "/room/addDevice/${targetRoomId}", query: [id: deviceIdStr], desc: "addDevice/<roomId>?id=<devId>"],
-                        [path: "/room/addDevice/${targetRoomId}", query: [deviceId: deviceIdStr], desc: "addDevice/<roomId>?deviceId=<devId>"],
-                        // id=deviceId in path, roomId as query param
-                        [path: "/room/addDevice/${deviceIdStr}", query: [roomId: targetRoomId], desc: "addDevice/<devId>?roomId=<roomId>"],
-                        [path: "/room/addDevice/${deviceIdStr}", query: [id: targetRoomId], desc: "addDevice/<devId>?id=<roomId>"],
-                        // Both as query params, no path param
-                        [path: "/room/addDevice", query: [id: targetRoomId, deviceId: deviceIdStr], desc: "addDevice?id=<roomId>&deviceId=<devId>"],
-                        [path: "/room/addDevice", query: [roomId: targetRoomId, deviceId: deviceIdStr], desc: "addDevice?roomId=<roomId>&deviceId=<devId>"],
-                        [path: "/room/addDevice", query: [id: deviceIdStr, roomId: targetRoomId], desc: "addDevice?id=<devId>&roomId=<roomId>"],
-                    ]
-
-                    for (def attempt : addAttempts) {
-                        if (saveSuccess) break
-                        try {
-                            def resp = hubInternalGet(attempt.path, attempt.query)
-                            mcpLog("debug", "device", "update_device room: ${attempt.desc} -> response (${resp?.length() ?: 0} chars): ${resp?.take(500)}")
-                            // Check if response indicates success (not an error page)
-                            if (resp && !resp.contains("404") && !resp.contains("error")) {
-                                saveSuccess = true
-                                mcpLog("debug", "device", "update_device room: ${attempt.desc} SUCCEEDED")
-                            } else {
-                                mcpLog("debug", "device", "update_device room: ${attempt.desc} returned but may be error page")
-                            }
-                        } catch (Exception e) {
-                            mcpLog("debug", "device", "update_device room: ${attempt.desc} failed: ${e.message}")
-                            saveError = e.message
-                        }
+                    // Remove from old room first (best effort)
+                    def oldRoom = allRooms?.find { room ->
+                        (room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceIdInt)) && room.id?.toString() != targetRoomId
+                    }
+                    if (oldRoom) {
+                        mcpLog("debug", "device", "update_device room: moving from '${oldRoom.name}' (${oldRoom.id}) to room ${targetRoomId}")
                     }
 
-                    // If GET addDevice didn't work, try POST variants too
-                    if (!saveSuccess) {
-                        def postAttempts = [
-                            [path: "/room/addDevice/${targetRoomId}", body: [id: deviceIdStr], desc: "POST addDevice/<roomId> body:id=<devId>"],
-                            [path: "/room/addDevice/${targetRoomId}", body: [deviceId: deviceIdStr], desc: "POST addDevice/<roomId> body:deviceId=<devId>"],
-                            [path: "/room/addDevice/${deviceIdStr}", body: [roomId: targetRoomId], desc: "POST addDevice/<devId> body:roomId=<roomId>"],
-                        ]
-                        for (def attempt : postAttempts) {
-                            if (saveSuccess) break
-                            try {
-                                hubInternalPost(attempt.path, attempt.body)
-                                mcpLog("debug", "device", "update_device room: ${attempt.desc} SUCCEEDED")
-                                saveSuccess = true
-                            } catch (Exception e) {
-                                mcpLog("debug", "device", "update_device room: ${attempt.desc} failed: ${e.message}")
+                    // Get target room's current device list
+                    def targetRoom = allRooms?.find { it.id?.toString() == targetRoomId }
+                    def targetDeviceIds = targetRoom?.deviceIds?.collect { it } ?: []
+                    if (!targetDeviceIds.contains(deviceIdLong) && !targetDeviceIds.contains(deviceIdInt)) {
+                        targetDeviceIds << deviceIdLong
+                    }
+
+                    // Try multiple approaches
+                    def cookie = getHubSecurityCookie()
+                    def attempts = [
+                        // 1. Grails RESTful: PUT /room/<id> with JSON body
+                        [desc: "PUT /room/${targetRoomId} JSON", method: "PUT_JSON"],
+                        // 2. PUT /room/<id> with form body
+                        [desc: "PUT /room/${targetRoomId} form", method: "PUT_FORM"],
+                        // 3. POST /room/save with room data
+                        [desc: "POST /room/save", method: "POST_SAVE"],
+                        // 4. POST /room/update with room data
+                        [desc: "POST /room/update", method: "POST_UPDATE"],
+                        // 5. GET /room/addDevice with query params (discovered via 405 on POST)
+                        [desc: "GET /room/addDevice?id=<roomId>&deviceId=<devId>", method: "GET_ADD"],
+                    ]
+
+                    for (def att : attempts) {
+                        if (saveSuccess) break
+                        try {
+                            switch (att.method) {
+                                case "PUT_JSON":
+                                    def putBody = [id: targetRoomId as Integer, name: targetRoom?.name ?: "", deviceIds: targetDeviceIds]
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${putBody}")
+                                    def putParams = [
+                                        uri: "http://127.0.0.1:8080",
+                                        path: "/room/${targetRoomId}",
+                                        requestContentType: "application/json",
+                                        body: groovy.json.JsonOutput.toJson(putBody),
+                                        textParser: true,
+                                        timeout: 30,
+                                        ignoreSSLIssues: true
+                                    ]
+                                    if (cookie) { putParams.headers = ["Cookie": cookie] }
+                                    httpPut(putParams) { resp ->
+                                        mcpLog("debug", "device", "update_device room: ${att.desc} status=${resp.status}")
+                                    }
+                                    saveSuccess = true
+                                    break
+
+                                case "PUT_FORM":
+                                    // For form-encoded, send deviceIds as repeated params
+                                    def formBody = "id=${targetRoomId}&name=${java.net.URLEncoder.encode(targetRoom?.name ?: '', 'UTF-8')}"
+                                    targetDeviceIds.each { did -> formBody += "&deviceIds=${did}" }
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${formBody}")
+                                    def putFormParams = [
+                                        uri: "http://127.0.0.1:8080",
+                                        path: "/room/${targetRoomId}",
+                                        requestContentType: "application/x-www-form-urlencoded",
+                                        body: formBody,
+                                        textParser: true,
+                                        timeout: 30,
+                                        ignoreSSLIssues: true
+                                    ]
+                                    if (cookie) { putFormParams.headers = ["Cookie": cookie] }
+                                    httpPut(putFormParams) { resp ->
+                                        mcpLog("debug", "device", "update_device room: ${att.desc} status=${resp.status}")
+                                    }
+                                    saveSuccess = true
+                                    break
+
+                                case "POST_SAVE":
+                                    def saveBody = [id: targetRoomId, name: targetRoom?.name ?: "", deviceIds: targetDeviceIds]
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${saveBody}")
+                                    hubInternalPost("/room/save", saveBody)
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} succeeded")
+                                    saveSuccess = true
+                                    break
+
+                                case "POST_UPDATE":
+                                    def updateBody = [id: targetRoomId, name: targetRoom?.name ?: "", deviceIds: targetDeviceIds]
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${updateBody}")
+                                    hubInternalPost("/room/update", updateBody)
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} succeeded")
+                                    saveSuccess = true
+                                    break
+
+                                case "GET_ADD":
+                                    mcpLog("debug", "device", "update_device room: ${att.desc}")
+                                    def resp = hubInternalGet("/room/addDevice", [id: targetRoomId, deviceId: deviceIdStr])
+                                    mcpLog("debug", "device", "update_device room: ${att.desc} response: ${resp?.take(500)}")
+                                    saveSuccess = true
+                                    break
                             }
+                        } catch (Exception e) {
+                            mcpLog("debug", "device", "update_device room: ${att.desc} failed: ${e.message}")
+                            saveError = e.message
                         }
                     }
                 }
 
+                // Verify the room actually changed
                 if (saveSuccess) {
-                    // Verify the room actually changed by re-checking getRooms()
                     def verified = false
                     try {
                         def verifyRooms = getRooms()
                         if (targetRoomId == "0") {
-                            // Check device is NOT in any room
-                            def stillInRoom = verifyRooms?.find { room -> room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceId as Integer) }
+                            def stillInRoom = verifyRooms?.find { room -> room.deviceIds?.contains(deviceIdLong) || room.deviceIds?.contains(deviceIdInt) }
                             verified = (stillInRoom == null)
                             if (!verified) {
                                 mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device still in room '${stillInRoom?.name}'")
                             }
                         } else {
-                            // Check device IS in the target room
-                            def targetRoom = verifyRooms?.find { it.id?.toString() == targetRoomId }
-                            verified = targetRoom?.deviceIds?.contains(deviceIdLong) || targetRoom?.deviceIds?.contains(deviceId as Integer)
+                            def tRoom = verifyRooms?.find { it.id?.toString() == targetRoomId }
+                            verified = tRoom?.deviceIds?.contains(deviceIdLong) || tRoom?.deviceIds?.contains(deviceIdInt)
                             if (!verified) {
-                                mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device not found in room '${targetRoom?.name}' deviceIds: ${targetRoom?.deviceIds}")
+                                mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device not in room. Room '${tRoom?.name}' deviceIds: ${tRoom?.deviceIds}")
                             }
                         }
                     } catch (Exception verErr) {
-                        mcpLog("debug", "device", "update_device room: verification check failed: ${verErr.message}")
+                        mcpLog("debug", "device", "update_device room: verification error: ${verErr.message}")
                     }
 
                     if (verified) {
-                        def oldRoom = device.roomName ?: "none"
-                        changes << [property: "room", oldValue: oldRoom, newValue: args.room ?: "none"]
-                        mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoom} -> ${args.room ?: 'none'} (VERIFIED)")
+                        def oldRoomName = device.roomName ?: "none"
+                        changes << [property: "room", oldValue: oldRoomName, newValue: args.room ?: "none"]
+                        mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoomName} -> ${args.room ?: 'none'} (VERIFIED)")
                     } else {
-                        mcpLog("debug", "device", "update_device room: endpoint returned success but room did NOT change — trying to report failure")
-                        throw new RuntimeException("Room assignment endpoint returned success but room did not actually change. The correct /room/ API endpoint has not been found yet.")
+                        throw new RuntimeException("Room assignment endpoint returned success but room did not actually change. Check debug logs for /room/list HTML to discover correct endpoint.")
                     }
                 } else {
-                    throw new RuntimeException("Room assignment failed after all attempts. Last error: ${saveError}")
+                    throw new RuntimeException("Room assignment failed after all attempts. Last error: ${saveError}. Check debug logs for /room/list HTML.")
                 }
             } catch (Exception e) {
                 mcpLog("debug", "device", "update_device room: error: ${e.message}")
@@ -6368,7 +6441,7 @@ def toolUpdateDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.12"
+    return "0.6.13"
 }
 
 def isNewerVersion(String remote, String local) {
