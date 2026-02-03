@@ -17,8 +17,11 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.12:**
+- **Fix room assignment** — `/room/addDevice` returns 405 on POST (Method Not Allowed), confirming it's a GET endpoint. Now tries 7 GET parameter combinations (Grails convention: path param as `id`, query params for remaining args) plus 3 POST fallbacks. Adds post-save **verification** via `getRooms()` to detect silent failures — no more false "success" reports.
+
 **New in v0.6.11:**
-- **Fix room assignment** — `/device/save` returns 200 but silently ignores roomId. Rooms in Hubitat are managed from the room side (a room has a device list). Now uses `/room/` controller endpoints: tries `/room/addDevice`, `/room/save` with updated device list, and `/device/save` as final fallback. Handles both assign and unassign.
+- **Fix room assignment** — `/device/save` returns 200 but silently ignores roomId. Rooms in Hubitat are managed from the room side (a room has a device list). Now uses `/room/` controller endpoints.
 
 **New in v0.6.10:**
 - **Fix room assignment** — diagnostic revealed device edit page is a Vue.js SPA with zero HTML form fields. Now fetches device data from `/device/fullJson/<id>`, builds proper POST body with all required fields (id, version, name, label, deviceNetworkId, deviceTypeId, roomId, etc.), and tries 4 different save strategies (form-encoded flat, JSON POST, /device/updateRoom, Grails device.* prefix).
@@ -820,6 +823,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.12** - Fix room assignment: use GET /room/addDevice with query params + verification
 - **v0.6.11** - Fix room assignment: use /room/ controller endpoints (add device to room)
 - **v0.6.10** - Fix room assignment: use fullJson device data for /device/save (Vue.js SPA has no HTML forms)
 - **v0.6.9** - Room assignment: scrape device edit page HTML for correct form fields
