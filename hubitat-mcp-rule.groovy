@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.7.0
+ * Version: 0.7.1
  */
 
 definition(
@@ -2263,24 +2263,32 @@ def appButtonHandler(btn) {
         clearActionSettings()
         state.remove("editingActionIndex")
     } else if (btn.startsWith("moveUp_")) {
-        def idx = btn.replace("moveUp_", "").toInteger()
-        def list = atomicState.actions ?: []
-        if (idx > 0 && idx < list.size()) {
-            def temp = list[idx]
-            list[idx] = list[idx - 1]
-            list[idx - 1] = temp
-            atomicState.actions = list
-            state.updatedAt = now()
+        try {
+            def idx = btn.replace("moveUp_", "").toInteger()
+            def list = atomicState.actions ?: []
+            if (idx > 0 && idx < list.size()) {
+                def temp = list[idx]
+                list[idx] = list[idx - 1]
+                list[idx - 1] = temp
+                atomicState.actions = list
+                state.updatedAt = now()
+            }
+        } catch (NumberFormatException e) {
+            log.error "Invalid moveUp button index: ${btn}"
         }
     } else if (btn.startsWith("moveDown_")) {
-        def idx = btn.replace("moveDown_", "").toInteger()
-        def list = atomicState.actions ?: []
-        if (idx >= 0 && idx < list.size() - 1) {
-            def temp = list[idx]
-            list[idx] = list[idx + 1]
-            list[idx + 1] = temp
-            atomicState.actions = list
-            state.updatedAt = now()
+        try {
+            def idx = btn.replace("moveDown_", "").toInteger()
+            def list = atomicState.actions ?: []
+            if (idx >= 0 && idx < list.size() - 1) {
+                def temp = list[idx]
+                list[idx] = list[idx + 1]
+                list[idx + 1] = temp
+                atomicState.actions = list
+                state.updatedAt = now()
+            }
+        } catch (NumberFormatException e) {
+            log.error "Invalid moveDown button index: ${btn}"
         }
     }
 }
@@ -2592,6 +2600,10 @@ def subscribeToTriggers() {
                         // trigger.time is "HH:mm" format — convert to cron expression for schedule()
                         // schedule() only accepts cron strings or ISO 8601 date strings, not bare "HH:mm"
                         def parts = trigger.time.split(":")
+                        if (parts.size() < 2) {
+                            ruleLog("error", "Invalid time format '${trigger.time}' - expected HH:mm")
+                            return
+                        }
                         def cronTime = "0 ${parts[1]} ${parts[0]} ? * * *"
                         schedule(cronTime, "handleTimeEvent")
                     } else if (trigger.sunrise) {
@@ -3346,10 +3358,18 @@ def executeAction(action, actionIndex = null, evt = null) {
             break
 
         case "set_mode":
+            if (!action.mode) {
+                ruleLog("error", "set_mode action missing 'mode' value")
+                return false
+            }
             location.setMode(action.mode)
             break
 
         case "set_hsm":
+            if (!action.status) {
+                ruleLog("error", "set_hsm action missing 'status' value")
+                return false
+            }
             sendLocationEvent(name: "hsmSetArm", value: action.status)
             break
 
