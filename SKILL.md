@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 68 tools for device control, virtual device management, rule automation, hub admin, file management, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 73 tools for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -27,7 +27,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 67 tool definitions + dispatch         │  │
+│  │  - 73 tool definitions + dispatch         │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -71,6 +71,7 @@ The server file is organized with prominent section delimiters:
 // ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
 // ==================== DEVICE ADMIN TOOL IMPLEMENTATIONS ====================
 // ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
+// ==================== ROOM MANAGEMENT ====================
 // ==================== VERSION UPDATE CHECK ====================
 ```
 
@@ -315,10 +316,31 @@ The `update_device` tool modifies properties on any accessible device (selected 
 - **deviceNetworkId** — `device.setDeviceNetworkId(value)` (official API)
 - **dataValues** — `device.updateDataValue(key, value)` for each entry (official API)
 - **preferences** — `device.updateSetting(key, [type: type, value: value])` for each entry (official API, requires `type` field: `bool`, `number`, `decimal`, `text`, `enum`, `time`, `hub`)
-- **room** — resolves room name → ID via `getRooms()` (case-insensitive), then POSTs to `/device/save` with flat field names: `id`, `label`, `name`, `deviceNetworkId`, `type.id`, `roomId` (undocumented API, Grails convention — no `device.` prefix; requires Hub Admin Write)
+- **room** — resolves room name → ID via `getRooms()` (case-insensitive), then POSTs JSON to `/room/save` with `roomId`, `name`, and `deviceIds` fields. Removes device from old room first, then adds to new room. Uses `Content-Type: application/json` (NOT form-encoded — the endpoint returns 500 with form data). The API field is `roomId` (not `id` — using `id` returns `{"roomId":null,"error":"Invalid room id"}`). Post-save verification via `getRooms()`. Requires Hub Admin Write.
 - **enabled** — POSTs to `/device/disable` with `id` and `disable` as body params (undocumented API, must be POST not GET; requires Hub Admin Write)
 
 Room assignment and enable/disable use the hub's internal API at `http://127.0.0.1:8080` and require Hub Admin Write safety gate confirmation. All other properties use the official Hubitat Groovy API and work on any accessible device. Driver type cannot be changed — must delete and recreate the device.
+
+### Room Management
+
+5 tools for full room CRUD, using `POST /room/save` (JSON) and `getRooms()` for verification:
+
+| Tool | Access Gate | Description |
+|------|------------|-------------|
+| `list_rooms` | None | Lists all rooms with IDs, names, device counts via `getRooms()` |
+| `get_room` | None | Room details with full device info/states. Accepts name (case-insensitive) or ID |
+| `create_room` | Hub Admin Write | Creates room via `POST /room/save` with `roomId: 0` (Grails create convention) |
+| `delete_room` | Hub Admin Write | Deletes room via `POST /room/delete/<id>` or `GET /room/delete/<id>`. Devices become unassigned |
+| `rename_room` | Hub Admin Write | Renames room via `POST /room/save` with existing `roomId` and new `name`. Preserves device assignments |
+
+**Key API details:**
+- All room mutations use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`
+- The JSON body uses `roomId` (not `id`) — the API returns `{"roomId":null,"error":"Invalid room id"}` if `id` is used
+- Body format: `{"roomId": <int>, "name": "<string>", "deviceIds": [<int>, ...]}`
+- For room creation, `roomId: 0` triggers create behavior (Grails convention)
+- `getRooms()` is a built-in Hubitat SDK method returning `[[id:1, name:"Bedroom", deviceIds:[5, 6]], ...]`
+- All write tools verify the operation via `getRooms()` after the API call
+- Form-encoded bodies return 500 — the endpoint strictly requires JSON
 
 ### Version Management
 
@@ -333,7 +355,8 @@ Version strings appear in multiple locations. When bumping the version, update A
 - `currentVersion()` return value
 - `packageManifest.json` version field + releaseNotes
 - `README.md` — "New in vX.Y.Z" section + Version History table
-- `SKILL.md` — description frontmatter + architecture diagram tool count
+- `SKILL.md` — description frontmatter tool count + architecture diagram tool count
+- `hubitat-mcp-rule.groovy` — file header comment version
 
 Search for the current version string across all files to find all locations.
 
@@ -381,6 +404,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/driver/ajax/code` with query `id=<id>` | Driver source code (JSON: source, version, status) |
 | `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
 | `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
+| `/hub2/roomsList` | List of rooms as JSON (alternative to `getRooms()` SDK method) |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |
@@ -393,14 +417,16 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/app/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update app code |
 | `/driver/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update driver code |
 | `/login` | `username=<u>, password=<p>, submit=Login` | Hub Security login |
-| `/device/save` | `id=<deviceId>, label=<label>, name=<name>, deviceNetworkId=<dni>, type.id=<typeId>, roomId=<roomId>` | Update device properties (flat field names, Grails convention) |
+| `/device/save` | `id=<deviceId>, label=<label>, name=<name>, deviceNetworkId=<dni>, type.id=<typeId>` | Update device properties (flat field names, Grails convention). NOTE: silently ignores `roomId` — use `/room/save` instead |
 | `/device/disable` | `id=<deviceId>, disable=<true\|false>` | Enable or disable a device (MUST be POST, not GET) |
+| `/room/save` | JSON: `{"roomId": <int>, "name": "<str>", "deviceIds": [<int>,...]}` | Create (roomId=0) or update room. MUST use `Content-Type: application/json` — form-encoded returns 500. Field is `roomId` not `id` |
 
-**Delete endpoints (GET):**
-| Path | Purpose |
-|------|---------|
-| `/app/edit/deleteJsonSafe/<id>` | Delete app (returns JSON with `status: true`) |
-| `/driver/editor/deleteJson/<id>` | Delete driver (returns JSON with `status: true`) |
+**Delete endpoints (GET or POST):**
+| Path | Method | Purpose |
+|------|--------|---------|
+| `/app/edit/deleteJsonSafe/<id>` | GET | Delete app (returns JSON with `status: true`) |
+| `/driver/editor/deleteJson/<id>` | GET | Delete driver (returns JSON with `status: true`) |
+| `/room/delete/<roomId>` | POST or GET | Delete room (try POST first, fall back to GET) |
 
 ### MCP Protocol Implementation
 
@@ -420,7 +446,7 @@ The server implements MCP protocol version `2024-11-05`:
 5. **Hub internal API responses vary by firmware** — always handle both JSON and non-JSON responses with nested try/catch for parsing
 6. **Numeric parsing of API responses** — hub endpoints like `/hub/advanced/freeOSMemory` return text that might not be numeric; wrap `as Integer` / `as Double` conversions in try/catch
 7. **OAuth token** — created once in `initialize()` via `createAccessToken()` and stored in `state.accessToken`; never regenerate it or users lose their MCP endpoint URL
-8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations across `hubitat-mcp-server.groovy`, `packageManifest.json`, `README.md`, and `SKILL.md`
+8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations across `hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`, `packageManifest.json`, `README.md`, and `SKILL.md`
 
 ## Future Plans (Blue-Sky — Needs Research)
 
