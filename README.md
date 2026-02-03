@@ -18,6 +18,13 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.7.2:**
+- **Stronger device authorization warnings** — Tool descriptions now include explicit warnings to prevent AI assistants from using unauthorized devices
+  - `list_devices`: Added warning to report "device not found" rather than substituting similar devices
+  - `send_command`: Added warning that ONLY user-specified devices may be controlled
+  - `get_device`, `get_attribute`, `update_device`: Added reminders to only interact with user-requested devices
+- **Simplified `create_virtual_device`** — Reduced redundancy in inputSchema descriptions for better MCP client compatibility
+
 **New in v0.7.1:**
 - **Automatic backup for `delete_rule`** — Rules are automatically backed up to File Manager (`mcp_rule_backup_*.json`) before deletion. Restore via `read_file` + `import_rule`.
 - **Test rule flag** — Mark rules as `testRule: true` in `create_rule` or `update_rule` to skip backup on deletion. Use for temporary/experimental rules.

@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.1 - Bug fixes, code quality improvements, add safety gate to delete_rule
+ * Version: 0.7.2 - Stronger device authorization warnings, simplified create_virtual_device schema
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.7.1"
+                paragraph "<b>Version:</b> 0.7.2"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.1). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.2). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.7.1"
+        version: "0.7.2"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -398,14 +398,24 @@ def getToolDefinitions() {
         // Device Tools
         [
             name: "list_devices",
-            description: """List all devices available to MCP with their current states. IMPORTANT: When user requests a device by name, verify it exists in this list by exact label match. Do NOT guess or assume device mappings - if a requested device is not found, report 'device not found' rather than substituting a similar device.
+            description: """List all devices available to MCP with their current states.
 
-PERFORMANCE WARNING:
-- Use detailed=false for initial device discovery (returns only common attributes)
-- With detailed=true, use pagination: 20-30 devices per request is recommended
-- Queries with 100+ devices and detailed=true can cause temporary hub slowdown
-- For large device lists, make multiple paginated requests rather than one large request
-- IMPORTANT: Make MCP tool calls sequentially, not in parallel - concurrent requests may cause issues""",
+CRITICAL AUTHORIZATION RULES:
+- ONLY control devices the user has EXPLICITLY named or approved
+- If a requested device is not found, report 'device not found' and ASK the user - do NOT substitute a similar device
+- NEVER use a different device than what the user specified, even if a task fails
+- When a tool fails (e.g., create_virtual_device), do NOT fall back to using existing devices without explicit user permission
+- Unauthorized device access is a serious violation of user trust
+
+DEVICE MATCHING:
+- Match devices by EXACT label (case-insensitive is OK)
+- Do NOT guess or assume device mappings
+- If ambiguous, list the options and ask the user to clarify
+
+PERFORMANCE:
+- Use detailed=false for initial discovery
+- With detailed=true, paginate: 20-30 devices per request
+- Make MCP tool calls sequentially, not in parallel""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -417,22 +427,26 @@ PERFORMANCE WARNING:
         ],
         [
             name: "get_device",
-            description: "Get detailed information about a specific device",
+            description: """Get detailed information about a specific device.
+
+Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID"]
+                    deviceId: [type: "string", description: "Device ID from list_devices"]
                 ],
                 required: ["deviceId"]
             ]
         ],
         [
             name: "get_attribute",
-            description: "Get a specific attribute value from a device",
+            description: """Get a specific attribute value from a device.
+
+Only query devices the user has mentioned or that are relevant to their request.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID"],
+                    deviceId: [type: "string", description: "Device ID from list_devices"],
                     attribute: [type: "string", description: "Attribute name"]
                 ],
                 required: ["deviceId", "attribute"]
@@ -440,11 +454,18 @@ PERFORMANCE WARNING:
         ],
         [
             name: "send_command",
-            description: "Send a command to a device. Always verify state changed after.",
+            description: """Send a command to a device. Always verify state changed after.
+
+CRITICAL: ONLY send commands to devices the user has EXPLICITLY authorized. If the user asks to control 'the kitchen light', you must verify that exact device exists. NEVER substitute a different device if:
+- The requested device is not found
+- A previous operation failed
+- You think a similar device might work
+
+If you cannot find the exact device, STOP and ask the user for clarification.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID"],
+                    deviceId: [type: "string", description: "Device ID - MUST be a device the user explicitly authorized"],
                     command: [type: "string", description: "Command name"],
                     parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
                 ],
@@ -1187,6 +1208,8 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
         [
             name: "update_device",
             description: """Update properties of any accessible device (selected devices OR MCP-managed virtual devices).
+
+IMPORTANT: Only modify devices the user has explicitly requested changes to. Never modify a device without clear user intent.
 
 Can modify one or more properties in a single call — only provide the fields you want to change.
 
@@ -2236,7 +2259,7 @@ def toolDeleteRule(args) {
             def exportData = [
                 exportVersion: "1.0",
                 exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-                serverVersion: "0.7.1",
+                serverVersion: "0.7.2",
                 deletedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
                 originalRuleId: args.ruleId,
                 rule: ruleExport,
@@ -2357,7 +2380,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.7.1",
+        serverVersion: "0.7.2",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4548,7 +4571,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.7.1",
+        version: "0.7.2",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4569,7 +4592,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.7.1"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.7.2"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4736,7 +4759,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.7.1"
+    details.mcpServerVersion = "0.7.2"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6863,7 +6886,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.1"
+    return "0.7.2"
 }
 
 def isNewerVersion(String remote, String local) {

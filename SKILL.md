@@ -206,6 +206,13 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - `delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
+**Device Authorization Safety** (v0.7.2+):
+- Device tools include explicit warnings to prevent AI from using unauthorized devices
+- If a requested device is not found, AI must report "device not found" and ask user — never substitute a similar device
+- When a tool fails (e.g., `create_virtual_device`), AI must not fall back to existing devices without explicit user permission
+- Key tools with authorization warnings: `list_devices`, `send_command`, `get_device`, `get_attribute`, `update_device`
+- The `delete_device` tool has its own extensive safety checklist (requires recent backup, explicit confirmation, audit logging)
+
 **Rule Deletion Safety** (delete_rule):
 - Automatically backs up rule to File Manager before deletion as `mcp_rule_backup_<name>_<timestamp>.json`
 - Backup includes full rule export (triggers, conditions, actions, device manifest)
