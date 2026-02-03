@@ -19,7 +19,8 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
 **New in v0.7.1:**
-- **Automatic backup for `delete_rule`** — Rules are automatically backed up to File Manager (`mcp_rule_backup_*.json`) before deletion. Use `skipBackupCheck=true` only for test rules or backup copies. Restore via `import_rule` + `read_file`.
+- **Automatic backup for `delete_rule`** — Rules are automatically backed up to File Manager (`mcp_rule_backup_*.json`) before deletion. Restore via `read_file` + `import_rule`.
+- **Test rule flag** — Mark rules as `testRule: true` in `create_rule` or `update_rule` to skip backup on deletion. Use for temporary/experimental rules.
 - **Bug fixes and code quality improvements:**
   - Add bounds checking to time trigger format parsing (prevents crash on malformed HH:mm)
   - Add null validation for `set_mode` and `set_hsm` actions (log error instead of crash)
@@ -852,7 +853,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.7.1** - Auto-backup for delete_rule (saves to File Manager), bug fixes for time triggers and button handlers
+- **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
 - **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object

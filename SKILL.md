@@ -206,6 +206,15 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - `delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
+**Rule Deletion Safety** (delete_rule):
+- Automatically backs up rule to File Manager before deletion as `mcp_rule_backup_<name>_<timestamp>.json`
+- Backup includes full rule export (triggers, conditions, actions, device manifest)
+- Restore via: `read_file(fileName)` → `import_rule(exportData: <json>)`
+- **Test rules**: Set `testRule: true` in `create_rule` or `update_rule` to skip backup on deletion
+- `skipBackupCheck: true` parameter forces skip regardless of testRule flag (rarely needed)
+- Test rule flag visible in `get_rule` and `list_rules` responses
+- No Hub Admin Write required (rules are MCP-managed, not hub-level resources)
+
 ### Hub Internal API Helpers
 
 Three helpers for calling the hub's internal HTTP API at `http://127.0.0.1:8080`:
