@@ -207,10 +207,11 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
 **Device Authorization Safety** (v0.7.2+):
-- Device tools include explicit warnings to prevent AI from using unauthorized devices
-- If a requested device is not found, AI must report "device not found" and ask user — never substitute a similar device
-- When a tool fails (e.g., `create_virtual_device`), AI must not fall back to existing devices without explicit user permission
-- Key tools with authorization warnings: `list_devices`, `send_command`, `get_device`, `get_attribute`, `update_device`
+- Device tools require AI to confirm before using non-exact device matches
+- If user specifies an exact device name that matches, AI can use it directly
+- If no exact match: AI must suggest similar devices and **ask user to confirm** before using any of them
+- When a tool fails (e.g., `create_virtual_device`), AI must report the failure — not silently use existing devices as a workaround
+- This prevents accidentally controlling critical systems (HVAC, locks) when user meant a different device
 - The `delete_device` tool has its own extensive safety checklist (requires recent backup, explicit confirmation, audit logging)
 
 **Rule Deletion Safety** (delete_rule):

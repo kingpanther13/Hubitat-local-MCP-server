@@ -19,10 +19,10 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
 **New in v0.7.2:**
-- **Stronger device authorization warnings** — Tool descriptions now include explicit warnings to prevent AI assistants from using unauthorized devices
-  - `list_devices`: Added warning to report "device not found" rather than substituting similar devices
-  - `send_command`: Added warning that ONLY user-specified devices may be controlled
-  - `get_device`, `get_attribute`, `update_device`: Added reminders to only interact with user-requested devices
+- **Device authorization safety** — Tool descriptions now require AI to confirm before using non-exact device matches
+  - If user says "use virtual test switch" but no exact match exists, AI must suggest similar devices and **ask for confirmation** before using any of them
+  - Exact name matches can be used directly without confirmation
+  - Prevents AI from silently using wrong devices (e.g., accidentally controlling HVAC instead of a test switch)
 - **Simplified `create_virtual_device`** — Reduced redundancy in inputSchema descriptions for better MCP client compatibility
 
 **New in v0.7.1:**

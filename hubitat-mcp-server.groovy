@@ -400,16 +400,15 @@ def getToolDefinitions() {
             name: "list_devices",
             description: """List all devices available to MCP with their current states.
 
-CRITICAL AUTHORIZATION RULES:
-- ONLY control devices the user has EXPLICITLY named or approved
-- If the user asks for a device that doesn't exist, report 'not found' and ASK - do NOT substitute a similar device
-- If a creation tool fails (e.g., create_virtual_device errors), report the failure and STOP - do NOT use existing devices as a workaround
-- NEVER use a different device than what the user specified
-- Unauthorized device access is a serious violation of user trust
+DEVICE AUTHORIZATION:
+- If user gives an EXACT device name that matches, use it directly
+- If no exact match: search for similar devices, then ASK USER TO CONFIRM before using any of them
+- If a creation tool fails (e.g., create_virtual_device errors), report the failure - do NOT silently use existing devices as a workaround
+- NEVER control a device without user approval - wrong device could control critical systems (HVAC, locks, etc.)
 
 DEVICE MATCHING:
-- Match devices by EXACT label (case-insensitive is OK)
-- Do NOT guess or assume device mappings
+- Match devices by EXACT label first (case-insensitive is OK)
+- If no exact match, suggest similar devices and wait for confirmation
 - If ambiguous, list the options and ask the user to clarify
 
 PERFORMANCE:
@@ -456,16 +455,11 @@ Only query devices the user has mentioned or that are relevant to their request.
             name: "send_command",
             description: """Send a command to a device. Always verify state changed after.
 
-CRITICAL: ONLY send commands to devices the user has EXPLICITLY authorized. If the user asks to control 'the kitchen light', you must verify that exact device exists. NEVER substitute a different device if:
-- The requested device is not found
-- A previous operation failed
-- You think a similar device might work
-
-If you cannot find the exact device, STOP and ask the user for clarification.""",
+If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID - MUST be a device the user explicitly authorized"],
+                    deviceId: [type: "string", description: "Device ID from list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name"],
                     parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
                 ],
