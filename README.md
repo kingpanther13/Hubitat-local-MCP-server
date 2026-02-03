@@ -17,6 +17,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.6.14:**
+- **Room assignment** — `/room/save` returned 500 (endpoint exists, wrong format). Now tries `POST /room/save` with explicit JSON content type first (Vue.js backend), then form-encoded, then `/hub2/room/save` prefix, then Grails command object pattern (`room.id`, `room.name`, `room.deviceIds[]`). Captures response bodies from all attempts for diagnosis.
+
 **New in v0.6.13:**
 - **Room assignment** — new approach: tries `PUT /room/<id>` (Grails RESTful update), `POST /room/save`, `POST /room/update`, plus GET fallback. Probes `/room/list` HTML and logs its JavaScript to discover the actual room management endpoints. Post-save verification via `getRooms()`.
 
@@ -826,6 +829,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object
 - **v0.6.13** - Room assignment: try PUT /room (Grails RESTful update), POST /room/save, POST /room/update, probe /room/list for endpoint discovery
 - **v0.6.12** - Fix room assignment: use GET /room/addDevice with query params + verification
 - **v0.6.11** - Fix room assignment: use /room/ controller endpoints (add device to room)
