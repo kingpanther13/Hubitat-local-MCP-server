@@ -1144,11 +1144,11 @@ Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app s
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceType: [type: "string", description: "The virtual device driver type. Must be one of: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller",
+                    deviceType: [type: "string", description: "The virtual device driver type (see enum for options)",
                         enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
-                    deviceLabel: [type: "string", description: "Display label for the device (e.g., 'MCP Automation Trigger', 'HA Bridge Switch')"],
-                    deviceNetworkId: [type: "string", description: "Optional unique network ID. Auto-generated if omitted. Must be unique across all hub devices."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user has approved creation of this virtual device."]
+                    deviceLabel: [type: "string", description: "Display label for the device"],
+                    deviceNetworkId: [type: "string", description: "Optional unique network ID. Auto-generated if omitted."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm device creation."]
                 ],
                 required: ["deviceType", "deviceLabel", "confirm"]
             ]
