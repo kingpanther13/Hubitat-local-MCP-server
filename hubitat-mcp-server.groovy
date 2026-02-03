@@ -518,6 +518,7 @@ Always verify rule created correctly after.""",
                     name: [type: "string", description: "Rule name"],
                     description: [type: "string", description: "Rule description"],
                     enabled: [type: "boolean", description: "Enable rule immediately", default: true],
+                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion. Use for temporary/experimental rules.", default: false],
                     triggers: [type: "array", description: "List of triggers"],
                     conditions: [type: "array", description: "List of conditions"],
                     conditionLogic: [type: "string", enum: ["all", "any"], default: "all"],
@@ -536,6 +537,7 @@ Always verify rule created correctly after.""",
                     name: [type: "string"],
                     description: [type: "string"],
                     enabled: [type: "boolean"],
+                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
                     triggers: [type: "array"],
                     conditions: [type: "array"],
                     conditionLogic: [type: "string", enum: ["all", "any"]],
@@ -546,13 +548,13 @@ Always verify rule created correctly after.""",
         ],
         [
             name: "delete_rule",
-            description: "DESTRUCTIVE: Permanently delete a rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Use skipBackupCheck=true ONLY for test rules or backup copies that don't need preservation.",
+            description: "DESTRUCTIVE: Permanently delete a rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Rules marked as testRule=true skip backup automatically.",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "string", description: "Rule ID"],
                     confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion."],
-                    skipBackupCheck: [type: "boolean", description: "Skip automatic backup. Use ONLY for test rules or backup copies. Default: false (backup created automatically)."]
+                    skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules. Rarely needed since testRule flag handles this. Default: false."]
                 ],
                 required: ["ruleId", "confirm"]
             ]
@@ -2094,7 +2096,8 @@ def toolCreateRule(args) {
         conditionLogic: args.conditionLogic ?: "all",
         actions: args.actions,
         localVariables: args.localVariables ?: [:],
-        enabled: args.enabled != false  // Set enabled AFTER data is stored
+        enabled: args.enabled != false,  // Set enabled AFTER data is stored
+        testRule: args.testRule ?: false  // Test rules skip backup on deletion
     ])
 
     // Verify data was stored correctly
@@ -2171,6 +2174,7 @@ def toolUpdateRule(ruleId, args) {
         childApp.updateSetting("ruleDescription", args.description)
     }
     if (args.enabled != null) updateData.enabled = args.enabled
+    if (args.testRule != null) updateData.testRule = args.testRule
     if (args.triggers != null) updateData.triggers = args.triggers
     if (args.conditions != null) updateData.conditions = args.conditions
     if (args.conditionLogic != null) updateData.conditionLogic = args.conditionLogic
@@ -2201,11 +2205,16 @@ def toolDeleteRule(args) {
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
     def backupFileName = null
 
-    // Automatically create a backup to File Manager unless explicitly skipped
-    if (!args.skipBackupCheck) {
+    // Check if rule is marked as a test rule
+    def ruleData = childApp.getRuleData()
+    def isTestRule = ruleData?.testRule ?: false
+
+    // Automatically create a backup to File Manager unless:
+    // 1. skipBackupCheck=true is passed, OR
+    // 2. The rule is marked as testRule=true
+    if (!args.skipBackupCheck && !isTestRule) {
         try {
-            // Get the rule export data
-            def ruleData = childApp.getRuleData()
+            // Get the rule export data (already fetched above)
             if (!ruleData) {
                 throw new IllegalArgumentException("Unable to read rule data for backup")
             }
@@ -2246,10 +2255,14 @@ def toolDeleteRule(args) {
             mcpLog("info", "rules", "Auto-backup created: '${backupFileName}' for rule '${ruleName}' before deletion")
 
         } catch (Exception e) {
-            throw new IllegalArgumentException("BACKUP FAILED: Could not create backup for rule '${ruleName}' before deletion: ${e.message}. Fix the issue or set skipBackupCheck=true if this is a test rule that doesn't need preservation.")
+            throw new IllegalArgumentException("BACKUP FAILED: Could not create backup for rule '${ruleName}' before deletion: ${e.message}. Fix the issue, mark the rule as testRule=true, or set skipBackupCheck=true.")
         }
     } else {
-        mcpLog("warn", "rules", "Backup skipped for rule '${ruleName}' - user set skipBackupCheck=true")
+        if (isTestRule) {
+            mcpLog("info", "rules", "Backup skipped for rule '${ruleName}' - marked as testRule")
+        } else {
+            mcpLog("warn", "rules", "Backup skipped for rule '${ruleName}' - user set skipBackupCheck=true")
+        }
     }
 
     mcpLog("warn", "rules", "Deleting rule '${ruleName}' (ID: ${args.ruleId}) - user confirmed deletion")
@@ -2263,6 +2276,8 @@ def toolDeleteRule(args) {
     if (backupFileName) {
         result.backupFile = backupFileName
         result.message += " Backup saved to File Manager: ${backupFileName}"
+    } else if (isTestRule) {
+        result.message += " (No backup - test rule)"
     }
 
     return result

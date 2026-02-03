@@ -3791,6 +3791,7 @@ def getRuleData() {
         name: settings.ruleName,
         description: settings.ruleDescription,
         enabled: settings.ruleEnabled ?: false,
+        testRule: atomicState.testRule ?: false,  // Test rules skip backup on deletion
         triggers: atomicState.triggers ?: [],
         conditions: atomicState.conditions ?: [],
         conditionLogic: settings.conditionLogic ?: "all",
@@ -3818,6 +3819,7 @@ def updateRuleFromParent(data) {
     if (data.conditions != null) atomicState.conditions = data.conditions
     if (data.actions != null) atomicState.actions = data.actions
     if (data.localVariables != null) atomicState.localVariables = data.localVariables
+    if (data.testRule != null) atomicState.testRule = data.testRule  // Test rules skip backup on deletion
     state.updatedAt = now()
 
     log.debug "updateRuleFromParent: atomicState now has ${atomicState.triggers?.size() ?: 0} triggers, ${atomicState.actions?.size() ?: 0} actions"
