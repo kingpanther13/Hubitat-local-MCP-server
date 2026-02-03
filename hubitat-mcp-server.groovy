@@ -402,9 +402,9 @@ def getToolDefinitions() {
 
 CRITICAL AUTHORIZATION RULES:
 - ONLY control devices the user has EXPLICITLY named or approved
-- If a requested device is not found, report 'device not found' and ASK the user - do NOT substitute a similar device
-- NEVER use a different device than what the user specified, even if a task fails
-- When a tool fails (e.g., create_virtual_device), do NOT fall back to using existing devices without explicit user permission
+- If the user asks for a device that doesn't exist, report 'not found' and ASK - do NOT substitute a similar device
+- If a creation tool fails (e.g., create_virtual_device errors), report the failure and STOP - do NOT use existing devices as a workaround
+- NEVER use a different device than what the user specified
 - Unauthorized device access is a serious violation of user trust
 
 DEVICE MATCHING:
