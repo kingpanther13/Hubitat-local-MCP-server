@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.2 - Stronger device authorization warnings, simplified create_virtual_device schema
+ * Version: 0.7.2 - Device authorization safety (require confirmation for non-exact matches)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App

@@ -860,6 +860,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.7.2** - Device authorization safety: require confirmation for non-exact device matches
 - **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
