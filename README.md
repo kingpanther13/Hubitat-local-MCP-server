@@ -17,6 +17,16 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.7.0:**
+- **Room management tools** — 5 new tools for full room CRUD:
+  - `list_rooms` — list all rooms with device counts
+  - `get_room` — get room details with all device info and current states
+  - `create_room` — create new rooms (optionally assign devices at creation)
+  - `delete_room` — delete rooms (devices become unassigned)
+  - `rename_room` — rename existing rooms
+- **Room assignment fixed** — `update_device` room property now works reliably via `POST /room/save` with JSON
+- 73 MCP tools total (up from 68 in v0.6.x)
+
 **New in v0.6.15:**
 - **Room assignment fix** — API response `{"roomId":null,"error":"Invalid room id"}` revealed the field name is `roomId` not `id`. Now sends correct JSON body to `POST /room/save`. Also removes device from old room before adding to new room.
 
@@ -832,6 +842,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
 - **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object
 - **v0.6.13** - Room assignment: try PUT /room (Grails RESTful update), POST /room/save, POST /room/update, probe /room/list for endpoint discovery

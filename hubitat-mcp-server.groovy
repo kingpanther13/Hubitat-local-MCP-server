@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.15 - Room assignment: try PUT /room/<id>, probe /room/list for endpoint discovery
+ * Version: 0.7.0 - Room assignment: try PUT /room/<id>, probe /room/list for endpoint discovery
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.15"
+                paragraph "<b>Version:</b> 0.7.0"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.15). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.0). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.15"
+        version: "0.7.0"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1219,6 +1219,76 @@ Requires 'Enable Hub Admin Write Tools' for room and enabled changes. Label, nam
             ]
         ],
 
+        // Room Management Tools
+        [
+            name: "list_rooms",
+            description: "List all rooms on the hub with their IDs, names, and device counts. Returns summary information for each room.",
+            inputSchema: [type: "object", properties: [:]]
+        ],
+        [
+            name: "get_room",
+            description: """Get detailed information about a specific room including all devices assigned to it with their current states.
+
+Specify room by name (case-insensitive) or by ID.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID"]
+                ],
+                required: ["room"]
+            ]
+        ],
+        [
+            name: "create_room",
+            description: """Create a new room on the hub.
+
+Room names must be unique. Optionally assign devices to the room at creation time by providing a list of device IDs.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Name for the new room"],
+                    deviceIds: [type: "array", description: "Optional list of device IDs to assign to the room", items: [type: "string"]],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved room creation."]
+                ],
+                required: ["name", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_room",
+            description: """⚠️ Delete a room from the hub.
+
+Devices in the room will become unassigned (not deleted). Specify room by name or ID.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved room deletion."]
+                ],
+                required: ["room", "confirm"]
+            ]
+        ],
+        [
+            name: "rename_room",
+            description: """Rename an existing room. Specify room by current name or ID.
+
+The room's device assignments are preserved. New name must not conflict with an existing room.
+
+Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    room: [type: "string", description: "Current room name (case-insensitive) or room ID"],
+                    newName: [type: "string", description: "New name for the room"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved rename."]
+                ],
+                required: ["room", "newName", "confirm"]
+            ]
+        ],
+
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
@@ -1641,6 +1711,13 @@ def executeTool(toolName, args) {
         case "list_virtual_devices": return toolListVirtualDevices(args)
         case "delete_virtual_device": return toolDeleteVirtualDevice(args)
         case "update_device": return toolUpdateDevice(args)
+
+        // Room Management
+        case "list_rooms": return toolListRooms()
+        case "get_room": return toolGetRoom(args.room)
+        case "create_room": return toolCreateRoom(args)
+        case "delete_room": return toolDeleteRoom(args)
+        case "rename_room": return toolRenameRoom(args)
 
         // Hub Admin App/Driver Management
         case "get_app_source": return toolGetAppSource(args)
@@ -2167,7 +2244,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.15",
+        serverVersion: "0.7.0",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4435,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.15",
+        version: "0.7.0",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4456,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.15"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.7.0"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4623,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.15"
+    details.mcpServerVersion = "0.7.0"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6398,10 +6475,302 @@ def toolUpdateDevice(args) {
     ]
 }
 
+// ==================== ROOM MANAGEMENT ====================
+
+def toolListRooms() {
+    def rooms = getRooms()
+    if (!rooms) {
+        return [rooms: [], count: 0, message: "No rooms configured on this hub."]
+    }
+    def roomList = rooms.collect { room ->
+        [
+            id: room.id?.toString(),
+            name: room.name,
+            deviceCount: room.deviceIds?.size() ?: 0,
+            deviceIds: room.deviceIds?.collect { it.toString() } ?: []
+        ]
+    }.sort { it.name }
+    return [rooms: roomList, count: roomList.size()]
+}
+
+def toolGetRoom(String roomIdentifier) {
+    if (!roomIdentifier) throw new IllegalArgumentException("Room name or ID is required")
+
+    def rooms = getRooms()
+    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
+
+    // Find room by ID or name (case-insensitive)
+    def room = rooms.find { it.id?.toString() == roomIdentifier } ?:
+               rooms.find { it.name?.toLowerCase() == roomIdentifier.toLowerCase() }
+
+    if (!room) {
+        def available = rooms.collect { it.name }.sort()
+        throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
+    }
+
+    // Get device details for each device in the room
+    def devices = []
+    def allDevices = (selectedDevices ?: []).toList()
+    def childDevs = getChildDevices() ?: []
+    def selectedIds = allDevices.collect { it.id.toString() } as Set
+    childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
+
+    room.deviceIds?.each { devId ->
+        def device = allDevices?.find { it.id?.toString() == devId.toString() }
+        if (device) {
+            def devInfo = [
+                id: device.id.toString(),
+                label: device.label ?: device.name,
+                name: device.name
+            ]
+            // Add common current states
+            def states = [:]
+            try {
+                device.currentStates?.each { st ->
+                    states[st.name] = st.value
+                }
+            } catch (Exception ignored) {}
+            if (states) devInfo.currentStates = states
+            devices << devInfo
+        } else {
+            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown"]
+        }
+    }
+
+    return [
+        id: room.id?.toString(),
+        name: room.name,
+        deviceCount: devices.size(),
+        devices: devices.sort { it.label?.toLowerCase() }
+    ]
+}
+
+def toolCreateRoom(args) {
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings")
+    }
+    if (!args.confirm) {
+        throw new IllegalArgumentException("confirm must be true to create a room")
+    }
+    if (!args.name?.trim()) {
+        throw new IllegalArgumentException("Room name is required")
+    }
+
+    def roomName = args.name.trim()
+
+    // Check for duplicate name
+    def rooms = getRooms()
+    if (rooms?.find { it.name?.toLowerCase() == roomName.toLowerCase() }) {
+        throw new IllegalArgumentException("A room named '${roomName}' already exists")
+    }
+
+    // Build device IDs list
+    def deviceIds = args.deviceIds?.collect { it as Integer } ?: []
+
+    // POST /room/save with roomId: 0 to create (Grails convention)
+    def cookie = getHubSecurityCookie()
+    def body = [roomId: 0, name: roomName, deviceIds: deviceIds]
+    def jsonStr = groovy.json.JsonOutput.toJson(body)
+    mcpLog("debug", "room", "create_room: POST /room/save body: ${jsonStr}")
+
+    def respBody = null
+    def postParams = [
+        uri: "http://127.0.0.1:8080",
+        path: "/room/save",
+        requestContentType: "application/json",
+        body: jsonStr,
+        textParser: true,
+        timeout: 30,
+        ignoreSSLIssues: true
+    ]
+    if (cookie) { postParams.headers = ["Cookie": cookie] }
+    httpPost(postParams) { resp ->
+        try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
+        mcpLog("debug", "room", "create_room: response status=${resp.status} body=${respBody?.take(500)}")
+    }
+
+    if (respBody?.contains('"error"')) {
+        throw new RuntimeException("Failed to create room: ${respBody?.take(500)}")
+    }
+
+    // Verify creation
+    def updatedRooms = getRooms()
+    def newRoom = updatedRooms?.find { it.name == roomName }
+    if (!newRoom) {
+        throw new RuntimeException("Room creation endpoint returned success but room '${roomName}' not found in rooms list")
+    }
+
+    mcpLog("info", "room", "Created room '${roomName}' (ID: ${newRoom.id})")
+    return [
+        success: true,
+        room: [id: newRoom.id?.toString(), name: newRoom.name, deviceCount: newRoom.deviceIds?.size() ?: 0],
+        message: "Room '${roomName}' created successfully."
+    ]
+}
+
+def toolDeleteRoom(args) {
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings")
+    }
+    if (!args.confirm) {
+        throw new IllegalArgumentException("confirm must be true to delete a room")
+    }
+    if (!args.room?.trim()) {
+        throw new IllegalArgumentException("Room name or ID is required")
+    }
+
+    def rooms = getRooms()
+    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
+
+    def room = rooms.find { it.id?.toString() == args.room.trim() } ?:
+               rooms.find { it.name?.toLowerCase() == args.room.trim().toLowerCase() }
+    if (!room) {
+        def available = rooms.collect { it.name }.sort()
+        throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
+    }
+
+    def roomId = room.id
+    def roomName = room.name
+    def deviceCount = room.deviceIds?.size() ?: 0
+    mcpLog("debug", "room", "delete_room: deleting room '${roomName}' (ID: ${roomId}), ${deviceCount} devices will be unassigned")
+
+    def cookie = getHubSecurityCookie()
+    def deleteSuccess = false
+    def deleteError = null
+
+    // Try POST /room/delete/<id> first, then GET /room/delete/<id>
+    def attempts = [
+        [desc: "POST /room/delete/${roomId}", method: "POST"],
+        [desc: "GET /room/delete/${roomId}", method: "GET"],
+    ]
+    for (def att : attempts) {
+        if (deleteSuccess) break
+        try {
+            if (att.method == "POST") {
+                def postParams = [
+                    uri: "http://127.0.0.1:8080",
+                    path: "/room/delete/${roomId}",
+                    requestContentType: "application/json",
+                    body: groovy.json.JsonOutput.toJson([roomId: roomId as Integer]),
+                    textParser: true,
+                    timeout: 30,
+                    ignoreSSLIssues: true
+                ]
+                if (cookie) { postParams.headers = ["Cookie": cookie] }
+                httpPost(postParams) { resp ->
+                    mcpLog("debug", "room", "delete_room: ${att.desc} status=${resp.status}")
+                }
+                deleteSuccess = true
+            } else {
+                hubInternalGet("/room/delete/${roomId}")
+                mcpLog("debug", "room", "delete_room: ${att.desc} succeeded")
+                deleteSuccess = true
+            }
+        } catch (Exception e) {
+            mcpLog("debug", "room", "delete_room: ${att.desc} failed: ${e.message}")
+            deleteError = e.message
+        }
+    }
+
+    if (!deleteSuccess) {
+        throw new RuntimeException("Failed to delete room '${roomName}'. Last error: ${deleteError}")
+    }
+
+    // Verify deletion
+    def updatedRooms = getRooms()
+    def stillExists = updatedRooms?.find { it.id?.toString() == roomId.toString() }
+    if (stillExists) {
+        throw new RuntimeException("Delete endpoint returned success but room '${roomName}' still exists")
+    }
+
+    mcpLog("info", "room", "Deleted room '${roomName}' (ID: ${roomId}), ${deviceCount} devices unassigned")
+    return [
+        success: true,
+        deletedRoom: [id: roomId.toString(), name: roomName],
+        devicesUnassigned: deviceCount,
+        message: "Room '${roomName}' deleted. ${deviceCount} device(s) are now unassigned."
+    ]
+}
+
+def toolRenameRoom(args) {
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings")
+    }
+    if (!args.confirm) {
+        throw new IllegalArgumentException("confirm must be true to rename a room")
+    }
+    if (!args.room?.trim()) {
+        throw new IllegalArgumentException("Room name or ID is required")
+    }
+    if (!args.newName?.trim()) {
+        throw new IllegalArgumentException("New room name is required")
+    }
+
+    def newName = args.newName.trim()
+    def rooms = getRooms()
+    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
+
+    def room = rooms.find { it.id?.toString() == args.room.trim() } ?:
+               rooms.find { it.name?.toLowerCase() == args.room.trim().toLowerCase() }
+    if (!room) {
+        def available = rooms.collect { it.name }.sort()
+        throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
+    }
+
+    // Check for name conflict
+    if (rooms.find { it.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id }) {
+        throw new IllegalArgumentException("A room named '${newName}' already exists")
+    }
+
+    def oldName = room.name
+    def roomId = room.id
+    def deviceIds = room.deviceIds?.collect { it as Integer } ?: []
+
+    // POST /room/save with existing roomId and new name
+    def cookie = getHubSecurityCookie()
+    def body = [roomId: roomId as Integer, name: newName, deviceIds: deviceIds]
+    def jsonStr = groovy.json.JsonOutput.toJson(body)
+    mcpLog("debug", "room", "rename_room: POST /room/save body: ${jsonStr}")
+
+    def respBody = null
+    def postParams = [
+        uri: "http://127.0.0.1:8080",
+        path: "/room/save",
+        requestContentType: "application/json",
+        body: jsonStr,
+        textParser: true,
+        timeout: 30,
+        ignoreSSLIssues: true
+    ]
+    if (cookie) { postParams.headers = ["Cookie": cookie] }
+    httpPost(postParams) { resp ->
+        try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
+        mcpLog("debug", "room", "rename_room: response status=${resp.status} body=${respBody?.take(500)}")
+    }
+
+    if (respBody?.contains('"error"')) {
+        throw new RuntimeException("Failed to rename room: ${respBody?.take(500)}")
+    }
+
+    // Verify rename
+    def updatedRooms = getRooms()
+    def updatedRoom = updatedRooms?.find { it.id?.toString() == roomId.toString() }
+    if (!updatedRoom || updatedRoom.name != newName) {
+        throw new RuntimeException("Rename endpoint returned success but room name did not change")
+    }
+
+    mcpLog("info", "room", "Renamed room '${oldName}' -> '${newName}' (ID: ${roomId})")
+    return [
+        success: true,
+        room: [id: roomId.toString(), name: newName, previousName: oldName],
+        message: "Room renamed from '${oldName}' to '${newName}'."
+    ]
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.15"
+    return "0.7.0"
 }
 
 def isNewerVersion(String remote, String local) {
