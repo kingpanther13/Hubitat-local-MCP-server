@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.6.14 - Room assignment: try PUT /room/<id>, probe /room/list for endpoint discovery
+ * Version: 0.6.15 - Room assignment: try PUT /room/<id>, probe /room/list for endpoint discovery
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.6.14"
+                paragraph "<b>Version:</b> 0.6.15"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.14). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.6.15). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -349,7 +349,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.6.14"
+        version: "0.6.15"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -2167,7 +2167,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.6.14",
+        serverVersion: "0.6.15",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4358,7 +4358,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.6.14",
+        version: "0.6.15",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4379,7 +4379,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.6.14"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.6.15"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4546,7 +4546,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.6.14"
+    details.mcpServerVersion = "0.6.15"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6186,42 +6186,34 @@ def toolUpdateDevice(args) {
 
                         // Try removing device from room — use same approaches as assign
                         def cookie = getHubSecurityCookie()
-                        def unassignRoomData = [id: currentRoom.id as Integer, name: currentRoom.name, deviceIds: updatedDeviceIds.collect { it as Integer }]
-                        def unassignAttempts = [
-                            [desc: "POST /room/save JSON (remove)", method: "POST_JSON"],
-                            [desc: "POST /room/save form (remove)", method: "POST_FORM"],
-                        ]
-                        for (def att : unassignAttempts) {
-                            if (saveSuccess) break
-                            try {
-                                if (att.method == "POST_JSON") {
-                                    def jsonStr = groovy.json.JsonOutput.toJson(unassignRoomData)
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${jsonStr}")
-                                    def postParams = [
-                                        uri: "http://127.0.0.1:8080",
-                                        path: "/room/save",
-                                        requestContentType: "application/json",
-                                        body: jsonStr,
-                                        textParser: true,
-                                        timeout: 30,
-                                        ignoreSSLIssues: true
-                                    ]
-                                    if (cookie) { postParams.headers = ["Cookie": cookie] }
-                                    httpPost(postParams) { resp ->
-                                        mcpLog("debug", "device", "update_device room: ${att.desc} status=${resp.status}")
-                                    }
-                                    saveSuccess = true
-                                } else {
-                                    def formBody = [id: currentRoom.id.toString(), name: currentRoom.name]
-                                    updatedDeviceIds.eachWithIndex { did, idx -> formBody["deviceIds[${idx}]"] = did.toString() }
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${formBody}")
-                                    hubInternalPostForm("/room/save", formBody)
-                                    saveSuccess = true
-                                }
-                            } catch (Exception e) {
-                                mcpLog("debug", "device", "update_device room: ${att.desc} failed: ${e.message}")
-                                saveError = e.message
+                        // API expects "roomId" not "id" (discovered from response: {"roomId":null,"error":"Invalid room id"})
+                        def unassignRoomData = [roomId: currentRoom.id as Integer, name: currentRoom.name, deviceIds: updatedDeviceIds.collect { it as Integer }]
+                        try {
+                            def jsonStr = groovy.json.JsonOutput.toJson(unassignRoomData)
+                            mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) body: ${jsonStr}")
+                            def postParams = [
+                                uri: "http://127.0.0.1:8080",
+                                path: "/room/save",
+                                requestContentType: "application/json",
+                                body: jsonStr,
+                                textParser: true,
+                                timeout: 30,
+                                ignoreSSLIssues: true
+                            ]
+                            if (cookie) { postParams.headers = ["Cookie": cookie] }
+                            def respBody = null
+                            httpPost(postParams) { resp ->
+                                mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) status=${resp.status}")
+                                try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
                             }
+                            mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) body=${respBody?.take(500)}")
+                            if (respBody?.contains('"error"')) {
+                                throw new RuntimeException("API returned error: ${respBody?.take(500)}")
+                            }
+                            saveSuccess = true
+                        } catch (Exception e) {
+                            mcpLog("debug", "device", "update_device room: POST /room/save JSON (remove) failed: ${e.message}")
+                            saveError = e.message
                         }
                     }
                 } else {
@@ -6234,6 +6226,29 @@ def toolUpdateDevice(args) {
                     }
                     if (oldRoom) {
                         mcpLog("debug", "device", "update_device room: moving from '${oldRoom.name}' (${oldRoom.id}) to room ${targetRoomId}")
+                        // Remove from old room first
+                        try {
+                            def oldCookie = getHubSecurityCookie()
+                            def oldDeviceIds = oldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
+                            def oldRoomBody = [roomId: oldRoom.id as Integer, name: oldRoom.name, deviceIds: oldDeviceIds]
+                            def oldJsonStr = groovy.json.JsonOutput.toJson(oldRoomBody)
+                            mcpLog("debug", "device", "update_device room: removing from old room body: ${oldJsonStr}")
+                            def oldParams = [
+                                uri: "http://127.0.0.1:8080",
+                                path: "/room/save",
+                                requestContentType: "application/json",
+                                body: oldJsonStr,
+                                textParser: true,
+                                timeout: 30,
+                                ignoreSSLIssues: true
+                            ]
+                            if (oldCookie) { oldParams.headers = ["Cookie": oldCookie] }
+                            httpPost(oldParams) { resp ->
+                                mcpLog("debug", "device", "update_device room: removed from old room '${oldRoom.name}' status=${resp.status}")
+                            }
+                        } catch (Exception oldErr) {
+                            mcpLog("debug", "device", "update_device room: failed to remove from old room: ${oldErr.message}")
+                        }
                     }
 
                     // Get target room's current device list
@@ -6268,20 +6283,13 @@ def toolUpdateDevice(args) {
                         return [status: respStatus, body: respBody]
                     }
 
-                    // Build room data with device IDs as numbers (matching getRooms format)
-                    def roomData = [id: targetRoomId as Integer, name: targetRoom?.name ?: "", deviceIds: targetDeviceIds.collect { it as Integer }]
+                    // Build room data — API response showed field is "roomId" not "id":
+                    // {"roomId":null,"error":"Invalid room id"}
+                    def roomData = [roomId: targetRoomId as Integer, name: targetRoom?.name ?: "", deviceIds: targetDeviceIds.collect { it as Integer }]
 
                     def attempts = [
-                        // 1. POST /room/save with JSON body (Vue.js SPA backend likely expects JSON)
+                        // 1. POST /room/save with JSON body — got 200 + "Invalid room id" when using "id", now using "roomId"
                         [desc: "POST /room/save JSON", method: "POST_SAVE_JSON"],
-                        // 2. POST /room/save with form-encoded body
-                        [desc: "POST /room/save form", method: "POST_SAVE_FORM"],
-                        // 3. POST /hub2/room/save (Vue UI2 prefix pattern)
-                        [desc: "POST /hub2/room/save JSON", method: "POST_HUB2_SAVE"],
-                        // 4. POST /room/save with Grails command object pattern (devices[] array)
-                        [desc: "POST /room/save Grails cmd", method: "POST_SAVE_CMD"],
-                        // 5. PUT /room/<id> with JSON
-                        [desc: "PUT /room/${targetRoomId} JSON", method: "PUT_JSON"],
                     ]
 
                     for (def att : attempts) {
@@ -6292,49 +6300,9 @@ def toolUpdateDevice(args) {
                                     mcpLog("debug", "device", "update_device room: ${att.desc} body: ${groovy.json.JsonOutput.toJson(roomData)}")
                                     def result = jsonPost("/room/save", roomData)
                                     mcpLog("debug", "device", "update_device room: ${att.desc} status=${result.status} body=${result.body?.take(500)}")
-                                    saveSuccess = true
-                                    break
-
-                                case "POST_SAVE_FORM":
-                                    def formBody = [id: targetRoomId, name: targetRoom?.name ?: ""]
-                                    targetDeviceIds.eachWithIndex { did, idx -> formBody["deviceIds[${idx}]"] = did.toString() }
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${formBody}")
-                                    def result = hubInternalPostForm("/room/save", formBody)
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} result: ${result}")
-                                    saveSuccess = true
-                                    break
-
-                                case "POST_HUB2_SAVE":
-                                    mcpLog("debug", "device", "update_device room: ${att.desc}")
-                                    def result = jsonPost("/hub2/room/save", roomData)
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} status=${result.status} body=${result.body?.take(500)}")
-                                    saveSuccess = true
-                                    break
-
-                                case "POST_SAVE_CMD":
-                                    // Try Grails convention: room.id, room.name, room.deviceIds
-                                    def cmdBody = ["room.id": targetRoomId, "room.name": targetRoom?.name ?: ""]
-                                    targetDeviceIds.eachWithIndex { did, idx -> cmdBody["room.deviceIds[${idx}]"] = did.toString() }
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} body: ${cmdBody}")
-                                    def result = hubInternalPostForm("/room/save", cmdBody)
-                                    mcpLog("debug", "device", "update_device room: ${att.desc} result: ${result}")
-                                    saveSuccess = true
-                                    break
-
-                                case "PUT_JSON":
-                                    mcpLog("debug", "device", "update_device room: ${att.desc}")
-                                    def putParams = [
-                                        uri: "http://127.0.0.1:8080",
-                                        path: "/room/${targetRoomId}",
-                                        requestContentType: "application/json",
-                                        body: groovy.json.JsonOutput.toJson(roomData),
-                                        textParser: true,
-                                        timeout: 30,
-                                        ignoreSSLIssues: true
-                                    ]
-                                    if (cookie) { putParams.headers = ["Cookie": cookie] }
-                                    httpPut(putParams) { resp ->
-                                        mcpLog("debug", "device", "update_device room: ${att.desc} status=${resp.status}")
+                                    // Check response body for error
+                                    if (result.body?.contains('"error"')) {
+                                        throw new RuntimeException("API returned error: ${result.body?.take(500)}")
                                     }
                                     saveSuccess = true
                                     break
@@ -6433,7 +6401,7 @@ def toolUpdateDevice(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.6.14"
+    return "0.6.15"
 }
 
 def isNewerVersion(String remote, String local) {
