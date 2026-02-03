@@ -546,13 +546,13 @@ Always verify rule created correctly after.""",
         ],
         [
             name: "delete_rule",
-            description: "DESTRUCTIVE: Permanently delete a rule. This action is IRREVERSIBLE. MANDATORY: You MUST call export_rule FIRST to create a backup before deletion. The backup must be within the last 24 hours. Use skipBackupCheck=true ONLY when intentionally deleting a backup copy or test rule.",
+            description: "DESTRUCTIVE: Permanently delete a rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Use skipBackupCheck=true ONLY for test rules or backup copies that don't need preservation.",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "string", description: "Rule ID"],
-                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion. Rule will be permanently deleted."],
-                    skipBackupCheck: [type: "boolean", description: "Set to true ONLY when intentionally deleting a backup copy or test rule that doesn't need preservation. Default: false (backup required)."]
+                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion."],
+                    skipBackupCheck: [type: "boolean", description: "Skip automatic backup. Use ONLY for test rules or backup copies. Default: false (backup created automatically)."]
                 ],
                 required: ["ruleId", "confirm"]
             ]
@@ -2199,39 +2199,73 @@ def toolDeleteRule(args) {
     }
 
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
+    def backupFileName = null
 
-    // Check for recent backup unless explicitly skipped
+    // Automatically create a backup to File Manager unless explicitly skipped
     if (!args.skipBackupCheck) {
-        def ruleBackups = state.ruleBackupTimestamps ?: [:]
-        def lastBackup = ruleBackups[args.ruleId.toString()]
-        def twentyFourHoursMs = 24 * 60 * 60 * 1000
+        try {
+            // Get the rule export data
+            def ruleData = childApp.getRuleData()
+            if (!ruleData) {
+                throw new IllegalArgumentException("Unable to read rule data for backup")
+            }
 
-        if (!lastBackup) {
-            throw new IllegalArgumentException("BACKUP REQUIRED: You must call export_rule for rule '${ruleName}' (ID: ${args.ruleId}) BEFORE deleting it. No backup found for this rule. If this is a test rule or backup copy that doesn't need preservation, set skipBackupCheck=true.")
+            // Build the portable rule object
+            def ruleExport = [
+                name: ruleData.name,
+                description: ruleData.description ?: "",
+                enabled: ruleData.enabled,
+                conditionLogic: ruleData.conditionLogic ?: "all",
+                triggers: ruleData.triggers ?: [],
+                conditions: ruleData.conditions ?: [],
+                actions: ruleData.actions ?: [],
+                localVariables: ruleData.localVariables ?: [:]
+            ]
+
+            def deviceManifest = buildDeviceManifest(ruleData)
+
+            def exportData = [
+                exportVersion: "1.0",
+                exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+                serverVersion: "0.7.1",
+                deletedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+                originalRuleId: args.ruleId,
+                rule: ruleExport,
+                deviceManifest: deviceManifest
+            ]
+
+            // Create backup file name: sanitize rule name for file system
+            def safeName = ruleName.replaceAll(/[^A-Za-z0-9]/, '_').take(30)
+            def timestamp = new Date().format("yyyyMMdd-HHmmss")
+            backupFileName = "mcp_rule_backup_${safeName}_${timestamp}.json"
+
+            // Save to File Manager
+            def jsonContent = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(exportData))
+            uploadHubFile(backupFileName, jsonContent.getBytes("UTF-8"))
+
+            mcpLog("info", "rules", "Auto-backup created: '${backupFileName}' for rule '${ruleName}' before deletion")
+
+        } catch (Exception e) {
+            throw new IllegalArgumentException("BACKUP FAILED: Could not create backup for rule '${ruleName}' before deletion: ${e.message}. Fix the issue or set skipBackupCheck=true if this is a test rule that doesn't need preservation.")
         }
-
-        if ((now() - lastBackup) > twentyFourHoursMs) {
-            def hoursAgo = (int)((now() - lastBackup) / 3600000)
-            throw new IllegalArgumentException("BACKUP EXPIRED: The backup for rule '${ruleName}' is ${hoursAgo} hours old (must be within 24 hours). Call export_rule again before deleting. If this is a test rule or backup copy, set skipBackupCheck=true.")
-        }
-
-        mcpLog("info", "rules", "Backup verified for rule '${ruleName}' (backed up ${(int)((now() - lastBackup) / 60000)} minutes ago)")
     } else {
-        mcpLog("warn", "rules", "Backup check skipped for rule '${ruleName}' - user set skipBackupCheck=true")
+        mcpLog("warn", "rules", "Backup skipped for rule '${ruleName}' - user set skipBackupCheck=true")
     }
 
     mcpLog("warn", "rules", "Deleting rule '${ruleName}' (ID: ${args.ruleId}) - user confirmed deletion")
     deleteChildApp(childApp.id)
 
-    // Clean up the backup timestamp for this rule
-    def ruleBackups = state.ruleBackupTimestamps ?: [:]
-    ruleBackups.remove(args.ruleId.toString())
-    state.ruleBackupTimestamps = ruleBackups
-
-    return [
+    def result = [
         success: true,
-        message: "Rule '${ruleName}' deleted permanently. This action cannot be undone."
+        message: "Rule '${ruleName}' deleted permanently."
     ]
+
+    if (backupFileName) {
+        result.backupFile = backupFileName
+        result.message += " Backup saved to File Manager: ${backupFileName}"
+    }
+
+    return result
 }
 
 def toolEnableRule(ruleId) {
@@ -2314,11 +2348,6 @@ def toolExportRule(args) {
     ]
 
     mcpLog("info", "server", "Exported rule '${ruleData.name}' (ID: ${args.ruleId}) with ${deviceManifest.size()} device references", args.ruleId)
-
-    // Track this backup for the delete_rule safety check
-    def ruleBackups = state.ruleBackupTimestamps ?: [:]
-    ruleBackups[args.ruleId.toString()] = now()
-    state.ruleBackupTimestamps = ruleBackups
 
     return exportData
 }
