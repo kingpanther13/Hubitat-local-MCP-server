@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.1 - Bug fixes: remove dead code, improve error handling in rule app
+ * Version: 0.7.1 - Bug fixes and code quality improvements in rule app
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -6264,6 +6264,7 @@ def toolUpdateDevice(args) {
                 def saveSuccess = false
                 def saveError = null
                 def deviceIdLong = deviceId as Long
+                def deviceIdInt = deviceId as Integer
 
                 // Helper: POST JSON to /room/save and check for errors
                 def roomSavePost = { Map bodyMap ->

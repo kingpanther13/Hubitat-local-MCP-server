@@ -20,7 +20,6 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 
 **New in v0.7.1:**
 - **Bug fixes and code quality improvements:**
-  - Remove dead code (unused `deviceIdInt` variable in `update_device`)
   - Add bounds checking to time trigger format parsing (prevents crash on malformed HH:mm)
   - Add null validation for `set_mode` and `set_hsm` actions (log error instead of crash)
   - Add try-catch to button handler integer parsing (prevents crash on invalid input)
@@ -852,7 +851,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
-- **v0.7.1** - Bug fixes: remove dead code, add bounds checking to time triggers, null validation for set_mode/set_hsm, try-catch for button handlers
+- **v0.7.1** - Bug fixes: bounds checking for time triggers, null validation for set_mode/set_hsm, try-catch for button handlers
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
 - **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object
