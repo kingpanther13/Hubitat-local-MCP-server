@@ -18,6 +18,9 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.7.3:**
+- **Documentation sync** — SKILL.md section names now match actual source code structure (24 sections vs. old 17)
+
 **New in v0.7.2:**
 - **Device authorization safety** — Tool descriptions now require AI to confirm before using non-exact device matches
   - If user says "use virtual test switch" but no exact match exists, AI must suggest similar devices and **ask for confirmation** before using any of them
@@ -866,6 +869,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.7.3** - Documentation sync (SKILL.md section names now match actual source code structure)
 - **v0.7.2** - Device authorization safety + optimized tool descriptions + get_tool_guide (74 tools)
 - **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
