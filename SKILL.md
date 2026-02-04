@@ -63,21 +63,28 @@ The server file is organized with prominent section delimiters:
 ```groovy
 // ==================== APP LIFECYCLE ====================
 // ==================== MCP REQUEST HANDLERS ====================
-// ==================== TOOL DEFINITIONS ====================
-// ==================== TOOL DISPATCH ====================
-// ==================== DEVICE TOOL IMPLEMENTATIONS ====================
+// ==================== DEVICE TOOLS ====================
 // ==================== RULE TOOLS (Child App Based) ====================
-// ==================== VALIDATION ====================
+// ==================== RULE EXPORT/IMPORT/CLONE TOOLS ====================
+// ==================== EXPORT/IMPORT HELPERS ====================
+// ==================== SYSTEM TOOLS ====================
+// ==================== CAPTURED STATE TOOLS ====================
+// ==================== VALIDATION FUNCTIONS ====================
 // ==================== HELPER FUNCTIONS ====================
 // ==================== HUB SECURITY & INTERNAL API HELPERS ====================
+// ==================== ITEM BACKUP TOOLS ====================
+// ==================== FILE MANAGER TOOLS ====================
 // ==================== MCP DEBUG LOGGING SYSTEM ====================
+// ==================== DEBUG TOOL IMPLEMENTATIONS ====================
 // ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
+// ==================== MONITORING TOOL IMPLEMENTATIONS ====================
 // ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
 // ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
 // ==================== DEVICE ADMIN TOOL IMPLEMENTATIONS ====================
 // ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
 // ==================== ROOM MANAGEMENT ====================
 // ==================== VERSION UPDATE CHECK ====================
+// ==================== TOOL GUIDE ====================
 ```
 
 New code should be placed in the appropriate section. New sections should follow the same `// ==== NAME ====` delimiter pattern.
