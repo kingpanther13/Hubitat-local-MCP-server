@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 73 tools for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 74 tools for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -17,6 +17,11 @@ The server exposes an OAuth-secured HTTP endpoint that speaks JSON-RPC 2.0 per t
 
 There are **no external dependencies, build steps, or test frameworks**. Everything runs inside the Hubitat Groovy sandbox. The two Groovy files plus `packageManifest.json` and `repository.json` (for Hubitat Package Manager distribution) are the entire project.
 
+**Documentation files:**
+- `README.md` — User-facing documentation
+- `SKILL.md` — Developer reference (this file)
+- `TOOL_GUIDE.md` — Human-readable tool reference (same content available to AI via `get_tool_guide` MCP tool)
+
 ## Architecture
 
 ```
@@ -27,7 +32,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 73 tool definitions + dispatch         │  │
+│  │  - 74 tool definitions + dispatch         │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -205,6 +210,22 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - `write_file` — writes via `uploadHubFile()`; requires Hub Admin Write + confirm; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
 - `delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
+
+**Device Authorization Safety** (v0.7.2+):
+- Device tools require AI to confirm before using non-exact device matches
+- If user specifies an exact device name that matches, AI can use it directly
+- If no exact match: AI must suggest similar devices and **ask user to confirm** before using any of them
+- When a tool fails (e.g., `create_virtual_device`), AI must report the failure — not silently use existing devices as a workaround
+- This prevents accidentally controlling critical systems (HVAC, locks) when user meant a different device
+- The `delete_device` tool has its own extensive safety checklist (requires recent backup, explicit confirmation, audit logging)
+
+**Optimized Tool Descriptions** (v0.7.2+):
+- Tool descriptions reduced by ~387 lines for better token efficiency
+- Based on MCP best practices from Anthropic and modelcontextprotocol.io
+- All critical safety rules preserved: pre-flight checklists, confirm requirements, backup requirements
+- Descriptions follow "explain like to a new hire" principle — concise but complete
+- Reduces context consumption when 74 tools are loaded into AI context
+- New `get_tool_guide` tool provides detailed reference on-demand (embedded in server, accessible via MCP)
 
 **Rule Deletion Safety** (delete_rule):
 - Automatically backs up rule to File Manager before deletion as `mcp_rule_backup_<name>_<timestamp>.json`

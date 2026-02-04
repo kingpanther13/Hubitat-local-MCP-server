@@ -18,6 +18,18 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.7.2:**
+- **Device authorization safety** — Tool descriptions now require AI to confirm before using non-exact device matches
+  - If user says "use virtual test switch" but no exact match exists, AI must suggest similar devices and **ask for confirmation** before using any of them
+  - Exact name matches can be used directly without confirmation
+  - Prevents AI from silently using wrong devices (e.g., accidentally controlling HVAC instead of a test switch)
+- **Optimized tool descriptions** — ~387 lines reduced from tool definitions for better token efficiency
+  - Based on MCP best practices research from Anthropic and modelcontextprotocol.io
+  - Critical safety rules preserved (pre-flight checklists, confirm requirements, backup requirements)
+  - Reduces token consumption when tool definitions are loaded into AI context
+- **New `get_tool_guide` tool** — Embedded reference guide accessible via MCP. AI can retrieve detailed guidance on device authorization, pre-flight checklists, virtual device types, rule structure, etc. when tool descriptions need clarification. Supports section-based retrieval to minimize token usage.
+- **Simplified `create_virtual_device`** — Reduced redundancy in inputSchema descriptions
+
 **New in v0.7.1:**
 - **Automatic backup for `delete_rule`** — Rules are automatically backed up to File Manager (`mcp_rule_backup_*.json`) before deletion. Restore via `read_file` + `import_rule`.
 - **Test rule flag** — Mark rules as `testRule: true` in `create_rule` or `update_rule` to skip backup on deletion. Use for temporary/experimental rules.
@@ -178,7 +190,7 @@ Manage your automation rules directly in the Hubitat web interface:
 - **Test rules** (dry run) to see what would happen without executing
 - **Delete rules** with confirmation
 
-### MCP Tools (73 total)
+### MCP Tools (74 total)
 
 | Category | Tools |
 |----------|-------|
@@ -195,6 +207,7 @@ Manage your automation rules directly in the Hubitat web interface:
 | **Device Admin** (1) | `delete_device` |
 | **Item Backups** (3) | `list_item_backups`, `get_item_backup`, `restore_item_backup` |
 | **File Manager** (4) | `list_files`, `read_file`, `write_file`, `delete_file` |
+| **Reference** (1) | `get_tool_guide` |
 
 ### Rule Engine
 
@@ -853,6 +866,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.7.2** - Device authorization safety + optimized tool descriptions + get_tool_guide (74 tools)
 - **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
