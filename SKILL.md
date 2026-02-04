@@ -97,9 +97,11 @@ Every new tool requires changes in exactly three places:
 2. **Case statement** in `executeTool()` — dispatches `toolName` to the implementation method
 3. **Implementation method** — prefixed with `tool` (e.g., `toolMyNewTool`)
 
-Additionally, update:
-4. **`packageManifest.json`** — release notes with updated tool count
-5. **Version strings** — if this is a version bump, update ALL version references (search for the current version string)
+Additionally, update tool count in:
+4. **`packageManifest.json`** — version field + releaseNotes with updated tool count
+5. **`README.md`** — "MCP Tools (N total)" header + category table + version history
+6. **`SKILL.md`** — description frontmatter + architecture diagram tool count
+7. **Version strings** — if this is a version bump, update ALL version references (search for the current version string)
 
 ### Tool Definition Pattern
 
@@ -182,7 +184,7 @@ Conventions:
 
 Three tiers of access control:
 
-**No gate** — Device tools, rule tools, system tools, `list_virtual_devices`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), and MCP-managed rules.
+**No gate** — Device tools, rule tools, system tools, `list_virtual_devices`, `get_tool_guide`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), MCP-managed rules, or return static reference content.
 
 **`requireHubAdminRead()`** — Checks `settings.enableHubAdminRead` is true. Used for tools that read hub system info (hub details, health, app/driver lists, source code).
 
@@ -386,6 +388,7 @@ Version strings appear in multiple locations. When bumping the version, update A
 - `mainPage()` display paragraphs (2 locations: version display + update banner)
 - `handleInitialize()` response
 - `toolExportRule()` serverVersion field
+- `toolImportRule()` serverVersion field (for imported rule metadata)
 - `toolGetLoggingStatus()` version field
 - `toolGenerateBugReport()` version variable
 - `toolGetHubDetails()` mcpServerVersion field
