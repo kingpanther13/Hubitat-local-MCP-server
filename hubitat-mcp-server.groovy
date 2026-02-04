@@ -416,7 +416,7 @@ PERFORMANCE:
 - With detailed=true, paginate: 20-30 devices per request
 - Make MCP tool calls sequentially, not in parallel (hub may not handle concurrent requests well)
 
-See TOOL_GUIDE.md for detailed reference on all tools.""",
+Use get_tool_guide tool for detailed reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1295,6 +1295,17 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
                 ],
                 required: ["fileName", "confirm"]
             ]
+        ],
+        // Tool Guide
+        [
+            name: "get_tool_guide",
+            description: "Get detailed reference for MCP tools. USE SPARINGLY - tool descriptions should suffice for most cases. When needed, ALWAYS specify a section to minimize token usage.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, update_device, rules, backup, file_manager, performance. Full guide only if absolutely necessary."]
+                ]
+            ]
         ]
     ]
 }
@@ -1405,6 +1416,9 @@ def executeTool(toolName, args) {
         case "read_file": return toolReadFile(args)
         case "write_file": return toolWriteFile(args)
         case "delete_file": return toolDeleteFile(args)
+
+        // Tool Guide
+        case "get_tool_guide": return toolGetToolGuide(args.section)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -6600,4 +6614,219 @@ def toolCheckForUpdate(args) {
             installedVersion: currentVersion()
         ]
     }
+}
+
+// ==================== TOOL GUIDE ====================
+
+def toolGetToolGuide(section) {
+    def sections = getToolGuideSections()
+
+    if (section) {
+        def key = section.toLowerCase().replaceAll(/[^a-z_]/, "_")
+        if (sections.containsKey(key)) {
+            return [
+                success: true,
+                section: key,
+                content: sections[key]
+            ]
+        } else {
+            return [
+                success: false,
+                error: "Unknown section: ${section}",
+                availableSections: sections.keySet().toList()
+            ]
+        }
+    }
+
+    // Return full guide
+    def fullGuide = sections.collect { k, v -> v }.join("\n\n---\n\n")
+    return [
+        success: true,
+        section: "full",
+        availableSections: sections.keySet().toList(),
+        content: fullGuide
+    ]
+}
+
+def getToolGuideSections() {
+    return [
+        device_authorization: '''## Device Authorization (CRITICAL)
+
+**Exact match rule:**
+- If user specifies a device name that EXACTLY matches a device label (case-insensitive OK), use it directly
+- Example: User says "turn on Kitchen Light" and device "Kitchen Light" exists → use it
+
+**Non-exact match rule:**
+- If no exact match exists, search for similar devices
+- Present options to user and WAIT FOR EXPLICIT CONFIRMATION before using any device
+- Example: User says "use test switch" but only "Virtual Test Switch" exists → ask "Did you mean 'Virtual Test Switch'?"
+
+**Tool failure rule:**
+- If a tool fails (e.g., create_virtual_device returns an error), report the failure to the user
+- Do NOT silently fall back to using existing devices as a workaround
+- Example: If creating a virtual device fails, don't just grab an existing device to use instead
+
+**Why this matters:**
+- Wrong device could control critical systems (HVAC, locks, security)
+- User trust depends on AI only controlling what they explicitly authorized''',
+
+        hub_admin_write: '''## Hub Admin Write Tools - Pre-Flight Checklist
+
+All Hub Admin Write tools require these steps:
+1. Backup check: Ensure create_hub_backup was called within the last 24 hours
+2. Inform user: Tell them what you're about to do
+3. Get confirmation: Wait for explicit "yes", "confirm", or "proceed"
+4. Set confirm=true: Pass the confirm parameter
+
+### Tool-Specific Requirements
+
+**reboot_hub** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
+
+**shutdown_hub** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
+
+**zwave_repair** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours.
+
+**delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
+- Use get_device to verify correct device
+- Warn if recent activity or Z-Wave/Zigbee (do exclusion first)
+- All details logged to MCP debug logs for audit
+
+**delete_room** - Devices become unassigned (not deleted). List affected devices first.
+
+**delete_app/delete_driver** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). Auto-backs up before deletion.''',
+
+        virtual_devices: '''## Virtual Device Types
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| Virtual Switch | on/off toggle | Boolean flags, triggers |
+| Virtual Button | pushable button | Triggering automations |
+| Virtual Contact Sensor | open/closed | Simulate door/window |
+| Virtual Motion Sensor | active/inactive | Simulate motion |
+| Virtual Presence Sensor | present/not present | Presence simulation |
+| Virtual Lock | lock/unlock | Lock state simulation |
+| Virtual Temperature Sensor | numeric temp | Temperature reporting |
+| Virtual Humidity Sensor | numeric humidity | Humidity reporting |
+| Virtual Dimmer | switch + level 0-100 | Dimmable light simulation |
+| Virtual RGBW Light | color-controllable | Color light simulation |
+| Virtual Shade | open/close + position | Window shade control |
+| Virtual Garage Door Opener | open/close | Garage door state |
+| Virtual Water Sensor | wet/dry | Water leak simulation |
+| Virtual Omni Sensor | multi-purpose | Combined sensor types |
+| Virtual Fan Controller | fan speed | Fan simulation |
+
+MCP-managed virtual devices:
+- Auto-accessible to all MCP tools without manual selection
+- Appear in Hubitat UI for Maker API, Dashboard, Rule Machine
+- Use delete_virtual_device to remove (not delete_device)''',
+
+        update_device: '''## update_device Properties
+
+| Property | Requires Hub Admin Write |
+|----------|-------------------------|
+| label | No |
+| name | No |
+| deviceNetworkId | No |
+| dataValues | No |
+| preferences | No |
+| room | Yes |
+| enabled | Yes |
+
+**Preferences format:**
+{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}
+
+**Valid preference types:** bool, number, string, enum, decimal, text
+
+**Room assignment:** Use exact room name (case-sensitive)''',
+
+        rules: '''## Rule Structure Reference
+
+### Triggers
+- device_event: Device attribute changes (supports duration, multi-device via deviceIds array)
+- button_event: Button pushed/held/doubleTapped
+- time: Specific time (HH:mm) or sunrise/sunset with offset (offset in minutes)
+- periodic: Interval-based
+- mode_change: Location mode changes
+- hsm_change: HSM status changes
+
+### Conditions
+- device_state: Current device attribute value
+- device_was: Device was in state for X seconds
+- time_range: Time window (supports sunrise/sunset)
+- mode: Current location mode
+- variable: Hub variable value
+- days_of_week: Specific days
+- sun_position: Sun above/below horizon
+- hsm_status: Current HSM state
+
+### Actions
+- device_command: Send command to device
+- toggle_device: Toggle device state
+- activate_scene: Activate a scene
+- set_variable/set_local_variable: Set variable value
+- set_mode: Change location mode
+- set_hsm: Change HSM state
+- delay: Wait (with ID for targeted cancel)
+- if_then_else: Conditional logic
+- cancel_delayed: Cancel pending delayed actions
+- repeat: Loop actions
+- stop: Stop rule execution
+- log: Log message
+- set_thermostat: Mode/setpoints/fan
+- http_request: GET/POST to URL
+- speak: TTS with optional volume
+- variable_math: Arithmetic (add/subtract/multiply/divide/modulo/set)''',
+
+        backup: '''## Backup System
+
+### Hub Backups
+- create_hub_backup creates full hub database backup
+- Required within 24 hours before any Hub Admin Write operation
+- Only write tool that doesn't require a prior backup
+
+### Source Code Backups (Automatic)
+- Created when using update_app_code, update_driver_code, delete_app, delete_driver
+- Stored in File Manager as .groovy files
+- Persist even if MCP uninstalled
+- Max 20 kept, oldest pruned
+- Rapid edits preserve original (1-hour protection)
+
+### Rule Backups (Automatic)
+- delete_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
+- Restore via: read_file → import_rule
+- Skip backup: set testRule=true when creating/updating''',
+
+        file_manager: '''## File Manager
+
+Files stored at http://<HUB_IP>/local/<filename>
+
+**File name rules:**
+- Must match ^[A-Za-z0-9][A-Za-z0-9._-]*$
+- No spaces, no leading period
+- Valid: my-config.json, backup_2024.txt
+- Invalid: .hidden, my file.txt
+
+**Chunked reading:**
+- Use offset and length for files >60KB
+- Each chunk must be <60KB''',
+
+        performance: '''## Performance Tips
+
+**list_devices:**
+- Use detailed=false for initial discovery
+- With detailed=true, paginate: 20-30 devices per request
+- Make tool calls sequentially, not in parallel
+
+**get_device_events:**
+- Default limit 10, recommended max 50
+- Higher values (100+) may cause delays
+
+**get_hub_logs:**
+- Default 100 entries, max 500
+- Use level and source filters to narrow results
+
+**get_device_history:**
+- Up to 7 days of history
+- Use attribute filter to reduce data volume'''
+    ]
 }
