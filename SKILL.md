@@ -300,7 +300,7 @@ atomicState.durationTimers = timers  // Write back entire map
 ```
 Direct nested mutation (`atomicState.map[key] = value`) silently fails to persist. Regular `state` is used for UI editor state, counters, and timestamps. `cancelledDelayIds` is cleared on `initialize()` since `unschedule()` in `updated()` cancels all pending callbacks.
 
-**Execution Loop Guard** — `executeRule()` tracks recent execution timestamps in `atomicState.recentExecutions`. If a rule fires 10+ times within a 60-second sliding window, it auto-disables (`ruleEnabled = false`), unsubscribes from events, and unschedules all timers. This prevents infinite event loops (e.g., "trigger on Switch A on → action: turn on Switch A") from crashing the hub. The rule must be manually re-enabled after fixing the loop. The guard uses `atomicState` for immediate persistence across rapid-fire event handlers.
+**Execution Loop Guard** — `executeRule()` tracks recent execution timestamps in `atomicState.recentExecutions`. If a rule fires 30+ times within a 60-second sliding window, it auto-disables (`ruleEnabled = false`), unsubscribes from events, and unschedules all timers. This prevents infinite event loops (e.g., "trigger on Switch A on → action: turn on Switch A") from crashing the hub. When triggered, `notifyLoopGuard()` sends push notifications to any `capability.notification` devices in the parent's selected devices and fires a `mcpLoopGuard` location event (name=`mcpLoopGuard`, value=rule name) that other automations (Rule Machine, etc.) can subscribe to. The rule must be manually re-enabled after fixing the loop. The guard uses `atomicState` for immediate persistence across rapid-fire event handlers.
 
 ### Parent-Child Communication
 

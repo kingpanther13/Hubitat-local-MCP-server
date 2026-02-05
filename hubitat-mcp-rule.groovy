@@ -3006,7 +3006,7 @@ def executeRule(triggerSource, evt = null) {
     // Execution loop guard — prevents infinite event loops
     // (e.g., rule triggers on "Switch A on" with action "Turn on Switch A")
     def loopGuardWindow = 60000  // 60-second sliding window
-    def loopGuardMax = 10        // max executions within the window
+    def loopGuardMax = 30        // max executions within the window
     def currentTime = now()
     def recentExecs = atomicState.recentExecutions ?: []
 
@@ -3014,12 +3014,14 @@ def executeRule(triggerSource, evt = null) {
     recentExecs = recentExecs.findAll { it > (currentTime - loopGuardWindow) }
 
     if (recentExecs.size() >= loopGuardMax) {
-        log.warn "Rule '${settings.ruleName}' SUPPRESSED: ${recentExecs.size()} executions in ${loopGuardWindow / 1000}s — possible infinite loop detected. Auto-disabling rule."
+        def msg = "Rule '${settings.ruleName}' auto-disabled: ${recentExecs.size()} executions in ${loopGuardWindow / 1000}s — possible infinite loop."
+        log.warn msg
         ruleLog("warn", "Execution loop detected (${recentExecs.size()} runs in ${loopGuardWindow / 1000}s). Rule auto-disabled to protect hub stability.")
         app.updateSetting("ruleEnabled", false)
         unsubscribe()
         unschedule()
         atomicState.recentExecutions = []
+        notifyLoopGuard(msg)
         return
     }
 
@@ -3878,6 +3880,36 @@ def enableRule() {
     unsubscribe()
     unschedule()
     subscribeToTriggers()
+}
+
+// Send loop guard notification to any notification-capable devices in the parent's selected devices.
+// Also fires a Hubitat "systemAlert" location event so other automations can react.
+def notifyLoopGuard(String message) {
+    try {
+        // Fire a location event that other apps (Rule Machine, etc.) can subscribe to
+        sendLocationEvent(name: "mcpLoopGuard", value: settings.ruleName, descriptionText: message)
+    } catch (Exception e) {
+        log.warn "Failed to send loop guard location event: ${e.message}"
+    }
+
+    try {
+        def devices = parent.getSelectedDevices() ?: []
+        def notifiers = devices.findAll { dev ->
+            dev.hasCommand("deviceNotification")
+        }
+        notifiers.each { dev ->
+            try {
+                dev.deviceNotification(message)
+            } catch (Exception e) {
+                log.warn "Failed to notify ${dev.label ?: dev.name}: ${e.message}"
+            }
+        }
+        if (notifiers.size() > 0) {
+            ruleLog("info", "Loop guard notification sent to ${notifiers.size()} device(s)")
+        }
+    } catch (Exception e) {
+        log.warn "Failed to send loop guard notifications: ${e.message}"
+    }
 }
 
 // Bridge to parent's mcpLog for MCP debug log visibility
