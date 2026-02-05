@@ -879,17 +879,9 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - **v0.7.2** - Device authorization safety + optimized tool descriptions + get_tool_guide (74 tools)
 - **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
-- **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
-- **v0.6.x** - Device update tooling, virtual device management, room assignment iteration (68→67 tools)
-- **v0.5.x** - Monitoring tools: hub logs, device history, performance tracking, health checks (64 tools)
-- **v0.4.x** - Hub Admin tools, Hub Security support, file management, item backups (52→59 tools)
-- **v0.3.x** - Rule portability (export/import/clone), 8 new action types, conditional triggers (34 tools)
-- **v0.2.x** - Debug logging system, UI bug fixes, code reviews (30 tools)
-- **v0.1.x** - Rule engine development: triggers, conditions, actions, duration triggers, pagination
-- **v0.0.x** - Initial release and UI foundation
 
 <details>
-<summary>Full version history (v0.0.3 – v0.6.15)</summary>
+<summary>Older versions (v0.0.3 – v0.6.15)</summary>
 
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
 - **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object
