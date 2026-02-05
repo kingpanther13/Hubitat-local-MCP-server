@@ -18,6 +18,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**v0.7.5** — Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% description token reduction)
 **v0.7.4** — Execution loop guard (configurable, with push notifications), safe room move pattern, resilient date parsing
 **v0.7.3** — Documentation sync (SKILL.md section names match source code structure)
 **v0.7.2** — Device authorization safety, optimized tool descriptions, new `get_tool_guide` tool (74 tools)
@@ -719,6 +720,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.7.5** - Token efficiency: optimize tool descriptions using progressive disclosure. Verbose descriptions trimmed to concise summaries; detailed reference moved to `get_tool_guide`. Enhanced rules guide with JSON syntax examples. ~27% reduction in tool description tokens.
 - **v0.7.4** - Stability fixes: configurable execution loop guard with push notifications, safe room move pattern, resilient date parsing
 - **v0.7.3** - Documentation sync (SKILL.md section names now match actual source code structure)
 - **v0.7.2** - Device authorization safety + optimized tool descriptions + get_tool_guide (74 tools)

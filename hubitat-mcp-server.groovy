@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.4 - Stability fixes (loop guard, safe room move, resilient date parsing)
+ * Version: 0.7.5 - Optimize tool descriptions for token efficiency (lean descriptions + get_tool_guide progressive disclosure)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.7.4"
+                paragraph "<b>Version:</b> 0.7.5"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.4). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.5). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -372,7 +372,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.7.4"
+        version: "0.7.5"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -421,25 +421,11 @@ def getToolDefinitions() {
         // Device Tools
         [
             name: "list_devices",
-            description: """List all devices available to MCP with their current states.
+            description: """List all devices available to MCP with current states.
 
-DEVICE AUTHORIZATION:
-- If user gives an EXACT device name that matches, use it directly
-- If no exact match: search for similar devices, then ASK USER TO CONFIRM before using any of them
-- If a creation tool fails (e.g., create_virtual_device errors), report the failure - do NOT silently use existing devices as a workaround
-- NEVER control a device without user approval - wrong device could control critical systems (HVAC, locks, etc.)
+DEVICE AUTHORIZATION: Exact name match → use directly. No exact match → suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
-DEVICE MATCHING:
-- Match devices by EXACT label first (case-insensitive is OK)
-- If no exact match, suggest similar devices and wait for confirmation
-- If ambiguous, list the options and ask the user to clarify
-
-PERFORMANCE:
-- Use detailed=false for initial discovery
-- With detailed=true, paginate: 20-30 devices per request
-- Make MCP tool calls sequentially, not in parallel (hub may not handle concurrent requests well)
-
-Use get_tool_guide tool for detailed reference.""",
+Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -525,25 +511,13 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "create_rule",
-            description: """Create a new automation rule. Rule structure:
-{
-  "name": "Rule name",
-  "description": "Optional description",
-  "enabled": true,
-  "triggers": [...],
-  "conditions": [...],
-  "conditionLogic": "all|any",
-  "actions": [...]
-}
+            description: """Create a new automation rule. Use get_tool_guide section=rules for structure, syntax, and examples.
 
-TRIGGERS: device_event (with duration for debouncing; supports multi-device via deviceIds array with matchMode any/all), button_event (pushed/held/doubleTapped), time (HH:mm or sunrise/sunset with offset), periodic (interval-based), mode_change, hsm_change
-MULTI-DEVICE TRIGGER: {"type":"device_event","deviceIds":["id1","id2"],"attribute":"switch","value":"on","matchMode":"all"} - triggers when any device changes, optionally requires all to match
-TIME TRIGGER EXAMPLES: {"type":"time","time":"08:30"}, {"type":"time","sunrise":true,"offset":30}, {"type":"time","sunset":true,"offset":-15}
-  sunrise/sunset offset is in minutes (positive=after, negative=before). Many formats accepted and auto-normalized.
-CONDITIONS: device_state, device_was (state for X seconds), time_range (supports sunrise/sunset), mode, variable, days_of_week, sun_position, hsm_status
-ACTIONS: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay (with ID for targeted cancel), if_then_else, cancel_delayed, repeat, stop, log, set_thermostat (mode/setpoints/fan), http_request (GET/POST), speak (TTS with optional volume), comment (documentation only), set_valve (open/close), set_fan_speed (low/medium/high/auto), set_shade (open/close/position), variable_math (arithmetic on variables: add/subtract/multiply/divide/modulo/set with variableName, operation, operand, scope local|global)
+Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
+Condition types: device_state, device_was, time_range, mode, variable, days_of_week, sun_position, hsm_status
+Action types: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay, if_then_else, cancel_delayed, repeat, stop, log, set_thermostat, http_request, speak, comment, set_valve, set_fan_speed, set_shade, variable_math
 
-Always verify rule created correctly after.""",
+Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -788,10 +762,7 @@ Always verify rule created correctly after.""",
         ],
         [
             name: "import_rule",
-            description: """Import a rule from exported JSON data. Provide the full export object from export_rule.
-
-Optionally provide a deviceMapping to remap old device IDs to new ones (useful when importing to a different hub).
-The deviceMapping is an object where keys are old device IDs and values are new device IDs, e.g. {"123": "456", "789": "101"}.""",
+            description: """Import a rule from exported JSON (from export_rule). Optional deviceMapping remaps old device IDs to new: {"oldId": "newId"}.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -826,7 +797,7 @@ The deviceMapping is an object where keys are old device IDs and values are new 
         // ==================== HUB ADMIN READ TOOLS ====================
         [
             name: "get_hub_details",
-            description: "Extended hub info: model, firmware, memory, temperature, network, radios. Requires Hub Admin Read. If Hub Security enabled, configure credentials in app settings.",
+            description: "Extended hub info: model, firmware, memory, temperature, network, radios. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -982,11 +953,10 @@ Requires Hub Admin Write.""",
         // Device Admin
         [
             name: "delete_device",
-            description: """⚠️ MOST DESTRUCTIVE: Permanently deletes a device. NO UNDO. Intended for: ghost/orphaned devices, stale DB records, stuck virtual devices.
+            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. For ghost/orphaned/stuck devices only.
 
-PRE-FLIGHT: 1) Backup <24h 2) get_device to verify 3) Tell user device name/ID 4) Warn if recent activity or Z-Wave/Zigbee (do exclusion first) 5) Get confirmation 6) Set confirm=true
-Effects: Device + history lost, automations break. Full details logged to MCP debug logs for audit.
-Requires Hub Admin Write.""",
+PRE-FLIGHT: 1) Backup <24h 2) get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
+Device + history lost, automations break. Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1000,10 +970,7 @@ Requires Hub Admin Write.""",
         // Virtual Device Management
         [
             name: "create_virtual_device",
-            description: """Create an MCP-managed virtual device. Auto-accessible to all MCP tools. Also appears in Hubitat UI for Maker API, Dashboard, Rule Machine.
-
-Types: Switch, Button, Contact/Motion/Presence/Water Sensor, Lock, Temp/Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door, Omni Sensor, Fan Controller.
-Requires Hub Admin Write + confirm.""",
+            description: """Create an MCP-managed virtual device (types in deviceType enum). Auto-accessible to MCP tools, visible in Hubitat UI. Requires Hub Admin Write + confirm.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1040,8 +1007,7 @@ Requires Hub Admin Write + confirm.""",
             name: "update_device",
             description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
 
-Only modify devices user explicitly requested. Room/enabled require Hub Admin Write; others work without it.
-Preferences format: {"key": {"type": "TYPE", "value": X}} where TYPE is: bool, number, string, enum, decimal, text""",
+Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. See get_tool_guide section=update_device for preferences format.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1062,7 +1028,7 @@ Preferences format: {"key": {"type": "TYPE", "value": X}} where TYPE is: bool, n
         // Room Management Tools
         [
             name: "list_rooms",
-            description: "List all rooms on the hub with their IDs, names, and device counts. Returns summary information for each room.",
+            description: "List all rooms with IDs, names, and device counts.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -1242,7 +1208,7 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
         // ==================== Item Backup Tools ====================
         [
             name: "list_item_backups",
-            description: "List auto-created source backups (from app/driver modifications). Stored in File Manager (persist even if MCP uninstalled), max 20 kept, rapid edits preserve original.",
+            description: "List auto-created source backups from app/driver modifications. Stored in File Manager, max 20 kept.",
             inputSchema: [
                 type: "object",
                 properties: [:],
@@ -1905,7 +1871,7 @@ def toolDeleteRule(args) {
             def exportData = [
                 exportVersion: "1.0",
                 exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-                serverVersion: "0.7.4",
+                serverVersion: "0.7.5",
                 deletedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
                 originalRuleId: args.ruleId,
                 rule: ruleExport,
@@ -2026,7 +1992,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.7.4",
+        serverVersion: "0.7.5",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4217,7 +4183,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.7.4",
+        version: "0.7.5",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4238,7 +4204,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.7.4"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.7.5"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4405,7 +4371,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.7.4"
+    details.mcpServerVersion = "0.7.5"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6547,7 +6513,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.4"
+    return "0.7.5"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -6779,13 +6745,17 @@ MCP-managed virtual devices:
 
         rules: '''## Rule Structure Reference
 
+### Rule JSON Structure
+{"name": "Rule name", "description": "Optional", "enabled": true, "triggers": [...], "conditions": [...], "conditionLogic": "all|any", "actions": [...]}
+
 ### Triggers
-- device_event: Device attribute changes (supports duration, multi-device via deviceIds array)
-- button_event: Button pushed/held/doubleTapped
-- time: Specific time (HH:mm) or sunrise/sunset with offset (offset in minutes)
-- periodic: Interval-based
-- mode_change: Location mode changes
-- hsm_change: HSM status changes
+- device_event: {"type":"device_event","deviceId":"id","attribute":"switch","value":"on","operator":"equals"} — supports duration (seconds) for debouncing, multi-device via deviceIds array with matchMode any/all
+- Multi-device: {"type":"device_event","deviceIds":["id1","id2"],"attribute":"switch","value":"on","matchMode":"all"}
+- button_event: {"type":"button_event","deviceId":"id","action":"pushed|held|doubleTapped","buttonNumber":1}
+- time: {"type":"time","time":"08:30"} or {"type":"time","sunrise":true,"offset":30} or {"type":"time","sunset":true,"offset":-15} — offset in minutes (positive=after, negative=before)
+- periodic: {"type":"periodic","interval":5,"unit":"minutes|hours|days"}
+- mode_change: {"type":"mode_change","fromMode":"Away","toMode":"Home"} — both optional
+- hsm_change: {"type":"hsm_change","status":"armedAway|armedHome|armedNight|disarmed|intrusion"} — optional
 
 ### Conditions
 - device_state: Current device attribute value
@@ -6804,16 +6774,20 @@ MCP-managed virtual devices:
 - set_variable/set_local_variable: Set variable value
 - set_mode: Change location mode
 - set_hsm: Change HSM state
-- delay: Wait (with ID for targeted cancel)
-- if_then_else: Conditional logic
-- cancel_delayed: Cancel pending delayed actions
-- repeat: Loop actions
+- delay: Wait with optional ID for targeted cancel via cancel_delayed
+- if_then_else: Conditional logic within actions
+- cancel_delayed: Cancel pending delayed actions by ID
+- repeat: Loop actions N times or until condition
 - stop: Stop rule execution
-- log: Log message
-- set_thermostat: Mode/setpoints/fan
+- log: Log message to MCP debug logs
+- set_thermostat: Set mode/setpoints/fan
 - http_request: GET/POST to URL
 - speak: TTS with optional volume
-- variable_math: Arithmetic (add/subtract/multiply/divide/modulo/set)''',
+- comment: Documentation only, not executed
+- set_valve: Open/close valve
+- set_fan_speed: Set fan to low/medium/high/auto
+- set_shade: Open/close/position shade
+- variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}''',
 
         backup: '''## Backup System
 
