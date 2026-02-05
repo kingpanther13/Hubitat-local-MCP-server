@@ -44,6 +44,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  - Trigger subscriptions & evaluation     │  │
 │  │  - Condition evaluation                   │  │
 │  │  - Action execution                       │  │
+│  │  - Execution loop guard (auto-disable)    │  │
 │  │  - Isolated settings & state per rule     │  │
 │  └───────────────────────────────────────────┘  │
 │                                                 │
@@ -299,6 +300,8 @@ atomicState.durationTimers = timers  // Write back entire map
 ```
 Direct nested mutation (`atomicState.map[key] = value`) silently fails to persist. Regular `state` is used for UI editor state, counters, and timestamps. `cancelledDelayIds` is cleared on `initialize()` since `unschedule()` in `updated()` cancels all pending callbacks.
 
+**Execution Loop Guard** — `executeRule()` tracks recent execution timestamps in `atomicState.recentExecutions`. If a rule fires 10+ times within a 60-second sliding window, it auto-disables (`ruleEnabled = false`), unsubscribes from events, and unschedules all timers. This prevents infinite event loops (e.g., "trigger on Switch A on → action: turn on Switch A") from crashing the hub. The rule must be manually re-enabled after fixing the loop. The guard uses `atomicState` for immediate persistence across rapid-fire event handlers.
+
 ### Parent-Child Communication
 
 ```groovy
@@ -355,7 +358,7 @@ The `update_device` tool modifies properties on any accessible device (selected 
 - **deviceNetworkId** — `device.setDeviceNetworkId(value)` (official API)
 - **dataValues** — `device.updateDataValue(key, value)` for each entry (official API)
 - **preferences** — `device.updateSetting(key, [type: type, value: value])` for each entry (official API, requires `type` field: `bool`, `number`, `decimal`, `text`, `enum`, `time`, `hub`)
-- **room** — resolves room name → ID via `getRooms()` (case-insensitive), then POSTs JSON to `/room/save` with `roomId`, `name`, and `deviceIds` fields. Removes device from old room first, then adds to new room. Uses `Content-Type: application/json` (NOT form-encoded — the endpoint returns 500 with form data). The API field is `roomId` (not `id` — using `id` returns `{"roomId":null,"error":"Invalid room id"}`). Post-save verification via `getRooms()`. Requires Hub Admin Write.
+- **room** — resolves room name → ID via `getRooms()` (case-insensitive), then POSTs JSON to `/room/save` with `roomId`, `name`, and `deviceIds` fields. Uses **safe move pattern**: adds device to new room first, then removes from old room. This prevents "device limbo" (device in no room) if the second API call fails — worst case, device appears in both rooms temporarily, which is recoverable. Uses `Content-Type: application/json` (NOT form-encoded — the endpoint returns 500 with form data). The API field is `roomId` (not `id` — using `id` returns `{"roomId":null,"error":"Invalid room id"}`). Post-save verification via `getRooms()`. Requires Hub Admin Write.
 - **enabled** — POSTs to `/device/disable` with `id` and `disable` as body params (undocumented API, must be POST not GET; requires Hub Admin Write)
 
 Room assignment and enable/disable use the hub's internal API at `http://127.0.0.1:8080` and require Hub Admin Write safety gate confirmation. All other properties use the official Hubitat Groovy API and work on any accessible device. Driver type cannot be changed — must delete and recreate the device.
@@ -487,6 +490,7 @@ The server implements MCP protocol version `2024-11-05`:
 6. **Numeric parsing of API responses** — hub endpoints like `/hub/advanced/freeOSMemory` return text that might not be numeric; wrap `as Integer` / `as Double` conversions in try/catch
 7. **OAuth token** — created once in `initialize()` via `createAccessToken()` and stored in `state.accessToken`; never regenerate it or users lose their MCP endpoint URL
 8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations across `hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`, `packageManifest.json`, `README.md`, and `SKILL.md`
+9. **Date/timestamp parsing** — `formatTimestamp()` tries 6 ISO 8601 format variations (with/without millis, with Z/offset/no timezone, space-separated) to handle differences across firmware versions and upstream APIs. Falls back to truncated raw string if no format matches. Never use a single strict `Date.parse()` format
 
 ## Future Plans (Blue-Sky — Needs Research)
 

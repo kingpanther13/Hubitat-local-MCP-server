@@ -18,6 +18,11 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**New in v0.7.4:**
+- **Execution loop guard** — Rules auto-disable if they fire 10+ times in 60 seconds, preventing infinite event loops (e.g., "Switch A on → turn on Switch A")
+- **Safe room move** — Device room reassignment now adds to the new room first, then removes from the old room. Prevents devices from being orphaned in "no room" if the second API call fails
+- **Resilient date parsing** — `formatTimestamp` now tries 6 ISO 8601 format variations instead of one strict pattern, gracefully handling firmware differences
+
 **New in v0.7.3:**
 - **Documentation sync** — SKILL.md section names now match actual source code structure (24 sections vs. old 17)
 
@@ -869,10 +874,23 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.7.4** - Stability fixes: execution loop guard, safe room move pattern, resilient date parsing
 - **v0.7.3** - Documentation sync (SKILL.md section names now match actual source code structure)
 - **v0.7.2** - Device authorization safety + optimized tool descriptions + get_tool_guide (74 tools)
 - **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
+- **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
+- **v0.6.x** - Device update tooling, virtual device management, room assignment iteration (68→67 tools)
+- **v0.5.x** - Monitoring tools: hub logs, device history, performance tracking, health checks (64 tools)
+- **v0.4.x** - Hub Admin tools, Hub Security support, file management, item backups (52→59 tools)
+- **v0.3.x** - Rule portability (export/import/clone), 8 new action types, conditional triggers (34 tools)
+- **v0.2.x** - Debug logging system, UI bug fixes, code reviews (30 tools)
+- **v0.1.x** - Rule engine development: triggers, conditions, actions, duration triggers, pagination
+- **v0.0.x** - Initial release and UI foundation
+
+<details>
+<summary>Full version history (v0.0.3 – v0.6.15)</summary>
+
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
 - **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object
 - **v0.6.13** - Room assignment: try PUT /room (Grails RESTful update), POST /room/save, POST /room/update, probe /room/list for endpoint discovery
@@ -887,164 +905,69 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 - **v0.6.4** - Fix room assignment: extract device data from nested `fullJson.device`
 - **v0.6.3** - Fix `update_device` room assignment (500) and enable/disable (404) bugs + debug logging
 - **v0.6.2** - Add `update_device` tool (68 tools)
-  - New `update_device` — modify label, name, room, enable/disable, preferences, data values, and DNI on any accessible device
-  - Room assignment via hub internal `/device/save` endpoint with room ID resolution via `getRooms()`
-  - Enable/disable via hub internal `/device/disable` endpoint
-  - Label, name, DNI, data values, preferences via official Hubitat API (`setLabel`, `setName`, `setDeviceNetworkId`, `updateDataValue`, `updateSetting`)
 - **v0.6.1** - Fix BigDecimal.round() crash in version update checker (67 tools)
-  - Fix `checkForUpdate()` crashing nightly at 3 AM — `BigDecimal.round(1)` replaced with pure integer math
-  - Full audit of all division/rounding patterns across both apps — no other instances found
-  - Sync `hubitat-mcp-rule.groovy` version from 0.4.7 to 0.6.1
 - **v0.6.0** - Virtual device creation and management (67 tools)
-  - New `create_virtual_device` — create virtual switches, buttons, sensors, and more as MCP-managed child devices using `addChildDevice()`
-  - New `list_virtual_devices` — list all MCP-managed virtual devices with current states and capabilities
-  - New `delete_virtual_device` — remove MCP-managed virtual devices
-  - `findDevice()` and `list_devices` now include MCP-managed child devices automatically
-  - Supports 15 virtual device types: Switch, Button, Contact Sensor, Motion Sensor, Presence Sensor, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Opener, Water Sensor, Omni Sensor, Fan Controller
 - **v0.5.4** - Fix BigDecimal arithmetic with pure integer math in `device_health_check` and `delete_device` (64 tools)
 - **v0.5.3** - Fix `BigDecimal.round()` in `device_health_check` (64 tools)
 - **v0.5.2** - Fix `device_health_check` error handling (64 tools)
 - **v0.5.1** - Fix `get_hub_logs` JSON array parsing (64 tools)
 - **v0.5.0** - Monitoring tools and device management (64 tools)
-  - New `get_hub_logs` — access Hubitat's built-in system logs with level and source filtering
-  - New `get_device_history` — time-range event queries via `eventsSince()` with attribute filtering (up to 7 days)
-  - New `get_hub_performance` — performance snapshots with CSV time-series trend tracking in File Manager
-  - New `device_health_check` — scan all selected devices, flag stale/offline devices by configurable threshold
-  - New `delete_device` — force-delete ghost/orphaned devices with comprehensive safeguards (radio checks, rule references, audit logging, deletion verification)
 - **v0.4.8** - Fix Z-Wave and Zigbee endpoint compatibility (59 tools)
-  - Fix `get_zwave_details` returning 404 on firmware 2.3.7.1+ — tries `/hub/zwaveDetails/json` first, falls back to `/hub2/zwaveInfo`
-  - Fix `get_zigbee_details` returning 404 on firmware 2.3.7.1+ — tries `/hub/zigbeeDetails/json` first, falls back to `/hub2/zigbeeInfo`
 - **v0.4.7** - Comprehensive bug fixes from code review (59 tools)
-  - Fix `mcpLog` nested state mutation — entries now persist reliably via top-level reassignment
-  - Fix Hub Security auth retry — all `hubInternalGet`/`hubInternalPost`/`hubInternalPostForm` retry once on cookie expiry
-  - Fix `collectDeviceIds` — now handles `deviceIds` plural array (multi-device triggers, capture_state)
-  - Fix `time_range` condition — handles bare "HH:mm" strings that `toDateTime()` rejects
-  - Fix `days_of_week` condition — uses `Locale.US` for consistent English day names
-  - Fix `substituteVariables` — resolves rule engine variables, not just hub connector globals
-  - Fix `restore_state` flash — devices restoring to "off" no longer briefly flash on from setLevel
-  - Fix delay action overwrite — multiple delays in same rule no longer clobber each other via runIn
-  - Fix parameter conversion — handles edge cases (overflow, scientific notation) with try-catch
-  - Fix HSM `previousStatus` — captured before `sendLocationEvent` instead of after
 - **v0.4.6** - Fix version mismatch bug in optimistic locking (59 tools)
-  - `update_app_code`/`update_driver_code` now fetch fresh version from hub instead of using potentially stale backup cache
 - **v0.4.5** - Smart large-file handling (59 tools)
-  - Chunked reading for `get_app_source`, `get_driver_source`, `read_file` via `offset`/`length` parameters
-  - Large sources (>64KB) auto-saved to File Manager as `mcp-source-{type}-{id}.groovy`
-  - New `resave` mode for `update_app_code`/`update_driver_code` — re-saves current source entirely on-hub, no cloud round-trip
-  - New `sourceFile` mode — reads source from File Manager file, bypasses 64KB cloud response limit
-  - Refactored get/update source tools into shared `toolGetItemSource`/`toolUpdateItemCode` helpers
 - **v0.4.4** - Fix bugs found during live Claude.ai testing (59 tools)
-  - **CRITICAL**: Fixed `hubInternalGet`/`hubInternalPostForm` not reading `InputStreamReader` — `textParser: true` returns a Reader/InputStream that must be read with `.text`, not `.toString()`
-  - **MAJOR**: Fixed `list_files` returning empty array — rewritten with multi-endpoint fallback and multi-format parsing (JSON list, JSON object, HTML href extraction)
-  - **MAJOR**: Fixed `delete_app`/`delete_driver` returning `status: false` when deletion succeeded — now handles both boolean and string status values
-  - **DESIGN**: Prevent infinite backup chain — `delete_file` now detects backup files (`_backup_`, `mcp-backup-`, `mcp-prerestore-`) and skips auto-backup for them
-  - Added debug logging for delete responses and file manager operations
-- **v0.4.3** - Comprehensive bug fixes + item backup & file manager tools (59 tools total)
-  - **CRITICAL**: Fixed `evaluateComparison()` NullPointerException when device attribute returns null — numeric comparisons now fail closed instead of crashing
-  - **CRITICAL**: Migrated `durationTimers` and `durationFired` from `state` to `atomicState` — fixes race condition where scheduled callbacks could read stale duration data
-  - **CRITICAL**: Fixed unbounded `cancelledDelayIds` memory leak — now cleared on initialize/disable when scheduled callbacks are cancelled
-  - **HIGH**: Fixed lost event context after delay actions — `%device%`, `%value%`, `%name%` substitutions now work after delays by serializing event fields
-  - **HIGH**: Fixed sunrise/sunset rescheduling drift — now uses `getSunriseAndSunset()` for accurate next-day times instead of +24h
-  - **HIGH**: Fixed `applyDeviceMapping` missing `deviceIds` arrays — multi-device triggers are now properly remapped during rule import
-  - **HIGH**: Fixed response size guard using char count instead of byte count — now uses `getBytes("UTF-8").length` for accurate sizing
-  - **HIGH**: Fixed non-JSON update responses incorrectly assumed successful — now warns instead of silently assuming success
-  - **HIGH**: Item backup cache invalidated after successful code updates — prevents stale version numbers for optimistic locking
-  - **HIGH**: Wrapped all action types in outer try-catch — one action failure no longer aborts remaining actions in the chain
-  - **HIGH**: Migrated item backups from app state to hub File Manager — full source stored as .groovy files, no truncation, survives MCP uninstall
-  - **MEDIUM**: Added range validation for `set_level` (0-100), `set_color` hue/saturation/level (0-100), `delay` (1-86400s), `repeat` (1-100)
-  - **MEDIUM**: Fixed `formatTimeInput` to validate HH:mm format — prevents malformed cron expressions from invalid time strings
-  - **MEDIUM**: Fixed `device_was` event window with 2-second margin — accounts for event timestamp vs wall-clock differences
-  - **MEDIUM**: Fixed Elvis operator on `limit:0` for `get_device_events` — passing `limit=0` now correctly returns 0 events
-  - **MEDIUM**: Added `textParser: true` to `hubInternalPostForm` — handles non-JSON responses without parse exceptions
-  - **MEDIUM**: Install tools now warn when new app/driver ID cannot be extracted from hub response
-  - **LOW**: Fixed comment/code mismatch in `backupItemSource` (said 100KB, code used 64KB)
-  - **NEW**: 3 item backup tools — `list_item_backups`, `get_item_backup`, `restore_item_backup` — view and restore automatic pre-edit source code backups stored in File Manager
-  - **NEW**: Backup tools include manual restore instructions and direct download URLs in every response, so users can recover even if MCP is unavailable
-  - **NEW**: 4 File Manager tools — `list_files`, `read_file`, `write_file`, `delete_file` — full read/write access to the hub's local file system with automatic backup-before-modify safeguards
+- **v0.4.3** - Comprehensive bug fixes + item backup & file manager tools (59 tools)
 - **v0.4.2** - Response size safety limits (hub enforces 128KB cap)
-  - **64KB source truncation** on `get_app_source` and `get_driver_source` — keeps total JSON response under hub's 128KB limit after encoding
-  - **Global response size guard** in `handleMcpRequest` — catches ANY oversized response (>124KB) and returns a clean error instead of crashing the hub
-  - **Item-level backups** introduced — automatic pre-edit source backup for modify/delete operations
-  - **Debug log truncation** — large responses no longer spam the debug log (capped at 500 chars)
-  - Returns `sourceLength`, `truncated` flag, and warning when output is incomplete
 - **v0.4.1** - Bug fixes for Hub Admin tools + two-tier backup system
-  - **Fixed `get_app_source` and `get_driver_source`** returning 404: Query parameters now passed via `query` map instead of embedded in path string
-  - **Fixed `create_hub_backup`** returning 405 Method Not Allowed: Changed from `POST /hub/backup` to `GET /hub/backupDB?fileName=latest`
-  - **Fixed `update_app_code` and `update_driver_code`** version fetch (same query parameter fix)
-  - **Unblocked all Hub Admin Write tools**: Backup creation was failing, which blocked all 9 write operations behind the safety gate
-  - **Two-tier backup system**: Full hub backup required within 24 hours (was 1 hour); individual item source code automatically backed up before any modify/delete operation (1-hour window preserves pre-edit original)
-  - **Backup timeout** increased to 300 seconds (5 minutes) for larger hubs
-  - **SKILL.md**: Claude Code development skill documenting all project conventions and architecture
-- **v0.4.0** - Hub Admin Tools with Hub Security support (52 tools total)
-  - **18 new Hub Admin tools**: Full hub administration through MCP
-  - **Hub Admin Read Tools** (8): `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source`
-  - **Hub Admin Write Tools** (10): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`
-  - **Hub Security support**: Automatic cookie-based authentication for hubs with Hub Security enabled; 30-minute cookie caching with auto-renewal
-  - **Three-layer safety gate** for write tools: settings toggle + explicit `confirm=true` + mandatory hub backup within last 24 hours
-  - **UI toggles**: Independent enable/disable for Hub Admin Read and Write access in app settings
-  - **Graceful degradation**: All Hub Admin tools handle unavailable endpoints, non-JSON responses, and firmware variations
+- **v0.4.0** - Hub Admin Tools with Hub Security support (52 tools)
 - **v0.3.3** - Multi-device trigger support and validation fixes
-  - Fixed multi-device triggers: rules can now trigger from multiple devices for the same attribute
-  - Validation improvements for trigger and condition edge cases
-  - Minor stability fixes
 - **v0.3.2** - Comprehensive bug fixes (25 bugs verified and fixed)
-  - Systematic testing and fixing of 25 confirmed bugs across rule creation, trigger handling, condition evaluation, action execution, and MCP tool responses
-  - Improved error messages and edge case handling throughout
-- **v0.3.1** - Bug fixes from comprehensive v0.3.0 testing:
-  - Fixed `test_rule` dry run showing "Unknown action: variable_math" (missing `describeAction()` case in child app)
-  - Fixed `test_rule` dry run showing "Log [null]" for log actions without explicit level (now defaults to "info")
-  - Fixed `set_log_level` not persisting between MCP requests (nested `state` mutation + enum setting type fix)
-- **v0.3.0** - Major feature release: Rule portability, new action types, conditional triggers, and reliability improvements
-  - **Rule export/import/clone**: `export_rule` exports rules as portable JSON with a device manifest; `import_rule` imports with optional device ID remapping; `clone_rule` duplicates an existing rule (disabled by default)
-  - **Conditional triggers**: Each trigger can now have an inline `condition` gate — the trigger only fires if its condition evaluates to true
-  - **8 new action types**: `set_thermostat` (mode/setpoints/fan), `http_request` (GET/POST), `speak` (TTS with optional volume), `comment` (documentation-only no-op), `set_valve` (open/close), `set_fan_speed` (low through auto), `set_shade` (open/close/position), `variable_math` (arithmetic on local/global variables)
-  - **Variable math**: Perform `add`, `subtract`, `multiply`, `divide`, `modulo`, or `set` operations on local or global variables within rule actions
-  - **String substitution**: Actions like `send_notification` now support `%device%`, `%value%`, `%name%`, `%time%`, `%date%`, `%now%`, `%mode%`, and variable references
-  - **Version update check**: Automatic daily check against GitHub; UI shows an orange banner when outdated; `check_for_update` MCP tool for on-demand checks; update status included in MCP `initialize` response
-  - **Sunrise/sunset trigger normalization**: Accepts 6+ input formats (e.g., `{"type":"sunrise"}`, `{"type":"time","time":"sunrise"}`, `{"type":"sun","event":"sunset"}`) and auto-normalizes to canonical form on create/update
-  - **Debug logging overhaul**: 45+ silent failure points across both parent and child apps now route through the MCP debug log system; child app uses `ruleLog()` bridge to parent's `mcpLog()`
-  - 34 MCP tools total (up from 30)
-- **v0.2.12** - Fourth code review: Critical UI bug fixes + 16 additional bug fixes: UI rule creation blocked by cross-page `required` validation (sub-page inputs now `required:false`), UI trigger dropdown resetting on every render (`clearTriggerSettings` ran on `submitOnChange` re-renders), UI cancel button trapped by validation popup, sunrise/sunset `runOnce` overwrite bug (shared handler name), missing past-time check for sunrise/sunset, `update_rule` not syncing name/description/label, mode condition singular/plural key, `time_range` rejecting sunrise/sunset, `evaluateCondition` default true→false, `eventsSince` limit 10→100 with attribute filter, duplicate subscriptions on rule update, `forSeconds` type coercion, per-condition error isolation, negative offset/limit clamping, JSON-RPC batch null check, `set_color_temperature` falsy check
-- **v0.2.11** - Third code review (16 fixes): `settings.ruleEnabled` stale after `updateSetting()` (new enabled rules didn't subscribe), `schedule()` crash with Long for sunrise/sunset (now uses `runOnce()` + daily reschedule), `schedule()` crash with bare HH:mm (now converts to cron), added `singleThreaded:true` to child app, `send_notification` missing deviceId validation, `send_command` param type crash, `get_attribute` false "not found" for null-valued attributes, reject `expression` condition (always `true` since v0.1.18), `device_command` rule action param type conversion, `state.previousMode` init for mode_change triggers, repeat validation `times`/`count` roundtrip, `get_debug_logs` limit=0 falsy bug, log level confirmation ordering, delay warning in nested blocks, periodic trigger interval validation, dead code cleanup
-- **v0.2.10** - Fixed operator handling: `equals`/`not_equals` rejected by MCP validation, `!=` had inverted logic at runtime. Now accepts both word and symbolic forms (`equals`/`==`, `not_equals`/`!=`), normalizes to word form before storing.
-- **v0.2.9** - Critical bug fixes from second thorough review: infinite loop in debug log buffer cleanup, periodic triggers crashing (missing method), UI-based edits not persisting (atomicState in-place mutations), `set_local_variable` not persisting, `confirmDeletePage` return value, null check for `if_then_else` condition, stale header version, corrected tool count (30 not 28)
-- **v0.2.8** - Thorough code review fixes: `get_logging_status` crash on empty logs, `test_rule` returning hardcoded results, `List.remove()` wrong overload, try-catch for trigger subscriptions and time parsing
-- **v0.2.7** - Fixed StackOverflowError on app install/open (thanks [@ashwinma14](https://github.com/ashwinma14) - [#14](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/14), [#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
-- **v0.2.6** - Added `generate_bug_report` tool for easy issue submission, updated README version history
-- **v0.2.5** - Added UI control for MCP debug log level (dropdown in Settings), defaults to "error" for production
-- **v0.2.4** - Added version field to `get_logging_status` for MCP version checking
+- **v0.3.1** - Bug fixes from comprehensive v0.3.0 testing
+- **v0.3.0** - Rule portability, new action types, conditional triggers (34 tools)
+- **v0.2.12** - Fourth code review: Critical UI bug fixes + 16 additional bug fixes
+- **v0.2.11** - Third code review (16 fixes)
+- **v0.2.10** - Fixed operator handling
+- **v0.2.9** - Critical bug fixes from second thorough review
+- **v0.2.8** - Thorough code review fixes
+- **v0.2.7** - Fixed StackOverflowError on app install/open
+- **v0.2.6** - Added `generate_bug_report` tool
+- **v0.2.5** - Added UI control for MCP debug log level
+- **v0.2.4** - Added version field to `get_logging_status`
 - **v0.2.3** - Version bump for HPM release
-- **v0.2.2** - **CRITICAL FIX**: Rules with `enabled=true` now persist correctly (switched to atomicState for immediate persistence)
+- **v0.2.2** - **CRITICAL FIX**: Rules with `enabled=true` now persist correctly
 - **v0.2.1** - Fixed duplicate `formatTimestamp` method compilation error
-- **v0.2.0** - MCP Debug Logging System with 5 new diagnostic tools (`get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`)
-- **v0.1.23** - Critical fix for rule creation order (enabled status set after data persistence)
-- **v0.1.22** - Major bug fixes: `if_then_else`/`repeat` action returns, `device_was` validation, type coercion, button 0 support
-- **v0.1.21** - Fixed negative index vulnerabilities, hue value coercion, previousMode capture, null safety improvements
-- **v0.1.20** - Added `handlePeriodicEvent()` handler, fixed `cancel_delayed`, added 7 missing condition types to UI
-- **v0.1.19** - Fixed `time_range` field name compatibility (accepts both `start`/`end` and `startTime`/`endTime`)
-- **v0.1.18** - Removed `expression` condition type (not allowed in Hubitat sandbox)
-- **v0.1.17** - UI/MCP parity: added 6 missing condition types and 12 missing action types to UI
-- **v0.1.16** - Fixed duration trigger re-arming, added `clearDurationState()` to lifecycle methods
+- **v0.2.0** - MCP Debug Logging System (5 new diagnostic tools)
+- **v0.1.23** - Critical fix for rule creation order
+- **v0.1.22** - Major bug fixes: action returns, validation, type coercion
+- **v0.1.21** - Fixed negative index vulnerabilities, null safety improvements
+- **v0.1.20** - Added `handlePeriodicEvent()`, fixed `cancel_delayed`, 7 missing condition types
+- **v0.1.19** - Fixed `time_range` field name compatibility
+- **v0.1.18** - Removed `expression` condition type (not allowed in sandbox)
+- **v0.1.17** - UI/MCP parity: 6 condition types + 12 action types added to UI
+- **v0.1.16** - Fixed duration trigger re-arming
 - **v0.1.15** - Fixed "required fields" validation error on rule creation
-- **v0.1.14** - Fixed child app label not updating in Hubitat Apps list
-- **v0.1.13** - Fixed Hubitat sandbox compatibility (removed private/static modifiers)
-- **v0.1.12** - Performance improvements, configurable captured states limit (1-100), new state management tools
-- **v0.1.11** - Added verification reminders to tool descriptions (verify state after commands/rules)
-- **v0.1.10** - Fixed device label returning null in send_command and get_attribute responses
-- **v0.1.9** - Fixed missing condition type validations (presence, lock, thermostat_mode, thermostat_state, illuminance, power)
-- **v0.1.8** - Fixed duration triggers firing repeatedly (now waits for condition to go false before re-arming)
-- **v0.1.7** - Fixed duration-based `device_event` triggers (now properly waits for condition to stay true)
-- **v0.1.6** - Fixed `repeat` action parameter name (`times` now works correctly)
-- **v0.1.5** - Fixed `capture_state`/`restore_state` to work across different rules
-- **v0.1.4** - Added all remaining documented actions: `set_color`, `set_color_temperature`, `lock`/`unlock`, `capture_state`/`restore_state`, `send_notification`, `repeat`
-- **v0.1.3** - Major rule engine fixes: `delay` now uses `runIn()`, added `variable` condition, `device_was` condition, and more condition types
-- **v0.1.2** - Fixed missing action types: `if_then_else`, `cancel_delayed`, `set_local_variable`, `activate_scene`
-- **v0.1.1** - Added pagination for `list_devices` (fixes cloud 128KB limit issue)
-- **v0.1.0** - Parent/Child architecture (rules are now child apps with isolated settings)
+- **v0.1.14** - Fixed child app label not updating
+- **v0.1.13** - Fixed Hubitat sandbox compatibility
+- **v0.1.12** - Performance improvements, configurable captured states limit
+- **v0.1.11** - Added verification reminders to tool descriptions
+- **v0.1.10** - Fixed device label returning null
+- **v0.1.9** - Fixed missing condition type validations
+- **v0.1.8** - Fixed duration triggers firing repeatedly
+- **v0.1.7** - Fixed duration-based `device_event` triggers
+- **v0.1.6** - Fixed `repeat` action parameter name
+- **v0.1.5** - Fixed `capture_state`/`restore_state` across rules
+- **v0.1.4** - Added remaining documented actions
+- **v0.1.3** - Major rule engine fixes
+- **v0.1.2** - Fixed missing action types
+- **v0.1.1** - Added pagination for `list_devices`
+- **v0.1.0** - Parent/Child architecture
 - **v0.0.6** - Fixed trigger/condition/action save flow
-- **v0.0.5** - Bug fixes for device and variable tools, UI improvements
+- **v0.0.5** - Bug fixes for device and variable tools
 - **v0.0.4** - Added full Rule Engine UI
 - **v0.0.3** - Initial release
+
+</details>
 
 ## Manual Testing Checklist
 

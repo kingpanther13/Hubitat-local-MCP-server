@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.7.3
+ * Version: 0.7.4
  */
 
 definition(
@@ -3003,6 +3003,29 @@ def handleHsmEvent(evt) {
 }
 
 def executeRule(triggerSource, evt = null) {
+    // Execution loop guard — prevents infinite event loops
+    // (e.g., rule triggers on "Switch A on" with action "Turn on Switch A")
+    def loopGuardWindow = 60000  // 60-second sliding window
+    def loopGuardMax = 10        // max executions within the window
+    def currentTime = now()
+    def recentExecs = atomicState.recentExecutions ?: []
+
+    // Prune entries outside the sliding window
+    recentExecs = recentExecs.findAll { it > (currentTime - loopGuardWindow) }
+
+    if (recentExecs.size() >= loopGuardMax) {
+        log.warn "Rule '${settings.ruleName}' SUPPRESSED: ${recentExecs.size()} executions in ${loopGuardWindow / 1000}s — possible infinite loop detected. Auto-disabling rule."
+        ruleLog("warn", "Execution loop detected (${recentExecs.size()} runs in ${loopGuardWindow / 1000}s). Rule auto-disabled to protect hub stability.")
+        app.updateSetting("ruleEnabled", false)
+        unsubscribe()
+        unschedule()
+        atomicState.recentExecutions = []
+        return
+    }
+
+    recentExecs << currentTime
+    atomicState.recentExecutions = recentExecs
+
     log.info "Rule '${settings.ruleName}' triggered by ${triggerSource}"
 
     // Check conditions
