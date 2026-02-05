@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.3 - Documentation sync (SKILL.md section names match actual source)
+ * Version: 0.7.4 - Stability fixes (loop guard, safe room move, resilient date parsing)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.7.3"
+                paragraph "<b>Version:</b> 0.7.4"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.3). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.4). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -130,6 +130,12 @@ def mainPage() {
             input "maxCapturedStates", "number", title: "Max Captured States",
                   description: "Maximum number of unique state captures to store (default: 20)",
                   defaultValue: 20, range: "1..100", required: false
+            input "loopGuardMax", "number", title: "Loop Guard: Max Executions",
+                  description: "Auto-disable a rule after this many executions within the time window (default: 30)",
+                  defaultValue: 30, range: "5..200", required: false
+            input "loopGuardWindowSec", "number", title: "Loop Guard: Window (seconds)",
+                  description: "Sliding time window for the execution count (default: 60)",
+                  defaultValue: 60, range: "10..300", required: false
         }
     }
 }
@@ -141,10 +147,27 @@ def formatTimestamp(timestamp) {
             def date = new Date(timestamp)
             return date.format("yyyy-MM-dd HH:mm:ss")
         } else if (timestamp instanceof String) {
-            def date = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", timestamp)
-            return date.format("yyyy-MM-dd HH:mm:ss")
+            // Try multiple ISO 8601 formats to handle variations from
+            // different firmware versions or upstream APIs
+            def formats = [
+                "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // Full with millis and offset: 2025-01-15T10:30:00.000+0000
+                "yyyy-MM-dd'T'HH:mm:ssZ",         // No millis with offset:      2025-01-15T10:30:00+0000
+                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",   // Full with millis and Z:     2025-01-15T10:30:00.000Z
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",       // No millis with Z:           2025-01-15T10:30:00Z
+                "yyyy-MM-dd'T'HH:mm:ss",          // No millis, no timezone:     2025-01-15T10:30:00
+                "yyyy-MM-dd HH:mm:ss",            // Space-separated:            2025-01-15 10:30:00
+            ]
+            for (fmt in formats) {
+                try {
+                    def date = Date.parse(fmt, timestamp)
+                    return date.format("yyyy-MM-dd HH:mm:ss")
+                } catch (Exception ignored) {
+                    // Try next format
+                }
+            }
+            // No format matched — fall through to raw string truncation below
         }
-        return "Unknown"
+        return timestamp?.toString()?.take(20) ?: "Unknown"
     } catch (Exception e) {
         return timestamp?.toString()?.take(20) ?: "Unknown"
     }
@@ -349,7 +372,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.7.3"
+        version: "0.7.4"
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1882,7 +1905,7 @@ def toolDeleteRule(args) {
             def exportData = [
                 exportVersion: "1.0",
                 exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-                serverVersion: "0.7.3",
+                serverVersion: "0.7.4",
                 deletedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
                 originalRuleId: args.ruleId,
                 rule: ruleExport,
@@ -2003,7 +2026,7 @@ def toolExportRule(args) {
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.7.3",
+        serverVersion: "0.7.4",
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -4194,7 +4217,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.7.3",
+        version: "0.7.4",
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4215,7 +4238,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.7.3"  // NOTE: Keep in sync with serverInfo version
+    def version = "0.7.4"  // NOTE: Keep in sync with serverInfo version
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4382,7 +4405,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.7.3"
+    details.mcpServerVersion = "0.7.4"
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6068,27 +6091,19 @@ def toolUpdateDevice(args) {
                         mcpLog("debug", "device", "update_device room: device already in target room '${targetRoom.name}'")
                         saveSuccess = true
                     } else {
-                        // Remove from old room first (required, not best-effort)
+                        // Safe Move pattern: add to new room FIRST, then remove from old room.
+                        // This prevents "device limbo" where a device ends up in no room if
+                        // the second API call fails after the first succeeds.
+                        // Worst case (remove fails): device appears in both rooms temporarily,
+                        // which is recoverable. The old pattern (remove first) could orphan the device.
+
+                        // Locate old room (if any) before mutations
                         def oldRoom = allRooms?.find { room ->
                             deviceInRoom(room) && room.id?.toString() != targetRoomId
                         }
-                        if (oldRoom) {
-                            mcpLog("debug", "device", "update_device room: moving from '${oldRoom.name}' (${oldRoom.id}) to room ${targetRoomId}")
-                            def oldDeviceIds = oldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
-                            def oldBody = [roomId: oldRoom.id as Integer, name: oldRoom.name, deviceIds: oldDeviceIds]
-                            mcpLog("debug", "device", "update_device room: removing from old room: ${groovy.json.JsonOutput.toJson(oldBody)}")
-                            try {
-                                roomSavePost(oldBody)
-                                mcpLog("debug", "device", "update_device room: removed from old room '${oldRoom.name}'")
-                            } catch (Exception oldErr) {
-                                // Abort — don't add to new room if we can't remove from old (would create dual-room state)
-                                throw new RuntimeException("Failed to remove device from old room '${oldRoom.name}': ${oldErr.message}")
-                            }
-                        }
 
-                        // Add to target room — re-fetch rooms to get fresh data after old room mutation
-                        def freshRooms = oldRoom ? getRooms() : allRooms
-                        def freshTarget = freshRooms?.find { it.id?.toString() == targetRoomId }
+                        // Step 1: Add device to target room
+                        def freshTarget = allRooms?.find { it.id?.toString() == targetRoomId }
                         def targetDeviceIds = freshTarget?.deviceIds?.collect { it as Integer } ?: []
                         def devIdInt = deviceId as Integer
                         if (!targetDeviceIds.contains(devIdInt)) {
@@ -6099,10 +6114,33 @@ def toolUpdateDevice(args) {
                         mcpLog("debug", "device", "update_device room: POST /room/save (add) body: ${groovy.json.JsonOutput.toJson(roomData)}")
                         try {
                             roomSavePost(roomData)
+                            mcpLog("debug", "device", "update_device room: added to target room '${freshTarget?.name ?: targetRoomId}'")
                             saveSuccess = true
                         } catch (Exception e) {
+                            // Add failed — device stays safely in its old room (no change made)
                             mcpLog("debug", "device", "update_device room: add to room failed: ${e.message}")
                             saveError = e.message
+                        }
+
+                        // Step 2: Remove from old room (only if add succeeded)
+                        if (saveSuccess && oldRoom) {
+                            mcpLog("debug", "device", "update_device room: removing from old room '${oldRoom.name}' (${oldRoom.id})")
+                            // Re-fetch rooms to get fresh data after the add mutation
+                            def freshRooms = getRooms()
+                            def freshOldRoom = freshRooms?.find { it.id?.toString() == oldRoom.id?.toString() }
+                            if (freshOldRoom) {
+                                def oldDeviceIds = freshOldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
+                                def oldBody = [roomId: freshOldRoom.id as Integer, name: freshOldRoom.name, deviceIds: oldDeviceIds]
+                                mcpLog("debug", "device", "update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(oldBody)}")
+                                try {
+                                    roomSavePost(oldBody)
+                                    mcpLog("debug", "device", "update_device room: removed from old room '${oldRoom.name}'")
+                                } catch (Exception oldErr) {
+                                    // Device is in both rooms — not ideal but it IS in the target room.
+                                    // Log a warning so the user is aware.
+                                    mcpLog("warn", "device", "update_device room: device added to new room but removal from old room '${oldRoom.name}' failed: ${oldErr.message}. Device may appear in both rooms.")
+                                }
+                            }
                         }
                     }
                 }
@@ -6509,7 +6547,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.3"
+    return "0.7.4"
 }
 
 def isNewerVersion(String remote, String local) {

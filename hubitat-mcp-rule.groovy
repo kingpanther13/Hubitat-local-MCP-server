@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.7.3
+ * Version: 0.7.4
  */
 
 definition(
@@ -3003,6 +3003,32 @@ def handleHsmEvent(evt) {
 }
 
 def executeRule(triggerSource, evt = null) {
+    // Execution loop guard — prevents infinite event loops
+    // (e.g., rule triggers on "Switch A on" with action "Turn on Switch A")
+    // Thresholds configurable via parent app settings; defaults: 30 executions / 60 seconds
+    def loopGuardMax = (parent?.settings?.loopGuardMax ?: 30) as Integer
+    def loopGuardWindow = ((parent?.settings?.loopGuardWindowSec ?: 60) as Integer) * 1000
+    def currentTime = now()
+    def recentExecs = atomicState.recentExecutions ?: []
+
+    // Prune entries outside the sliding window
+    recentExecs = recentExecs.findAll { it > (currentTime - loopGuardWindow) }
+
+    if (recentExecs.size() >= loopGuardMax) {
+        def msg = "Rule '${settings.ruleName}' auto-disabled: ${recentExecs.size()} executions in ${loopGuardWindow / 1000}s — possible infinite loop."
+        log.warn msg
+        ruleLog("warn", "Execution loop detected (${recentExecs.size()} runs in ${loopGuardWindow / 1000}s). Rule auto-disabled to protect hub stability.")
+        app.updateSetting("ruleEnabled", false)
+        unsubscribe()
+        unschedule()
+        atomicState.recentExecutions = []
+        notifyLoopGuard(msg)
+        return
+    }
+
+    recentExecs << currentTime
+    atomicState.recentExecutions = recentExecs
+
     log.info "Rule '${settings.ruleName}' triggered by ${triggerSource}"
 
     // Check conditions
@@ -3855,6 +3881,36 @@ def enableRule() {
     unsubscribe()
     unschedule()
     subscribeToTriggers()
+}
+
+// Send loop guard notification to any notification-capable devices in the parent's selected devices.
+// Also fires a "mcpLoopGuard" location event so other automations can react.
+def notifyLoopGuard(String message) {
+    try {
+        // Fire a location event that other apps (Rule Machine, etc.) can subscribe to
+        sendLocationEvent(name: "mcpLoopGuard", value: settings.ruleName, descriptionText: message)
+    } catch (Exception e) {
+        log.warn "Failed to send loop guard location event: ${e.message}"
+    }
+
+    try {
+        def devices = parent.getSelectedDevices() ?: []
+        def notifiers = devices.findAll { dev ->
+            dev.hasCommand("deviceNotification")
+        }
+        notifiers.each { dev ->
+            try {
+                dev.deviceNotification(message)
+            } catch (Exception e) {
+                log.warn "Failed to notify ${dev.label ?: dev.name}: ${e.message}"
+            }
+        }
+        if (notifiers.size() > 0) {
+            ruleLog("info", "Loop guard notification sent to ${notifiers.size()} device(s)")
+        }
+    } catch (Exception e) {
+        log.warn "Failed to send loop guard notifications: ${e.message}"
+    }
 }
 
 // Bridge to parent's mcpLog for MCP debug log visibility
