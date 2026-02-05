@@ -19,7 +19,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
 **New in v0.7.4:**
-- **Execution loop guard** — Rules auto-disable if they fire 10+ times in 60 seconds, preventing infinite event loops (e.g., "Switch A on → turn on Switch A")
+- **Execution loop guard** — Rules auto-disable if they fire 30+ times in 60 seconds, preventing infinite event loops (e.g., "Switch A on → turn on Switch A")
 - **Safe room move** — Device room reassignment now adds to the new room first, then removes from the old room. Prevents devices from being orphaned in "no room" if the second API call fails
 - **Resilient date parsing** — `formatTimestamp` now tries 6 ISO 8601 format variations instead of one strict pattern, gracefully handling firmware differences
 
