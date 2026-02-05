@@ -130,6 +130,12 @@ def mainPage() {
             input "maxCapturedStates", "number", title: "Max Captured States",
                   description: "Maximum number of unique state captures to store (default: 20)",
                   defaultValue: 20, range: "1..100", required: false
+            input "loopGuardMax", "number", title: "Loop Guard: Max Executions",
+                  description: "Auto-disable a rule after this many executions within the time window (default: 30)",
+                  defaultValue: 30, range: "5..200", required: false
+            input "loopGuardWindowSec", "number", title: "Loop Guard: Window (seconds)",
+                  description: "Sliding time window for the execution count (default: 60)",
+                  defaultValue: 60, range: "10..300", required: false
         }
     }
 }

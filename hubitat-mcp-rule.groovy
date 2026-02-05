@@ -3005,8 +3005,9 @@ def handleHsmEvent(evt) {
 def executeRule(triggerSource, evt = null) {
     // Execution loop guard — prevents infinite event loops
     // (e.g., rule triggers on "Switch A on" with action "Turn on Switch A")
-    def loopGuardWindow = 60000  // 60-second sliding window
-    def loopGuardMax = 30        // max executions within the window
+    // Thresholds configurable via parent app settings; defaults: 30 executions / 60 seconds
+    def loopGuardMax = (parent?.settings?.loopGuardMax ?: 30) as Integer
+    def loopGuardWindow = ((parent?.settings?.loopGuardWindowSec ?: 60) as Integer) * 1000
     def currentTime = now()
     def recentExecs = atomicState.recentExecutions ?: []
 
@@ -3883,7 +3884,7 @@ def enableRule() {
 }
 
 // Send loop guard notification to any notification-capable devices in the parent's selected devices.
-// Also fires a Hubitat "systemAlert" location event so other automations can react.
+// Also fires a "mcpLoopGuard" location event so other automations can react.
 def notifyLoopGuard(String message) {
     try {
         // Fire a location event that other apps (Rule Machine, etc.) can subscribe to
