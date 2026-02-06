@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.5 - Optimize tool descriptions for token efficiency (lean descriptions + get_tool_guide progressive disclosure)
+ * Version: 0.7.6 - Code review: bug fixes, deduplication, version centralization, helper extraction
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -45,9 +45,9 @@ def mainPage() {
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>App ID:</b> ${app.id}"
-                paragraph "<b>Version:</b> 0.7.5"
+                paragraph "<b>Version:</b> ${currentVersion()}"
                 if (state.updateCheck?.updateAvailable) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v0.7.5). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v${currentVersion()}). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
             }
         }
@@ -310,8 +310,8 @@ def handleMcpRequest() {
 
     // Safety guard: hub enforces 128KB response limit — use byte length for accurate sizing
     def maxResponseSize = 124000 // Leave 4KB headroom under 128KB limit
-    // Only compute byte length for responses that might exceed the limit (avoid allocation for small responses)
-    def responseBytes = jsonResponse.length() > (maxResponseSize - 4000) ? jsonResponse.getBytes("UTF-8").length : jsonResponse.length()
+    // Only compute byte length for large responses (avoid byte array allocation for small ones)
+    def responseBytes = jsonResponse.length() > (maxResponseSize - 8000) ? jsonResponse.getBytes("UTF-8").length : jsonResponse.length()
     if (responseBytes > maxResponseSize) {
         mcpLog("error", "system", "MCP response too large: ${responseBytes} bytes (limit ${maxResponseSize}). Returning error instead.")
         def errResp = jsonRpcError(
@@ -372,7 +372,7 @@ def handleNotification(msg) {
 def handleInitialize(msg) {
     def info = [
         name: "hubitat-mcp-rule-server",
-        version: "0.7.5"
+        version: currentVersion()
     ]
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
@@ -1854,24 +1854,13 @@ def toolDeleteRule(args) {
                 throw new IllegalArgumentException("Unable to read rule data for backup")
             }
 
-            // Build the portable rule object
-            def ruleExport = [
-                name: ruleData.name,
-                description: ruleData.description ?: "",
-                enabled: ruleData.enabled,
-                conditionLogic: ruleData.conditionLogic ?: "all",
-                triggers: ruleData.triggers ?: [],
-                conditions: ruleData.conditions ?: [],
-                actions: ruleData.actions ?: [],
-                localVariables: ruleData.localVariables ?: [:]
-            ]
-
+            def ruleExport = buildRuleExport(ruleData)
             def deviceManifest = buildDeviceManifest(ruleData)
 
             def exportData = [
                 exportVersion: "1.0",
                 exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-                serverVersion: "0.7.5",
+                serverVersion: currentVersion(),
                 deletedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
                 originalRuleId: args.ruleId,
                 rule: ruleExport,
@@ -1919,32 +1908,27 @@ def toolDeleteRule(args) {
 }
 
 def toolEnableRule(ruleId) {
-    def childApp = getChildAppById(ruleId)
-    if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${ruleId}")
-    }
-
-    childApp.enableRule()
-
-    def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
-    return [
-        success: true,
-        message: "Rule '${ruleName}' enabled"
-    ]
+    return toolToggleRule(ruleId, true)
 }
 
 def toolDisableRule(ruleId) {
+    return toolToggleRule(ruleId, false)
+}
+
+private Map toolToggleRule(ruleId, boolean enable) {
     def childApp = getChildAppById(ruleId)
     if (!childApp) {
         throw new IllegalArgumentException("Rule not found: ${ruleId}")
     }
 
-    childApp.disableRule()
+    if (enable) { childApp.enableRule() } else { childApp.disableRule() }
 
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
+    def action = enable ? "enabled" : "disabled"
     return [
         success: true,
-        message: "Rule '${ruleName}' disabled"
+        ruleId: ruleId,
+        message: "Rule '${ruleName}' ${action}"
     ]
 }
 
@@ -1955,6 +1939,24 @@ def toolTestRule(ruleId) {
     }
 
     return childApp.testRuleFromParent()
+}
+
+// ==================== RULE HELPERS ====================
+
+/**
+ * Build a portable rule export object from rule data (excludes runtime state like id, lastTriggered, executionCount).
+ */
+private Map buildRuleExport(Map ruleData) {
+    return [
+        name: ruleData.name,
+        description: ruleData.description ?: "",
+        enabled: ruleData.enabled,
+        conditionLogic: ruleData.conditionLogic ?: "all",
+        triggers: ruleData.triggers ?: [],
+        conditions: ruleData.conditions ?: [],
+        actions: ruleData.actions ?: [],
+        localVariables: ruleData.localVariables ?: [:]
+    ]
 }
 
 // ==================== RULE EXPORT/IMPORT/CLONE TOOLS ====================
@@ -1974,25 +1976,13 @@ def toolExportRule(args) {
         throw new IllegalArgumentException("Unable to read rule data for rule: ${args.ruleId}")
     }
 
-    // Build the portable rule object (exclude runtime state like id, lastTriggered, executionCount)
-    def ruleExport = [
-        name: ruleData.name,
-        description: ruleData.description ?: "",
-        enabled: ruleData.enabled,
-        conditionLogic: ruleData.conditionLogic ?: "all",
-        triggers: ruleData.triggers ?: [],
-        conditions: ruleData.conditions ?: [],
-        actions: ruleData.actions ?: [],
-        localVariables: ruleData.localVariables ?: [:]
-    ]
-
-    // Build device manifest by scanning all rule components
+    def ruleExport = buildRuleExport(ruleData)
     def deviceManifest = buildDeviceManifest(ruleData)
 
     def exportData = [
         exportVersion: "1.0",
         exportedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-        serverVersion: "0.7.5",
+        serverVersion: currentVersion(),
         rule: ruleExport,
         deviceManifest: deviceManifest
     ]
@@ -3136,6 +3126,20 @@ def getHubSecurityCookie() {
 }
 
 /**
+ * Check if an exception indicates an auth failure that should be retried with a fresh cookie.
+ * If so, clears the cached cookie and returns true.
+ */
+private boolean shouldRetryWithFreshCookie(Exception e, boolean isRetry) {
+    if (!isRetry && settings.hubSecurityEnabled &&
+        (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
+        state.hubSecurityCookie = null
+        state.hubSecurityCookieExpiry = null
+        return true
+    }
+    return false
+}
+
+/**
  * Make an authenticated GET request to the hub's internal API.
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
@@ -3168,10 +3172,7 @@ def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRe
             }
         }
     } catch (Exception e) {
-        // On auth failure, clear stale cookie and retry once with fresh credentials
-        if (!isRetry && settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
-            state.hubSecurityCookie = null
-            state.hubSecurityCookieExpiry = null
+        if (shouldRetryWithFreshCookie(e, isRetry)) {
             mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on GET ${path}")
             return hubInternalGet(path, query, timeout, true)
         }
@@ -3207,10 +3208,7 @@ def hubInternalPost(String path, Map body = null, boolean isRetry = false) {
             responseText = resp.data?.text?.toString() ?: resp.data?.toString()
         }
     } catch (Exception e) {
-        // On auth failure, clear stale cookie and retry once with fresh credentials
-        if (!isRetry && settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
-            state.hubSecurityCookie = null
-            state.hubSecurityCookieExpiry = null
+        if (shouldRetryWithFreshCookie(e, isRetry)) {
             mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST ${path}")
             return hubInternalPost(path, body, true)
         }
@@ -3258,10 +3256,7 @@ def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetr
             ]
         }
     } catch (Exception e) {
-        // On auth failure, clear stale cookie and retry once with fresh credentials
-        if (!isRetry && settings.hubSecurityEnabled && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
-            state.hubSecurityCookie = null
-            state.hubSecurityCookieExpiry = null
+        if (shouldRetryWithFreshCookie(e, isRetry)) {
             mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST-form ${path}")
             return hubInternalPostForm(path, body, timeout, true)
         }
@@ -4183,7 +4178,7 @@ def toolGetLoggingStatus(args) {
     def entries = state.debugLogs.entries ?: []
 
     def result = [
-        version: "0.7.5",
+        version: currentVersion(),
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
@@ -4204,7 +4199,7 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
-    def version = "0.7.5"  // NOTE: Keep in sync with serverInfo version
+    def version = currentVersion()
     def timestamp = formatTimestamp(now())
 
     // Gather system info
@@ -4371,7 +4366,7 @@ def toolGetHubDetails(args) {
         mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
     }
 
-    details.mcpServerVersion = "0.7.5"
+    details.mcpServerVersion = currentVersion()
     details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
     details.ruleCount = getChildApps()?.size() ?: 0
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -4909,7 +4904,7 @@ def toolDeviceHealthCheck(args) {
                 try {
                     entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
                     def activityTime = lastActivity.getTime()
-                    entry.hoursAgo = (int)((now() - activityTime) / 360000) / 10.0
+                    entry.hoursAgo = Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0
 
                     if (activityTime < staleThreshold) {
                         stale << entry
@@ -5155,79 +5150,54 @@ def toolGetDriverSource(args) {
 }
 
 def toolInstallApp(args) {
-    requireHubAdminWrite(args.confirm)
-    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
-
-    mcpLog("info", "hub-admin", "Installing new app...")
-    try {
-        def result = hubInternalPostForm("/app/save", [
-            id: "",
-            version: "",
-            create: "",
-            source: args.source
-        ])
-
-        def newAppId = null
-        if (result?.location) {
-            // Extract app ID from redirect Location header: /app/editor/123
-            newAppId = result.location.replaceAll(".*?/app/editor/", "").replaceAll("[^0-9]", "")
-        }
-
-        mcpLog("info", "hub-admin", "App installed successfully${newAppId ? ' (ID: ' + newAppId + ')' : ''}")
-        def installResult = [
-            success: true,
-            message: "App installed successfully",
-            appId: newAppId,
-            lastBackup: formatTimestamp(state.lastBackupTimestamp)
-        ]
-        if (!newAppId) {
-            installResult.warning = "Could not extract new app ID from hub response. The app was installed but you may need to check the Hubitat web UI to find it."
-        }
-        return installResult
-    } catch (Exception e) {
-        mcpLog("error", "hub-admin", "App installation failed: ${e.message}")
-        return [
-            success: false,
-            error: "App installation failed: ${e.message}",
-            note: "Check that the Groovy source code is valid and doesn't have syntax errors."
-        ]
-    }
+    return toolInstallItem("app", args)
 }
 
 def toolInstallDriver(args) {
+    return toolInstallItem("driver", args)
+}
+
+/**
+ * Shared implementation for installing apps and drivers.
+ */
+private Map toolInstallItem(String type, args) {
     requireHubAdminWrite(args.confirm)
     if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
 
-    mcpLog("info", "hub-admin", "Installing new driver...")
+    def savePath = (type == "app") ? "/app/save" : "/driver/save"
+    def editorPath = (type == "app") ? "/app/editor/" : "/driver/editor/"
+    def idField = (type == "app") ? "appId" : "driverId"
+
+    mcpLog("info", "hub-admin", "Installing new ${type}...")
     try {
-        def result = hubInternalPostForm("/driver/save", [
+        def result = hubInternalPostForm(savePath, [
             id: "",
             version: "",
             create: "",
             source: args.source
         ])
 
-        def newDriverId = null
+        def newItemId = null
         if (result?.location) {
-            newDriverId = result.location.replaceAll(".*?/driver/editor/", "").replaceAll("[^0-9]", "")
+            newItemId = result.location.replaceAll(".*?${editorPath}", "").replaceAll("[^0-9]", "")
         }
 
-        mcpLog("info", "hub-admin", "Driver installed successfully${newDriverId ? ' (ID: ' + newDriverId + ')' : ''}")
+        mcpLog("info", "hub-admin", "${type.capitalize()} installed successfully${newItemId ? ' (ID: ' + newItemId + ')' : ''}")
         def installResult = [
             success: true,
-            message: "Driver installed successfully",
-            driverId: newDriverId,
+            message: "${type.capitalize()} installed successfully",
+            (idField): newItemId,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
-        if (!newDriverId) {
-            installResult.warning = "Could not extract new driver ID from hub response. The driver was installed but you may need to check the Hubitat web UI to find it."
+        if (!newItemId) {
+            installResult.warning = "Could not extract new ${type} ID from hub response. The ${type} was installed but you may need to check the Hubitat web UI to find it."
         }
         return installResult
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Driver installation failed: ${e.message}")
+        mcpLog("error", "hub-admin", "${type.capitalize()} installation failed: ${e.message}")
         return [
             success: false,
-            error: "Driver installation failed: ${e.message}",
+            error: "${type.capitalize()} installation failed: ${e.message}",
             note: "Check that the Groovy source code is valid and doesn't have syntax errors."
         ]
     }
@@ -5362,83 +5332,38 @@ def toolUpdateDriverCode(args) {
 }
 
 def toolDeleteApp(args) {
-    requireHubAdminWrite(args.confirm)
-    if (!args.appId) throw new IllegalArgumentException("appId is required")
-
-    // Back up source code to File Manager before deletion so it can be restored if needed
-    def backupSucceeded = true
-    try {
-        backupItemSource("app", args.appId.toString())
-    } catch (Exception backupErr) {
-        backupSucceeded = false
-        mcpLog("warn", "hub-admin", "Pre-delete backup failed for app ${args.appId}: ${backupErr.message} — proceeding with delete")
-    }
-
-    mcpLog("warn", "hub-admin", "Deleting app ID: ${args.appId}")
-    try {
-        def responseText = hubInternalGet("/app/edit/deleteJsonSafe/${args.appId}")
-        mcpLog("debug", "hub-admin", "Delete app ${args.appId} response: ${responseText?.take(200)}")
-        def success = false
-        if (responseText) {
-            try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                // Handle both boolean true and string "true" from hub
-                success = parsed.status?.toString() == "true"
-            } catch (Exception parseErr) {
-                // If not JSON, check if it contains error indicators
-                success = !responseText.toLowerCase().contains("error")
-            }
-        }
-
-        if (success) {
-            mcpLog("info", "hub-admin", "App ID ${args.appId} deleted successfully")
-            def backupEntry = state.itemBackupManifest?.get("app_${args.appId}")
-            def result = [
-                success: true,
-                message: backupSucceeded ? "App deleted successfully. Source code backed up to File Manager." : "App deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
-                appId: args.appId,
-                lastBackup: formatTimestamp(state.lastBackupTimestamp),
-                backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use 'install_app' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
-            ]
-            if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
-            return result
-        } else {
-            return [
-                success: false,
-                error: "Delete may have failed - check the Hubitat web UI to verify",
-                appId: args.appId,
-                response: responseText?.take(500)
-            ]
-        }
-    } catch (Exception e) {
-        mcpLog("error", "hub-admin", "App deletion failed: ${e.message}")
-        return [success: false, error: "App deletion failed: ${e.message}"]
-    }
+    return toolDeleteItem("app", "appId", "/app/edit/deleteJsonSafe/", args)
 }
 
 def toolDeleteDriver(args) {
-    requireHubAdminWrite(args.confirm)
-    if (!args.driverId) throw new IllegalArgumentException("driverId is required")
+    return toolDeleteItem("driver", "driverId", "/driver/editor/deleteJson/", args)
+}
 
-    // Back up source code to File Manager before deletion so it can be restored if needed
+/**
+ * Shared implementation for deleting apps and drivers.
+ * Backs up source code before deletion, then deletes and verifies.
+ */
+private Map toolDeleteItem(String type, String idParam, String deletePath, args) {
+    requireHubAdminWrite(args.confirm)
+    def itemId = args[idParam]
+    if (!itemId) throw new IllegalArgumentException("${idParam} is required")
+
     def backupSucceeded = true
     try {
-        backupItemSource("driver", args.driverId.toString())
+        backupItemSource(type, itemId.toString())
     } catch (Exception backupErr) {
         backupSucceeded = false
-        mcpLog("warn", "hub-admin", "Pre-delete backup failed for driver ${args.driverId}: ${backupErr.message} — proceeding with delete")
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${itemId}: ${backupErr.message} — proceeding with delete")
     }
 
-    mcpLog("warn", "hub-admin", "Deleting driver ID: ${args.driverId}")
+    mcpLog("warn", "hub-admin", "Deleting ${type} ID: ${itemId}")
     try {
-        def responseText = hubInternalGet("/driver/editor/deleteJson/${args.driverId}")
-        mcpLog("debug", "hub-admin", "Delete driver ${args.driverId} response: ${responseText?.take(200)}")
+        def responseText = hubInternalGet("${deletePath}${itemId}")
+        mcpLog("debug", "hub-admin", "Delete ${type} ${itemId} response: ${responseText?.take(200)}")
         def success = false
         if (responseText) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                // Handle both boolean true and string "true" from hub
                 success = parsed.status?.toString() == "true"
             } catch (Exception parseErr) {
                 success = !responseText.toLowerCase().contains("error")
@@ -5446,15 +5371,16 @@ def toolDeleteDriver(args) {
         }
 
         if (success) {
-            mcpLog("info", "hub-admin", "Driver ID ${args.driverId} deleted successfully")
-            def backupEntry = state.itemBackupManifest?.get("driver_${args.driverId}")
+            mcpLog("info", "hub-admin", "${type.capitalize()} ID ${itemId} deleted successfully")
+            def backupEntry = state.itemBackupManifest?.get("${type}_${itemId}")
+            def installTool = (type == "app") ? "install_app" : "install_driver"
             def result = [
                 success: true,
-                message: backupSucceeded ? "Driver deleted successfully. Source code backed up to File Manager." : "Driver deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
-                driverId: args.driverId,
+                message: backupSucceeded ? "${type.capitalize()} deleted successfully. Source code backed up to File Manager." : "${type.capitalize()} deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
+                (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use 'install_driver' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -5462,13 +5388,13 @@ def toolDeleteDriver(args) {
             return [
                 success: false,
                 error: "Delete may have failed - check the Hubitat web UI to verify",
-                driverId: args.driverId,
+                (idParam): itemId,
                 response: responseText?.take(500)
             ]
         }
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Driver deletion failed: ${e.message}")
-        return [success: false, error: "Driver deletion failed: ${e.message}"]
+        mcpLog("error", "hub-admin", "${type.capitalize()} deletion failed: ${e.message}")
+        return [success: false, error: "${type.capitalize()} deletion failed: ${e.message}"]
     }
 }
 
@@ -5508,7 +5434,7 @@ def toolDeleteDevice(args) {
         if (selectedDevice) {
             def lastActivity = selectedDevice.lastActivity
             if (lastActivity) {
-                def hoursAgo = (int)((now() - lastActivity.time) / 360000) / 10.0
+                def hoursAgo = Math.round((now() - lastActivity.time) / 3600000.0 * 10) / 10.0
                 if (hoursAgo < 24) {
                     warnings << "ACTIVE DEVICE: Last activity was ${hoursAgo} hours ago at ${lastActivity.format("yyyy-MM-dd'T'HH:mm:ss")}. This device may still be functional."
                 }
@@ -6513,7 +6439,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.5"
+    return "0.7.6"
 }
 
 def isNewerVersion(String remote, String local) {
