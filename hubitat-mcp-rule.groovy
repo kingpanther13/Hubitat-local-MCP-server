@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.7.5
+ * Version: 0.7.6
  */
 
 definition(
@@ -3125,8 +3125,8 @@ def evaluateCondition(condition) {
                 ruleLog("warn", "Cannot evaluate sun_position: sunrise/sunset times not available for this location")
                 return false
             }
-            def now = new Date()
-            def isSunUp = now.after(sunriseTime) && now.before(sunsetTime)
+            def currentTime = new Date()
+            def isSunUp = currentTime.after(sunriseTime) && currentTime.before(sunsetTime)
             return condition.position == "up" ? isSunUp : !isSunUp
 
         case "hsm_status":
@@ -3372,7 +3372,7 @@ def executeAction(action, actionIndex = null, evt = null) {
         case "set_level":
             def device = parent.findDevice(action.deviceId)
             if (device) {
-                def level = Math.max(0, Math.min(100, (action.level as Integer) ?: 0))
+                def level = clampPercent((action.level as Integer) ?: 0)
                 if (action.duration) {
                     device.setLevel(level, action.duration)
                 } else {
@@ -3445,7 +3445,7 @@ def executeAction(action, actionIndex = null, evt = null) {
                     if (!executeAction(thenList[i], null, evt)) return false
                 }
             } else if (action.elseActions) {
-                def elseList = action.elseActions ?: []
+                def elseList = action.elseActions
                 for (int i = 0; i < elseList.size(); i++) {
                     if (!executeAction(elseList[i], null, evt)) return false
                 }
@@ -3486,9 +3486,9 @@ def executeAction(action, actionIndex = null, evt = null) {
             def colorDevice = parent.findDevice(action.deviceId)
             if (colorDevice) {
                 def colorMap = [:]
-                if (action.hue != null) colorMap.hue = Math.max(0, Math.min(100, action.hue as Integer))
-                if (action.saturation != null) colorMap.saturation = Math.max(0, Math.min(100, action.saturation as Integer))
-                if (action.level != null) colorMap.level = Math.max(0, Math.min(100, action.level as Integer))
+                if (action.hue != null) colorMap.hue = clampPercent(action.hue)
+                if (action.saturation != null) colorMap.saturation = clampPercent(action.saturation)
+                if (action.level != null) colorMap.level = clampPercent(action.level)
                 colorDevice.setColor(colorMap)
             } else {
                 ruleLog("warn", "Action 'set_color' skipped: device not found (ID: ${action.deviceId})")
@@ -3807,6 +3807,11 @@ def formatTimestamp(timestamp) {
     } catch (Exception e) {
         return timestamp.toString()
     }
+}
+
+/** Clamp an integer value to 0-100 range (for percentages like level, hue, saturation). */
+private int clampPercent(value) {
+    return Math.max(0, Math.min(100, value as Integer))
 }
 
 // ==================== API FOR PARENT ====================

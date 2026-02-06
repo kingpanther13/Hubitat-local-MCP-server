@@ -18,6 +18,7 @@ This Hubitat app exposes an MCP server that allows AI assistants (like Claude) t
 - **Query system state** - Get device status, hub info, modes, variables, HSM status
 - **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
 
+**v0.7.6** — Code review: bug fixes (hoursAgo calculation, variable shadowing), version centralization, helper extraction (~90 lines reduced)
 **v0.7.5** — Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% description token reduction)
 **v0.7.4** — Execution loop guard (configurable, with push notifications), safe room move pattern, resilient date parsing
 **v0.7.3** — Documentation sync (SKILL.md section names match source code structure)
@@ -720,6 +721,7 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 ## Version History
 
+- **v0.7.6** - Code review: fix hoursAgo calculation bug (was 10x off due to integer division with wrong divisor), fix `now` variable shadowing built-in `now()` in sun_position condition evaluation, centralize version string via `currentVersion()` (eliminates 7 hardcoded version strings), extract shared helpers (`buildRuleExport`, `toolInstallItem`, `toolDeleteItem`, `toolToggleRule`, `shouldRetryWithFreshCookie`, `clampPercent`) reducing ~90 lines of duplicate code, add `ruleId` to enable/disable responses for consistency.
 - **v0.7.5** - Token efficiency: optimize tool descriptions using progressive disclosure. Verbose descriptions trimmed to concise summaries; detailed reference moved to `get_tool_guide`. Enhanced rules guide with JSON syntax examples. ~27% reduction in tool description tokens.
 - **v0.7.4** - Stability fixes: configurable execution loop guard with push notifications, safe room move pattern, resilient date parsing
 - **v0.7.3** - Documentation sync (SKILL.md section names now match actual source code structure)

@@ -258,8 +258,20 @@ Three helpers for calling the hub's internal HTTP API at `http://127.0.0.1:8080`
 
 All three:
 - Call `getHubSecurityCookie()` and attach cookie header if Hub Security is enabled
-- Clear the cached cookie on 401/403 errors for automatic re-auth on next call
+- Use `shouldRetryWithFreshCookie(e, isRetry)` to detect 401/403 errors and clear the cached cookie for automatic re-auth retry
 - Use `ignoreSSLIssues: true`
+
+### Shared Helper Methods (v0.7.6+)
+
+| Helper | Purpose |
+|--------|---------|
+| `currentVersion()` | Single source of truth for version string |
+| `buildRuleExport(ruleData)` | Build portable rule export map (used by export and delete backup) |
+| `toolInstallItem(type, args)` | Shared install logic for apps and drivers |
+| `toolDeleteItem(type, idParam, deletePath, args)` | Shared delete logic for apps and drivers |
+| `toolToggleRule(ruleId, enable)` | Shared enable/disable logic for rules |
+| `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |
+| `clampPercent(value)` | Clamp integer to 0-100 range (in rule.groovy) |
 
 ### Hub Security Cookie Pattern
 
@@ -386,22 +398,16 @@ Room assignment and enable/disable use the hub's internal API at `http://127.0.0
 
 ### Version Management
 
-Version strings appear in multiple locations. When bumping the version, update ALL of these:
-- File header comment (`hubitat-mcp-server.groovy` line 7)
-- `mainPage()` display paragraphs (2 locations: version display + update banner)
-- `handleInitialize()` response
-- `toolExportRule()` serverVersion field
-- `toolImportRule()` serverVersion field (for imported rule metadata)
-- `toolGetLoggingStatus()` version field
-- `toolGenerateBugReport()` version variable
-- `toolGetHubDetails()` mcpServerVersion field
-- `currentVersion()` return value
-- `packageManifest.json` version field + releaseNotes
-- `README.md` — "New in vX.Y.Z" section + Version History table
-- `SKILL.md` — description frontmatter tool count + architecture diagram tool count
-- `hubitat-mcp-rule.groovy` — file header comment version
+As of v0.7.6, most version references in `hubitat-mcp-server.groovy` are **centralized** via the `currentVersion()` function. Runtime code (handleInitialize, toolExportRule, toolGetLoggingStatus, toolGenerateBugReport, toolGetHubDetails, mainPage display) all call `currentVersion()` instead of hardcoding the version string.
 
-Search for the current version string across all files to find all locations.
+When bumping the version, update these locations:
+- `currentVersion()` return value — **single source of truth** for runtime version
+- File header comment (`hubitat-mcp-server.groovy` line 7) — for source code readers
+- `hubitat-mcp-rule.groovy` — file header comment version
+- `packageManifest.json` — version field, dateReleased, and releaseNotes
+- `README.md` — "New in vX.Y.Z" section + Version History table
+
+Search for the current version string across all files to verify no hardcoded references remain.
 
 ### Groovy/Hubitat Idioms
 
