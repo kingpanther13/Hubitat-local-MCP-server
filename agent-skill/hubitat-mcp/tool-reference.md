@@ -106,18 +106,18 @@ Quick reference for all 74 MCP tools organized by category. For the most authori
 
 All require: Hub Admin Write enabled + backup within 24h + confirm=true.
 
-| Tool | Description |
-|------|-------------|
-| `create_hub_backup` | Create full hub database backup. |
-| `reboot_hub` | Reboot hub (1-3 min downtime). |
-| `shutdown_hub` | Power off hub (needs manual restart). |
-| `zwave_repair` | Start Z-Wave network repair (5-30 min). |
-| `install_app` | Install a new Groovy app from source. |
-| `install_driver` | Install a new Groovy driver from source. |
-| `update_app_code` | Update existing app source code. |
-| `update_driver_code` | Update existing driver source code. |
-| `delete_app` | Delete an installed app (auto-backs up). |
-| `delete_driver` | Delete an installed driver (auto-backs up). |
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `create_hub_backup` | Create full hub database backup. | Hub Admin Write |
+| `reboot_hub` | Reboot hub (1-3 min downtime). | Hub Admin Write |
+| `shutdown_hub` | Power off hub (needs manual restart). | Hub Admin Write |
+| `zwave_repair` | Start Z-Wave network repair (5-30 min). | Hub Admin Write |
+| `install_app` | Install a new Groovy app from source. | Hub Admin Write |
+| `install_driver` | Install a new Groovy driver from source. | Hub Admin Write |
+| `update_app_code` | Update existing app source code. | Hub Admin Write |
+| `update_driver_code` | Update existing driver source code. | Hub Admin Write |
+| `delete_app` | Delete an installed app (auto-backs up). | Hub Admin Write |
+| `delete_driver` | Delete an installed driver (auto-backs up). | Hub Admin Write |
 
 ## Device Admin Tools (1)
 
