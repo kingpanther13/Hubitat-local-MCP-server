@@ -1,10 +1,10 @@
 ---
-name: hubitat-mcp-development
-description: Internal development guide for maintaining the Hubitat MCP Rule Server codebase. For the installable Agent Skill, see agent-skill/hubitat-mcp/.
+name: hubitat-mcp-server
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 74 tools for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
-# Hubitat MCP Rule Server — Development Guide
+# Hubitat MCP Rule Server — Development Skill
 
 ## Project Overview
 
@@ -19,7 +19,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 
 **Documentation files:**
 - `README.md` — User-facing documentation
-- `DEVELOPMENT.md` — Developer reference (this file)
+- `SKILL.md` — Developer reference (this file)
 - `TOOL_GUIDE.md` — Human-readable tool reference (same content available to AI via `get_tool_guide` MCP tool)
 
 ## Architecture
@@ -101,7 +101,7 @@ Every new tool requires changes in exactly three places:
 Additionally, update tool count in:
 4. **`packageManifest.json`** — version field + releaseNotes with updated tool count
 5. **`README.md`** — "MCP Tools (N total)" header + category table + version history
-6. **`DEVELOPMENT.md`** — description frontmatter + architecture diagram tool count
+6. **`SKILL.md`** — description frontmatter + architecture diagram tool count
 7. **Version strings** — if this is a version bump, update ALL version references (search for the current version string)
 
 ### Tool Definition Pattern
@@ -495,7 +495,7 @@ The server implements MCP protocol version `2024-11-05`:
 5. **Hub internal API responses vary by firmware** — always handle both JSON and non-JSON responses with nested try/catch for parsing
 6. **Numeric parsing of API responses** — hub endpoints like `/hub/advanced/freeOSMemory` return text that might not be numeric; wrap `as Integer` / `as Double` conversions in try/catch
 7. **OAuth token** — created once in `initialize()` via `createAccessToken()` and stored in `state.accessToken`; never regenerate it or users lose their MCP endpoint URL
-8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations across `hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`, `packageManifest.json`, `README.md`, and `DEVELOPMENT.md`
+8. **Version strings in 9+ locations** — when bumping version, search for the current version string to find all locations across `hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`, `packageManifest.json`, `README.md`, and `SKILL.md`
 9. **Date/timestamp parsing** — `formatTimestamp()` tries 6 ISO 8601 format variations (with/without millis, with Z/offset/no timezone, space-separated) to handle differences across firmware versions and upstream APIs. Falls back to truncated raw string if no format matches. Never use a single strict `Date.parse()` format
 
 ## Future Plans (Blue-Sky — Needs Research)
