@@ -1,251 +1,30 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub, with a built-in custom rule engine.
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 74 MCP tools.
 
-> **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress and may have bugs, edge cases, or issues. Use at your own risk. Contributions and bug reports welcome!
->
-> **Found a bug?** Please report issues at [GitHub Issues](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues). For easier bug reporting:
-> 1. Set debug log level: Settings → MCP Debug Log Level → "Debug", or ask your AI to `set_log_level` to "debug"
-> 2. Reproduce the issue
-> 3. Ask your AI to use the `generate_bug_report` tool - it will gather diagnostics and format a ready-to-submit report
+> **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
-## What is this?
+## What Is This?
 
-This Hubitat app exposes an MCP server that allows AI assistants (like Claude) to:
-- **Control devices** - Turn lights on/off, set levels, trigger scenes
-- **Create automations** - Build rules with triggers, conditions, and actions
-- **Manage rooms** - List, create, delete, and rename rooms; assign devices to rooms
-- **Query system state** - Get device status, hub info, modes, variables, HSM status
-- **Administer the hub** - View hub health, manage apps/drivers, create backups, and more
+This app lets AI assistants like Claude control your Hubitat smart home through natural language. Just talk to it:
 
-**v0.7.6** — Code review: bug fixes (hoursAgo calculation, variable shadowing), version centralization, helper extraction (~90 lines reduced)
-**v0.7.5** — Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% description token reduction)
-**v0.7.4** — Execution loop guard (configurable, with push notifications), safe room move pattern, resilient date parsing
-**v0.7.3** — Documentation sync (SKILL.md section names match source code structure)
-**v0.7.2** — Device authorization safety, optimized tool descriptions, new `get_tool_guide` tool (74 tools)
-**v0.7.1** — Auto-backup for `delete_rule`, `testRule` flag, bug fixes
-**v0.7.0** — Room management: `list_rooms`, `get_room`, `create_room`, `delete_room`, `rename_room` (73 tools)
+> "Turn on the living room lights"
 
-*[Full version history below](#version-history)*
+> "What's the temperature in the bedroom?"
 
-Instead of running a separate Node.js MCP server on another machine, this runs natively on the Hubitat hub itself.
+> "Create a rule that turns off all lights at midnight"
 
-## Features
+> "When motion is detected in the hallway, turn on the hallway light for 5 minutes"
 
-### Rule Engine UI
+> "When the temperature stays above 78 for 5 minutes, turn on the AC"
 
-Manage your automation rules directly in the Hubitat web interface:
+> "Turn on outdoor lights at sunset"
 
-- **View all rules** with status (enabled/disabled) and last triggered time
-- **Create new rules** as child apps (like Rule Machine)
-- **Edit triggers** - Device events, button presses, time schedules, mode changes, and more
-- **Edit conditions** - Device state, time range, mode, variables, presence, and 14 condition types total
-- **Edit actions** - Device commands, scenes, delays, notifications, and 29 action types total
-- **Enable/disable rules** with a single tap
-- **Test rules** (dry run) to see what would happen without executing
-- **Delete rules** with confirmation
+> "When the bedroom button is double-tapped, toggle the bedroom lights"
 
-### MCP Tools (74 total)
+> "What's the hub's health status?"
 
-| Category | Tools |
-|----------|-------|
-| **Devices** (5) | `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events` |
-| **Virtual Devices** (4) | `create_virtual_device`, `list_virtual_devices`, `delete_virtual_device`, `update_device` |
-| **Rooms** (5) | `list_rooms`, `get_room`, `create_room`, `delete_room`, `rename_room` |
-| **Rules** (11) | `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `enable_rule`, `disable_rule`, `test_rule`, `export_rule`, `import_rule`, `clone_rule` |
-| **System** (9) | `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `list_variables`, `get_variable`, `set_variable`, `check_for_update` |
-| **State Capture** (3) | `list_captured_states`, `delete_captured_state`, `clear_captured_states` |
-| **Debug/Diagnostics** (6) | `get_debug_logs`, `clear_debug_logs`, `get_rule_diagnostics`, `set_log_level`, `get_logging_status`, `generate_bug_report` |
-| **Monitoring** (4) | `get_hub_logs`, `get_device_history`, `get_hub_performance`, `device_health_check` |
-| **Hub Admin Read** (8) | `get_hub_details`, `list_hub_apps`, `list_hub_drivers`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `get_app_source`, `get_driver_source` |
-| **Hub Admin Write** (10) | `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` |
-| **Device Admin** (1) | `delete_device` |
-| **Item Backups** (3) | `list_item_backups`, `get_item_backup`, `restore_item_backup` |
-| **File Manager** (4) | `list_files`, `read_file`, `write_file`, `delete_file` |
-| **Reference** (1) | `get_tool_guide` |
-
-### Rule Engine
-
-Create automations via natural language through Claude:
-
-**Supported Triggers:**
-- `device_event` - When a device attribute changes (with optional duration for debouncing, e.g., "temp > 78 for 5 minutes")
-- `button_event` - Button pressed, held, double-tapped, or released
-- `time` - At a specific time (HH:mm), or relative to sunrise/sunset with offset
-- `periodic` - Repeat at intervals (minutes, hours, or days)
-- `mode_change` - When hub mode changes
-- `hsm_change` - When HSM (Home Security Monitor) status changes
-
-**Supported Conditions:**
-- `device_state` - Check current device attribute value
-- `device_was` - Check if device has been in a state for X seconds (anti-cycling)
-- `time_range` - Check if within a time window (supports sunrise/sunset keywords)
-- `mode` - Check current hub mode
-- `variable` - Check hub or rule-local variable value
-- `days_of_week` - Check day of week
-- `sun_position` - Check if sun is up or down
-- `hsm_status` - Check HSM arm status
-- `presence` - Check presence sensor status (present/not present)
-- `lock` - Check lock status (locked/unlocked)
-- `thermostat_mode` - Check thermostat operating mode
-- `thermostat_state` - Check thermostat operating state (idle/heating/cooling)
-- `illuminance` - Check light level (lux) with comparison operators
-- `power` - Check power consumption (watts) with comparison operators
-
-**Supported Actions:**
-- `device_command` - Send command to device
-- `toggle_device` - Toggle device on/off
-- `activate_scene` - Activate a scene device
-- `set_level` - Set dimmer level with optional duration
-- `set_color` - Set color (hue, saturation, level) on RGB devices
-- `set_color_temperature` - Set color temperature on CT bulbs
-- `lock` / `unlock` - Lock or unlock a lock device
-- `set_variable` - Set a global or rule-local variable
-- `set_local_variable` - Set a rule-scoped variable
-- `set_mode` - Change hub mode
-- `set_hsm` - Change HSM arm mode
-- `delay` - Wait before next action (with optional ID for targeted cancellation)
-- `if_then_else` - Conditional branching
-- `cancel_delayed` - Cancel pending delayed actions (specific or all)
-- `repeat` - Repeat actions N times
-- `stop` - Stop rule execution
-- `log` - Write to Hubitat logs
-- `capture_state` / `restore_state` - Save and restore device states
-- `send_notification` - Send push notification to notification devices
-- `set_thermostat` - Set thermostat mode, heating/cooling setpoints, and fan mode
-- `http_request` - Make HTTP GET/POST requests (webhooks, external APIs)
-- `speak` - Text-to-speech on speech synthesis devices (with optional volume)
-- `comment` - Documentation-only action (no-op, for annotating rule logic)
-- `set_valve` - Open or close a valve device
-- `set_fan_speed` - Set fan speed (low/medium-low/medium/medium-high/high/on/off/auto)
-- `set_shade` - Open, close, or set position (0-100) of window shades
-- `variable_math` - Arithmetic on local/global variables (add, subtract, multiply, divide, modulo, set)
-
-### Hub Admin Tools (v0.4.0+)
-
-Manage and monitor your Hubitat hub directly through MCP. Both Hub Admin Read and Hub Admin Write access are **disabled by default** and must be explicitly enabled in the app settings.
-
-#### Enabling Hub Admin Tools
-
-1. Open **Apps** → **MCP Rule Server** in the Hubitat web UI
-2. Under **Hub Admin Access**, toggle:
-   - **Enable Hub Admin Read Tools** — for read-only hub information
-   - **Enable Hub Admin Write Tools** — for backup, reboot, shutdown, Z-Wave repair, and app/driver management
-3. If your hub has **Hub Security** enabled, also configure:
-   - **Hub Security Username** and **Password** under the Hub Security section
-
-#### Hub Admin Read Tools
-
-| Tool | Description |
-|------|-------------|
-| `get_hub_details` | Hub model, firmware, IP, uptime, free memory, CPU temperature, database size, Z-Wave/Zigbee info |
-| `list_hub_apps` | List all user-installed apps (ID, name, namespace) |
-| `list_hub_drivers` | List all user-installed drivers (ID, name, namespace) |
-| `get_zwave_details` | Z-Wave radio firmware, frequency, device details |
-| `get_zigbee_details` | Zigbee channel, PAN ID, radio details |
-| `get_hub_health` | Health dashboard with memory/temperature/database warnings, uptime, MCP statistics |
-| `get_app_source` | Retrieve the full Groovy source code of an installed app by ID |
-| `get_driver_source` | Retrieve the full Groovy source code of an installed driver by ID |
-
-#### Hub Admin Write Tools
-
-All write tools enforce a **three-layer safety gate**:
-1. Hub Admin Write must be **enabled** in settings
-2. The AI must pass `confirm=true` explicitly
-3. A full hub **backup must exist within the last 24 hours** (enforced automatically)
-
-Additionally, tools that **modify or delete** existing apps/drivers automatically back up the item's source code before making changes (1-hour window — preserves the original pre-edit source across multiple edits).
-
-| Tool | Description |
-|------|-------------|
-| `create_hub_backup` | Create a hub database backup (required before any other write operation) |
-| `reboot_hub` | Reboot the hub (will be unreachable for 1-3 minutes) |
-| `shutdown_hub` | Shut down the hub (requires manual power cycle to restart) |
-| `zwave_repair` | Start a Z-Wave network repair (runs in background for 5-30 minutes) |
-| `install_app` | Install a new Groovy app from source code |
-| `install_driver` | Install a new Groovy driver from source code |
-| `update_app_code` | Update an existing app's source code (uses optimistic locking) |
-| `update_driver_code` | Update an existing driver's source code (uses optimistic locking) |
-| `delete_app` | Permanently delete an installed app |
-| `delete_driver` | Permanently delete an installed driver |
-
-#### Item Backup & Restore Tools
-
-These tools let you view and restore the automatic source code backups that are created before any modify/delete operation. They work even if Hub Admin Read/Write is disabled (except `restore_item_backup` which needs write access).
-
-| Tool | Description |
-|------|-------------|
-| `list_item_backups` | List all saved source code backups with timestamps and sizes |
-| `get_item_backup` | Retrieve the full source code from a specific backup |
-| `restore_item_backup` | Restore an app/driver to its backed-up version |
-
-**How item backups work:**
-- When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes
-- Backups are stored as `.groovy` files in the hub's local **File Manager** — no cloud involvement, no size limits
-- Files are named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`
-- Backups persist even if the MCP app is uninstalled or deleted — they live in the hub's file system
-- Files are directly downloadable at `http://<your-hub-ip>/local/<filename>`
-- Max 20 backups kept; oldest file is automatically deleted when the limit is exceeded
-- Within a 1-hour window, the **first** backup is preserved — multiple edits won't overwrite the pre-edit original
-
-**How to restore if something goes wrong:**
-
-Via MCP:
-1. Call `list_item_backups` to see available backups
-2. Call `restore_item_backup` with the backup key (e.g., `app_123`) and `confirm=true`
-
-Via MCP (for deleted items):
-1. Call `get_item_backup` to retrieve the source code
-2. Call `install_app` or `install_driver` with that source code to re-install it
-
-Manually (without MCP — backups survive even if MCP is deleted):
-1. Go to your Hubitat web UI > **Settings** > **File Manager**
-2. Find the backup file (e.g., `mcp-backup-app-123.groovy`) and download it
-3. Or navigate directly to `http://<your-hub-ip>/local/mcp-backup-app-123.groovy`
-4. Go to Hubitat > **Apps Code** (or **Drivers Code**) > select the app/driver (or click "New App"/"New Driver" for deleted items)
-5. Paste the source code and click **Save**
-
-#### File Manager Tools
-
-These tools provide direct read/write access to the hub's local File Manager — the same storage area accessible via Hubitat > Settings > File Manager. Files are stored locally on the hub (~1GB capacity) and accessible at `http://<your-hub-ip>/local/<filename>`.
-
-| Tool | Description |
-|------|-------------|
-| `list_files` | List all files in File Manager with sizes and download URLs |
-| `read_file` | Read the contents of a file (returns text inline or download URL for large files) |
-| `write_file` | Create or update a file (auto-backs up existing file before overwriting) |
-| `delete_file` | Delete a file (auto-backs up file before deletion) |
-
-**Safety features:**
-- `write_file` on an existing file automatically creates a backup copy first (named `<original>_backup_<timestamp>.<ext>`)
-- `delete_file` automatically creates a backup copy before deletion
-- Both `write_file` and `delete_file` require Hub Admin Write access and `confirm=true`
-- `list_files` and `read_file` are always available (no access gates)
-- File name validation: only letters, numbers, hyphens, underscores, and periods allowed
-
-#### Hub Security Support
-
-If your hub has Hub Security enabled (login required for the web UI), the MCP server handles authentication automatically:
-- Configure your Hub Security username and password in the app settings
-- The server caches the session cookie for 30 minutes
-- Stale cookies are automatically cleared and re-authenticated on the next request
-- If Hub Security is not enabled, no credentials are needed
-
-#### Example Usage
-
-```
-"What's the hub's health status? Check memory and temperature."
-→ Uses get_hub_health
-
-"List all installed apps and show me the source code for app ID 42"
-→ Uses list_hub_apps, then get_app_source
-
-"Create a backup, then install this driver code on my hub: [code]"
-→ Uses create_hub_backup, then install_driver
-
-"My Z-Wave devices are responding slowly. Run a Z-Wave repair."
-→ Uses create_hub_backup (mandatory), then zwave_repair
-```
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub.
 
 ## Requirements
 
@@ -259,7 +38,7 @@ If your hub has Hub Security enabled (login required for the web UI), the MCP se
 If you have [Hubitat Package Manager (HPM)](https://hubitatpackagemanager.hubitatcommunity.com/) installed:
 
 **First, add the custom repository:**
-1. Open HPM → **Package Manager Settings**
+1. Open HPM > **Package Manager Settings**
 2. Click **Add a custom repository**
 3. Paste this URL:
    ```
@@ -268,11 +47,11 @@ If you have [Hubitat Package Manager (HPM)](https://hubitatpackagemanager.hubita
 4. Click **Save**
 
 **Then install the package:**
-1. Go to HPM → **Install** → **Search by Keywords**
+1. Go to HPM > **Install** > **Search by Keywords**
 2. Search for "MCP Rule Server"
 3. Select it and install
 
-> **Note**: If it doesn't appear in search, you can also use HPM → **Install** → **From a URL** with the packageManifest.json URL. After initial install, updates will work normally.
+> **Note**: If it doesn't appear in search, you can also use HPM > **Install** > **From a URL** with the packageManifest.json URL. After initial install, updates will work normally.
 
 HPM will install both the parent app and child app automatically and notify you when updates are available.
 
@@ -281,28 +60,28 @@ HPM will install both the parent app and child app automatically and notify you 
 You need to install **two** app files:
 
 **1. Install the Parent App (MCP Rule Server):**
-1. Go to Hubitat web UI → **Apps Code** → **+ New App**
+1. Go to Hubitat web UI > **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
    https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy
    ```
-3. Click **Import** → **OK** → **Save**
-4. Click **OAuth** → **Enable OAuth in App** → **Save**
+3. Click **Import** > **OK** > **Save**
+4. Click **OAuth** > **Enable OAuth in App** > **Save**
 
 **2. Install the Child App (MCP Rule):**
-1. Go to **Apps Code** → **+ New App**
+1. Go to **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
    https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-rule.groovy
    ```
-3. Click **Import** → **OK** → **Save**
+3. Click **Import** > **OK** > **Save**
 4. (No OAuth needed for the child app)
 
 ## Quick Start
 
 ### 1. Add the App
 
-1. Go to **Apps** → **+ Add User App** → **MCP Rule Server**
+1. Go to **Apps** > **+ Add User App** > **MCP Rule Server**
 2. Select devices you want accessible via MCP
 3. Click **Done**
 4. Open the app to see your endpoint URLs and manage rules
@@ -311,23 +90,23 @@ You need to install **two** app files:
 
 The app shows two endpoint URLs:
 
-- **Local Endpoint** - For use on your local network:
+- **Local Endpoint** — for use on your local network:
   ```
   http://192.168.1.100/apps/api/123/mcp?access_token=YOUR_TOKEN
   ```
 
-- **Cloud Endpoint** - For remote access (requires Hubitat Cloud subscription):
+- **Cloud Endpoint** — for remote access (requires Hubitat Cloud subscription):
   ```
   https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN
   ```
 
-## MCP Client Setup
+### 3. Connect Your AI Client
 
-### Claude Code (CLI)
+<details>
+<summary><b>Claude Code (CLI)</b></summary>
 
-Add to your Claude Code MCP settings file (`~/.claude/claude_desktop_config.json` on Mac/Linux or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+Add to your MCP settings file (`~/.claude.json` or project `.mcp.json`):
 
-**For Local Network:**
 ```json
 {
   "mcpServers": {
@@ -339,21 +118,14 @@ Add to your Claude Code MCP settings file (`~/.claude/claude_desktop_config.json
 }
 ```
 
-**For Remote Access (Hubitat Cloud):**
-```json
-{
-  "mcpServers": {
-    "hubitat": {
-      "type": "url",
-      "url": "https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN"
-    }
-  }
-}
-```
+For remote access, use the Hubitat Cloud URL instead.
 
-### Claude Desktop
+</details>
 
-Same configuration as above. Add to your Claude Desktop config file:
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Add to your Claude Desktop config file:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
@@ -368,26 +140,49 @@ Same configuration as above. Add to your Claude Desktop config file:
 }
 ```
 
-### Claude.ai (Connectors)
+</details>
 
-Claude.ai supports MCP servers through **Connectors**. You can add this Hubitat MCP server as a connector:
+<details>
+<summary><b>Claude.ai (Connectors)</b></summary>
 
-1. Go to [claude.ai](https://claude.ai) → **Settings** → **Connectors**
+Claude.ai supports MCP servers through **Connectors**:
+
+1. Go to [claude.ai](https://claude.ai) > **Settings** > **Connectors**
 2. Add a new connector with your Hubitat endpoint URL
-3. Use the **Cloud Endpoint** URL for remote access (requires Hubitat Cloud subscription), or use a Cloudflare Tunnel URL
+3. Use the **Cloud Endpoint** URL for remote access, or use a Cloudflare Tunnel URL
 
-With Hubitat Cloud, this means you can control your smart home from claude.ai anywhere - no local setup required!
+With Hubitat Cloud, you can control your smart home from claude.ai anywhere — no local setup required!
 
-### Other AI Services
+</details>
+
+<details>
+<summary><b>Other AI Services</b></summary>
 
 Any AI service that supports MCP servers via HTTP URL can use this server. Use either:
 
-- **Hubitat Cloud URL** - No additional setup needed if you have a Hubitat Cloud subscription
-- **Cloudflare Tunnel** - For self-hosted remote access (see below)
+- **Hubitat Cloud URL** — no additional setup needed with a Hubitat Cloud subscription
+- **Cloudflare Tunnel** — for free self-hosted remote access (see [Remote Access](#remote-access-options))
+
+</details>
+
+## Agent Skill for Claude.ai (Optional)
+
+An **Agent Skill** is a knowledge pack that teaches Claude best practices for using this MCP server — device safety protocols, rule creation patterns, tool usage tips, and more. It's not required (Claude works fine without it), but it helps Claude make better decisions, especially around safety-critical operations like device authorization and hub admin tools.
+
+**To install:**
+1. Download the `agent-skill/hubitat-mcp/` folder from this repository
+2. Zip it so the folder is the root: `hubitat-mcp.zip` > `hubitat-mcp/` > `SKILL.md`, etc.
+3. Go to [claude.ai](https://claude.ai) > **Settings** > **Features** > **Skills**
+4. Upload the zip file
+
+The skill works alongside the MCP connector — the connector gives Claude the tools, and the skill teaches Claude how to use them well.
+
+> **For Claude Code users**: You can also copy the skill folder to `~/.claude/skills/hubitat-mcp/` for automatic loading.
 
 ## Remote Access Options
 
-### Option 1: Hubitat Cloud (Easiest)
+<details>
+<summary><b>Option 1: Hubitat Cloud (Easiest)</b></summary>
 
 If you have a [Hubitat Cloud](https://hubitat.com/pages/remote-admin) subscription:
 
@@ -395,7 +190,10 @@ If you have a [Hubitat Cloud](https://hubitat.com/pages/remote-admin) subscripti
 2. Use that URL in your MCP client configuration
 3. No additional setup required!
 
-### Option 2: Cloudflare Tunnel (Free, Self-Hosted)
+</details>
+
+<details>
+<summary><b>Option 2: Cloudflare Tunnel (Free, Self-Hosted)</b></summary>
 
 For free remote access without a Hubitat Cloud subscription:
 
@@ -413,50 +211,298 @@ For free remote access without a Hubitat Cloud subscription:
    https://hubitat-mcp.yourdomain.com/apps/api/123/mcp?access_token=YOUR_TOKEN
    ```
 
-## Example Usage
+</details>
 
-Once connected, you can ask Claude things like:
+---
 
-> "Turn on the living room lights"
+## Features
 
-> "Create a rule that turns off all lights at midnight"
+### MCP Tools (74 total)
 
-> "When motion is detected in the hallway, turn on the hallway light for 5 minutes"
+<details>
+<summary><b>Devices</b> (5) — Control and query physical devices</summary>
 
-> "Create a rule: when temperature stays above 78 for 5 minutes, turn on the AC"
+| Tool | Description |
+|------|-------------|
+| `list_devices` | List accessible devices (supports pagination) |
+| `get_device` | Full device details: attributes, commands, capabilities |
+| `get_attribute` | Get a specific attribute value |
+| `send_command` | Send a command (on, off, setLevel, etc.) |
+| `get_device_events` | Recent events for a device |
 
-> "When the bedroom button is double-tapped, toggle the bedroom lights"
+</details>
 
-> "Turn on outdoor lights at sunset"
+<details>
+<summary><b>Virtual Devices</b> (4) — Create and manage MCP-managed virtual devices</summary>
 
-> "What's the temperature in the bedroom?"
+| Tool | Description |
+|------|-------------|
+| `create_virtual_device` | Create a virtual device (15 types: switch, dimmer, sensor, etc.) |
+| `list_virtual_devices` | List all MCP-managed virtual devices |
+| `delete_virtual_device` | Delete an MCP-managed virtual device |
+| `update_device` | Update device properties (label, room, preferences, etc.) |
 
-> "List all my rules"
+</details>
 
-## Rule Structure
+<details>
+<summary><b>Rooms</b> (5) — Manage room organization</summary>
 
-Rules are JSON objects with triggers, conditions, and actions:
+| Tool | Description |
+|------|-------------|
+| `list_rooms` | List all rooms with device counts |
+| `get_room` | Room details with full device info |
+| `create_room` | Create a new room |
+| `delete_room` | Delete a room (devices become unassigned) |
+| `rename_room` | Rename an existing room |
 
-### Basic Example
+</details>
+
+<details>
+<summary><b>Rules</b> (11) — Create and manage automation rules</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_rules` | List all rules with status |
+| `get_rule` | Full rule details (triggers, conditions, actions) |
+| `create_rule` | Create a new automation rule |
+| `update_rule` | Update rule triggers, conditions, or actions |
+| `delete_rule` | Delete a rule (auto-backs up first) |
+| `enable_rule` | Enable a disabled rule |
+| `disable_rule` | Disable a rule without deleting |
+| `test_rule` | Dry-run: see what would happen without executing |
+| `export_rule` | Export rule as portable JSON |
+| `import_rule` | Import a rule from exported JSON |
+| `clone_rule` | Duplicate an existing rule |
+
+</details>
+
+<details>
+<summary><b>System</b> (9) — Hub modes, variables, and HSM</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_hub_info` | Basic hub information |
+| `get_modes` | List location modes |
+| `set_mode` | Change location mode (Home, Away, Night, etc.) |
+| `get_hsm_status` | Get Home Security Monitor status |
+| `set_hsm` | Change HSM arm mode |
+| `list_variables` | List all hub variables |
+| `get_variable` | Get a specific variable value |
+| `set_variable` | Set a variable value |
+| `check_for_update` | Check for MCP server updates |
+
+</details>
+
+<details>
+<summary><b>State Capture</b> (3) — Save and restore device states</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_captured_states` | List saved device state snapshots |
+| `delete_captured_state` | Delete a specific state snapshot |
+| `clear_captured_states` | Delete all state snapshots |
+
+</details>
+
+<details>
+<summary><b>Debug & Diagnostics</b> (6) — MCP-specific logging and diagnostics</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_debug_logs` | Retrieve MCP debug log entries |
+| `clear_debug_logs` | Clear all MCP debug logs |
+| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
+| `set_log_level` | Set MCP log level (debug/info/warn/error) |
+| `get_logging_status` | View logging system statistics |
+| `generate_bug_report` | Generate comprehensive diagnostic report |
+
+</details>
+
+<details>
+<summary><b>Monitoring</b> (4) — Hub logs, device history, and health checks</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_hub_logs` | Hub log entries with level/source filtering |
+| `get_device_history` | Up to 7 days of device event history |
+| `get_hub_performance` | Memory, temperature, database size |
+| `device_health_check` | Find stale/offline devices |
+
+Requires Hub Admin Read to be enabled.
+
+</details>
+
+<details>
+<summary><b>Hub Admin Read</b> (8) — Read-only hub system information</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_hub_details` | Model, firmware, IP, uptime, memory, temp, database |
+| `list_hub_apps` | List all user-installed apps |
+| `list_hub_drivers` | List all user-installed drivers |
+| `get_zwave_details` | Z-Wave radio info |
+| `get_zigbee_details` | Zigbee radio info |
+| `get_hub_health` | Health dashboard with warnings |
+| `get_app_source` | Retrieve app source code |
+| `get_driver_source` | Retrieve driver source code |
+
+Disabled by default. Enable in app settings under **Hub Admin Access**.
+
+</details>
+
+<details>
+<summary><b>Hub Admin Write</b> (10) — Backup, reboot, install/update apps and drivers</summary>
+
+| Tool | Description |
+|------|-------------|
+| `create_hub_backup` | Create full hub database backup |
+| `reboot_hub` | Reboot the hub (1-3 min downtime) |
+| `shutdown_hub` | Power off hub (needs manual restart) |
+| `zwave_repair` | Start Z-Wave network repair (5-30 min) |
+| `install_app` | Install a new Groovy app from source |
+| `install_driver` | Install a new Groovy driver from source |
+| `update_app_code` | Update existing app source code |
+| `update_driver_code` | Update existing driver source code |
+| `delete_app` | Delete an installed app (auto-backs up) |
+| `delete_driver` | Delete an installed driver (auto-backs up) |
+
+All write tools enforce a **three-layer safety gate**: Hub Admin Write must be enabled + a hub backup within 24 hours + explicit `confirm=true`.
+
+</details>
+
+<details>
+<summary><b>Device Admin</b> (1) — Device deletion for ghost/orphaned devices</summary>
+
+| Tool | Description |
+|------|-------------|
+| `delete_device` | Permanently delete a device (**no undo**) |
+
+Intended for ghost/orphaned devices only. Requires Hub Admin Write.
+
+</details>
+
+<details>
+<summary><b>Item Backups</b> (3) — View and restore automatic source code backups</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_item_backups` | List all saved source code backups |
+| `get_item_backup` | Retrieve source from a backup |
+| `restore_item_backup` | Restore app/driver to backed-up version |
+
+Source code is automatically backed up before any modify/delete operation.
+
+</details>
+
+<details>
+<summary><b>File Manager</b> (4) — Read/write files on the hub</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_files` | List all files in File Manager |
+| `read_file` | Read a file's contents |
+| `write_file` | Create or update a file (auto-backs up existing) |
+| `delete_file` | Delete a file (auto-backs up first) |
+
+</details>
+
+<details>
+<summary><b>Reference</b> (1) — On-demand tool documentation</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_tool_guide` | Full tool reference from the MCP server itself |
+
+</details>
+
+### Rule Engine
+
+Create automations via natural language — the AI translates your request into rules with triggers, conditions, and actions. You can also manage rules through the Hubitat web UI.
+
+<details>
+<summary><b>Supported Triggers</b> (6 types)</summary>
+
+| Type | Description |
+|------|-------------|
+| `device_event` | When a device attribute changes (with optional duration for debouncing) |
+| `button_event` | Button pressed, held, double-tapped, or released |
+| `time` | At a specific time, or relative to sunrise/sunset with offset |
+| `periodic` | Repeat at intervals (minutes, hours, or days) |
+| `mode_change` | When hub mode changes |
+| `hsm_change` | When HSM status changes |
+
+</details>
+
+<details>
+<summary><b>Supported Conditions</b> (14 types)</summary>
+
+| Type | Description |
+|------|-------------|
+| `device_state` | Check current device attribute value |
+| `device_was` | Device has been in state for X seconds (anti-cycling) |
+| `time_range` | Within a time window (supports sunrise/sunset) |
+| `mode` | Current hub mode |
+| `variable` | Hub or rule-local variable value |
+| `days_of_week` | Specific days |
+| `sun_position` | Sun above or below horizon |
+| `hsm_status` | Current HSM arm status |
+| `presence` | Presence sensor status |
+| `lock` | Lock status |
+| `thermostat_mode` | Thermostat operating mode |
+| `thermostat_state` | Thermostat operating state |
+| `illuminance` | Light level (lux) with comparison |
+| `power` | Power consumption (watts) with comparison |
+
+</details>
+
+<details>
+<summary><b>Supported Actions</b> (29 types)</summary>
+
+| Type | Description |
+|------|-------------|
+| `device_command` | Send command to device |
+| `toggle_device` | Toggle device on/off |
+| `activate_scene` | Activate a scene device |
+| `set_level` | Set dimmer level with optional duration |
+| `set_color` | Set color on RGB devices |
+| `set_color_temperature` | Set color temperature |
+| `lock` / `unlock` | Lock or unlock a device |
+| `set_variable` | Set a global variable |
+| `set_local_variable` | Set a rule-scoped variable |
+| `set_mode` | Change hub mode |
+| `set_hsm` | Change HSM arm mode |
+| `delay` | Wait before next action (with optional ID for cancellation) |
+| `if_then_else` | Conditional branching |
+| `cancel_delayed` | Cancel pending delayed actions |
+| `repeat` | Repeat actions N times |
+| `stop` | Stop rule execution |
+| `log` | Write to Hubitat logs |
+| `capture_state` / `restore_state` | Save and restore device states |
+| `send_notification` | Push notification |
+| `set_thermostat` | Thermostat mode, setpoints, fan mode |
+| `http_request` | HTTP GET/POST (webhooks, external APIs) |
+| `speak` | Text-to-speech with optional volume |
+| `comment` | Documentation-only (no-op) |
+| `set_valve` | Open or close a valve |
+| `set_fan_speed` | Set fan speed |
+| `set_shade` | Open, close, or position window shades |
+| `variable_math` | Arithmetic on variables |
+
+</details>
+
+<details>
+<summary><b>Rule Examples</b></summary>
+
+**Motion-activated light:**
 ```json
 {
   "name": "Motion Light",
   "triggers": [
-    {
-      "type": "device_event",
-      "deviceId": "123",
-      "attribute": "motion",
-      "value": "active"
-    }
+    { "type": "device_event", "deviceId": "123", "attribute": "motion", "value": "active" }
   ],
   "conditions": [
-    {
-      "type": "time_range",
-      "startTime": "sunset",
-      "endTime": "sunrise"
-    }
+    { "type": "time_range", "startTime": "sunset", "endTime": "sunrise" }
   ],
-  "conditionLogic": "all",
   "actions": [
     { "type": "device_command", "deviceId": "456", "command": "on" },
     { "type": "delay", "seconds": 300, "delayId": "motion-off" },
@@ -465,7 +511,21 @@ Rules are JSON objects with triggers, conditions, and actions:
 }
 ```
 
-### Button with Local Variables (State Machine)
+**Temperature with debouncing:**
+```json
+{
+  "name": "AC On When Hot",
+  "triggers": [
+    { "type": "device_event", "deviceId": "1", "attribute": "temperature",
+      "operator": ">", "value": "78", "duration": 300 }
+  ],
+  "actions": [
+    { "type": "device_command", "deviceId": "8", "command": "on" }
+  ]
+}
+```
+
+**Button state machine with local variables:**
 ```json
 {
   "name": "Smart Button Toggle",
@@ -476,7 +536,8 @@ Rules are JSON objects with triggers, conditions, and actions:
   "actions": [
     {
       "type": "if_then_else",
-      "condition": { "type": "variable", "variableName": "lastScene", "operator": "equals", "value": "natural" },
+      "condition": { "type": "variable", "variableName": "lastScene",
+                     "operator": "equals", "value": "natural" },
       "thenActions": [
         { "type": "activate_scene", "sceneDeviceId": "nightlight-scene" },
         { "type": "set_local_variable", "variableName": "lastScene", "value": "nightlight" }
@@ -490,116 +551,142 @@ Rules are JSON objects with triggers, conditions, and actions:
 }
 ```
 
-### Temperature with Debouncing (Anti-Flapping)
-```json
-{
-  "name": "AC On When Hot",
-  "triggers": [
-    {
-      "type": "device_event",
-      "deviceId": "1",
-      "attribute": "temperature",
-      "operator": ">",
-      "value": "78",
-      "duration": 300
-    }
-  ],
-  "conditions": [
-    { "type": "device_was", "deviceId": "8", "attribute": "switch", "value": "off", "forSeconds": 600 }
-  ],
-  "actions": [
-    { "type": "device_command", "deviceId": "8", "command": "on" }
-  ]
-}
-```
+</details>
 
-## Performance Considerations
+---
 
-### Hub Hardware
+## Hub Admin Tools
+
+Both Hub Admin Read and Hub Admin Write access are **disabled by default** and must be explicitly enabled in app settings.
+
+<details>
+<summary><b>Enabling Hub Admin Tools</b></summary>
+
+1. Open **Apps** > **MCP Rule Server** in the Hubitat web UI
+2. Under **Hub Admin Access**, toggle:
+   - **Enable Hub Admin Read Tools** — for read-only hub information
+   - **Enable Hub Admin Write Tools** — for backup, reboot, shutdown, Z-Wave repair, and app/driver management
+3. If your hub has **Hub Security** enabled, also configure:
+   - **Hub Security Username** and **Password** under the Hub Security section
+
+</details>
+
+<details>
+<summary><b>Safety Gates</b></summary>
+
+All Hub Admin Write tools enforce a **three-layer safety gate**:
+1. Hub Admin Write must be **enabled** in settings
+2. The AI must pass `confirm=true` explicitly
+3. A full hub **backup must exist within the last 24 hours** (enforced automatically)
+
+Additionally, tools that modify or delete existing apps/drivers automatically back up the item's source code before making changes.
+
+</details>
+
+<details>
+<summary><b>Item Backup & Restore</b></summary>
+
+When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes.
+
+- Backups stored as `.groovy` files in the hub's local **File Manager**
+- Named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`
+- Persist even if the MCP app is uninstalled
+- Downloadable at `http://<your-hub-ip>/local/<filename>`
+- Max 20 kept; oldest pruned automatically
+- 1-hour protection window: multiple edits preserve the pre-edit original
+
+**Restore via MCP:**
+1. `list_item_backups` to see available backups
+2. `restore_item_backup` with the backup key and `confirm=true`
+
+**Restore manually (without MCP):**
+1. Go to Hubitat web UI > **Settings** > **File Manager**
+2. Download the backup file (e.g., `mcp-backup-app-123.groovy`)
+3. Go to **Apps Code** (or **Drivers Code**) > select the app > paste source > **Save**
+
+</details>
+
+<details>
+<summary><b>Hub Security Support</b></summary>
+
+If your hub has Hub Security enabled (login required for the web UI), the MCP server handles authentication automatically:
+- Configure your Hub Security username and password in the app settings
+- The server caches the session cookie for 30 minutes
+- Stale cookies are automatically cleared and re-authenticated
+- If Hub Security is not enabled, no credentials are needed
+
+</details>
+
+---
+
+## Performance & Limits
+
+<details>
+<summary><b>Hub Hardware Recommendations</b></summary>
 
 | Hub Model | Recommendation |
 |-----------|----------------|
-| **C-7** | Older/slower hardware. Works fine for basic use, but may experience delays with large device lists or complex rules. |
-| **C-8** | Good for most users. Handles moderate device counts well. |
-| **C-8 Pro** | Best option for heavy use, large device counts (100+), or complex automations. |
+| **C-7** | Works for basic use, may be slow with large device lists or complex rules |
+| **C-8** | Good for most users |
+| **C-8 Pro** | Best for heavy use, large device counts (100+), or complex automations |
 
-### Known Limits
+</details>
 
-- **`list_devices` with `detailed=true`** - Can be slow on 50+ devices. Use pagination:
-  ```
-  list_devices(detailed=true, limit=25, offset=0)
-  ```
-- **Duration triggers** - Maximum of 2 hours (7200 seconds). For longer durations, consider alternative approaches.
-- **Captured states** - Default limit of 20 unique state IDs (configurable in app settings, range 1-100). When limit is reached, the oldest capture is automatically deleted. Use `list_captured_states` to monitor usage.
-- **Hubitat Cloud responses** - 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
+<details>
+<summary><b>Known Limits</b></summary>
 
-## Debug Logging System
+- **`list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `list_devices(detailed=true, limit=25, offset=0)`
+- **Duration triggers** — Maximum of 2 hours (7200 seconds)
+- **Captured states** — Default limit of 20 (configurable 1-100 in settings)
+- **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
+- No real-time event streaming (MCP responses only)
+- Sunrise/sunset times are recalculated daily
 
-**New in v0.2.0:** The MCP server includes a built-in debug logging system that stores logs in app state, making them accessible via MCP tools. Unlike Hubitat's built-in logs (which require UI access), these logs can be retrieved directly through MCP.
+</details>
 
-### Debug Logging Tools
-
-| Tool | Description |
-|------|-------------|
-| `get_debug_logs` | Retrieve recent log entries with optional filters |
-| `clear_debug_logs` | Clear all stored log entries |
-| `get_rule_diagnostics` | Get comprehensive diagnostic info for a specific rule |
-| `set_log_level` | Set minimum log level (debug/info/warn/error) |
-| `get_logging_status` | View logging system statistics |
-
-### Usage Examples
-
-**Get recent logs:**
-```json
-{"tool": "get_debug_logs", "arguments": {"limit": 50, "level": "error"}}
-```
-
-**Get diagnostics for a problematic rule:**
-```json
-{"tool": "get_rule_diagnostics", "arguments": {"ruleId": "123"}}
-```
-
-**Set log level to debug for detailed troubleshooting:**
-```json
-{"tool": "set_log_level", "arguments": {"level": "debug"}}
-```
-
-### What Gets Logged
-
-- Rule creation with verification of stored triggers/actions
-- Rule execution events
-- Errors with context information
-- Timing data for performance analysis
-- State persistence verification
-
-The logging system stores up to 100 entries in a circular buffer (oldest entries are removed when limit is reached).
+---
 
 ## Troubleshooting
 
-### Device not found
+<details>
+<summary><b>Device not found</b></summary>
+
 Make sure the device is selected in the app's "Select Devices for MCP Access" setting.
 
-### OAuth token not working
-1. Open Apps Code → MCP Rule Server
-2. Click OAuth → Enable OAuth in App
+</details>
+
+<details>
+<summary><b>OAuth token not working</b></summary>
+
+1. Open Apps Code > MCP Rule Server
+2. Click OAuth > Enable OAuth in App
 3. Save
 4. Re-open the app in Apps to get the new token
 
-### Rules not triggering
+</details>
+
+<details>
+<summary><b>Rules not triggering</b></summary>
+
 - Check that "Enable Rule Engine" is on in app settings
 - Enable "Debug Logging" and check Hubitat Logs
 - Verify the trigger device is selected for MCP access
 - For duration-based triggers, ensure the condition stays true for the full duration
 
-### Button events not working
+</details>
+
+<details>
+<summary><b>Button events not working</b></summary>
+
 - Make sure you're using `button_event` trigger type (not `device_event`)
 - Verify the button action type: `pushed`, `held`, `doubleTapped`, or `released`
 
-### Rules from v0.0.x not showing
-Version 0.1.0 uses a new parent/child architecture. Old rules stored in `state.rules` are not migrated automatically. You'll need to recreate rules either through the UI or via MCP.
+</details>
 
-### list_devices(detailed=true) fails over Hubitat Cloud
-Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). With many devices, `detailed=true` can exceed this. Use pagination:
+<details>
+<summary><b>list_devices(detailed=true) fails over Hubitat Cloud</b></summary>
+
+Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). Use pagination:
 
 ```
 list_devices(detailed=true, limit=25, offset=0)   // First 25 devices
@@ -608,129 +695,183 @@ list_devices(detailed=true, limit=25, offset=25)  // Next 25 devices
 
 The response includes `total`, `hasMore`, and `nextOffset` to help with pagination.
 
-## Limitations
+</details>
 
-- **Hubitat Cloud 128KB limit** - Large responses fail over cloud; use pagination for `list_devices(detailed=true)`
-- No real-time event streaming (MCP responses only, no push notifications)
-- Time triggers use Hubitat's `schedule()` which has some limitations
-- Sunrise/sunset times are recalculated daily
+<details>
+<summary><b>Rules from v0.0.x not showing</b></summary>
+
+Version 0.1.0 uses a new parent/child architecture. Old rules stored in `state.rules` are not migrated automatically. You'll need to recreate rules either through the UI or via MCP.
+
+</details>
+
+<details>
+<summary><b>Reporting bugs</b></summary>
+
+For easier bug reporting:
+1. Set debug log level: Settings > MCP Debug Log Level > "Debug", or ask your AI to `set_log_level` to "debug"
+2. Reproduce the issue
+3. Ask your AI to use the `generate_bug_report` tool — it will gather diagnostics and format a ready-to-submit report
+4. Submit at [GitHub Issues](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues)
+
+</details>
+
+---
 
 ## Future Plans
 
-> **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to. They represent potential directions the project could go.
+> **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to.
 
-### Rule Engine — Trigger Enhancements
-- **Endpoint/webhook triggers** — create local LAN and/or cloud URLs that trigger a rule when hit (like Rule Machine's Local/Cloud End Point triggers)
-- **Hub variable change triggers** — trigger a rule when a hub variable or rule engine variable value changes
-- **Conditional triggers** — evaluate a condition at the moment a trigger fires; rule only executes if the condition is true (Rule Machine 5.1 feature — different from separate conditions which are evaluated independently)
-- **Sticky/duration triggers** — trigger only when a device state persists for N seconds (debounce built into the trigger itself, not just via conditions)
-- **System start trigger** — fire actions on hub boot/restart
-- **Date range triggers** — trigger between two calendar dates (e.g., seasonal automations)
-- **Cron/periodic triggers** — interval-based recurring triggers (e.g., every 5 minutes, every hour) beyond simple time-of-day schedules
+<details>
+<summary><b>Rule Engine Enhancements</b></summary>
 
-### Rule Engine — Condition Enhancements
-- **Required Expressions (rule gates)** — a prerequisite expression that must be true for the rule to run at all, with an option to cancel in-flight actions (pending delays, repeats) when the gate expression becomes false mid-execution
-- **Full boolean expression builder** — support AND/OR/XOR/NOT with nested parenthetical grouping for complex condition logic (currently only supports all/any)
-- **Private Boolean** — per-rule built-in boolean variable that can be read/set by other rules, usable as a condition or restriction
+**Trigger Enhancements:**
+- Endpoint/webhook triggers
+- Hub variable change triggers
+- Conditional triggers (evaluate at trigger time)
+- System start trigger
+- Date range triggers
+- Cron/periodic triggers
 
-### Rule Engine — Action Enhancements
-- **Fade dimmer over time** — gradually ramp a dimmer level from current to target over a specified duration
-- **Change color temperature over time** — gradually transition color temperature (e.g., warm to cool over 30 minutes)
-- **Per-mode actions** — different action parameters depending on current hub mode (e.g., set level to 100 in Day mode, 30 in Night mode)
-- **Wait for Event** — pause execution until a specific device event occurs, with configurable timeout
-- **Wait for Expression** — pause until a boolean expression becomes true, with timeout and optional duration requirement (expression must remain true for N seconds)
-- **Repeat While / Repeat Until** — loop with expression evaluation (current `repeat` only does count-based)
-- **Rule-to-rule control** — run another rule's actions, pause/resume other rules
-- **Cancel Rule Timers** — cancel pending timers (delays, waits) on other rules remotely
-- **File write/append/delete** — write to hub's local File Manager from within rule actions
-- **Ping IP address** — ping a host and store results (packet loss, latency) in a variable
-- **Custom Action** — run any arbitrary command on any device by selecting capability + command + parameters
-- **Music/siren control** — play sound, set volume, mute/unmute, control media players, sound chime/siren
-- **Disable/Enable a device** — programmatically disable or re-enable a Hubitat device
-- **Ramp actions** — start continuously raising/lowering a dimmer level, stop on command
+**Condition Enhancements:**
+- Required Expressions (rule gates) with in-flight action cancellation
+- Full boolean expression builder (AND/OR/XOR/NOT with nesting)
+- Private Boolean per rule
 
-### Rule Engine — Variable System Enhancements
-- **Hub Variable Connectors** — expose hub variables as virtual device attributes so any app can read them
-- **Variable change events** — variables generating location events when they change, enabling triggers and conditions based on variable state
-- **Local variable triggers** — allow rule-scoped local variables to trigger re-evaluation when changed
+**Action Enhancements:**
+- Fade dimmer over time
+- Change color temperature over time
+- Per-mode actions
+- Wait for Event / Wait for Expression
+- Repeat While / Repeat Until
+- Rule-to-rule control
+- File write/append/delete
+- Ping IP address
+- Custom Action (any capability + command)
+- Music/siren control
+- Disable/Enable a device
+- Ramp actions (continuous raise/lower)
 
-### Built-in Automation Equivalents
-- **Room Lighting** — room-centric lighting automation with motion triggers, scene management, vacancy mode (lights only turn off, never auto-on), per-mode settings, and scene transitions over time (Rule Machine covers most of this but Room Lighting is a dedicated streamlined UX)
-- **Zone Motion Controller** — combine multiple motion sensors into zones with aggregation logic, false-motion filtering, and configurable activation/deactivation behavior
-- **Mode Manager** — dedicated tool/rule template for automating mode changes based on time of day, presence sensors, sunrise/sunset (currently possible via rules but no dedicated tool)
-- **Button Controller** — streamlined button-to-action mapping (essentially the same as button_event triggers + actions but with a simplified single-purpose UX)
-- **Thermostat Scheduler** — schedule-based thermostat automation with per-time-slot, per-day, per-mode setpoints (currently partial via set_thermostat action)
-- **Lock Code Manager** — manage lock user codes, access schedules, and lock/unlock notifications
-- **Groups and Scenes** — Zigbee group messaging (eliminates the "popcorn effect" of staggered device commands), scene capture/recall with transition timing
+**Variable System:**
+- Hub Variable Connectors (expose as device attributes)
+- Variable change events
+- Local variable triggers
 
-### HPM Integration
-- **Search HPM repositories** — tool to search Hubitat Package Manager for available packages by keyword
-- **Install via HPM** — trigger HPM to install a package (app + driver bundles) without manual UI steps
-- **Uninstall via HPM** — remove packages cleanly through HPM's uninstall process
-- **Check for updates** — query HPM for available updates across all installed packages
+</details>
 
-### App/Integration Discovery & Install (Outside HPM)
-- **Search for official integrations** — find and install built-in Hubitat apps and integrations that aren't yet enabled
-- **Search for custom apps** — discover and install community apps/drivers from sources outside HPM (GitHub repos, community forums, etc.)
-- **Browse available integrations** — list official integrations available on the hub that haven't been activated yet
+<details>
+<summary><b>Built-in Automation Equivalents</b></summary>
 
-### Dashboard Management
-- **Create dashboards** — programmatically create new dashboards with device tiles and layouts
-- **Modify dashboards** — add/remove/rearrange tiles, change tile templates, update dashboard settings
-- **Delete dashboards** — remove dashboards that are no longer needed
-- **Official dashboard support preferred** — ideally interact with Hubitat's native dashboard system so dashboards appear on the home screen and mobile app; if not feasible, explore alternative dashboard solutions that can be set as defaults
+- Room Lighting (room-centric lighting with vacancy mode)
+- Zone Motion Controller (multi-sensor zones)
+- Mode Manager (automated mode changes)
+- Button Controller (streamlined button-to-action mapping)
+- Thermostat Scheduler (schedule-based setpoints)
+- Lock Code Manager
+- Groups and Scenes (Zigbee group messaging)
 
-### Rule Machine Interoperability
-> **Feasibility researched** — programmatically creating or modifying Rule Machine rules is **not possible**. RM is closed-source, the export format is an undocumented internal data dump (not guaranteed valid JSON), and the Groovy sandbox prevents cross-app state access. However, controlling existing RM rules IS feasible via `RMUtils` and internal endpoints.
+</details>
 
-- **List all RM rules** — enumerate Rule Machine rules with name, ID, and enabled/disabled status via `/hub2/appsList` or `RMUtils.getRuleList("5.0")`
-- **Enable/disable RM rules** — programmatically enable or disable individual RM rules via `/installedapp/disable?id={ID}&disable={true|false}`
-- **Trigger RM rule actions** — execute an existing RM rule's actions via `RMUtils.sendAction()` with `runRuleAct`
-- **Pause/resume RM rules** — pause or resume existing RM rules via `RMUtils.sendAction()` with `pauseRule`/`resumeRule`
-- **Set RM Private Booleans** — set a rule's Private Boolean true/false via `RMUtils.sendAction()` with `setRuleBooleanTrue`/`setRuleBooleanFalse`
-- **Hub variable bridge** — set hub variables that RM rules react to, and vice versa, enabling cross-engine coordination between MCP rules and RM rules
+<details>
+<summary><b>HPM & App/Integration Management</b></summary>
 
-### Integration & Streaming
-- **MQTT client** — publish and subscribe to MQTT topics from within rules or as a standalone tool (connect to an external MQTT broker for bridging to Node-RED, Home Assistant, etc.)
-- **Event streaming / webhooks** — real-time POST of device events to external URLs as they happen (similar to Maker API's postURL feature but integrated into the MCP server)
+- Search HPM repositories by keyword
+- Install/uninstall packages via HPM
+- Check for updates across installed packages
+- Search for official integrations not yet enabled
+- Discover community apps/drivers from GitHub, forums, etc.
 
-### Advanced Automation Patterns
-- **Occupancy / room state machine** — rooms with states like occupied, vacant, engaged, checking — going beyond simple motion-on/motion-off to track true room occupancy using multiple sensor types (motion, contact, power meters, presence)
-- **Presence-based automation** — geofencing triggers with first-to-arrive and last-to-leave logic, arrival/departure actions, presence-based mode changes
-- **Weather-based triggers** — respond to weather conditions (rain, temperature thresholds, wind speed, humidity) from weather station devices or external weather APIs
-- **Vacation mode** — random light cycling to simulate occupancy, timed on/off patterns, lock all doors, energy-saving thermostat presets
+</details>
 
-### Monitoring & Diagnostics
-- **Device health watchdog** — monitor last check-in time for all devices, alert on stale/offline devices that haven't reported in a configurable period
-- **Z-Wave ghost device detection** — identify orphaned Z-Wave nodes (no routes, no linked device) and assist with removal workflow
-- **Event history / analytics** — aggregate device event data over time periods, generate summary reports (e.g., how many times a door opened today, average temperature over the last week)
-- **Hub performance monitoring** — track memory usage, temperature, and database size trends over time, alert on degradation
-- **Access to Hubitat logs/events** — read the hub's native log entries (app logs, device logs, location events) via MCP tools for diagnostics and troubleshooting without needing the web UI
+<details>
+<summary><b>Dashboard Management</b></summary>
 
-### Notification Enhancements
-- **Pushover integration** — native Pushover notifications from rules with support for priority levels (quiet, normal, high, emergency with repeat-until-acknowledged)
-- **Email notifications** — send emails via SendGrid or similar API from within rules
-- **Rate limiting / throttling** — configurable maximum notifications per timeframe to prevent notification storms
-- **Notification routing** — different notification targets per severity or event type (e.g., critical alerts to Pushover, informational to email)
+- Create, modify, delete dashboards programmatically
+- Prefer official Hubitat dashboard system for home screen and mobile app visibility
 
-### Additional Ideas
-- **Device creation** — *partially implemented in v0.6.0* (MCP-managed child virtual devices via `create_virtual_device`). Future: create standalone virtual devices that appear in the regular Devices section independent of the MCP app, and support device pairing for Z-Wave, Zigbee, and cloud-connected devices
-- **Scene management** — create, modify, and manage scenes (device state groups) beyond the current `activate_scene`
-- **Energy monitoring dashboard** — aggregate power/energy data from devices into summary reports
-- **Scheduled report generation** — periodic automated reports on hub health, device status, rule execution history
+</details>
+
+<details>
+<summary><b>Rule Machine Interoperability</b></summary>
+
+> **Feasibility researched** — creating/modifying RM rules is not possible (closed-source, undocumented format). However, controlling existing RM rules IS feasible.
+
+- List all RM rules via `RMUtils.getRuleList()`
+- Enable/disable RM rules
+- Trigger RM rule actions via `RMUtils.sendAction()`
+- Pause/resume RM rules
+- Set RM Private Booleans
+- Hub variable bridge for cross-engine coordination
+
+</details>
+
+<details>
+<summary><b>Integration & Streaming</b></summary>
+
+- MQTT client (bridge to Node-RED, Home Assistant, etc.)
+- Event streaming / webhooks (real-time POST of device events)
+
+</details>
+
+<details>
+<summary><b>Advanced Automation Patterns</b></summary>
+
+- Occupancy / room state machine
+- Presence-based automation (first-to-arrive, last-to-leave)
+- Weather-based triggers
+- Vacation mode (random light cycling, auto-lock, energy savings)
+
+</details>
+
+<details>
+<summary><b>Monitoring & Diagnostics</b></summary>
+
+- Device health watchdog
+- Z-Wave ghost device detection
+- Event history / analytics
+- Hub performance trend monitoring
+
+</details>
+
+<details>
+<summary><b>Notification Enhancements</b></summary>
+
+- Pushover integration with priority levels
+- Email notifications via SendGrid
+- Rate limiting / throttling
+- Notification routing by severity
+
+</details>
+
+<details>
+<summary><b>Additional Ideas</b></summary>
+
+- Standalone virtual device creation (independent of MCP app)
+- Device pairing assistance (Z-Wave, Zigbee, cloud)
+- Scene management (create/modify beyond activate_scene)
+- Energy monitoring dashboard
+- Scheduled automated reports
+
+</details>
+
+---
 
 ## Version History
 
-- **v0.7.6** - Code review: fix hoursAgo calculation bug (was 10x off due to integer division with wrong divisor), fix `now` variable shadowing built-in `now()` in sun_position condition evaluation, centralize version string via `currentVersion()` (eliminates 7 hardcoded version strings), extract shared helpers (`buildRuleExport`, `toolInstallItem`, `toolDeleteItem`, `toolToggleRule`, `shouldRetryWithFreshCookie`, `clampPercent`) reducing ~90 lines of duplicate code, add `ruleId` to enable/disable responses for consistency.
-- **v0.7.5** - Token efficiency: optimize tool descriptions using progressive disclosure. Verbose descriptions trimmed to concise summaries; detailed reference moved to `get_tool_guide`. Enhanced rules guide with JSON syntax examples. ~27% reduction in tool description tokens.
-- **v0.7.4** - Stability fixes: configurable execution loop guard with push notifications, safe room move pattern, resilient date parsing
-- **v0.7.3** - Documentation sync (SKILL.md section names now match actual source code structure)
+<details>
+<summary><b>Recent versions (v0.7.0 – v0.7.6)</b></summary>
+
+- **v0.7.6** - Code review: fix hoursAgo calculation bug, fix variable shadowing, centralize version string, extract shared helpers (~90 lines reduced)
+- **v0.7.5** - Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% token reduction)
+- **v0.7.4** - Stability: configurable execution loop guard with push notifications, safe room move, resilient date parsing
+- **v0.7.3** - Documentation sync (SKILL.md section names match source code structure)
 - **v0.7.2** - Device authorization safety + optimized tool descriptions + get_tool_guide (74 tools)
-- **v0.7.1** - Auto-backup for delete_rule (File Manager), testRule flag to skip backup, bug fixes
+- **v0.7.1** - Auto-backup for delete_rule, testRule flag, bug fixes
 - **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
 
+</details>
+
 <details>
-<summary>Older versions (v0.0.3 – v0.6.15)</summary>
+<summary><b>Older versions (v0.0.3 – v0.6.15)</b></summary>
 
 - **v0.6.15** - Room assignment fix: use 'roomId' field (not 'id'), remove from old room before adding to new
 - **v0.6.14** - Room assignment: POST /room/save with JSON content type, form-encoded, hub2/ prefix, Grails command object
@@ -810,12 +951,13 @@ The response includes `total`, `hasMore`, and `nextOffset` to help with paginati
 
 </details>
 
-## Manual Testing Checklist
+---
 
-The following features require manual testing through the Hubitat web UI:
+<details>
+<summary><b>Manual Testing Checklist</b></summary>
 
 ### UI Rule Management
-- [ ] Create a new rule via Hubitat Apps → MCP Rule Server → Add Rule
+- [ ] Create a new rule via Hubitat Apps > MCP Rule Server > Add Rule
 - [ ] Edit existing rule triggers through the UI
 - [ ] Edit existing rule conditions through the UI
 - [ ] Edit existing rule actions through the UI
@@ -849,19 +991,11 @@ The following features require manual testing through the Hubitat web UI:
 - [ ] Add set_variable action with scope selection
 - [ ] Verify action reordering works correctly
 
+</details>
+
 ## Contributing
 
-This is a work in progress! Contributions welcome:
-
-1. Fork the repo
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-Please include:
-- Description of changes
-- Any testing you've done
-- Screenshots if applicable
+Contributions welcome! Fork the repo, create a feature branch, make your changes, and submit a pull request. Please include a description of changes and any testing you've done.
 
 ## License
 
