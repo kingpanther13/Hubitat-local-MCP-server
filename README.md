@@ -35,25 +35,20 @@ Behind the scenes, the AI uses MCP tools to control devices, create automation r
 
 ### Option A: Hubitat Package Manager (Recommended)
 
-If you have [Hubitat Package Manager (HPM)](https://hubitatpackagemanager.hubitatcommunity.com/) installed:
+If you don't have Hubitat Package Manager (HPM) installed yet, follow the [HPM installation instructions](https://hubitatpackagemanager.hubitatcommunity.com/installing) to set it up first.
 
-**First, add the custom repository:**
-1. Open HPM > **Package Manager Settings**
-2. Click **Add a custom repository**
-3. Paste this URL:
-   ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/repository.json
-   ```
-4. Click **Save**
+Once HPM is installed:
 
-**Then install the package:**
-1. Go to HPM > **Install** > **Search by Keywords**
-2. Search for "MCP Rule Server"
-3. Select it and install
+1. Open HPM > **Install**
+2. Search for **"MCP"**
+3. Select **MCP Rule Server** and install
 
-> **Note**: If it doesn't appear in search, you can also use HPM > **Install** > **From a URL** with the packageManifest.json URL. After initial install, updates will work normally.
+That's it! HPM will install both the parent app and child app automatically and notify you when updates are available.
 
-HPM will install both the parent app and child app automatically and notify you when updates are available.
+> **Alternate HPM method**: You can also use HPM > **Install** > **From a URL** and paste:
+> ```
+> https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json
+> ```
 
 ### Option B: Manual Installation
 
@@ -717,141 +712,129 @@ For easier bug reporting:
 
 ---
 
+<!-- FUTURE_PLANS_START -->
 ## Future Plans
 
 > **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to.
+>
+> **Status key:** `[ ]` = not started | `[~]` = in progress / partially done | `[x]` = completed | `[?]` = needs research / feasibility unknown
+>
+> *This section is auto-generated from [futureplans.md](futureplans.md).*
 
-<details>
-<summary><b>Rule Engine Enhancements</b></summary>
+---
 
-**Trigger Enhancements:**
-- Endpoint/webhook triggers
-- Hub variable change triggers
-- Conditional triggers (evaluate at trigger time)
-- System start trigger
-- Date range triggers
-- Cron/periodic triggers
+### Rule Engine Enhancements
 
-**Condition Enhancements:**
-- Required Expressions (rule gates) with in-flight action cancellation
-- Full boolean expression builder (AND/OR/XOR/NOT with nesting)
-- Private Boolean per rule
+**Trigger Enhancements**
+- [ ] Endpoint/webhook triggers
+- [ ] Hub variable change triggers
+- [ ] Conditional triggers (evaluate at trigger time)
+- [ ] System start trigger
+- [ ] Date range triggers
+- [ ] Cron/periodic triggers
 
-**Action Enhancements:**
-- Fade dimmer over time
-- Change color temperature over time
-- Per-mode actions
-- Wait for Event / Wait for Expression
-- Repeat While / Repeat Until
-- Rule-to-rule control
-- File write/append/delete
-- Ping IP address
-- Custom Action (any capability + command)
-- Music/siren control
-- Disable/Enable a device
-- Ramp actions (continuous raise/lower)
+**Condition Enhancements**
+- [ ] Required Expressions (rule gates) with in-flight action cancellation
+- [ ] Full boolean expression builder (AND/OR/XOR/NOT with nesting)
+- [ ] Private Boolean per rule
 
-**Variable System:**
-- Hub Variable Connectors (expose as device attributes)
-- Variable change events
-- Local variable triggers
+**Action Enhancements**
+- [ ] Fade dimmer over time
+- [ ] Change color temperature over time
+- [ ] Per-mode actions
+- [ ] Wait for Event / Wait for Expression
+- [ ] Repeat While / Repeat Until
+- [ ] Rule-to-rule control
+- [ ] File write/append/delete
+- [ ] Ping IP address
+- [ ] Custom Action (any capability + command)
+- [ ] Music/siren control
+- [ ] Disable/Enable a device
+- [ ] Ramp actions (continuous raise/lower)
 
-</details>
+**Variable System**
+- [ ] Hub Variable Connectors (expose as device attributes)
+- [ ] Variable change events
+- [ ] Local variable triggers
 
-<details>
-<summary><b>Built-in Automation Equivalents</b></summary>
+---
 
-- Room Lighting (room-centric lighting with vacancy mode)
-- Zone Motion Controller (multi-sensor zones)
-- Mode Manager (automated mode changes)
-- Button Controller (streamlined button-to-action mapping)
-- Thermostat Scheduler (schedule-based setpoints)
-- Lock Code Manager
-- Groups and Scenes (Zigbee group messaging)
+### Built-in Automation Equivalents
+- [ ] Room Lighting (room-centric lighting with vacancy mode)
+- [ ] Zone Motion Controller (multi-sensor zones)
+- [ ] Mode Manager (automated mode changes)
+- [ ] Button Controller (streamlined button-to-action mapping)
+- [ ] Thermostat Scheduler (schedule-based setpoints)
+- [ ] Lock Code Manager
+- [ ] Groups and Scenes (Zigbee group messaging)
 
-</details>
+---
 
-<details>
-<summary><b>HPM & App/Integration Management</b></summary>
+### HPM & App/Integration Management
+- [ ] Search HPM repositories by keyword
+- [ ] Install/uninstall packages via HPM
+- [ ] Check for updates across installed packages
+- [ ] Search for official integrations not yet enabled
+- [ ] Discover community apps/drivers from GitHub, forums, etc.
 
-- Search HPM repositories by keyword
-- Install/uninstall packages via HPM
-- Check for updates across installed packages
-- Search for official integrations not yet enabled
-- Discover community apps/drivers from GitHub, forums, etc.
+---
 
-</details>
+### Dashboard Management
+- [ ] Create, modify, delete dashboards programmatically
+- [ ] Prefer official Hubitat dashboard system for home screen and mobile app visibility
 
-<details>
-<summary><b>Dashboard Management</b></summary>
+---
 
-- Create, modify, delete dashboards programmatically
-- Prefer official Hubitat dashboard system for home screen and mobile app visibility
-
-</details>
-
-<details>
-<summary><b>Rule Machine Interoperability</b></summary>
+### Rule Machine Interoperability
 
 > **Feasibility researched** — creating/modifying RM rules is not possible (closed-source, undocumented format). However, controlling existing RM rules IS feasible.
 
-- List all RM rules via `RMUtils.getRuleList()`
-- Enable/disable RM rules
-- Trigger RM rule actions via `RMUtils.sendAction()`
-- Pause/resume RM rules
-- Set RM Private Booleans
-- Hub variable bridge for cross-engine coordination
+- [ ] List all RM rules via `RMUtils.getRuleList()`
+- [ ] Enable/disable RM rules
+- [ ] Trigger RM rule actions via `RMUtils.sendAction()`
+- [ ] Pause/resume RM rules
+- [ ] Set RM Private Booleans
+- [ ] Hub variable bridge for cross-engine coordination
 
-</details>
+---
 
-<details>
-<summary><b>Integration & Streaming</b></summary>
+### Integration & Streaming
+- [ ] MQTT client (bridge to Node-RED, Home Assistant, etc.)
+- [ ] Event streaming / webhooks (real-time POST of device events)
 
-- MQTT client (bridge to Node-RED, Home Assistant, etc.)
-- Event streaming / webhooks (real-time POST of device events)
+---
 
-</details>
+### Advanced Automation Patterns
+- [ ] Occupancy / room state machine
+- [ ] Presence-based automation (first-to-arrive, last-to-leave)
+- [ ] Weather-based triggers
+- [ ] Vacation mode (random light cycling, auto-lock, energy savings)
 
-<details>
-<summary><b>Advanced Automation Patterns</b></summary>
+---
 
-- Occupancy / room state machine
-- Presence-based automation (first-to-arrive, last-to-leave)
-- Weather-based triggers
-- Vacation mode (random light cycling, auto-lock, energy savings)
+### Monitoring & Diagnostics
+- [ ] Device health watchdog
+- [ ] Z-Wave ghost device detection
+- [ ] Event history / analytics
+- [ ] Hub performance trend monitoring
 
-</details>
+---
 
-<details>
-<summary><b>Monitoring & Diagnostics</b></summary>
+### Notification Enhancements
+- [ ] Pushover integration with priority levels
+- [ ] Email notifications via SendGrid
+- [ ] Rate limiting / throttling
+- [ ] Notification routing by severity
 
-- Device health watchdog
-- Z-Wave ghost device detection
-- Event history / analytics
-- Hub performance trend monitoring
+---
 
-</details>
-
-<details>
-<summary><b>Notification Enhancements</b></summary>
-
-- Pushover integration with priority levels
-- Email notifications via SendGrid
-- Rate limiting / throttling
-- Notification routing by severity
-
-</details>
-
-<details>
-<summary><b>Additional Ideas</b></summary>
-
-- Standalone virtual device creation (independent of MCP app)
-- Device pairing assistance (Z-Wave, Zigbee, cloud)
-- Scene management (create/modify beyond activate_scene)
-- Energy monitoring dashboard
-- Scheduled automated reports
-
-</details>
+### Additional Ideas
+- [ ] Standalone virtual device creation (independent of MCP app)
+- [ ] Device pairing assistance (Z-Wave, Zigbee, cloud)
+- [ ] Scene management (create/modify beyond activate_scene)
+- [ ] Energy monitoring dashboard
+- [ ] Scheduled automated reports
+<!-- FUTURE_PLANS_END -->
 
 ---
 
