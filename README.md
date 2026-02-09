@@ -715,17 +715,16 @@ For easier bug reporting:
 <!-- FUTURE_PLANS_START -->
 ## Future Plans
 
+
 > **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to.
 >
 > **Status key:** `[ ]` = not started | `[~]` = in progress / partially done | `[x]` = completed | `[?]` = needs research / feasibility unknown
->
-> *This section is auto-generated from [futureplans.md](futureplans.md).*
 
 ---
 
-### Rule Engine Enhancements
+#### Rule Engine Enhancements
 
-**Trigger Enhancements**
+#### Trigger Enhancements
 - [ ] Endpoint/webhook triggers
 - [ ] Hub variable change triggers
 - [ ] Conditional triggers (evaluate at trigger time)
@@ -733,12 +732,12 @@ For easier bug reporting:
 - [ ] Date range triggers
 - [ ] Cron/periodic triggers
 
-**Condition Enhancements**
+#### Condition Enhancements
 - [ ] Required Expressions (rule gates) with in-flight action cancellation
 - [ ] Full boolean expression builder (AND/OR/XOR/NOT with nesting)
 - [ ] Private Boolean per rule
 
-**Action Enhancements**
+#### Action Enhancements
 - [ ] Fade dimmer over time
 - [ ] Change color temperature over time
 - [ ] Per-mode actions
@@ -752,14 +751,14 @@ For easier bug reporting:
 - [ ] Disable/Enable a device
 - [ ] Ramp actions (continuous raise/lower)
 
-**Variable System**
+#### Variable System
 - [ ] Hub Variable Connectors (expose as device attributes)
 - [ ] Variable change events
 - [ ] Local variable triggers
 
 ---
 
-### Built-in Automation Equivalents
+#### Built-in Automation Equivalents
 - [ ] Room Lighting (room-centric lighting with vacancy mode)
 - [ ] Zone Motion Controller (multi-sensor zones)
 - [ ] Mode Manager (automated mode changes)
@@ -770,7 +769,7 @@ For easier bug reporting:
 
 ---
 
-### HPM & App/Integration Management
+#### HPM & App/Integration Management
 - [ ] Search HPM repositories by keyword
 - [ ] Install/uninstall packages via HPM
 - [ ] Check for updates across installed packages
@@ -779,13 +778,13 @@ For easier bug reporting:
 
 ---
 
-### Dashboard Management
+#### Dashboard Management
 - [ ] Create, modify, delete dashboards programmatically
 - [ ] Prefer official Hubitat dashboard system for home screen and mobile app visibility
 
 ---
 
-### Rule Machine Interoperability
+#### Rule Machine Interoperability
 
 > **Feasibility researched** — creating/modifying RM rules is not possible (closed-source, undocumented format). However, controlling existing RM rules IS feasible.
 
@@ -798,13 +797,13 @@ For easier bug reporting:
 
 ---
 
-### Integration & Streaming
+#### Integration & Streaming
 - [ ] MQTT client (bridge to Node-RED, Home Assistant, etc.)
 - [ ] Event streaming / webhooks (real-time POST of device events)
 
 ---
 
-### Advanced Automation Patterns
+#### Advanced Automation Patterns
 - [ ] Occupancy / room state machine
 - [ ] Presence-based automation (first-to-arrive, last-to-leave)
 - [ ] Weather-based triggers
@@ -812,7 +811,7 @@ For easier bug reporting:
 
 ---
 
-### Monitoring & Diagnostics
+#### Monitoring & Diagnostics
 - [ ] Device health watchdog
 - [ ] Z-Wave ghost device detection
 - [ ] Event history / analytics
@@ -820,7 +819,7 @@ For easier bug reporting:
 
 ---
 
-### Notification Enhancements
+#### Notification Enhancements
 - [ ] Pushover integration with priority levels
 - [ ] Email notifications via SendGrid
 - [ ] Rate limiting / throttling
@@ -828,13 +827,14 @@ For easier bug reporting:
 
 ---
 
-### Additional Ideas
+#### Additional Ideas
 - [ ] Standalone virtual device creation (independent of MCP app)
 - [ ] Device pairing assistance (Z-Wave, Zigbee, cloud)
 - [ ] Scene management (create/modify beyond activate_scene)
 - [ ] Energy monitoring dashboard
 - [ ] Scheduled automated reports
 <!-- FUTURE_PLANS_END -->
+
 
 ---
 
