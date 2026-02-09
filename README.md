@@ -988,6 +988,7 @@ MIT License - see [LICENSE](LICENSE)
 
 - Built with assistance from [Claude](https://claude.ai) (Anthropic)
 - Inspired by the [Model Context Protocol](https://modelcontextprotocol.io/)
+- Inspired by the [Home Assistant MCP](https://github.com/homeassistant-ai/ha-mcp/)
 - Thanks to the Hubitat community for documentation and examples
 - [@ashwinma14](https://github.com/ashwinma14) - Fix for StackOverflowError on app install ([#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
 
