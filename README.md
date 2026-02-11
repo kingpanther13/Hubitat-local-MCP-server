@@ -841,8 +841,9 @@ For easier bug reporting:
 ## Version History
 
 <details>
-<summary><b>Recent versions (v0.7.0 – v0.7.6)</b></summary>
+<summary><b>Recent versions (v0.7.0 – v0.7.7)</b></summary>
 
+- **v0.7.7** - Code review round 2: MCP protocol fix (tool errors use isError flag per spec), fix formatAge() singular grammar, short-circuit condition evaluation, fix CI sed double-demotion, consolidate redundant API calls, guard eager debug logging, deduplicate sunrise/sunset reschedule, fix variable_math double atomicState read, efficiency improvements
 - **v0.7.6** - Code review: fix hoursAgo calculation bug, fix variable shadowing, centralize version string, extract shared helpers (~90 lines reduced)
 - **v0.7.5** - Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% token reduction)
 - **v0.7.4** - Stability: configurable execution loop guard with push notifications, safe room move, resilient date parsing
