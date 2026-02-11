@@ -4706,7 +4706,7 @@ def toolGetHubLogs(args) {
 
     // Truncation safety for 128KB cloud limit
     def result = [logs: logs, count: logs.size(), totalParsed: totalParsed]
-    // Estimate JSON size without serializing: ~200 bytes per log entry overhead
+    // Estimate JSON size without serializing: ~120 bytes per log entry overhead
     def estimatedJsonSize = logs.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
     if (estimatedJsonSize > 120000) {
         logs.each { it.message = it.message?.take(200) }

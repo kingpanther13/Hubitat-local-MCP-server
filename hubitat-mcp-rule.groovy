@@ -3031,20 +3031,16 @@ def evaluateConditions() {
     def logic = settings.conditionLogic ?: "all"
     def conditions = atomicState.conditions ?: []
     // Short-circuit: stop evaluating as soon as outcome is determined
+    def safeEval = { condition ->
+        try { evaluateCondition(condition) } catch (Exception e) {
+            ruleLog("error", "Error evaluating condition (${condition.type}): ${e.message}")
+            false  // Treat failed conditions as not met (fail closed)
+        }
+    }
     if (logic == "all") {
-        return conditions.every { condition ->
-            try { evaluateCondition(condition) } catch (Exception e) {
-                ruleLog("error", "Error evaluating condition (${condition.type}): ${e.message}")
-                false  // Treat failed conditions as not met (fail closed)
-            }
-        }
+        return conditions.every(safeEval)
     } else {
-        return conditions.any { condition ->
-            try { evaluateCondition(condition) } catch (Exception e) {
-                ruleLog("error", "Error evaluating condition (${condition.type}): ${e.message}")
-                false
-            }
-        }
+        return conditions.any(safeEval)
     }
 }
 
