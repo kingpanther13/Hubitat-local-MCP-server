@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.7.6
+ * Version: 0.7.7
  */
 
 definition(
@@ -2686,7 +2686,7 @@ def subscribeToTriggers() {
  */
 def triggerMatchesDevice(trigger, deviceIdStr) {
     if (trigger.deviceIds) {
-        return trigger.deviceIds.collect { it.toString() }.contains(deviceIdStr)
+        return trigger.deviceIds.any { it.toString() == deviceIdStr }
     }
     return trigger.deviceId == deviceIdStr
 }
@@ -2930,49 +2930,30 @@ def handleSunsetEvent() {
     executeRule("sunset trigger")
 }
 
-def rescheduleSunriseTrigger() {
-    atomicState.triggers?.findAll { it.type == "time" && it.sunrise }?.each { trigger ->
+private void rescheduleSunTrigger(String sunType, String handlerName) {
+    atomicState.triggers?.findAll { it.type == "time" && it."${sunType}" }?.each { trigger ->
         try {
             // Use getSunriseAndSunset() for accurate next-day times (avoids drift from +24h)
             def tomorrow = new Date(now() + 86400000)
             def sunTimes = getSunriseAndSunset(date: tomorrow)
-            def sunriseTime = sunTimes?.sunrise ?: location.sunrise
-            if (sunriseTime) {
+            def sunTime = sunTimes?."${sunType}" ?: location."${sunType}"
+            if (sunTime) {
                 def offset = trigger.offset ?: 0
-                def sunriseDate = new Date(sunriseTime.time + (offset * 60000))
+                def sunDate = new Date(sunTime.time + (offset * 60000))
                 // Safety: if calculated time is still in the past, fall back to +24h from now
-                if (sunriseDate.time <= now()) {
-                    sunriseDate = new Date(now() + 86400000)
+                if (sunDate.time <= now()) {
+                    sunDate = new Date(now() + 86400000)
                 }
-                runOnce(sunriseDate, "handleSunriseEvent", [overwrite: true])
+                runOnce(sunDate, handlerName, [overwrite: true])
             }
         } catch (Exception e) {
-            ruleLog("error", "Failed to reschedule sunrise trigger: ${e.message}")
+            ruleLog("error", "Failed to reschedule ${sunType} trigger: ${e.message}")
         }
     }
 }
 
-def rescheduleSunsetTrigger() {
-    atomicState.triggers?.findAll { it.type == "time" && it.sunset }?.each { trigger ->
-        try {
-            // Use getSunriseAndSunset() for accurate next-day times (avoids drift from +24h)
-            def tomorrow = new Date(now() + 86400000)
-            def sunTimes = getSunriseAndSunset(date: tomorrow)
-            def sunsetTime = sunTimes?.sunset ?: location.sunset
-            if (sunsetTime) {
-                def offset = trigger.offset ?: 0
-                def sunsetDate = new Date(sunsetTime.time + (offset * 60000))
-                // Safety: if calculated time is still in the past, fall back to +24h from now
-                if (sunsetDate.time <= now()) {
-                    sunsetDate = new Date(now() + 86400000)
-                }
-                runOnce(sunsetDate, "handleSunsetEvent", [overwrite: true])
-            }
-        } catch (Exception e) {
-            ruleLog("error", "Failed to reschedule sunset trigger: ${e.message}")
-        }
-    }
-}
+def rescheduleSunriseTrigger() { rescheduleSunTrigger("sunrise", "handleSunriseEvent") }
+def rescheduleSunsetTrigger() { rescheduleSunTrigger("sunset", "handleSunsetEvent") }
 
 def handleModeEvent(evt) {
     if (!settings.ruleEnabled) return
@@ -3048,19 +3029,18 @@ def executeRule(triggerSource, evt = null) {
 
 def evaluateConditions() {
     def logic = settings.conditionLogic ?: "all"
-    def results = atomicState.conditions.collect { condition ->
-        try {
-            return evaluateCondition(condition)
-        } catch (Exception e) {
+    def conditions = atomicState.conditions ?: []
+    // Short-circuit: stop evaluating as soon as outcome is determined
+    def safeEval = { condition ->
+        try { evaluateCondition(condition) } catch (Exception e) {
             ruleLog("error", "Error evaluating condition (${condition.type}): ${e.message}")
-            return false  // Treat failed conditions as not met (fail closed)
+            false  // Treat failed conditions as not met (fail closed)
         }
     }
-
     if (logic == "all") {
-        return results.every { it }
+        return conditions.every(safeEval)
     } else {
-        return results.any { it }
+        return conditions.any(safeEval)
     }
 }
 
@@ -3250,16 +3230,17 @@ def substituteVariables(String text, evt = null) {
     if (!text) return text
 
     def result = text
+    def currentDate = new Date()
 
     // Built-in event variables
     if (evt) {
         result = result.replace("%device%", evt.displayName ?: "")
         result = result.replace("%value%", evt.value?.toString() ?: "")
         result = result.replace("%name%", evt.name ?: "")
-        result = result.replace("%time%", new Date().format("HH:mm:ss"))
-        result = result.replace("%date%", new Date().format("yyyy-MM-dd"))
+        result = result.replace("%time%", currentDate.format("HH:mm:ss"))
+        result = result.replace("%date%", currentDate.format("yyyy-MM-dd"))
     }
-    result = result.replace("%now%", new Date().format("yyyy-MM-dd HH:mm:ss"))
+    result = result.replace("%now%", currentDate.format("yyyy-MM-dd HH:mm:ss"))
     result = result.replace("%mode%", location.mode ?: "")
 
     // Local variables
@@ -3328,7 +3309,7 @@ def resumeDelayedActions(data) {
 }
 
 def executeAction(action, actionIndex = null, evt = null) {
-    log.debug "Executing action: ${describeAction(action)}"
+    if (log.isDebugEnabled()) log.debug "Executing action: ${describeAction(action)}"
 
     try {
     switch (action.type) {
@@ -3718,9 +3699,10 @@ def executeAction(action, actionIndex = null, evt = null) {
             def varName = action.variableName
             def scope = action.scope ?: "local"
             def currentVal = 0
+            def locals = null
 
             if (scope == "local") {
-                def locals = atomicState.localVariables ?: [:]
+                locals = atomicState.localVariables ?: [:]
                 currentVal = locals[varName] ?: 0
             } else {
                 // Global hub variable
@@ -3744,7 +3726,6 @@ def executeAction(action, actionIndex = null, evt = null) {
             }
 
             if (scope == "local") {
-                def locals = atomicState.localVariables ?: [:]
                 locals[varName] = mathResult
                 atomicState.localVariables = locals
             } else {

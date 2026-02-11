@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.6 - Code review: bug fixes, deduplication, version centralization, helper extraction
+ * Version: 0.7.7 - Code review: MCP protocol fix, efficiency improvements, bug fixes
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -412,7 +412,8 @@ def handleToolsCall(msg) {
             stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")
         ])
         log.error "Tool execution error: ${e.message}", e
-        return jsonRpcError(msg.id, -32603, "Tool error: ${e.message}")
+        // MCP spec: tool execution errors are returned as successful results with isError flag
+        return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
     }
 }
 
@@ -3923,9 +3924,12 @@ def formatAge(Long timestamp) {
     if (!timestamp) return "unknown"
     def elapsed = now() - timestamp
     if (elapsed < 60000) return "just now"
-    if (elapsed < 3600000) return "${(elapsed / 60000) as Integer} minutes ago"
-    if (elapsed < 86400000) return "${(elapsed / 3600000) as Integer} hours ago"
-    return "${(elapsed / 86400000) as Integer} days ago"
+    def minutes = (elapsed / 60000) as Integer
+    if (elapsed < 3600000) return "${minutes} ${minutes == 1 ? 'minute' : 'minutes'} ago"
+    def hours = (elapsed / 3600000) as Integer
+    if (elapsed < 86400000) return "${hours} ${hours == 1 ? 'hour' : 'hours'} ago"
+    def days = (elapsed / 86400000) as Integer
+    return "${days} ${days == 1 ? 'day' : 'days'} ago"
 }
 
 def jsonRpcResult(id, result) {
@@ -4702,8 +4706,9 @@ def toolGetHubLogs(args) {
 
     // Truncation safety for 128KB cloud limit
     def result = [logs: logs, count: logs.size(), totalParsed: totalParsed]
-    def jsonSize = new groovy.json.JsonBuilder(result).toString().size()
-    if (jsonSize > 120000) {
+    // Estimate JSON size without serializing: ~120 bytes per log entry overhead
+    def estimatedJsonSize = logs.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
+    if (estimatedJsonSize > 120000) {
         logs.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
@@ -5518,14 +5523,21 @@ def toolDeleteDevice(args) {
     try {
         def childApps = getChildApps()
         def referencingRules = []
+        // Recursive search for device ID references without serializing to JSON
+        def containsDeviceRef
+        containsDeviceRef = { obj ->
+            if (obj == null) return false
+            if (obj instanceof String) return obj == deviceId
+            if (obj instanceof Number) return obj.toString() == deviceId
+            if (obj instanceof Map) return obj.values().any { containsDeviceRef(it) }
+            if (obj instanceof Collection) return obj.any { containsDeviceRef(it) }
+            return obj.toString() == deviceId
+        }
         childApps?.each { childApp ->
             try {
                 def ruleData = childApp.getRuleData()
-                if (ruleData) {
-                    def ruleJson = new groovy.json.JsonBuilder(ruleData).toString()
-                    if (ruleJson.contains("\"${deviceId}\"")) {
-                        referencingRules << [id: ruleData.id, name: ruleData.name ?: "Unnamed"]
-                    }
+                if (ruleData && containsDeviceRef(ruleData)) {
+                    referencingRules << [id: ruleData.id, name: ruleData.name ?: "Unnamed"]
                 }
             } catch (Exception e) { /* skip rule */ }
         }
@@ -5618,9 +5630,12 @@ def toolCreateVirtualDevice(args) {
         throw new IllegalArgumentException("Unsupported device type: '${deviceType}'. Supported types: ${supportedTypes.join(', ')}")
     }
 
+    // Fetch child devices once for DNI generation and validation
+    def childDevs = getChildDevices() ?: []
+
     // Auto-generate DNI if not provided, with uniqueness retry
     if (!dni) {
-        def existingDnis = (getChildDevices() ?: []).collect { it.deviceNetworkId } as Set
+        def existingDnis = childDevs.collect { it.deviceNetworkId } as Set
         def attempts = 0
         while (attempts < 5) {
             def timestamp = Long.toString(now(), 16).toUpperCase()
@@ -5633,7 +5648,7 @@ def toolCreateVirtualDevice(args) {
     }
 
     // Validate DNI uniqueness against existing child devices
-    def existingChild = getChildDevices()?.find { it.deviceNetworkId == dni }
+    def existingChild = childDevs.find { it.deviceNetworkId == dni }
     if (existingChild) {
         throw new IllegalArgumentException("A device with network ID '${dni}' already exists: '${existingChild.label ?: existingChild.name}' (ID: ${existingChild.id})")
     }
@@ -5878,11 +5893,12 @@ def toolUpdateDevice(args) {
                     targetRoomId = "0"
                     mcpLog("debug", "device", "update_device room: unassigning device from room")
                 } else {
+                    def cachedRooms = null
                     try {
-                        def rooms = getRooms()
-                        mcpLog("debug", "device", "update_device room: getRooms() returned ${rooms?.size() ?: 0} rooms")
-                        if (rooms) {
-                            def targetRoom = rooms.find { it.name?.toString()?.toLowerCase() == args.room?.toString()?.toLowerCase() }
+                        cachedRooms = getRooms()
+                        mcpLog("debug", "device", "update_device room: getRooms() returned ${cachedRooms?.size() ?: 0} rooms")
+                        if (cachedRooms) {
+                            def targetRoom = cachedRooms.find { it.name?.toString()?.toLowerCase() == args.room?.toString()?.toLowerCase() }
                             if (targetRoom) {
                                 targetRoomId = targetRoom.id?.toString()
                                 mcpLog("debug", "device", "update_device room: resolved '${args.room}' -> roomId=${targetRoomId}")
@@ -5893,11 +5909,7 @@ def toolUpdateDevice(args) {
                     }
 
                     if (targetRoomId == null) {
-                        def allRoomNames = []
-                        try {
-                            def rooms = getRooms()
-                            if (rooms) { allRoomNames = rooms.collect { it.name } }
-                        } catch (Exception e) { /* not available */ }
+                        def allRoomNames = cachedRooms ? cachedRooms.collect { it.name } : []
                         throw new RuntimeException("Room '${args.room}' not found.${allRoomNames ? ' Available rooms: ' + allRoomNames.join(', ') : ''}")
                     }
                 }
@@ -6439,7 +6451,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.6"
+    return "0.7.7"
 }
 
 def isNewerVersion(String remote, String local) {

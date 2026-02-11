@@ -261,7 +261,7 @@ All three:
 - Use `shouldRetryWithFreshCookie(e, isRetry)` to detect 401/403 errors and clear the cached cookie for automatic re-auth retry
 - Use `ignoreSSLIssues: true`
 
-### Shared Helper Methods (v0.7.6+)
+### Shared Helper Methods (v0.7.6+, updated v0.7.7)
 
 | Helper | Purpose |
 |--------|---------|
@@ -272,6 +272,7 @@ All three:
 | `toolToggleRule(ruleId, enable)` | Shared enable/disable logic for rules |
 | `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |
 | `clampPercent(value)` | Clamp integer to 0-100 range (in rule.groovy) |
+| `rescheduleSunTrigger(type, handler)` | Shared sunrise/sunset trigger rescheduling (in rule.groovy, v0.7.7+) |
 
 ### Hub Security Cookie Pattern
 
@@ -398,7 +399,7 @@ Room assignment and enable/disable use the hub's internal API at `http://127.0.0
 
 ### Version Management
 
-As of v0.7.6, most version references in `hubitat-mcp-server.groovy` are **centralized** via the `currentVersion()` function. Runtime code (handleInitialize, toolExportRule, toolGetLoggingStatus, toolGenerateBugReport, toolGetHubDetails, mainPage display) all call `currentVersion()` instead of hardcoding the version string.
+As of v0.7.6, most version references in `hubitat-mcp-server.groovy` are **centralized** via the `currentVersion()` function. Runtime code (handleInitialize, toolExportRule, toolGetLoggingStatus, toolGenerateBugReport, toolGetHubDetails, mainPage display) all call `currentVersion()` instead of hardcoding the version string. As of v0.7.7, tool execution errors use `isError: true` in the MCP result per protocol spec instead of JSON-RPC errors.
 
 When bumping the version, update these locations:
 - `currentVersion()` return value — **single source of truth** for runtime version
