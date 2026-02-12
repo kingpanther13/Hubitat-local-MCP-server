@@ -227,67 +227,34 @@
 
 ## Built-in Automation Equivalents
 
-> These are "meta-rule templates" — MCP tools that compose existing rule engine primitives into higher-level automation patterns. They don't require new sandbox capabilities, just smarter rule composition.
+> **Philosophy: prefer native Hubitat apps.** The MCP server was built to complement Hubitat, not replace it. These native apps (Room Lighting, Mode Manager, Button Controller, etc.) are well-maintained, have proper UIs, and are battle-tested. The MCP can already interact with the *effects* of these apps — it can read/set modes, control devices, trigger on device events, and see virtual devices they create.
+>
+> **The AI assistant is the wizard.** Rather than building dedicated wizard tools that generate MCP rules to replicate what native apps already do, the AI can compose rules on the fly using existing `create_rule` and the full rule engine. Dedicated MCP tooling for these patterns is **low priority** and would only be implemented if the MCP genuinely cannot interact with the native app's functionality in some way. Each item will be reviewed on a case-by-case basis.
 
-- [ ] **Room Lighting (room-centric lighting with vacancy mode)** — `Difficulty: 4 | Effort: L`
-  > *Feasible.* All building blocks exist: `device_event` triggers on motion sensors with duration for timeout, `illuminance`/`mode`/`time_range` conditions, `device_command` actions, `if_then_else` for vacancy logic, `delay` + `cancel_delayed` for auto-off timers, `capture_state`/`restore_state` for returning to prior state. Vacancy mode (lights only turn off, never auto-on) uses a hub variable flag in an `if_then_else` gate. Complexity is in the rule composition logic, not the platform.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_room_lighting` MCP wizard tool
-  > 2. Accept motion sensors, light devices, timeout, lux threshold, mode-specific levels
-  > 3. Generate rules using multi-device triggers + condition chains
-  > 4. Use hub variable for vacancy mode toggle
-  > 5. Use `cancel_delayed` on motion re-detection to reset timeout timer
+- [ ] **Room Lighting (room-centric lighting with vacancy mode)** — `Low priority`
+  > *Native app preferred.* Hubitat's built-in Room Lighting app handles this well. The MCP can already control all the same devices, trigger on motion events, and use `if_then_else` / `delay` / `cancel_delayed` to build equivalent logic via `create_rule` if needed. No dedicated MCP tool required unless a gap is identified where MCP cannot interact with Room Lighting's behavior.
 
-- [ ] **Zone Motion Controller (multi-sensor zones)** — `Difficulty: 3 | Effort: M`
-  > *Feasible.* Create a Virtual Motion Sensor via `create_virtual_device`, then a rule with multi-device `device_event` triggers (`matchMode: "any"`) watching all zone sensors. When any goes active, set the virtual device active. When one goes inactive, check all others via `device_state` conditions or a variable counter (`variable_math` increment/decrement), and only set inactive after a configurable delay.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_zone_motion` MCP wizard tool
-  > 2. Auto-create Virtual Motion Sensor via existing tool
-  > 3. Generate rule with multi-device triggers and counter-based zone logic
-  > 4. Configurable "zone inactive" delay via `delay` + `cancel_delayed`
+- [ ] **Zone Motion Controller (multi-sensor zones)** — `Low priority`
+  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
 
-- [ ] **Mode Manager (automated mode changes)** — `Difficulty: 2 | Effort: S`
-  > *Feasible.* Direct composition of existing primitives: `time` triggers (specific time, sunrise/sunset with offset) + `set_mode` action for time-based changes. `device_event` on presence sensors + `presence` conditions + `set_mode` for presence-based changes. First-to-arrive/last-to-leave uses a hub variable counter incremented/decremented by presence events.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_mode_manager` MCP wizard tool
-  > 2. Accept schedule (time→mode mappings) and/or presence sensor config
-  > 3. Generate time-triggered rules for scheduled mode changes
-  > 4. Generate presence-triggered rules with counter logic for first/last detection
+- [ ] **Mode Manager (automated mode changes)** — `Low priority`
+  > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `get_modes`/`set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
 
-- [ ] **Button Controller (streamlined button-to-action mapping)** — `Difficulty: 2 | Effort: S`
-  > *Feasible.* The `button_event` trigger already supports device, button number (1–20), and action type (pushed/held/doubleTapped/released). A wizard tool accepts a mapping format (button+action → commands) and generates rules with `button_event` triggers. Can create one rule per mapping or a single rule with `if_then_else` branching.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_button_mapping` MCP wizard tool
-  > 2. Accept device ID and array of {button, action, commands} mappings
-  > 3. Generate rules with `button_event` triggers and corresponding actions
+- [ ] **Button Controller (streamlined button-to-action mapping)** — `Low priority`
+  > *Native app preferred.* Hubitat's built-in Button Controller handles this natively. The MCP rule engine already has `button_event` triggers with full support for button numbers (1–20) and action types (pushed/held/doubleTapped/released). The AI can create these rules directly via `create_rule`. No dedicated tool needed.
 
-- [ ] **Thermostat Scheduler (schedule-based setpoints)** — `Difficulty: 2 | Effort: S`
-  > *Feasible.* Everything needed exists: `time` triggers, `set_thermostat` action (supports thermostatMode, heatingSetpoint, coolingSetpoint, fanMode), `mode` and `days_of_week` conditions. Example: "At 7:00 AM on weekdays when mode is Home, set heating to 72" = one rule.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_thermostat_schedule` MCP wizard tool
-  > 2. Accept schedule definition (time, days, mode → setpoints)
-  > 3. Generate one rule per schedule point (e.g., wake/leave/return/sleep = 4 rules)
+- [ ] **Thermostat Scheduler (schedule-based setpoints)** — `Low priority`
+  > *Native app preferred.* Hubitat's built-in Thermostat Scheduler handles schedule-based setpoints. The MCP rule engine already has `time` triggers, `set_thermostat` actions, `mode` and `days_of_week` conditions — the AI can compose schedule rules directly. No dedicated tool needed unless MCP cannot interact with the native scheduler's effects.
 
-- [ ] **Lock Code Manager** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* Basic CRUD via `send_command`: `setCode(slot, code, name)`, `deleteCode(slot)`, `get_attribute` for `lockCodes`. Event tracking via `device_event` on `lastCodeName`. Temporary codes via time-triggered `deleteCode`. Limitations: many drivers encrypt `lockCodes` (showing `????` for PINs), Z-Wave code setting can be slow, and code inventory management needs hub variables or file storage.
-  >
-  > **Implementation plan:**
-  > 1. Create `manage_lock_codes` MCP tool wrapping send_command for lock code operations
-  > 2. Add code inventory tracking in hub variables or File Manager
-  > 3. Support temporary codes via auto-generated time-triggered deletion rules
-  > 4. Track lock/unlock events with user identification via `lastCodeName`
+- [ ] **Lock Code Manager** — `Low priority — review needed`
+  > *May warrant a dedicated tool.* Hubitat's built-in Lock Code Manager handles code management via a UI. The MCP can already send lock code commands via `send_command` (`setCode`, `deleteCode`) and read `lockCodes`/`lastCodeName` attributes, so basic interaction is possible today. However, the native app's internal code inventory and temporary code scheduling are not directly accessible. A dedicated tool may add value for programmatic code management if the native app's outputs prove insufficient. **Needs case-by-case review.**
 
-- ~~[ ] **Groups and Scenes (Zigbee group messaging)**~~ — `Difficulty: N/A | Effort: N/A`
+- ~~[ ] **Groups and Scenes (Zigbee group messaging)**~~ — `Not feasible`
   > *Not feasible.* The `zigbee` object and `sendHubCommand()` with `Protocol.ZIGBEE` are only available in drivers, not apps. The MCP server is an app and cannot send raw Zigbee commands or manage Zigbee group IDs. Zigbee group management is handled by closed-source platform internals with no documented HTTP API endpoints.
   >
   > **Alternatives already available:**
+  > - **Leverage built-in Groups and Scenes app**: Guide users to create Zigbee groups via the built-in app, then control the resulting group activator device through MCP's `send_command` (group activator devices are regular switch/dimmer devices that MCP can already control)
   > - **Software-level group control**: Create rules that send commands to multiple devices sequentially — already possible via multi-device rules or `device_command` actions
-  > - **Leverage built-in Groups and Scenes app**: Guide users to create Zigbee groups via the built-in app, then control the resulting group activator device through MCP's `send_command` (group activator devices are regular switch/dimmer devices)
   > - **Scene capture/restore**: The existing `capture_state`/`restore_state` actions provide scene-like functionality across multiple devices
 
 ---
@@ -460,49 +427,19 @@
 
 ## Advanced Automation Patterns
 
-- [ ] **Occupancy / room state machine** — `Difficulty: 3 | Effort: M`
-  > *Feasible.* Build on existing rule engine primitives. A hub variable `roomState_<room>` holds the current state (vacant/occupied/engaged/checking). Multiple device_event triggers (motion, contact, presence sensors) feed into `if_then_else` chains that check and transition the state. Duration-based triggers handle the "checking" timeout. Can be built as a wizard tool that auto-creates the necessary rules and variables.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_occupancy_tracker` MCP wizard tool
-  > 2. Accept room name, sensor device IDs, and timeout values
-  > 3. Create hub variable for room state
-  > 4. Generate rules for state transitions:
-  >    - Motion active → set "occupied"
-  >    - Motion inactive for X min → set "checking"
-  >    - Still inactive for Y min → set "vacant"
-  >    - Contact sensor + motion → set "engaged" (manual override)
-  > 5. Other rules can use `variable` condition to check room state
+> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `create_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
 
-- [ ] **Presence-based automation (first-to-arrive, last-to-leave)** — `Difficulty: 2 | Effort: S–M`
-  > *Feasible.* Use a hub variable `homeCount` tracking the number of present people. `device_event` triggers on presence sensors increment/decrement via `variable_math`. Rules fire when `homeCount` transitions from 0→1 (first arrive) or 1→0 (last leave). The `singleThreaded: true` on child apps mitigates race conditions from simultaneous presence events.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_presence_automation` MCP wizard tool
-  > 2. Accept presence sensor device IDs and first-arrive/last-leave actions
-  > 3. Create `homeCount` hub variable
-  > 4. Generate rules: presence arrived → increment + check if count==1 (first)
-  > 5. Generate rules: presence departed → decrement + check if count==0 (last)
+- [ ] **Occupancy / room state machine** — `No new tools needed`
+  > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `create_rule` and `set_variable`.
 
-- [ ] **Weather-based triggers** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* **Best approach (no code changes):** Many Hubitat users have weather device drivers installed (OpenWeatherMap, Weather Underground, etc.) that expose weather data as device attributes. If selected in MCP, these are already triggerable via `device_event` triggers and `device_state` conditions. **Built-in approach:** Add a periodic weather polling task using `httpGet()` to a weather API, storing results in hub variables or a virtual sensor device. Requires API key management.
-  >
-  > **Implementation plan:**
-  > 1. Document the "weather device driver" approach as preferred (zero code changes)
-  > 2. Optionally: create `configure_weather_polling` tool for users without a weather driver
-  > 3. Periodic `schedule()` calls weather API via `httpGet()`
-  > 4. Store results in hub variables or update a Virtual Omni Sensor
-  > 5. Rules trigger on variable/device changes using existing primitives
+- [ ] **Presence-based automation (first-to-arrive, last-to-leave)** — `No new tools needed`
+  > *Already achievable.* The AI can compose this: a hub variable `homeCount` tracks present people. `device_event` triggers on presence sensors increment/decrement via `variable_math`. Rules with `variable` conditions fire when `homeCount` transitions 0→1 (first arrive) or 1→0 (last leave). All building blocks exist today.
 
-- [ ] **Vacation mode (random light cycling, auto-lock, energy savings)** — `Difficulty: 2 | Effort: S–M`
-  > *Feasible.* All building blocks exist. `new Random()` is confirmed available in the sandbox. Compose multiple rules: mode change to "Away"/"Vacation" triggers capture_state + lock all locks + adjust thermostat. A `periodic` trigger (every 15–30 min) with mode condition cycles random lights using `Random` for delay offsets. Mode return triggers restore_state.
-  >
-  > **Implementation plan:**
-  > 1. Create `create_vacation_mode` MCP wizard tool
-  > 2. Accept light devices, lock devices, thermostat, away setpoints
-  > 3. Generate "activation" rule: mode→Away triggers state capture + locks + thermostat
-  > 4. Generate "light cycling" rule: periodic trigger + mode condition + random light toggling
-  > 5. Generate "return" rule: mode→Home triggers state restore
+- [ ] **Weather-based triggers** — `No new tools needed`
+  > *Already achievable with weather device drivers.* Many Hubitat users have weather drivers installed (OpenWeatherMap, Weather Underground, etc.) that expose weather data as device attributes. If the user selects the weather device in MCP, it's already triggerable via `device_event` triggers and `device_state` conditions — zero code changes needed. For users without a weather driver, the AI could create a `periodic` rule with `http_request` actions to poll a weather API and store results in hub variables.
+
+- [ ] **Vacation mode (random light cycling, auto-lock, energy savings)** — `No new tools needed`
+  > *Already achievable.* The AI can compose this using existing primitives: `mode_change` trigger → `capture_state` + lock commands + thermostat setpoints. A `periodic` trigger with `mode` condition cycles random lights (the rule engine has `repeat` actions and `delay` with variable offsets). Mode return triggers `restore_state`. `new Random()` is available in the sandbox for randomized timing. All building blocks exist today.
 
 ---
 
@@ -666,48 +603,54 @@
 
 ## Recommended Implementation Priority
 
-> Based on the ratio of user value to implementation effort.
+> Based on the ratio of user value to implementation effort. Excludes items that the AI can already compose using existing tools (occupancy, presence, vacation mode, weather, and native app equivalents like Mode Manager, Button Controller, etc.).
 
 ### Phase 1: Quick Wins (Small effort, high value)
 1. **Rule Machine Interoperability** (list, control, trigger, booleans) — All use `RMUtils`, implement as 1–2 tools
-2. **Thermostat Scheduler** — Pure rule composition, small effort
-3. **Mode Manager** — Pure rule composition, foundational automation
-4. **Button Controller** — Pure rule composition, very common use case
-5. **Search HPM repositories** — Public GraphQL API, immediate discovery value
-6. **Rate limiting / throttling** — Pure in-app logic, enables safer notifications
-7. **System start trigger** — Single `subscribe()` call
-8. **Date range condition** — Follows existing condition patterns
-9. **Device health watchdog** — Add scheduled task to existing tool
+2. **Search HPM repositories** — Public GraphQL API, immediate discovery value
+3. **Rate limiting / throttling** — Pure in-app logic, enables safer notifications
+4. **System start trigger** — Single `subscribe()` call
+5. **Date range condition** — Follows existing condition patterns
+6. **Device health watchdog** — Add scheduled task to existing tool
+7. **Private Boolean per rule** — Cross-rule coordination via parent mediation
+8. **Disable/Enable a device action** — Wraps existing `update_device` capability
+9. **File write/append/delete actions** — Wraps existing parent file methods
+10. **Music/siren control actions** — Convenience wrappers around `device_command`
 
 ### Phase 2: Core Enhancements (Medium effort, high value)
-10. **Webhook triggers** — New endpoint + trigger type
-11. **Event streaming / webhooks** — Subscribe + async POST
-12. **Pushover integration** — Simple API integration
-13. **Email via SendGrid** — Simple API integration
-14. **Zone Motion Controller** — Virtual device + rule composition
-15. **Presence-based automation** — Counter + rule composition
-16. **Fade dimmer / color temp** — Shared ramp utility
-17. **Rule-to-rule control** — Parent mediation, existing methods
-18. **File write/append/delete** — Existing parent methods
-19. **Notification routing** — Layer on top of Pushover/SendGrid
-20. **Z-Wave ghost detection** — Node table cross-reference
+11. **Webhook triggers** — New endpoint + trigger type
+12. **Event streaming / webhooks** — Subscribe + async POST
+13. **Pushover integration** — Simple API integration
+14. **Email via SendGrid** — Simple API integration
+15. **Fade dimmer / color temp** — Shared ramp utility
+16. **Rule-to-rule control** — Parent mediation, existing methods
+17. **Notification routing** — Layer on top of Pushover/SendGrid
+18. **Z-Wave ghost detection** — Node table cross-reference
+19. **Variable change events** — Location event on variable write
+20. **Per-mode actions** — Multi-branch action type
 
 ### Phase 3: Advanced Features (Large effort, specialized value)
-21. **Room Lighting** — Complex wizard tool, benefits from Zone Motion
-22. **Occupancy state machine** — Multi-rule composition
-23. **Vacation mode** — Multi-rule composition
-24. **Lock Code Manager** — Complex device interaction
-25. **Boolean expression builder** — Recursive tree evaluation + migration
-26. **Required expressions / gates** — Continuous monitoring architecture
-27. **MQTT via companion driver** — Third file, driver development
-28. **Dashboard create/modify/delete** — Internal endpoint approach, needs hub testing
-29. **Scheduled reports** — Aggregation + scheduling + delivery
+21. **Boolean expression builder** — Recursive tree evaluation + migration
+22. **Required expressions / gates** — Continuous monitoring architecture
+23. **MQTT via companion driver** — Third file, driver development
+24. **Dashboard create/modify/delete** — Internal endpoint approach, needs hub testing
+25. **Scheduled reports** — Aggregation + scheduling + delivery
+26. **Energy monitoring** — Aggregate power/energy across devices
+27. **Scene management** — Scene-oriented wrappers around captured state
 
 ### Phase 4: Exploratory (Needs testing or has significant limitations)
-30. **Hub variable change triggers** — Polling trade-offs
-31. **Wait for Event / Expression** — Complex state persistence
-32. **Repeat While / Until** — Loop safety concerns
-33. **Hub Variable Connectors** — Custom driver dependency
-34. **Install packages via HPM** — HPM sync fragmentation
-35. **Standalone virtual devices** — API endpoint unverified
-36. **Event history / analytics** — Platform 7-day limit
+28. **Hub variable change triggers** — Polling trade-offs
+29. **Wait for Event / Expression** — Complex state persistence
+30. **Repeat While / Until** — Loop safety concerns
+31. **Hub Variable Connectors** — Custom driver dependency
+32. **Install packages via HPM** — HPM sync fragmentation
+33. **Standalone virtual devices** — API endpoint unverified
+34. **Event history / analytics** — Platform 7-day limit
+
+### Low Priority: Native App Equivalents (only if MCP interaction gaps found)
+35. **Room Lighting** — Use native app; review if MCP can't interact with its effects
+36. **Zone Motion Controller** — Use native app; MCP can already see its virtual device
+37. **Mode Manager** — Use native app; MCP already reads/sets modes
+38. **Button Controller** — Use native app; MCP already has `button_event` triggers
+39. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
+40. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
