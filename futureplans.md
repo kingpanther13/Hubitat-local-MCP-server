@@ -347,20 +347,37 @@
 
 ## Dashboard Management
 
-- [ ] **Read and modify existing dashboards** — `Difficulty: 4 | Effort: L`
-  > *Partially feasible.* Internal endpoints exist for reading/writing dashboard layouts: `GET/POST /apps/api/<dashboardAppId>/dashboard/<id>/layout?access_token=<token>`. The dashboard list is at `/apps/api/<dashboardAppId>/menu`. However, the Dashboard app's access token is separate from MCP's token and would need user configuration. The layout JSON format is undocumented.
+- [ ] **Create, modify, delete dashboards programmatically** — `Difficulty: 4 | Effort: L`
+  > *Feasible via internal HTTP endpoints (needs empirical testing).* Hubitat's dashboard system uses a parent-child app pattern: "Hubitat Dashboard" is the parent, each individual dashboard is a child app. Deep research uncovered the `/installedapp/createchild/` internal endpoint that the web UI uses.
+  >
+  > **Key discoveries:**
+  > - **Dashboard listing**: `GET /dashboard/all?pinToken=<token>` or via `GET /hub2/appsList` filtering for dashboard children
+  > - **Dashboard creation**: `GET /installedapp/createchild/hubitat/Dashboard/parent/{dashboardParentAppId}` — creates a new child dashboard under the parent app. Returns a redirect to `/installedapp/configure/{newChildId}`
+  > - **Dashboard layout read**: `GET /apps/api/<parentAppId>/dashboard/<childAppId>/layout?access_token=<token>`
+  > - **Dashboard layout write**: `POST /apps/api/<parentAppId>/dashboard/<childAppId>/layout` with Bearer token auth
+  > - **Dashboard deletion**: Likely `POST /installedapp/configure/{childId}` with remove action, or `GET /installedapp/remove/{childId}` (exact endpoint needs testing)
+  > - **Child app type**: namespace `hubitat`, name `Dashboard` (confirmed from error messages in community forums)
+  >
+  > **Important caveats:**
+  > - `addChildApp()` in Groovy **cannot** create dashboard children from the MCP app (parent mismatch), so the HTTP endpoint approach is required
+  > - The `createchild` endpoint returns an HTTP redirect (302), not JSON — need to extract new child ID from the Location header
+  > - Post-creation configuration (dashboard name, authorized devices) requires a separate POST to `/installedapp/configure/{id}` with form-encoded data
+  > - The Dashboard parent app must already be installed on the hub
+  > - The `pinToken` for `/dashboard/all` needs to be obtained from the Dashboard parent app or may not be required for local API calls
+  > - Firmware ≥ 2.3.9 introduced "Easy Dashboard" as an alternative — its internal structure may differ
+  > - All endpoints are undocumented and may change across firmware versions
   >
   > **Implementation plan:**
-  > 1. Add Dashboard app ID and access token to MCP app preferences
-  > 2. Create `list_dashboards`, `get_dashboard_layout`, `update_dashboard_layout` tools
-  > 3. Use `hubInternalGet`/`hubInternalPost` to read/write layout JSON
-  > 4. Document the undocumented layout format based on reverse engineering
-  > 5. Accept that create/delete is not API-accessible — guide users to the web UI
-
-- ~~[ ] **Create and delete dashboards programmatically**~~ — `Difficulty: N/A | Effort: N/A`
-  > *Not feasible.* Creating a dashboard requires instantiating a new Hubitat Dashboard child app, which is not possible from another app's Groovy code. No known HTTP endpoint exists for dashboard creation or deletion. The hub UI uses an internal app installation flow not exposed via API.
-  >
-  > **Alternative:** Provide a `list_dashboards` tool that returns existing dashboards with direct links to the Hubitat web UI for creation/deletion. Combined with the read/modify capabilities above, this covers the majority of use cases.
+  > 1. Discover Dashboard parent app ID via `GET /hub2/appsList` (filter by app name)
+  > 2. Create `create_dashboard` tool: call `GET /installedapp/createchild/hubitat/Dashboard/parent/{parentId}`, extract new child ID from redirect
+  > 3. Configure new dashboard: `POST /installedapp/configure/{newId}` with name and authorized devices
+  > 4. Create `list_dashboards` tool via `/dashboard/all` or `/hub2/appsList`
+  > 5. Create `get_dashboard_layout` / `update_dashboard_layout` tools for layout JSON read/write
+  > 6. Create `delete_dashboard` tool: test `/installedapp/remove/{childId}` endpoint
+  > 7. Add Dashboard parent app ID and access token to MCP app preferences
+  > 8. Requires Hub Admin Write gate for safety
+  > 9. **Phase 1**: Implement list + read/modify layout (known-working endpoints)
+  > 10. **Phase 2**: Implement create/delete (requires empirical testing on hub hardware)
 
 ---
 
@@ -645,8 +662,6 @@
 
 - ~~**Device pairing assistance (active)**~~ — Radio inclusion is interactive and undocumented. MCP's request-response model can't handle multi-step pairing flows. **→ Pairing guidance tool added as alternative**
 
-- ~~**Create/delete dashboards programmatically**~~ — No API for dashboard creation/deletion. Dashboard instantiation requires the hub's internal app installation flow. **→ Read/modify existing dashboards is feasible and has been added**
-
 ---
 
 ## Recommended Implementation Priority
@@ -685,7 +700,7 @@
 25. **Boolean expression builder** — Recursive tree evaluation + migration
 26. **Required expressions / gates** — Continuous monitoring architecture
 27. **MQTT via companion driver** — Third file, driver development
-28. **Dashboard read/modify** — Undocumented format reverse engineering
+28. **Dashboard create/modify/delete** — Internal endpoint approach, needs hub testing
 29. **Scheduled reports** — Aggregation + scheduling + delivery
 
 ### Phase 4: Exploratory (Needs testing or has significant limitations)
