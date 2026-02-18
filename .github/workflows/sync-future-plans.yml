@@ -17,7 +17,7 @@ jobs:
         run: |
           # Read futureplans.md, strip the top-level heading (line 1),
           # and demote all headings by one level (## -> ###, ### -> ####)
-          CONTENT=$(tail -n +2 futureplans.md | sed 's/^## /### /; s/^### /#### /')
+          CONTENT=$(tail -n +2 futureplans.md | sed 's/^### /#### /; s/^## /### /')
 
           # Build the replacement block with marker comments
           REPLACEMENT="<!-- FUTURE_PLANS_START -->"
