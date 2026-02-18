@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 74 MCP tools for device control, automation rules, room management, hub administration, and diagnostics.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 74 MCP tools for device control, automation rules, room management, hub administration, and diagnostics. The tools are organized as **18 core tools** (always visible) plus **8 domain-named gateways** that proxy 56 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -41,7 +41,7 @@ Always check the device's `supportedCommands` (from `get_device`) before sending
 
 ### Virtual Devices
 
-MCP can create virtual devices (switches, sensors, buttons, dimmers, etc.) via `create_virtual_device`. These are automatically accessible without manual selection. Use `delete_virtual_device` to remove them (not `delete_device`).
+MCP can create virtual devices (switches, sensors, buttons, dimmers, etc.) via `create_virtual_device` (in `manage_virtual_devices` gateway). These are automatically accessible without manual selection. Use `delete_virtual_device` to remove them (not `delete_device`).
 
 ## Automation Rules
 
@@ -99,9 +99,12 @@ Use `create_rule` with a JSON structure. For the complete rule structure referen
 
 ### Rule Management
 
+Core tools (always visible):
 - `list_rules` / `get_rule` - View rules and their configuration
 - `update_rule` - Modify triggers, conditions, or actions
 - `enable_rule` / `disable_rule` - Toggle rules on/off
+
+Via `manage_rules_admin` gateway:
 - `test_rule` - Dry-run to see what would happen without executing
 - `export_rule` / `import_rule` / `clone_rule` - Portability operations
 - `delete_rule` - Removes a rule (auto-backs up to File Manager first)
@@ -110,17 +113,23 @@ Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
 ## Room Management
 
-5 tools for room CRUD: `list_rooms`, `get_room`, `create_room`, `delete_room`, `rename_room`. Room creation/deletion/renaming requires Hub Admin Write.
+5 tools via `manage_rooms` gateway: `list_rooms`, `get_room`, `create_room`, `delete_room`, `rename_room`. Room creation/deletion/renaming requires Hub Admin Write.
 
 ## Hub Administration
 
-### Read Tools (require Hub Admin Read enabled)
+All hub admin tools are accessed via gateways:
 
-`get_hub_details`, `get_hub_health`, `list_hub_apps`, `list_hub_drivers`, `get_app_source`, `get_driver_source`, `get_zwave_details`, `get_zigbee_details`
+### Via `manage_hub_admin` gateway (10 tools)
 
-### Write Tools (require Hub Admin Write enabled)
+Read tools (require Hub Admin Read): `get_hub_details`, `get_hub_health`, `get_zwave_details`, `get_zigbee_details`
+Write tools (require Hub Admin Write): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `delete_device`, `check_for_update`
 
-**Pre-flight checklist for ALL write operations:**
+### Via `manage_apps_drivers` gateway (13 tools)
+
+`list_hub_apps`, `list_hub_drivers`, `get_app_source`, `get_driver_source`, `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`, `list_item_backups`, `get_item_backup`, `restore_item_backup`
+
+### Pre-flight checklist for ALL write operations
+
 1. A hub backup must exist within the last 24 hours (`create_hub_backup`)
 2. Tell the user what you are about to do
 3. Get explicit confirmation
@@ -137,28 +146,34 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 
 ## Diagnostics and Monitoring
 
+Core tool: `get_device_events` (always visible)
+
+Via `manage_logs_diagnostics` gateway:
 - `get_hub_logs` - Hub log entries (filter by level and source)
-- `get_device_events` / `get_device_history` - Device event data
+- `get_device_history` - Device event history (up to 7 days)
 - `get_hub_performance` - Memory, temperature, database size
 - `device_health_check` - Find stale/offline devices
 - `get_debug_logs` / `set_log_level` - MCP-specific debug logs
 - `generate_bug_report` - Comprehensive diagnostic report
+- `list_captured_states` / `delete_captured_state` / `clear_captured_states` - State snapshots
 
 ## File Manager
 
-4 tools for hub file operations: `list_files`, `read_file`, `write_file`, `delete_file`. Write/delete require Hub Admin Write. Files live at `http://<HUB_IP>/local/<filename>`.
+Via `manage_files` gateway: `list_files`, `read_file`, `write_file`, `delete_file`. Write/delete require Hub Admin Write. Files live at `http://<HUB_IP>/local/<filename>`.
 
 ## Item Backup System
 
-Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup`, `restore_item_backup` to manage backups.
+Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup`, `restore_item_backup` (via `manage_apps_drivers` gateway) to manage backups.
 
 ## System Tools
 
+Core tools (always visible):
 - `get_hub_info` - Basic hub information
 - `get_modes` / `set_mode` - Location modes (Home, Away, Night, etc.)
 - `get_hsm_status` / `set_hsm` - Home Security Monitor
+
+Via `manage_hub_variables` gateway:
 - `list_variables` / `get_variable` / `set_variable` - Hub variables
-- `check_for_update` - Check for MCP server updates
 
 ## Performance Tips
 
