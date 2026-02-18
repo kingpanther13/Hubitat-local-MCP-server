@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.6 - Code review: bug fixes, deduplication, version centralization, helper extraction
+ * Version: 0.8.0 - Category gateway proxy: consolidate 56 tools behind 8 domain-named gateways (74→26 on tools/list)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -416,7 +416,187 @@ def handleToolsCall(msg) {
     }
 }
 
+// ==================== CATEGORY GATEWAY PROXY ====================
+// Domain-named gateways that consolidate lesser-used tools behind a single MCP tool per domain.
+// Each gateway: call with no args → catalog of tool schemas; call with tool + args → execute.
+// Modeled after ha-mcp PR #637 (category gateway proxy pattern).
+
+def getGatewayConfig() {
+    return [
+        manage_rules_admin: [
+            description: "Rule administration: delete, test, export, import, and clone rules.",
+            tools: ["delete_rule", "test_rule", "export_rule", "import_rule", "clone_rule"],
+            summaries: [
+                delete_rule: "Permanently delete a rule (auto-backs up first)",
+                test_rule: "Dry-run a rule without executing actions",
+                export_rule: "Export rule to JSON for backup/sharing",
+                import_rule: "Import rule from exported JSON",
+                clone_rule: "Clone an existing rule (starts disabled)"
+            ]
+        ],
+        manage_hub_variables: [
+            description: "Manage hub connector and rule engine variables.",
+            tools: ["list_variables", "get_variable", "set_variable"],
+            summaries: [
+                list_variables: "List all hub connector and rule engine variables",
+                get_variable: "Get a variable value",
+                set_variable: "Set a variable value (creates if doesn't exist)"
+            ]
+        ],
+        manage_rooms: [
+            description: "Manage hub rooms: list, view details, create, delete, and rename rooms.",
+            tools: ["list_rooms", "get_room", "create_room", "delete_room", "rename_room"],
+            summaries: [
+                list_rooms: "List all rooms with IDs, names, and device counts",
+                get_room: "Get room details with assigned devices",
+                create_room: "Create a new room (Hub Admin Write + confirm)",
+                delete_room: "Permanently delete a room (Hub Admin Write + confirm)",
+                rename_room: "Rename a room (Hub Admin Write + confirm)"
+            ]
+        ],
+        manage_virtual_devices: [
+            description: "Create, list, and delete MCP-managed virtual devices.",
+            tools: ["create_virtual_device", "list_virtual_devices", "delete_virtual_device"],
+            summaries: [
+                create_virtual_device: "Create an MCP-managed virtual device (Hub Admin Write)",
+                list_virtual_devices: "List MCP-managed virtual devices with states",
+                delete_virtual_device: "Delete an MCP-managed virtual device (Hub Admin Write)"
+            ]
+        ],
+        manage_hub_admin: [
+            description: "Hub administration: detailed info, radio details, health, backups, reboot, maintenance, device deletion, and updates.",
+            tools: ["get_hub_details", "get_zwave_details", "get_zigbee_details", "get_hub_health", "create_hub_backup", "reboot_hub", "shutdown_hub", "zwave_repair", "delete_device", "check_for_update"],
+            summaries: [
+                get_hub_details: "Extended hub info (model, firmware, memory, temp, network)",
+                get_zwave_details: "Z-Wave radio info (firmware, devices)",
+                get_zigbee_details: "Zigbee radio info (channel, PAN ID, devices)",
+                get_hub_health: "Hub health (memory, temperature, uptime, DB size)",
+                create_hub_backup: "Create full hub backup (required before admin writes)",
+                reboot_hub: "Reboot the hub (DISRUPTIVE, 1-3 min downtime)",
+                shutdown_hub: "Power OFF the hub (EXTREME, requires physical restart)",
+                zwave_repair: "Z-Wave network repair (DISRUPTIVE, 5-30 min)",
+                delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo)",
+                check_for_update: "Check if a newer version is available"
+            ]
+        ],
+        manage_apps_drivers: [
+            description: "Manage hub apps and drivers: list, view source, install, update, delete, and backup/restore code.",
+            tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "list_item_backups", "get_item_backup", "restore_item_backup"],
+            summaries: [
+                list_hub_apps: "List all installed apps on the hub",
+                list_hub_drivers: "List all installed drivers on the hub",
+                get_app_source: "Get app Groovy source code",
+                get_driver_source: "Get driver Groovy source code",
+                install_app: "Install new app from Groovy source (Hub Admin Write)",
+                install_driver: "Install new driver from Groovy source (Hub Admin Write)",
+                update_app_code: "Modify existing app code (Hub Admin Write, CRITICAL)",
+                update_driver_code: "Modify existing driver code (Hub Admin Write, CRITICAL)",
+                delete_app: "Permanently delete an app (Hub Admin Write, DESTRUCTIVE)",
+                delete_driver: "Permanently delete a driver (Hub Admin Write, DESTRUCTIVE)",
+                list_item_backups: "List auto-created source code backups",
+                get_item_backup: "Get source from a backup",
+                restore_item_backup: "Restore app/driver to backed-up version (Hub Admin Write)"
+            ]
+        ],
+        manage_logs_diagnostics: [
+            description: "Logs, monitoring, and diagnostics: system logs, device history, performance, health checks, debug logs, rule diagnostics, and captured states.",
+            tools: ["get_hub_logs", "get_device_history", "get_hub_performance", "device_health_check", "get_debug_logs", "clear_debug_logs", "get_rule_diagnostics", "set_log_level", "get_logging_status", "generate_bug_report", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            summaries: [
+                get_hub_logs: "Get Hubitat system logs (filter by level/source)",
+                get_device_history: "Get device event history (up to 7 days)",
+                get_hub_performance: "Hub performance snapshot with trend tracking",
+                device_health_check: "Check all devices for stale/offline status",
+                get_debug_logs: "Get MCP debug logs",
+                clear_debug_logs: "Clear all debug log entries",
+                get_rule_diagnostics: "Comprehensive rule diagnostics",
+                set_log_level: "Set minimum log level threshold",
+                get_logging_status: "Get logging system status and capacity",
+                generate_bug_report: "Generate formatted GitHub bug report",
+                list_captured_states: "List captured device states",
+                delete_captured_state: "Delete a specific captured state",
+                clear_captured_states: "Clear all captured device states"
+            ]
+        ],
+        manage_files: [
+            description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
+            tools: ["list_files", "read_file", "write_file", "delete_file"],
+            summaries: [
+                list_files: "List files in File Manager (names, sizes, URLs)",
+                read_file: "Read file content (supports chunked reading)",
+                write_file: "Write file to File Manager (Hub Admin Write)",
+                delete_file: "Delete file from File Manager (Hub Admin Write)"
+            ]
+        ]
+    ]
+}
+
+def handleGateway(gatewayName, toolName, toolArgs) {
+    def config = getGatewayConfig()[gatewayName]
+    if (!config) {
+        throw new IllegalArgumentException("Unknown gateway: ${gatewayName}")
+    }
+
+    if (!toolName) {
+        // Catalog mode: return full schemas for all tools in this gateway
+        def allDefs = getAllToolDefinitions()
+        def defMap = [:]
+        allDefs.each { defMap[it.name] = it }
+
+        return [
+            gateway: gatewayName,
+            mode: "catalog",
+            message: "Call again with tool='<name>' and args={...} to execute a tool.",
+            tools: config.tools.collect { name ->
+                def d = defMap[name]
+                [name: name, description: d?.description, inputSchema: d?.inputSchema]
+            }
+        ]
+    }
+
+    if (!config.tools.contains(toolName)) {
+        throw new IllegalArgumentException("Unknown tool '${toolName}' in ${gatewayName}. Available: ${config.tools.join(', ')}")
+    }
+
+    // Prevent recursive gateway calls
+    if (getGatewayConfig().containsKey(toolName)) {
+        throw new IllegalArgumentException("Cannot call a gateway from within a gateway")
+    }
+
+    return executeTool(toolName, toolArgs ?: [:])
+}
+
+// Returns tool definitions visible to the MCP client (base tools + gateway tools)
 def getToolDefinitions() {
+    def proxiedNames = [] as Set
+    getGatewayConfig().each { gw, config -> proxiedNames.addAll(config.tools) }
+
+    // Base tools: all tools NOT behind a gateway
+    def baseTools = getAllToolDefinitions().findAll { !proxiedNames.contains(it.name) }
+
+    // Gateway tools: one tool per gateway
+    def gatewayTools = getGatewayConfig().collect { gwName, config ->
+        def catalog = config.tools.collect { toolName ->
+            "- ${toolName}: ${config.summaries[toolName]}"
+        }.join("\n")
+
+        [
+            name: gwName,
+            description: "${config.description}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: config.tools],
+                    args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
+                ]
+            ]
+        ]
+    }
+
+    return baseTools + gatewayTools
+}
+
+// Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
+def getAllToolDefinitions() {
     return [
         // Device Tools
         [
@@ -1408,6 +1588,17 @@ def executeTool(toolName, args) {
 
         // Tool Guide
         case "get_tool_guide": return toolGetToolGuide(args.section)
+
+        // Category Gateway Proxy Tools
+        case "manage_rules_admin":
+        case "manage_hub_variables":
+        case "manage_rooms":
+        case "manage_virtual_devices":
+        case "manage_hub_admin":
+        case "manage_apps_drivers":
+        case "manage_logs_diagnostics":
+        case "manage_files":
+            return handleGateway(toolName, args.tool, args.args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -6439,7 +6630,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.6"
+    return "0.8.0"
 }
 
 def isNewerVersion(String remote, String local) {
