@@ -539,9 +539,7 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 
     if (!toolName) {
         // Catalog mode: return full schemas for all tools in this gateway
-        def allDefs = getAllToolDefinitions()
-        def defMap = [:]
-        allDefs.each { defMap[it.name] = it }
+        def defMap = getAllToolDefinitions().collectEntries { [(it.name): it] }
 
         return [
             gateway: gatewayName,
@@ -568,14 +566,14 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 
 // Returns tool definitions visible to the MCP client (base tools + gateway tools)
 def getToolDefinitions() {
-    def proxiedNames = [] as Set
-    getGatewayConfig().each { gw, config -> proxiedNames.addAll(config.tools) }
+    def gatewayConfig = getGatewayConfig()
+    def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
 
     // Base tools: all tools NOT behind a gateway
     def baseTools = getAllToolDefinitions().findAll { !proxiedNames.contains(it.name) }
 
     // Gateway tools: one tool per gateway
-    def gatewayTools = getGatewayConfig().collect { gwName, config ->
+    def gatewayTools = gatewayConfig.collect { gwName, config ->
         def catalog = config.tools.collect { toolName ->
             "- ${toolName}: ${config.summaries[toolName]}"
         }.join("\n")
