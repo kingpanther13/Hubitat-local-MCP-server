@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 74 tools (31 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 73 tools (31 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 74 tools (31 on tools/list + gateways) │  │
+│  │  - 73 tools (31 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,25 +93,25 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 74 items to 31. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 73 items to 31. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 10 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 21 ungrouped tools + 10 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 74 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 73 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
 
-**10 gateways (53 proxied tools):**
+**10 gateways (52 proxied tools):**
 | Gateway | Tools | Domain |
 |---------|-------|--------|
 | `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
 | `manage_hub_variables` | 3 | Hub connector and rule engine variables |
 | `manage_rooms` | 5 | Room CRUD |
-| `manage_hub_info` | 5 | Hub details, health (read-only) |
+| `manage_hub_info` | 4 | Hub details, network info (read-only) |
 | `manage_hub_maintenance` | 5 | Hub backup, reboot, shutdown, device deletion (write) |
 | `manage_apps_drivers` | 6 | List/get apps, drivers, backups (read-only) |
 | `manage_code_changes` | 7 | Install/update/delete apps+drivers, restore backup (write) |
@@ -119,7 +119,7 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 | `manage_diagnostics` | 6 | Diagnostics, state capture |
 | `manage_files` | 4 | File Manager CRUD |
 
-**21 ungrouped tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `list_rules`, `get_rule`, `create_rule`, `update_rule`, `enable_rule`, `disable_rule`, `update_device`, `get_hub_info`, `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `get_tool_guide`, `create_virtual_device`, `list_virtual_devices`, `delete_virtual_device`
+**21 ungrouped tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `list_rules`, `get_rule`, `create_rule`, `update_rule`, `enable_rule`, `disable_rule`, `update_device`, `get_hub_info` (includes health data — memory, temp, DB size — when Hub Admin Read is enabled), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `get_tool_guide`, `create_virtual_device`, `list_virtual_devices`, `delete_virtual_device`
 
 **Safety gates are preserved:** All Hub Admin Read/Write checks live in the handler functions (e.g., `requireHubAdminRead()`, `requireHubAdminWrite(args.confirm)`), not in the dispatch layer. The gateway simply calls `executeTool()`, which calls the handler, which enforces the gate. No safety check is bypassed.
 

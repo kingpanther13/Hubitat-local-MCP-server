@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.0 - Category gateway proxy: consolidate 56 tools behind 8 domain-named gateways (74→26 on tools/list)
+ * Version: 0.8.0 - Category gateway proxy: consolidate 52 tools behind 10 domain-named gateways (73→31 on tools/list)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -458,13 +458,12 @@ def getGatewayConfig() {
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
         // Option B: manage_hub_admin split into info (read) + maintenance (write)
         manage_hub_info: [
-            description: "Hub information: detailed specs, radio status, health dashboard, and update checks.",
-            tools: ["get_hub_details", "get_zwave_details", "get_zigbee_details", "get_hub_health", "check_for_update"],
+            description: "Hub information: detailed specs, radio status, and update checks.",
+            tools: ["get_hub_details", "get_zwave_details", "get_zigbee_details", "check_for_update"],
             summaries: [
                 get_hub_details: "Extended hub info (model, firmware, memory, temp, network)",
                 get_zwave_details: "Z-Wave radio info (firmware, device count)",
                 get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count)",
-                get_hub_health: "Hub health dashboard (memory, temperature, uptime, DB size)",
                 check_for_update: "Check if a newer MCP server version is available"
             ]
         ],
@@ -817,7 +816,7 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "get_hub_info",
-            description: "Get information about the Hubitat hub",
+            description: "Get hub info including name, IP, firmware, uptime, and health data (memory, temperature, database size) when Hub Admin Read is enabled.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -1051,15 +1050,6 @@ Verify rule after creation.""",
                 properties: [:]
             ]
         ],
-        [
-            name: "get_hub_health",
-            description: "Get hub health: memory, temperature, uptime, database size. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [:]
-            ]
-        ],
-
         // ==================== MONITORING TOOLS ====================
         [
             name: "get_hub_logs",
@@ -1571,7 +1561,7 @@ def executeTool(toolName, args) {
         case "list_hub_drivers": return toolListHubDrivers(args)
         case "get_zwave_details": return toolGetZwaveDetails(args)
         case "get_zigbee_details": return toolGetZigbeeDetails(args)
-        case "get_hub_health": return toolGetHubHealth(args)
+        // get_hub_health merged into get_hub_info
 
         // Monitoring Tools
         case "get_hub_logs": return toolGetHubLogs(args)
@@ -2468,9 +2458,74 @@ def toolGetHubInfo() {
 
     try { info.model = hub?.hardwareID } catch (Exception e) { info.model = null }
     try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = null }
-    try { info.uptime = hub?.uptime } catch (Exception e) { info.uptime = null }
     try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = null }
     try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = null }
+
+    // Uptime (always available)
+    try {
+        def uptimeSec = hub?.uptime
+        if (uptimeSec && uptimeSec instanceof Number) {
+            def days = (uptimeSec / 86400).toInteger()
+            def hours = ((uptimeSec % 86400) / 3600).toInteger()
+            def mins = ((uptimeSec % 3600) / 60).toInteger()
+            info.uptimeSeconds = uptimeSec
+            info.uptimeFormatted = "${days}d ${hours}h ${mins}m"
+        }
+    } catch (Exception e) { info.uptimeSeconds = "unavailable" }
+
+    // Health data requires Hub Admin Read
+    if (settings.enableHubAdminRead) {
+        try {
+            def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+            if (freeMemory) {
+                info.freeMemoryKB = freeMemory.trim()
+                try {
+                    def memKB = freeMemory.trim() as Integer
+                    if (memKB < 50000) {
+                        info.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+                    } else if (memKB < 100000) {
+                        info.memoryNote = "Memory is moderate: ${memKB}KB free."
+                    }
+                } catch (NumberFormatException nfe) { /* non-numeric */ }
+            }
+        } catch (Exception e) { info.freeMemoryKB = "unavailable" }
+
+        try {
+            def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+            if (tempC) {
+                info.internalTempCelsius = tempC.trim()
+                try {
+                    def temp = tempC.trim() as Double
+                    if (temp > 70) {
+                        info.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+                    } else if (temp > 60) {
+                        info.temperatureNote = "Temperature is warm: ${temp}°C."
+                    }
+                } catch (NumberFormatException nfe) { /* non-numeric */ }
+            }
+        } catch (Exception e) { info.internalTempCelsius = "unavailable" }
+
+        try {
+            def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+            if (dbSize) {
+                info.databaseSizeKB = dbSize.trim()
+                try {
+                    def dbKB = dbSize.trim() as Integer
+                    if (dbKB > 500000) {
+                        info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+                    }
+                } catch (NumberFormatException nfe) { /* non-numeric */ }
+            }
+        } catch (Exception e) { info.databaseSizeKB = "unavailable" }
+
+        // MCP-specific stats
+        info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+        info.mcpRuleCount = getChildApps()?.size() ?: 0
+        info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+        info.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+    } else {
+        info.hubAdminReadDisabled = "Hub Admin Read is not enabled. The following data is excluded: free memory, internal temperature, database size, and MCP statistics. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
+    }
 
     return info
 }

@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize 53 lesser-used tools behind 10 gateway tools. The MCP `tools/list` shows 31 items (21 core + 10 gateways) instead of 74.
+As of v0.8.0, the server uses **domain-named gateways** to organize 52 lesser-used tools behind 10 gateway tools. The MCP `tools/list` shows 31 items (21 core + 10 gateways) instead of 73.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools

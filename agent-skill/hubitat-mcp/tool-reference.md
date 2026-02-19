@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 74 MCP tools. The server exposes **31 items on `tools/list`**: 21 core tools + 10 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 73 MCP tools. The server exposes **31 items on `tools/list`**: 21 core tools + 10 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -45,7 +45,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `get_hub_info` | Basic hub information. | None |
+| `get_hub_info` | Basic hub information; includes health data (memory, temp, DB size) when Hub Admin Read is enabled. | None |
 | `get_modes` | List location modes. | None |
 | `set_mode` | Change location mode (Home, Away, Night, etc.). | None |
 | `get_hsm_status` | Get Home Security Monitor status. | None |
@@ -97,16 +97,15 @@ Manage hub rooms: list, view details, create, delete, and rename.
 | `delete_room` | Delete a room (devices become unassigned). | Hub Admin Write |
 | `rename_room` | Rename an existing room. | Hub Admin Write |
 
-### manage_hub_info (5 tools)
+### manage_hub_info (4 tools)
 
-Hub information: detailed info, radio details, health, and update checks.
+Hub information: detailed info, radio details, and update checks.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_hub_details` | Model, firmware, IP, uptime, memory, temp, database. | Hub Admin Read |
 | `get_zwave_details` | Z-Wave radio info. | Hub Admin Read |
 | `get_zigbee_details` | Zigbee radio info. | Hub Admin Read |
-| `get_hub_health` | Health dashboard with warnings. | Hub Admin Read |
 | `check_for_update` | Check for MCP server updates. | None |
 
 ### manage_hub_maintenance (5 tools)

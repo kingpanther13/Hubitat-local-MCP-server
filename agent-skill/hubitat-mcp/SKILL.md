@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 74 MCP tools for device control, automation rules, room management, hub administration, and diagnostics. The tools are organized as **21 core tools** (always visible) plus **10 domain-named gateways** that proxy 53 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 73 MCP tools for device control, automation rules, room management, hub administration, and diagnostics. The tools are organized as **21 core tools** (always visible) plus **10 domain-named gateways** that proxy 52 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -119,9 +119,9 @@ Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
 All hub admin tools are accessed via gateways:
 
-### Via `manage_hub_info` gateway (5 tools)
+### Via `manage_hub_info` gateway (4 tools)
 
-Read-only hub information: `get_hub_details`, `get_zwave_details`, `get_zigbee_details`, `get_hub_health`, `check_for_update`
+Read-only hub information: `get_hub_details`, `get_zwave_details`, `get_zigbee_details`, `check_for_update`
 
 ### Via `manage_hub_maintenance` gateway (5 tools)
 
@@ -180,7 +180,7 @@ Source code is automatically backed up before modify/delete operations. Use `lis
 ## System Tools
 
 Core tools (always visible):
-- `get_hub_info` - Basic hub information
+- `get_hub_info` - Basic hub information; includes health data (memory, temp, DB size) when Hub Admin Read is enabled
 - `get_modes` / `set_mode` - Location modes (Home, Away, Night, etc.)
 - `get_hsm_status` / `set_hsm` - Home Security Monitor
 

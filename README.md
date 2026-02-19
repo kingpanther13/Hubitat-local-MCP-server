@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 74 MCP tools (31 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 73 MCP tools (31 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 74 tools total — 21 core tools are always visible, while 53 additional tools are organized behind 10 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 73 tools total — 21 core tools are always visible, while 52 additional tools are organized behind 10 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -212,9 +212,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (74 total — 31 on tools/list)
+### MCP Tools (73 total — 31 on tools/list)
 
-The server has 74 tools total. To keep the MCP `tools/list` manageable, **21 core tools** are always visible and **53 additional tools** are organized behind **10 domain-named gateways**. The AI sees 31 items on `tools/list` (21 + 10 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 73 tools total. To keep the MCP `tools/list` manageable, **21 core tools** are always visible and **52 additional tools** are organized behind **10 domain-named gateways**. The AI sees 31 items on `tools/list` (21 + 10 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (21) — Always visible on tools/list
 
@@ -259,7 +259,7 @@ The server has 74 tools total. To keep the MCP `tools/list` manageable, **21 cor
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_info` | Basic hub information |
+| `get_hub_info` | Hub info + health (memory, temp, DB size when Hub Admin Read enabled) |
 | `get_modes` | List location modes |
 | `set_mode` | Change location mode (Home, Away, Night, etc.) |
 | `get_hsm_status` | Get Home Security Monitor status |
@@ -329,14 +329,13 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>manage_hub_info</b> (5) — Hub information (read-only)</summary>
+<summary><b>manage_hub_info</b> (4) — Hub information (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
 | `get_hub_details` | Extended hub info (model, firmware, memory, temp, network) |
 | `get_zwave_details` | Z-Wave radio info (firmware, devices) |
 | `get_zigbee_details` | Zigbee radio info (channel, PAN ID, devices) |
-| `get_hub_health` | Hub health (memory, temperature, uptime, DB size) |
 | `check_for_update` | Check if a newer MCP server version is available |
 
 </details>
@@ -1403,7 +1402,7 @@ For easier bug reporting:
 <details>
 <summary><b>Recent versions (v0.7.0 – v0.8.0)</b></summary>
 
-- **v0.8.0** - Category gateway proxy: consolidate 53 tools behind 10 domain-named gateways, reducing `tools/list` from 74 to 31. 21 core tools stay ungrouped (devices, rules, modes, HSM, update_device, virtual devices, get_tool_guide). Each gateway shows tool summaries in its description (always visible to LLMs) and returns full schemas on demand. Gateways: manage_rules_admin, manage_hub_variables, manage_rooms, manage_hub_info, manage_hub_maintenance, manage_apps_drivers (read-only), manage_code_changes, manage_logs, manage_diagnostics, manage_files. Modeled after ha-mcp PR #637. Breaking change: proxied tools removed from `tools/list` but accessible via gateways.
+- **v0.8.0** - Category gateway proxy: consolidate 52 tools behind 10 domain-named gateways, reducing `tools/list` from 73 to 31. 21 core tools stay ungrouped (devices, rules, modes, HSM, update_device, virtual devices, get_hub_info, get_tool_guide). Merged get_hub_health into get_hub_info — health data (memory, temp, DB size) included automatically when Hub Admin Read is enabled. Each gateway shows tool summaries with parameter hints in its description (always visible to LLMs) and returns full schemas on demand. Gateways: manage_rules_admin, manage_hub_variables, manage_rooms, manage_hub_info, manage_hub_maintenance, manage_apps_drivers (read-only), manage_code_changes, manage_logs, manage_diagnostics, manage_files. Modeled after ha-mcp PR #637. Breaking change: proxied tools removed from `tools/list` but accessible via gateways.
 - **v0.7.7** - Code review round 2: MCP protocol fix (tool errors use isError flag per spec), fix formatAge() singular grammar, short-circuit condition evaluation, fix CI sed double-demotion, consolidate redundant API calls, guard eager debug logging, deduplicate sunrise/sunset reschedule, fix variable_math double atomicState read, efficiency improvements
 - **v0.7.6** - Code review: fix hoursAgo calculation bug, fix variable shadowing, centralize version string, extract shared helpers (~90 lines reduced)
 - **v0.7.5** - Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% token reduction)
