@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 72 MCP tools for device control, automation rules, room management, hub administration, and diagnostics. The tools are organized as **21 core tools** (always visible) plus **10 domain-named gateways** that proxy 51 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 69 MCP tools for device control, automation rules, room management, hub administration, and diagnostics. The tools are organized as **21 core tools** (always visible) plus **9 domain-named gateways** that proxy 48 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -41,7 +41,7 @@ Always check the device's `supportedCommands` (from `get_device`) before sending
 
 ### Virtual Devices
 
-MCP can create virtual devices (switches, sensors, buttons, dimmers, etc.) via `create_virtual_device` (a core tool, always visible). These are automatically accessible without manual selection. Use `list_virtual_devices` to see MCP-managed virtual devices and `delete_virtual_device` to remove them (not `delete_device`). All three virtual device tools are core tools on `tools/list`.
+MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, etc.) via `manage_virtual_device` (a core tool, always visible) using `action="create"` or `action="delete"`. These are automatically accessible without manual selection. Use `list_virtual_devices` to see MCP-managed virtual devices. Do not use `delete_device` for MCP-managed virtual devices. Both virtual device tools are core tools on `tools/list`.
 
 ## Automation Rules
 
@@ -101,8 +101,7 @@ Use `create_rule` with a JSON structure. For the complete rule structure referen
 
 Core tools (always visible):
 - `list_rules` / `get_rule` - View rules and their configuration
-- `update_rule` - Modify triggers, conditions, or actions
-- `enable_rule` / `disable_rule` - Toggle rules on/off
+- `update_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
 
 Via `manage_rules_admin` gateway:
 - `test_rule` - Dry-run to see what would happen without executing
@@ -117,21 +116,19 @@ Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
 ## Hub Administration
 
-All hub admin tools are accessed via gateways:
+Core hub admin tools (always visible): `create_hub_backup`, `check_for_update`, `generate_bug_report`
 
-### Via `manage_hub_info` gateway (3 tools)
+Additional hub admin tools are accessed via gateways:
 
-Read-only hub information: `get_zwave_details`, `get_zigbee_details`, `check_for_update`
+### Via `manage_destructive_hub_ops` gateway (3 tools)
 
-### Via `manage_hub_maintenance` gateway (5 tools)
-
-Write operations (require Hub Admin Write): `create_hub_backup`, `reboot_hub`, `shutdown_hub`, `zwave_repair`, `delete_device`
+Destructive write operations (require Hub Admin Write): `reboot_hub`, `shutdown_hub`, `delete_device`
 
 ### Via `manage_apps_drivers` gateway (6 tools — read-only)
 
 `list_hub_apps`, `list_hub_drivers`, `get_app_source`, `get_driver_source`, `list_item_backups`, `get_item_backup`
 
-### Via `manage_code_changes` gateway (7 tools — write operations)
+### Via `manage_app_driver_code` gateway (7 tools — write operations)
 
 `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`, `restore_item_backup`
 
@@ -149,7 +146,7 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 - `reboot_hub` - 1-3 min downtime, automations stop
 - `shutdown_hub` - Powers off completely, needs manual restart
 - `delete_device` - No undo, intended for ghost/orphaned devices only
-- `delete_app` / `delete_driver` (via `manage_code_changes`) - Auto-backs up source first
+- `delete_app` / `delete_driver` (via `manage_app_driver_code`) - Auto-backs up source first
 
 ## Diagnostics and Monitoring
 
@@ -162,11 +159,12 @@ Via `manage_logs` gateway (6 tools):
 - `set_log_level` - Set MCP log level
 - `get_logging_status` - View logging system statistics
 
-Via `manage_diagnostics` gateway (7 tools):
+Via `manage_diagnostics` gateway (9 tools):
 - `get_set_hub_metrics` - Record/retrieve hub metrics with CSV trend history
 - `device_health_check` - Find stale/offline devices
 - `get_rule_diagnostics` - Comprehensive diagnostics for a specific rule
-- `generate_bug_report` - Comprehensive diagnostic report
+- `get_zwave_details` / `get_zigbee_details` - Radio info (Z-Wave and Zigbee)
+- `zwave_repair` - Start Z-Wave network repair (5-30 min)
 - `list_captured_states` / `delete_captured_state` / `clear_captured_states` - State snapshots
 
 ## File Manager
@@ -175,7 +173,7 @@ Via `manage_files` gateway: `list_files`, `read_file`, `write_file`, `delete_fil
 
 ## Item Backup System
 
-Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup` (via `manage_apps_drivers` gateway) to view backups, and `restore_item_backup` (via `manage_code_changes` gateway) to restore.
+Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup` (via `manage_apps_drivers` gateway) to view backups, and `restore_item_backup` (via `manage_app_driver_code` gateway) to restore.
 
 ## System Tools
 

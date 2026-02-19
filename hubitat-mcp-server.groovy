@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.0 - Category gateway proxy: consolidate 51 tools behind 10 domain-named gateways (72→31 on tools/list)
+ * Version: 0.8.0 - Category gateway proxy: consolidate 48 tools behind 9 domain-named gateways (69→30 on tools/list)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -456,24 +456,14 @@ def getGatewayConfig() {
             ]
         ],
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
-        // Option B: manage_hub_admin split into info (read) + maintenance (write)
-        manage_hub_info: [
-            description: "Hub information: radio details and update checks.",
-            tools: ["get_zwave_details", "get_zigbee_details", "check_for_update"],
+        // manage_hub_info dissolved — zwave/zigbee moved to manage_diagnostics, check_for_update promoted to core
+        // create_hub_backup promoted to core, zwave_repair moved to manage_diagnostics
+        manage_destructive_hub_ops: [
+            description: "DESTRUCTIVE hub operations: reboot, shutdown, and permanent device deletion. All operations are irreversible or cause significant downtime — confirm with user first.",
+            tools: ["reboot_hub", "shutdown_hub", "delete_device"],
             summaries: [
-                get_zwave_details: "Z-Wave radio info (firmware, device count)",
-                get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count)",
-                check_for_update: "Check if a newer MCP server version is available"
-            ]
-        ],
-        manage_hub_maintenance: [
-            description: "Hub maintenance: backups, reboot, shutdown, Z-Wave repair, and device deletion. All operations are DISRUPTIVE — confirm with user first.",
-            tools: ["create_hub_backup", "reboot_hub", "shutdown_hub", "zwave_repair", "delete_device"],
-            summaries: [
-                create_hub_backup: "Create full hub backup (required before admin writes). Args: confirm=true",
                 reboot_hub: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
                 shutdown_hub: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
-                zwave_repair: "Z-Wave network repair (DISRUPTIVE, 5-30 min). Args: confirm=true",
                 delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
             ]
         ],
@@ -490,7 +480,7 @@ def getGatewayConfig() {
                 get_item_backup: "Get source from a backup. Args: backupId"
             ]
         ],
-        manage_code_changes: [
+        manage_app_driver_code: [
             description: "Install, update, and delete hub apps and drivers. All operations modify hub code and require Hub Admin Write.",
             tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup"],
             summaries: [
@@ -517,13 +507,15 @@ def getGatewayConfig() {
             ]
         ],
         manage_diagnostics: [
-            description: "Health monitoring and diagnostics: hub performance, device health checks, rule diagnostics, bug reports, and device state snapshots.",
-            tools: ["get_set_hub_metrics", "device_health_check", "get_rule_diagnostics", "generate_bug_report", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            description: "Health monitoring, diagnostics, and radio details: hub metrics, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
+            tools: ["get_set_hub_metrics", "device_health_check", "get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
             summaries: [
                 get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
                 device_health_check: "Check all devices for stale/offline status",
                 get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
-                generate_bug_report: "Generate formatted GitHub bug report",
+                get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
+                get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count). Requires Hub Admin Read",
+                zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
                 list_captured_states: "List saved device state snapshots",
                 delete_captured_state: "Delete a specific captured state. Args: stateId",
                 clear_captured_states: "Clear all captured device states"
@@ -749,7 +741,7 @@ Verify rule after creation.""",
         ],
         [
             name: "update_rule",
-            description: "Update an existing rule. Always verify changes after.",
+            description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -779,28 +771,7 @@ Verify rule after creation.""",
                 required: ["ruleId", "confirm"]
             ]
         ],
-        [
-            name: "enable_rule",
-            description: "Enable a rule. Always verify enabled after.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "disable_rule",
-            description: "Disable a rule. Always verify disabled after.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
+        // enable_rule and disable_rule merged into update_rule (use enabled=true/false)
         [
             name: "test_rule",
             description: "Test a rule without executing actions (dry run)",
@@ -1136,9 +1107,11 @@ Requires Hub Admin Write.""",
         ],
         [
             name: "zwave_repair",
-            description: """⚠️ DISRUPTIVE: Z-Wave network repair (5-30 min, devices may be unresponsive).
+            description: """⚠️ DISRUPTIVE: Z-Wave network repair. All Z-Wave devices may become unresponsive for 5-30 minutes.
 
-PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user about duration/impact 3) Get explicit confirmation 4) Set confirm=true
+WARNING: During repair, Z-Wave automations will be unreliable. Locks, garage doors, and security devices on Z-Wave may not respond. Schedule during off-peak hours when critical Z-Wave devices are not actively needed.
+
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user about duration/impact and which devices will be affected 3) Get explicit confirmation 4) Set confirm=true
 Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
@@ -1167,18 +1140,22 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
 
         // Virtual Device Management
         [
-            name: "create_virtual_device",
-            description: """Create an MCP-managed virtual device (types in deviceType enum). Auto-accessible to MCP tools, visible in Hubitat UI. Requires Hub Admin Write + confirm.""",
+            name: "manage_virtual_device",
+            description: """Create or delete MCP-managed virtual devices. Requires Hub Admin Write + confirm.
+
+action="create": Provide deviceType (see enum), deviceLabel, optional deviceNetworkId.
+action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_devices to find DNIs.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceType: [type: "string", description: "The virtual device driver type (see enum for options)",
+                    action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
+                    deviceType: [type: "string", description: "Virtual device driver type (required for create)",
                         enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
-                    deviceLabel: [type: "string", description: "Display label for the device"],
-                    deviceNetworkId: [type: "string", description: "Optional unique network ID. Auto-generated if omitted."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm device creation."]
+                    deviceLabel: [type: "string", description: "Display label (required for create)"],
+                    deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
                 ],
-                required: ["deviceType", "deviceLabel", "confirm"]
+                required: ["action", "confirm"]
             ]
         ],
         [
@@ -1187,18 +1164,6 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [:]
-            ]
-        ],
-        [
-            name: "delete_virtual_device",
-            description: "Delete an MCP-managed virtual device. Confirm with user first. Requires Hub Admin Write + confirm.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceNetworkId: [type: "string", description: "The device network ID (DNI) of the MCP-managed virtual device to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved deletion."]
-                ],
-                required: ["deviceNetworkId", "confirm"]
             ]
         ],
         [
@@ -1512,8 +1477,7 @@ def executeTool(toolName, args) {
         case "create_rule": return toolCreateRule(args)
         case "update_rule": return toolUpdateRule(args.ruleId, args)
         case "delete_rule": return toolDeleteRule(args)
-        case "enable_rule": return toolEnableRule(args.ruleId)
-        case "disable_rule": return toolDisableRule(args.ruleId)
+        // enable_rule/disable_rule merged into update_rule
         case "test_rule": return toolTestRule(args.ruleId)
 
         // System Tools
@@ -1571,9 +1535,8 @@ def executeTool(toolName, args) {
         case "delete_device": return toolDeleteDevice(args)
 
         // Virtual Device Management
-        case "create_virtual_device": return toolCreateVirtualDevice(args)
+        case "manage_virtual_device": return toolManageVirtualDevice(args)
         case "list_virtual_devices": return toolListVirtualDevices(args)
-        case "delete_virtual_device": return toolDeleteVirtualDevice(args)
         case "update_device": return toolUpdateDevice(args)
 
         // Room Management
@@ -1611,10 +1574,9 @@ def executeTool(toolName, args) {
         case "manage_rules_admin":
         case "manage_hub_variables":
         case "manage_rooms":
-        case "manage_hub_info":
-        case "manage_hub_maintenance":
+        case "manage_destructive_hub_ops":
         case "manage_apps_drivers":
-        case "manage_code_changes":
+        case "manage_app_driver_code":
         case "manage_logs":
         case "manage_diagnostics":
         case "manage_files":
@@ -5896,6 +5858,24 @@ def toolDeleteDevice(args) {
 
 // ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
 
+def toolManageVirtualDevice(args) {
+    def action = args.action
+    if (!action) {
+        throw new IllegalArgumentException("action is required. Use 'create' or 'delete'.")
+    }
+    switch (action) {
+        case "create":
+            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller.")
+            if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
+            return toolCreateVirtualDevice(args)
+        case "delete":
+            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use list_virtual_devices to find the DNI.")
+            return toolDeleteVirtualDevice(args)
+        default:
+            throw new IllegalArgumentException("Unknown action '${action}'. Use 'create' or 'delete'.")
+    }
+}
+
 def toolCreateVirtualDevice(args) {
     requireHubAdminWrite(args.confirm)
 
@@ -6948,7 +6928,7 @@ All Hub Admin Write tools require these steps:
 MCP-managed virtual devices:
 - Auto-accessible to all MCP tools without manual selection
 - Appear in Hubitat UI for Maker API, Dashboard, Rule Machine
-- Use delete_virtual_device to remove (not delete_device)''',
+- Use manage_virtual_device(action="delete") to remove (not delete_device)''',
 
         update_device: '''## update_device Properties
 
