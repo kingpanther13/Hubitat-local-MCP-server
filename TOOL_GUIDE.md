@@ -2,6 +2,18 @@
 
 Detailed reference for MCP Rule Server tools. Consult this when tool descriptions need clarification.
 
+## Category Gateway Proxy (v0.8.0+)
+
+As of v0.8.0, the server uses **domain-named gateways** to organize 48 lesser-used tools behind 9 gateway tools. The MCP `tools/list` shows 30 items (21 core + 9 gateways) instead of 69.
+
+**How to use a gateway:**
+1. Call the gateway with no arguments to see full parameter schemas for all its tools
+2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
+
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (6), `manage_diagnostics` (9), `manage_files` (4)
+
+All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
+
 ## Device Authorization (CRITICAL)
 
 **Exact match rule:**
@@ -14,7 +26,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 - Example: User says "use test switch" but only "Virtual Test Switch" exists → ask "Did you mean 'Virtual Test Switch'?"
 
 **Tool failure rule:**
-- If a tool fails (e.g., `create_virtual_device` returns an error), report the failure to the user
+- If a tool fails (e.g., `manage_virtual_device` returns an error), report the failure to the user
 - Do NOT silently fall back to using existing devices as a workaround
 - Example: If creating a virtual device fails, don't just grab an existing device to use instead
 
@@ -35,33 +47,33 @@ All Hub Admin Write tools require these steps:
 
 ### Tool-Specific Requirements
 
-**reboot_hub**
+**reboot_hub** (via `manage_destructive_hub_ops`)
 - Effects: 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart
 - Only use when user explicitly requests a reboot
 
-**shutdown_hub**
+**shutdown_hub** (via `manage_destructive_hub_ops`)
 - Effects: Powers OFF completely, requires physical restart (unplug/replug)
 - This is NOT a reboot - hub stays off until manually restarted
 - Only use when user explicitly requests shutdown
 
-**zwave_repair**
-- Effects: 5-30 min duration, Z-Wave devices may be unresponsive
-- Best run during off-peak hours
-- Only use when user explicitly requests Z-Wave repair
-
-**delete_device**
+**delete_device** (via `manage_destructive_hub_ops`)
 - MOST DESTRUCTIVE tool - NO UNDO
 - Intended for: ghost/orphaned devices, stale DB records, stuck virtual devices
 - Additional steps: Use `get_device` to verify correct device, warn if recent activity
 - For Z-Wave/Zigbee: Warn user to do proper exclusion first to avoid ghost nodes
 - All device details logged to MCP debug logs for audit
 
-**delete_room**
+**zwave_repair** (via `manage_diagnostics`)
+- Effects: 5-30 min duration, Z-Wave devices may be unresponsive
+- Best run during off-peak hours
+- Only use when user explicitly requests Z-Wave repair
+
+**delete_room** (via `manage_rooms`)
 - Devices become unassigned (not deleted)
 - List affected devices to user before proceeding
 - Dashboard layouts and automations referencing room may be affected
 
-**delete_app / delete_driver**
+**delete_app / delete_driver** (via `manage_apps_drivers`)
 - Remove app instances via Hubitat UI first (for apps)
 - Change devices to different driver first (for drivers)
 - Source code auto-backed up before deletion
@@ -70,7 +82,7 @@ All Hub Admin Write tools require these steps:
 
 ## Virtual Device Types
 
-When using `create_virtual_device`, these types are available:
+When using `manage_virtual_device` (action: "create"), these types are available:
 
 | Type | Description | Common Use Case |
 |------|-------------|-----------------|
@@ -93,7 +105,7 @@ When using `create_virtual_device`, these types are available:
 MCP-managed virtual devices:
 - Auto-accessible to all MCP device tools without manual selection
 - Appear in Hubitat UI for Maker API, Dashboard, Rule Machine sharing
-- Use `delete_virtual_device` to remove (not `delete_device`)
+- Use `manage_virtual_device` (action: "delete") to remove (not `delete_device`)
 
 ---
 

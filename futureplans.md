@@ -477,7 +477,7 @@
   > 5. Note: computation-heavy analytics may time out with many devices
 
 - [x] **Hub performance trend monitoring** — `Difficulty: 1 | Effort: S`
-  > *Mostly already implemented.* The `get_hub_performance` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
+  > *Mostly already implemented.* The `get_set_hub_metrics` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
   >
   > **Implementation plan (incremental):**
   > 1. Add `schedule("0 0 */4 ? * *", "recordPerformanceSnapshot")` to parent

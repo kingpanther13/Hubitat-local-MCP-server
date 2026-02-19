@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 74 tools for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 69 tools (30 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, and app/driver management.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 74 tool definitions + dispatch         │  │
+│  │  - 69 tools (30 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -85,18 +85,54 @@ The server file is organized with prominent section delimiters:
 // ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
 // ==================== ROOM MANAGEMENT ====================
 // ==================== VERSION UPDATE CHECK ====================
+// ==================== CATEGORY GATEWAY PROXY ====================
 // ==================== TOOL GUIDE ====================
 ```
 
 New code should be placed in the appropriate section. New sections should follow the same `// ==== NAME ====` delimiter pattern.
 
+### Category Gateway Proxy (v0.8.0+)
+
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 69 items to 30. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+
+**Architecture:**
+- `getGatewayConfig()` — defines 9 gateways, each with a description, tools list, and summaries map
+- `getToolDefinitions()` — returns 21 core tools + 9 gateway tool definitions (client-visible)
+- `getAllToolDefinitions()` — returns all 69 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
+
+**Gateway calling convention:**
+1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
+2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
+
+**9 gateways (48 proxied tools):**
+| Gateway | Tools | Domain |
+|---------|-------|--------|
+| `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
+| `manage_hub_variables` | 3 | Hub connector and rule engine variables |
+| `manage_rooms` | 5 | Room CRUD |
+| `manage_destructive_hub_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
+| `manage_apps_drivers` | 6 | List/get apps, drivers, backups (read-only) |
+| `manage_app_driver_code` | 7 | Install/update/delete apps+drivers, restore backup (write) |
+| `manage_logs` | 6 | Logs, monitoring, debug tools |
+| `manage_diagnostics` | 9 | Diagnostics, state capture, zwave/zigbee details, zwave repair |
+| `manage_files` | 4 | File Manager CRUD |
+
+**21 core tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `list_rules`, `get_rule`, `create_rule`, `update_rule`, `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`
+
+**Safety gates are preserved:** All Hub Admin Read/Write checks live in the handler functions (e.g., `requireHubAdminRead()`, `requireHubAdminWrite(args.confirm)`), not in the dispatch layer. The gateway simply calls `executeTool()`, which calls the handler, which enforces the gate. No safety check is bypassed.
+
 ### Adding a New Tool (Checklist)
 
 Every new tool requires changes in exactly three places:
 
-1. **Tool definition** in `getToolDefinitions()` — a map with `name`, `description`, and `inputSchema` (JSON Schema format)
+1. **Tool definition** in `getAllToolDefinitions()` — a map with `name`, `description`, and `inputSchema` (JSON Schema format)
 2. **Case statement** in `executeTool()` — dispatches `toolName` to the implementation method
 3. **Implementation method** — prefixed with `tool` (e.g., `toolMyNewTool`)
+
+**Gateway consideration (v0.8.0+):** Decide whether the new tool should be:
+- **Core** (on `tools/list` directly) — for frequently-used tools that AI needs instant access to
+- **Behind a gateway** — for lesser-used or admin tools. Add the tool name to the appropriate gateway's `tools` list and `summaries` map in `getGatewayConfig()`. The tool definition stays in `getAllToolDefinitions()` but gets filtered out of the client-visible `getToolDefinitions()`.
 
 Additionally, update tool count in:
 4. **`packageManifest.json`** — version field + releaseNotes with updated tool count
@@ -225,7 +261,7 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Device tools require AI to confirm before using non-exact device matches
 - If user specifies an exact device name that matches, AI can use it directly
 - If no exact match: AI must suggest similar devices and **ask user to confirm** before using any of them
-- When a tool fails (e.g., `create_virtual_device`), AI must report the failure — not silently use existing devices as a workaround
+- When a tool fails (e.g., `manage_virtual_device`), AI must report the failure — not silently use existing devices as a workaround
 - This prevents accidentally controlling critical systems (HVAC, locks) when user meant a different device
 - The `delete_device` tool has its own extensive safety checklist (requires recent backup, explicit confirmation, audit logging)
 
@@ -234,7 +270,7 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Based on MCP best practices from Anthropic and modelcontextprotocol.io
 - All critical safety rules preserved: pre-flight checklists, confirm requirements, backup requirements
 - Descriptions follow "explain like to a new hire" principle — concise but complete
-- Reduces context consumption when 74 tools are loaded into AI context
+- Reduces context consumption when tools are loaded into AI context
 - New `get_tool_guide` tool provides detailed reference on-demand (embedded in server, accessible via MCP)
 
 **Rule Deletion Safety** (delete_rule):
@@ -269,7 +305,7 @@ All three:
 | `buildRuleExport(ruleData)` | Build portable rule export map (used by export and delete backup) |
 | `toolInstallItem(type, args)` | Shared install logic for apps and drivers |
 | `toolDeleteItem(type, idParam, deletePath, args)` | Shared delete logic for apps and drivers |
-| `toolToggleRule(ruleId, enable)` | Shared enable/disable logic for rules |
+| `toolToggleRule(ruleId, enable)` | Shared enable/disable logic (called by `update_rule` with `enabled=true/false`) |
 | `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |
 | `clampPercent(value)` | Clamp integer to 0-100 range (in rule.groovy) |
 | `rescheduleSunTrigger(type, handler)` | Shared sunrise/sunset trigger rescheduling (in rule.groovy, v0.7.7+) |
@@ -346,13 +382,13 @@ def findDevice(deviceId) {
 
 Devices are accessible from two sources:
 1. **`settings.selectedDevices`** — the user explicitly selects which physical/existing devices to expose to MCP (security boundary)
-2. **`getChildDevices()`** — MCP-managed virtual devices created via `create_virtual_device` are automatically accessible without manual selection
+2. **`getChildDevices()`** — MCP-managed virtual devices created via `manage_virtual_device` are automatically accessible without manual selection
 
 `list_devices` also combines both sources (deduplicating by ID) and marks child devices with `mcpManaged: true`.
 
 ### Virtual Device Management
 
-Virtual devices are created as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
+Virtual devices are managed via the unified `manage_virtual_device` tool (action enum: "create", "delete") as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
 
 - **`addChildDevice("hubitat", driverName, dni, null, [name: ..., label: ..., isComponent: false])`** — creates a device using a built-in Hubitat driver (5-argument form with `null` hub ID for cross-firmware compatibility)
 - **`isComponent: false`** — device appears independently in the Hubitat UI, can be edited/deleted, and can be shared with other apps (Maker API, Dashboard, Rule Machine, HA, etc.)
@@ -399,7 +435,7 @@ Room assignment and enable/disable use the hub's internal API at `http://127.0.0
 
 ### Version Management
 
-As of v0.7.6, most version references in `hubitat-mcp-server.groovy` are **centralized** via the `currentVersion()` function. Runtime code (handleInitialize, toolExportRule, toolGetLoggingStatus, toolGenerateBugReport, toolGetHubDetails, mainPage display) all call `currentVersion()` instead of hardcoding the version string. As of v0.7.7, tool execution errors use `isError: true` in the MCP result per protocol spec instead of JSON-RPC errors.
+As of v0.7.6, most version references in `hubitat-mcp-server.groovy` are **centralized** via the `currentVersion()` function. Runtime code (handleInitialize, toolExportRule, toolGetLoggingStatus, toolGenerateBugReport, toolGetHubInfo, mainPage display) all call `currentVersion()` instead of hardcoding the version string. As of v0.7.7, tool execution errors use `isError: true` in the MCP result per protocol spec instead of JSON-RPC errors.
 
 When bumping the version, update these locations:
 - `currentVersion()` return value — **single source of truth** for runtime version

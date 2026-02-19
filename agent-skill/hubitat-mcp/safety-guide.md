@@ -23,6 +23,14 @@ Always confirm device identity before acting on critical systems.
 
 ---
 
+## Gateway Calling Convention (v0.8.0+)
+
+Many safety-critical tools are now accessed via gateways (e.g., `manage_destructive_hub_ops`, `manage_app_driver_code`). The gateway does **not** bypass any safety checks — all Hub Admin Read/Write gates, backup requirements, and confirm flags are enforced in the handler functions. When calling a tool through a gateway, the same pre-flight checklists apply.
+
+Example: To reboot the hub, call `manage_destructive_hub_ops(tool="reboot_hub", args={"confirm": true})` — the same backup and confirmation requirements apply as if `reboot_hub` were called directly.
+
+---
+
 ## Hub Admin Write - Pre-Flight Checklist
 
 ALL Hub Admin Write tools require these steps in order:
@@ -44,12 +52,12 @@ ALL Hub Admin Write tools require these steps in order:
 - **This is NOT a reboot** - the hub stays off until someone manually unplugs and replugs it
 - **Only when**: User explicitly requests shutdown (e.g., for maintenance or moving the hub)
 
-#### zwave_repair
+#### zwave_repair (via manage_diagnostics)
 - **Effects**: 5-30 minute background process, Z-Wave devices may be unresponsive during
 - **Best run**: During off-peak hours when automations aren't critical
 - **Only when**: User reports Z-Wave issues and explicitly requests repair
 
-#### delete_device
+#### delete_device (via manage_destructive_hub_ops)
 - **THE MOST DESTRUCTIVE TOOL - NO UNDO**
 - **Intended for**: Ghost/orphaned Z-Wave nodes, stale database records, stuck virtual devices
 - **Pre-flight**:
@@ -82,7 +90,7 @@ ALL Hub Admin Write tools require these steps in order:
 
 ## Virtual Device Safety
 
-- Use `create_virtual_device` / `delete_virtual_device` for MCP-managed virtual devices
+- Use `manage_virtual_device` with `action="create"` or `action="delete"` for MCP-managed virtual devices
 - Do NOT use `delete_device` for virtual devices created by MCP
 - Virtual devices created by MCP are automatically accessible to all device tools
 - 15 supported types: Virtual Switch, Button, Contact Sensor, Motion Sensor, Presence Sensor, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Opener, Water Sensor, Omni Sensor, Fan Controller

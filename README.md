@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 74 MCP tools.
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 69 MCP tools (30 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 69 tools total — 21 core tools are always visible, while 48 additional tools are organized behind 9 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -214,10 +214,14 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (74 total)
+### MCP Tools (69 total — 30 on tools/list)
+
+The server has 69 tools total. To keep the MCP `tools/list` manageable, **21 core tools** are always visible and **48 additional tools** are organized behind **9 domain-named gateways**. The AI sees 30 items on `tools/list` (21 + 9 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+
+#### Core Tools (21) — Always visible on tools/list
 
 <details>
-<summary><b>Devices</b> (5) — Control and query physical devices</summary>
+<summary><b>Devices</b> (5) — Control and query devices</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -230,161 +234,148 @@ For free remote access without a Hubitat Cloud subscription:
 </details>
 
 <details>
-<summary><b>Virtual Devices</b> (4) — Create and manage MCP-managed virtual devices</summary>
-
-| Tool | Description |
-|------|-------------|
-| `create_virtual_device` | Create a virtual device (15 types: switch, dimmer, sensor, etc.) |
-| `list_virtual_devices` | List all MCP-managed virtual devices |
-| `delete_virtual_device` | Delete an MCP-managed virtual device |
-| `update_device` | Update device properties (label, room, preferences, etc.) |
-
-</details>
-
-<details>
-<summary><b>Rooms</b> (5) — Manage room organization</summary>
-
-| Tool | Description |
-|------|-------------|
-| `list_rooms` | List all rooms with device counts |
-| `get_room` | Room details with full device info |
-| `create_room` | Create a new room |
-| `delete_room` | Delete a room (devices become unassigned) |
-| `rename_room` | Rename an existing room |
-
-</details>
-
-<details>
-<summary><b>Rules</b> (11) — Create and manage automation rules</summary>
+<summary><b>Rules</b> (4) — Create and manage automation rules</summary>
 
 | Tool | Description |
 |------|-------------|
 | `list_rules` | List all rules with status |
 | `get_rule` | Full rule details (triggers, conditions, actions) |
 | `create_rule` | Create a new automation rule |
-| `update_rule` | Update rule triggers, conditions, or actions |
-| `delete_rule` | Delete a rule (auto-backs up first) |
-| `enable_rule` | Enable a disabled rule |
-| `disable_rule` | Disable a rule without deleting |
-| `test_rule` | Dry-run: see what would happen without executing |
-| `export_rule` | Export rule as portable JSON |
-| `import_rule` | Import a rule from exported JSON |
-| `clone_rule` | Duplicate an existing rule |
+| `update_rule` | Update rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
 
 </details>
 
 <details>
-<summary><b>System</b> (9) — Hub modes, variables, and HSM</summary>
+<summary><b>Device Management</b> (1)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_info` | Basic hub information |
+| `update_device` | Update device properties (label, room, preferences, etc.) |
+
+</details>
+
+<details>
+<summary><b>System</b> (5) — Hub modes, HSM, and info</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_hub_info` | Comprehensive hub info: hardware, health, MCP stats. PII (name, IP, location) requires Hub Admin Read |
 | `get_modes` | List location modes |
 | `set_mode` | Change location mode (Home, Away, Night, etc.) |
 | `get_hsm_status` | Get Home Security Monitor status |
 | `set_hsm` | Change HSM arm mode |
-| `list_variables` | List all hub variables |
-| `get_variable` | Get a specific variable value |
-| `set_variable` | Set a variable value |
-| `check_for_update` | Check for MCP server updates |
 
 </details>
 
 <details>
-<summary><b>State Capture</b> (3) — Save and restore device states</summary>
+<summary><b>Virtual Devices</b> (2) — MCP-managed virtual devices</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_captured_states` | List saved device state snapshots |
-| `delete_captured_state` | Delete a specific state snapshot |
-| `clear_captured_states` | Delete all state snapshots |
+| `manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") (Hub Admin Write) |
+| `list_virtual_devices` | List MCP-managed virtual devices with states |
 
 </details>
 
 <details>
-<summary><b>Debug & Diagnostics</b> (6) — MCP-specific logging and diagnostics</summary>
+<summary><b>Hub Utilities</b> (3) — Backup, updates, and diagnostics</summary>
 
 | Tool | Description |
 |------|-------------|
-| `get_debug_logs` | Retrieve MCP debug log entries |
-| `clear_debug_logs` | Clear all MCP debug logs |
-| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
-| `set_log_level` | Set MCP log level (debug/info/warn/error) |
-| `get_logging_status` | View logging system statistics |
+| `create_hub_backup` | Create full hub backup (required before admin writes) |
+| `check_for_update` | Check if a newer MCP server version is available |
 | `generate_bug_report` | Generate comprehensive diagnostic report |
 
 </details>
 
 <details>
-<summary><b>Monitoring</b> (4) — Hub logs, device history, and health checks</summary>
+<summary><b>Reference</b> (1)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_logs` | Hub log entries with level/source filtering |
-| `get_device_history` | Up to 7 days of device event history |
-| `get_hub_performance` | Memory, temperature, database size |
-| `device_health_check` | Find stale/offline devices |
+| `get_tool_guide` | Full tool reference from the MCP server itself |
 
-Requires Hub Admin Read to be enabled.
+</details>
+
+#### Gateway Tools (9) — Each gateway proxies multiple tools
+
+Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
+
+<details>
+<summary><b>manage_rules_admin</b> (5) — Rule administration</summary>
+
+| Tool | Description |
+|------|-------------|
+| `delete_rule` | Permanently delete a rule (auto-backs up first) |
+| `test_rule` | Dry-run a rule without executing actions |
+| `export_rule` | Export rule to JSON for backup/sharing |
+| `import_rule` | Import rule from exported JSON |
+| `clone_rule` | Clone an existing rule (starts disabled) |
 
 </details>
 
 <details>
-<summary><b>Hub Admin Read</b> (8) — Read-only hub system information</summary>
+<summary><b>manage_hub_variables</b> (3) — Hub variables</summary>
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_details` | Model, firmware, IP, uptime, memory, temp, database |
-| `list_hub_apps` | List all user-installed apps |
-| `list_hub_drivers` | List all user-installed drivers |
-| `get_zwave_details` | Z-Wave radio info |
-| `get_zigbee_details` | Zigbee radio info |
-| `get_hub_health` | Health dashboard with warnings |
-| `get_app_source` | Retrieve app source code |
-| `get_driver_source` | Retrieve driver source code |
-
-Disabled by default. Enable in app settings under **Hub Admin Access**.
+| `list_variables` | List all hub connector and rule engine variables |
+| `get_variable` | Get a variable value |
+| `set_variable` | Set a variable value (creates if doesn't exist) |
 
 </details>
 
 <details>
-<summary><b>Hub Admin Write</b> (10) — Backup, reboot, install/update apps and drivers</summary>
+<summary><b>manage_rooms</b> (5) — Room management</summary>
 
 | Tool | Description |
 |------|-------------|
-| `create_hub_backup` | Create full hub database backup |
+| `list_rooms` | List all rooms with IDs, names, and device counts |
+| `get_room` | Get room details with assigned devices |
+| `create_room` | Create a new room (Hub Admin Write + confirm) |
+| `delete_room` | Permanently delete a room (Hub Admin Write + confirm) |
+| `rename_room` | Rename a room (Hub Admin Write + confirm) |
+
+</details>
+
+<details>
+<summary><b>manage_destructive_hub_ops</b> (3) — Destructive hub operations</summary>
+
+| Tool | Description |
+|------|-------------|
 | `reboot_hub` | Reboot the hub (1-3 min downtime) |
-| `shutdown_hub` | Power off hub (needs manual restart) |
-| `zwave_repair` | Start Z-Wave network repair (5-30 min) |
-| `install_app` | Install a new Groovy app from source |
-| `install_driver` | Install a new Groovy driver from source |
-| `update_app_code` | Update existing app source code |
-| `update_driver_code` | Update existing driver source code |
-| `delete_app` | Delete an installed app (auto-backs up) |
-| `delete_driver` | Delete an installed driver (auto-backs up) |
+| `shutdown_hub` | Power OFF the hub (requires physical restart) |
+| `delete_device` | Permanently delete any device (**no undo**) |
 
-All write tools enforce a **three-layer safety gate**: Hub Admin Write must be enabled + a hub backup within 24 hours + explicit `confirm=true`.
+All operations are disruptive. Hub admin tools require Hub Admin Read/Write to be enabled in settings. Write tools enforce a **three-layer safety gate**: Hub Admin Write enabled + hub backup within 24 hours + explicit `confirm=true`.
 
 </details>
 
 <details>
-<summary><b>Device Admin</b> (1) — Device deletion for ghost/orphaned devices</summary>
+<summary><b>manage_apps_drivers</b> (6) — App/driver listing, source code, and backups (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `delete_device` | Permanently delete a device (**no undo**) |
-
-Intended for ghost/orphaned devices only. Requires Hub Admin Write.
+| `list_hub_apps` | List all installed apps on the hub |
+| `list_hub_drivers` | List all installed drivers on the hub |
+| `get_app_source` | Get app Groovy source code |
+| `get_driver_source` | Get driver Groovy source code |
+| `list_item_backups` | List auto-created source code backups |
+| `get_item_backup` | Get source from a backup |
 
 </details>
 
 <details>
-<summary><b>Item Backups</b> (3) — View and restore automatic source code backups</summary>
+<summary><b>manage_app_driver_code</b> (7) — Install, update, delete apps/drivers and restore backups</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_item_backups` | List all saved source code backups |
-| `get_item_backup` | Retrieve source from a backup |
+| `install_app` | Install new app from Groovy source |
+| `install_driver` | Install new driver from Groovy source |
+| `update_app_code` | Modify existing app code |
+| `update_driver_code` | Modify existing driver code |
+| `delete_app` | Permanently delete an app (auto-backs up) |
+| `delete_driver` | Permanently delete a driver (auto-backs up) |
 | `restore_item_backup` | Restore app/driver to backed-up version |
 
 Source code is automatically backed up before any modify/delete operation.
@@ -392,7 +383,40 @@ Source code is automatically backed up before any modify/delete operation.
 </details>
 
 <details>
-<summary><b>File Manager</b> (4) — Read/write files on the hub</summary>
+<summary><b>manage_logs</b> (6) — Logs and log configuration</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_hub_logs` | Hub log entries with level/source filtering |
+| `get_device_history` | Up to 7 days of device event history |
+| `get_debug_logs` | Retrieve MCP debug log entries |
+| `clear_debug_logs` | Clear all MCP debug logs |
+| `set_log_level` | Set MCP log level (debug/info/warn/error) |
+| `get_logging_status` | Get logging system status and capacity |
+
+Monitoring tools require Hub Admin Read to be enabled.
+
+</details>
+
+<details>
+<summary><b>manage_diagnostics</b> (9) — Diagnostics, performance, radio details, and state capture</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history |
+| `device_health_check` | Find stale/offline devices |
+| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
+| `get_zwave_details` | Z-Wave radio info (firmware, devices) |
+| `get_zigbee_details` | Zigbee radio info (channel, PAN ID, devices) |
+| `zwave_repair` | Z-Wave network repair (5-30 min) |
+| `list_captured_states` | List saved device state snapshots |
+| `delete_captured_state` | Delete a specific state snapshot |
+| `clear_captured_states` | Delete all state snapshots |
+
+</details>
+
+<details>
+<summary><b>manage_files</b> (4) — Hub File Manager</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -401,14 +425,7 @@ Source code is automatically backed up before any modify/delete operation.
 | `write_file` | Create or update a file (auto-backs up existing) |
 | `delete_file` | Delete a file (auto-backs up first) |
 
-</details>
-
-<details>
-<summary><b>Reference</b> (1) — On-demand tool documentation</summary>
-
-| Tool | Description |
-|------|-------------|
-| `get_tool_guide` | Full tool reference from the MCP server itself |
+Write/delete require Hub Admin Write + confirm.
 
 </details>
 
@@ -953,7 +970,7 @@ For easier bug reporting:
   > *Native app preferred.* Hubitat's built-in Room Lighting app handles this well. The MCP can already control all the same devices, trigger on motion events, and use `if_then_else` / `delay` / `cancel_delayed` to build equivalent logic via `create_rule` if needed. No dedicated MCP tool required unless a gap is identified where MCP cannot interact with Room Lighting's behavior.
 
 - [ ] **Zone Motion Controller (multi-sensor zones)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
+  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `manage_virtual_device` + `create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
 
 - [ ] **Mode Manager (automated mode changes)** — `Low priority`
   > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `get_modes`/`set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
@@ -1145,7 +1162,7 @@ For easier bug reporting:
 
 ### Advanced Automation Patterns
 
-> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `create_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
+> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `create_rule`, `set_variable`, `manage_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
 
 - [ ] **Occupancy / room state machine** — `No new tools needed`
   > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `create_rule` and `set_variable`.
@@ -1195,7 +1212,7 @@ For easier bug reporting:
   > 5. Note: computation-heavy analytics may time out with many devices
 
 - [x] **Hub performance trend monitoring** — `Difficulty: 1 | Effort: S`
-  > *Mostly already implemented.* The `get_hub_performance` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
+  > *Mostly already implemented.* The `get_set_hub_metrics` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
   >
   > **Implementation plan (incremental):**
   > 1. Add `schedule("0 0 */4 ? * *", "recordPerformanceSnapshot")` to parent
@@ -1256,7 +1273,7 @@ For easier bug reporting:
   > 2. Discover built-in driver type IDs for Virtual Switch, Virtual Dimmer, etc.
   > 3. Create `create_standalone_device` MCP tool (Hub Admin Write required)
   > 4. Note: device won't auto-appear in MCP's device list without user selection
-  > 5. Fallback: use existing `create_virtual_device` with `isComponent: false`
+  > 5. Fallback: use existing `manage_virtual_device` with `isComponent: false`
 
 - [ ] **Scene management (create/modify beyond activate_scene)** — `Difficulty: 3 | Effort: M`
   > *Partially feasible.* Native Groups and Scenes CRUD is not possible (no API). However, the existing `capture_state`/`restore_state` system is already a de facto scene manager. Enhancement: wrap with scene-oriented terminology — `create_scene` (capture), `list_scenes` (list captures), `activate_scene` (restore), `delete_scene` (delete capture). Extend captured attributes beyond switch/level/color to include fan speed, shade position, thermostat setpoints.
@@ -1381,8 +1398,9 @@ For easier bug reporting:
 ## Version History
 
 <details>
-<summary><b>Recent versions (v0.7.0 – v0.7.7)</b></summary>
+<summary><b>Recent versions (v0.7.0 – v0.8.0)</b></summary>
 
+- **v0.8.0** - Category gateway proxy: consolidate 48 tools behind 9 domain-named gateways, reducing `tools/list` from 69 to 30. 21 core tools stay ungrouped (devices, rules, modes, HSM, update_device, manage_virtual_device, list_virtual_devices, get_hub_info, create_hub_backup, check_for_update, generate_bug_report, get_tool_guide). Merged get_hub_health and get_hub_details into get_hub_info — comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip code) gated behind Hub Admin Read. Merged enable_rule/disable_rule into update_rule (use `enabled=true/false`). Merged create_virtual_device/delete_virtual_device into manage_virtual_device (with `action` enum). Promoted create_hub_backup, check_for_update, and generate_bug_report to core tools. Dissolved manage_hub_info gateway (radio details moved to manage_diagnostics). Renamed manage_hub_maintenance to manage_destructive_hub_ops, manage_code_changes to manage_app_driver_code. Each gateway shows tool summaries with parameter hints in its description (always visible to LLMs) and returns full schemas on demand. Gateways: manage_rules_admin, manage_hub_variables, manage_rooms, manage_destructive_hub_ops, manage_apps_drivers (read-only), manage_app_driver_code, manage_logs, manage_diagnostics, manage_files. Modeled after ha-mcp PR #637. Breaking change: proxied tools removed from `tools/list` but accessible via gateways.
 - **v0.7.7** - Code review round 2: MCP protocol fix (tool errors use isError flag per spec), fix formatAge() singular grammar, short-circuit condition evaluation, fix CI sed double-demotion, consolidate redundant API calls, guard eager debug logging, deduplicate sunrise/sunset reschedule, fix variable_math double atomicState read, efficiency improvements
 - **v0.7.6** - Code review: fix hoursAgo calculation bug, fix variable shadowing, centralize version string, extract shared helpers (~90 lines reduced)
 - **v0.7.5** - Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% token reduction)

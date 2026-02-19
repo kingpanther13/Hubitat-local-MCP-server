@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.7.7 - Code review: MCP protocol fix, efficiency improvements, bug fixes
+ * Version: 0.8.0 - Category gateway proxy: consolidate 48 tools behind 9 domain-named gateways (69→30 on tools/list)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -417,7 +417,212 @@ def handleToolsCall(msg) {
     }
 }
 
+// ==================== CATEGORY GATEWAY PROXY ====================
+// Domain-named gateways that consolidate lesser-used tools behind a single MCP tool per domain.
+// Each gateway: call with no args → catalog of tool schemas; call with tool + args → execute.
+// Modeled after ha-mcp PR #637 (category gateway proxy pattern).
+
+def getGatewayConfig() {
+    return [
+        manage_rules_admin: [
+            description: "Rule administration: delete, test, export, import, and clone rules.",
+            tools: ["delete_rule", "test_rule", "export_rule", "import_rule", "clone_rule"],
+            summaries: [
+                delete_rule: "Permanently delete a rule (auto-backs up first). Args: ruleId",
+                test_rule: "Dry-run a rule without executing actions. Args: ruleId",
+                export_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
+                import_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
+                clone_rule: "Clone an existing rule (starts disabled). Args: ruleId"
+            ]
+        ],
+        manage_hub_variables: [
+            description: "Manage hub connector and rule engine variables.",
+            tools: ["list_variables", "get_variable", "set_variable"],
+            summaries: [
+                list_variables: "List all hub connector and rule engine variables",
+                get_variable: "Get a variable value. Args: name",
+                set_variable: "Set a variable value (creates if doesn't exist). Args: name, value"
+            ]
+        ],
+        manage_rooms: [
+            description: "Manage hub rooms: list, view details, create, delete, and rename rooms.",
+            tools: ["list_rooms", "get_room", "create_room", "delete_room", "rename_room"],
+            summaries: [
+                list_rooms: "List all rooms with IDs, names, and device counts",
+                get_room: "Get room details with assigned devices. Args: room (name or ID)",
+                create_room: "Create a new room. Args: name, confirm=true",
+                delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
+                rename_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
+            ]
+        ],
+        // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
+        // manage_hub_info dissolved — zwave/zigbee moved to manage_diagnostics, check_for_update promoted to core
+        // create_hub_backup promoted to core, zwave_repair moved to manage_diagnostics
+        manage_destructive_hub_ops: [
+            description: "DESTRUCTIVE hub operations: reboot, shutdown, and permanent device deletion. All operations are irreversible or cause significant downtime — confirm with user first.",
+            tools: ["reboot_hub", "shutdown_hub", "delete_device"],
+            summaries: [
+                reboot_hub: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
+                shutdown_hub: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
+                delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
+            ]
+        ],
+        // Option B: manage_apps_drivers split into browse (read) + changes (write)
+        manage_apps_drivers: [
+            description: "Browse installed apps and drivers: list, view source code, and view code backups.",
+            tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "list_item_backups", "get_item_backup"],
+            summaries: [
+                list_hub_apps: "List all installed apps on the hub",
+                list_hub_drivers: "List all installed drivers on the hub",
+                get_app_source: "Get app Groovy source code. Args: appId",
+                get_driver_source: "Get driver Groovy source code. Args: driverId",
+                list_item_backups: "List auto-created source code backups",
+                get_item_backup: "Get source from a backup. Args: backupId"
+            ]
+        ],
+        manage_app_driver_code: [
+            description: "Install, update, and delete hub apps and drivers. All operations modify hub code and require Hub Admin Write.",
+            tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup"],
+            summaries: [
+                install_app: "Install new app from Groovy source. Args: source, confirm=true",
+                install_driver: "Install new driver from Groovy source. Args: source, confirm=true",
+                update_app_code: "Modify existing app code (CRITICAL). Args: appId, source|sourceFile|resave, confirm=true",
+                update_driver_code: "Modify existing driver code (CRITICAL). Args: driverId, source|sourceFile|resave, confirm=true",
+                delete_app: "Permanently delete an app (DESTRUCTIVE). Args: appId, confirm=true",
+                delete_driver: "Permanently delete a driver (DESTRUCTIVE). Args: driverId, confirm=true",
+                restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true"
+            ]
+        ],
+        // Option B: manage_logs_diagnostics split into logs + diagnostics
+        manage_logs: [
+            description: "System logs and log settings: hub logs, device event history, MCP debug logs, and log level configuration.",
+            tools: ["get_hub_logs", "get_device_history", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
+            summaries: [
+                get_hub_logs: "Get Hubitat system logs. Args: level (debug/info/warn/error), source, limit",
+                get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
+                get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
+                clear_debug_logs: "Clear all MCP debug log entries",
+                set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)",
+                get_logging_status: "Get logging system status and capacity"
+            ]
+        ],
+        manage_diagnostics: [
+            description: "Health monitoring, diagnostics, and radio details: hub metrics, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
+            tools: ["get_set_hub_metrics", "device_health_check", "get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            summaries: [
+                get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
+                device_health_check: "Check all devices for stale/offline status",
+                get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
+                get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
+                get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count). Requires Hub Admin Read",
+                zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
+                list_captured_states: "List saved device state snapshots",
+                delete_captured_state: "Delete a specific captured state. Args: stateId",
+                clear_captured_states: "Clear all captured device states"
+            ]
+        ],
+        manage_files: [
+            description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
+            tools: ["list_files", "read_file", "write_file", "delete_file"],
+            summaries: [
+                list_files: "List files in File Manager (names, sizes, URLs)",
+                read_file: "Read file content. Args: fileName, offset, limit",
+                write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
+                delete_file: "Delete file from File Manager. Args: fileName, confirm=true"
+            ]
+        ]
+    ]
+}
+
+def handleGateway(gatewayName, toolName, toolArgs) {
+    def config = getGatewayConfig()[gatewayName]
+    if (!config) {
+        throw new IllegalArgumentException("Unknown gateway: ${gatewayName}")
+    }
+
+    if (!toolName) {
+        // Catalog mode: return full schemas for all tools in this gateway
+        def defMap = getAllToolDefinitions().collectEntries { [(it.name): it] }
+
+        return [
+            gateway: gatewayName,
+            mode: "catalog",
+            message: "Call again with tool='<name>' and args={...} to execute a tool.",
+            tools: config.tools.collect { name ->
+                def d = defMap[name]
+                [name: name, description: d?.description, inputSchema: d?.inputSchema]
+            }
+        ]
+    }
+
+    if (!config.tools.contains(toolName)) {
+        throw new IllegalArgumentException("Unknown tool '${toolName}' in ${gatewayName}. Available: ${config.tools.join(', ')}")
+    }
+
+    // Prevent recursive gateway calls
+    if (getGatewayConfig().containsKey(toolName)) {
+        throw new IllegalArgumentException("Cannot call a gateway from within a gateway")
+    }
+
+    // Option D: Pre-validate required parameters and return helpful error with full schema
+    def safeArgs = toolArgs ?: [:]
+    def defMap = getAllToolDefinitions().collectEntries { [(it.name): it] }
+    def toolDef = defMap[toolName]
+    if (toolDef?.inputSchema?.required) {
+        def missing = toolDef.inputSchema.required.findAll { !safeArgs.containsKey(it) }
+        if (missing) {
+            def props = toolDef.inputSchema.properties ?: [:]
+            def paramList = props.collect { pName, pDef ->
+                def req = toolDef.inputSchema.required.contains(pName) ? "REQUIRED" : "optional"
+                def hint = "  ${pName} (${pDef.type ?: 'any'}, ${req})"
+                if (pDef.enum) hint += " — one of: ${pDef.enum.join(', ')}"
+                else if (pDef.description) hint += " — ${pDef.description}"
+                hint
+            }.join("\n")
+            return [
+                isError: true,
+                error: "Missing required parameter(s): ${missing.join(', ')}",
+                tool: toolName,
+                parameters: paramList
+            ]
+        }
+    }
+
+    return executeTool(toolName, safeArgs)
+}
+
+// Returns tool definitions visible to the MCP client (base tools + gateway tools)
 def getToolDefinitions() {
+    def gatewayConfig = getGatewayConfig()
+    def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
+
+    // Base tools: all tools NOT behind a gateway
+    def baseTools = getAllToolDefinitions().findAll { !proxiedNames.contains(it.name) }
+
+    // Gateway tools: one tool per gateway
+    def gatewayTools = gatewayConfig.collect { gwName, config ->
+        def catalog = config.tools.collect { toolName ->
+            "- ${toolName}: ${config.summaries[toolName]}"
+        }.join("\n")
+
+        [
+            name: gwName,
+            description: "${config.description}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: config.tools],
+                    args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
+                ]
+            ]
+        ]
+    }
+
+    return baseTools + gatewayTools
+}
+
+// Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
+def getAllToolDefinitions() {
     return [
         // Device Tools
         [
@@ -536,7 +741,7 @@ Verify rule after creation.""",
         ],
         [
             name: "update_rule",
-            description: "Update an existing rule. Always verify changes after.",
+            description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -566,28 +771,7 @@ Verify rule after creation.""",
                 required: ["ruleId", "confirm"]
             ]
         ],
-        [
-            name: "enable_rule",
-            description: "Enable a rule. Always verify enabled after.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "disable_rule",
-            description: "Disable a rule. Always verify disabled after.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
+        // enable_rule and disable_rule merged into update_rule (use enabled=true/false)
         [
             name: "test_rule",
             description: "Test a rule without executing actions (dry run)",
@@ -602,7 +786,7 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "get_hub_info",
-            description: "Get information about the Hubitat hub",
+            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -796,14 +980,7 @@ Verify rule after creation.""",
         ],
 
         // ==================== HUB ADMIN READ TOOLS ====================
-        [
-            name: "get_hub_details",
-            description: "Extended hub info: model, firmware, memory, temperature, network, radios. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [:]
-            ]
-        ],
+        // get_hub_details merged into get_hub_info (core tool)
         [
             name: "list_hub_apps",
             description: "List all installed apps on the hub (not just MCP rules). Requires Hub Admin Read.",
@@ -836,15 +1013,6 @@ Verify rule after creation.""",
                 properties: [:]
             ]
         ],
-        [
-            name: "get_hub_health",
-            description: "Get hub health: memory, temperature, uptime, database size. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [:]
-            ]
-        ],
-
         // ==================== MONITORING TOOLS ====================
         [
             name: "get_hub_logs",
@@ -873,8 +1041,8 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_hub_performance",
-            description: "Hub performance snapshot with optional CSV trend tracking in File Manager. Requires Hub Admin Read.",
+            name: "get_set_hub_metrics",
+            description: "Record and retrieve hub metrics (memory, temp, DB size) with CSV trend history. Use recordSnapshot=false to read without recording. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -939,9 +1107,11 @@ Requires Hub Admin Write.""",
         ],
         [
             name: "zwave_repair",
-            description: """⚠️ DISRUPTIVE: Z-Wave network repair (5-30 min, devices may be unresponsive).
+            description: """⚠️ DISRUPTIVE: Z-Wave network repair. All Z-Wave devices may become unresponsive for 5-30 minutes.
 
-PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user about duration/impact 3) Get explicit confirmation 4) Set confirm=true
+WARNING: During repair, Z-Wave automations will be unreliable. Locks, garage doors, and security devices on Z-Wave may not respond. Schedule during off-peak hours when critical Z-Wave devices are not actively needed.
+
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user about duration/impact and which devices will be affected 3) Get explicit confirmation 4) Set confirm=true
 Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
@@ -970,18 +1140,22 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
 
         // Virtual Device Management
         [
-            name: "create_virtual_device",
-            description: """Create an MCP-managed virtual device (types in deviceType enum). Auto-accessible to MCP tools, visible in Hubitat UI. Requires Hub Admin Write + confirm.""",
+            name: "manage_virtual_device",
+            description: """Create or delete MCP-managed virtual devices. Requires Hub Admin Write + confirm.
+
+action="create": Provide deviceType (see enum), deviceLabel, optional deviceNetworkId.
+action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_devices to find DNIs.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceType: [type: "string", description: "The virtual device driver type (see enum for options)",
+                    action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
+                    deviceType: [type: "string", description: "Virtual device driver type (required for create)",
                         enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
-                    deviceLabel: [type: "string", description: "Display label for the device"],
-                    deviceNetworkId: [type: "string", description: "Optional unique network ID. Auto-generated if omitted."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm device creation."]
+                    deviceLabel: [type: "string", description: "Display label (required for create)"],
+                    deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
                 ],
-                required: ["deviceType", "deviceLabel", "confirm"]
+                required: ["action", "confirm"]
             ]
         ],
         [
@@ -990,18 +1164,6 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [:]
-            ]
-        ],
-        [
-            name: "delete_virtual_device",
-            description: "Delete an MCP-managed virtual device. Confirm with user first. Requires Hub Admin Write + confirm.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceNetworkId: [type: "string", description: "The device network ID (DNI) of the MCP-managed virtual device to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved deletion."]
-                ],
-                required: ["deviceNetworkId", "confirm"]
             ]
         ],
         [
@@ -1315,8 +1477,7 @@ def executeTool(toolName, args) {
         case "create_rule": return toolCreateRule(args)
         case "update_rule": return toolUpdateRule(args.ruleId, args)
         case "delete_rule": return toolDeleteRule(args)
-        case "enable_rule": return toolEnableRule(args.ruleId)
-        case "disable_rule": return toolDisableRule(args.ruleId)
+        // enable_rule/disable_rule merged into update_rule
         case "test_rule": return toolTestRule(args.ruleId)
 
         // System Tools
@@ -1351,17 +1512,17 @@ def executeTool(toolName, args) {
         case "check_for_update": return toolCheckForUpdate(args)
 
         // Hub Admin Read Tools
-        case "get_hub_details": return toolGetHubDetails(args)
+        // get_hub_details merged into get_hub_info
         case "list_hub_apps": return toolListHubApps(args)
         case "list_hub_drivers": return toolListHubDrivers(args)
         case "get_zwave_details": return toolGetZwaveDetails(args)
         case "get_zigbee_details": return toolGetZigbeeDetails(args)
-        case "get_hub_health": return toolGetHubHealth(args)
+        // get_hub_health merged into get_hub_info
 
         // Monitoring Tools
         case "get_hub_logs": return toolGetHubLogs(args)
         case "get_device_history": return toolGetDeviceHistory(args)
-        case "get_hub_performance": return toolGetHubPerformance(args)
+        case "get_set_hub_metrics": return toolGetHubPerformance(args)
         case "device_health_check": return toolDeviceHealthCheck(args)
 
         // Hub Admin Write Tools
@@ -1374,9 +1535,8 @@ def executeTool(toolName, args) {
         case "delete_device": return toolDeleteDevice(args)
 
         // Virtual Device Management
-        case "create_virtual_device": return toolCreateVirtualDevice(args)
+        case "manage_virtual_device": return toolManageVirtualDevice(args)
         case "list_virtual_devices": return toolListVirtualDevices(args)
-        case "delete_virtual_device": return toolDeleteVirtualDevice(args)
         case "update_device": return toolUpdateDevice(args)
 
         // Room Management
@@ -1409,6 +1569,18 @@ def executeTool(toolName, args) {
 
         // Tool Guide
         case "get_tool_guide": return toolGetToolGuide(args.section)
+
+        // Category Gateway Proxy Tools
+        case "manage_rules_admin":
+        case "manage_hub_variables":
+        case "manage_rooms":
+        case "manage_destructive_hub_ops":
+        case "manage_apps_drivers":
+        case "manage_app_driver_code":
+        case "manage_logs":
+        case "manage_diagnostics":
+        case "manage_files":
+            return handleGateway(toolName, args.tool, args.args)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${toolName}")
@@ -2230,19 +2402,97 @@ def applyDeviceMapping(data, Map mapping) {
 def toolGetHubInfo() {
     def hub = location.hub
     def info = [
-        name: hub?.name,
-        localIP: hub?.localIP,
-        timeZone: location.timeZone?.ID,
-        temperatureScale: location.temperatureScale,
-        latitude: location.latitude,
-        longitude: location.longitude
+        temperatureScale: location.temperatureScale
     ]
 
-    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = null }
-    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = null }
-    try { info.uptime = hub?.uptime } catch (Exception e) { info.uptime = null }
-    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = null }
-    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = null }
+    // Hub hardware and radio info (always available)
+    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = "unavailable" }
+    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
+    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
+    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }
+    try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable" }
+    try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable" }
+
+    // Uptime (always available)
+    try {
+        def uptimeSec = hub?.uptime
+        if (uptimeSec && uptimeSec instanceof Number) {
+            def days = (uptimeSec / 86400).toInteger()
+            def hours = ((uptimeSec % 86400) / 3600).toInteger()
+            def mins = ((uptimeSec % 3600) / 60).toInteger()
+            info.uptimeSeconds = uptimeSec
+            info.uptimeFormatted = "${days}d ${hours}h ${mins}m"
+        }
+    } catch (Exception e) { info.uptimeSeconds = "unavailable" }
+
+    // Health data (always available — uses internal API)
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) {
+            info.freeMemoryKB = freeMemory.trim()
+            try {
+                def memKB = freeMemory.trim() as Integer
+                if (memKB < 50000) {
+                    info.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+                } else if (memKB < 100000) {
+                    info.memoryNote = "Memory is moderate: ${memKB}KB free."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.freeMemoryKB = "unavailable" }
+
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) {
+            info.internalTempCelsius = tempC.trim()
+            try {
+                def temp = tempC.trim() as Double
+                if (temp > 70) {
+                    info.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+                } else if (temp > 60) {
+                    info.temperatureNote = "Temperature is warm: ${temp}°C."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.internalTempCelsius = "unavailable" }
+
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) {
+            info.databaseSizeKB = dbSize.trim()
+            try {
+                def dbKB = dbSize.trim() as Integer
+                if (dbKB > 500000) {
+                    info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.databaseSizeKB = "unavailable" }
+
+    // MCP-specific stats (always available)
+    info.mcpServerVersion = currentVersion()
+    info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    info.mcpRuleCount = getChildApps()?.size() ?: 0
+    info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+    info.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+
+    // Settings visibility (always available)
+    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
+    info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
+
+    // PII/location data requires Hub Admin Read
+    if (settings.enableHubAdminRead) {
+        info.name = hub?.name
+        info.localIP = hub?.localIP
+        info.timeZone = location.timeZone?.ID
+        info.latitude = location.latitude
+        info.longitude = location.longitude
+        info.zipCode = location.zipCode
+        try { info.hubData = hub?.data } catch (Exception e) { info.hubData = null }
+    } else {
+        info.hubAdminReadRequired = "Hub Admin Read is not enabled. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
+    }
 
     return info
 }
@@ -5608,6 +5858,24 @@ def toolDeleteDevice(args) {
 
 // ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
 
+def toolManageVirtualDevice(args) {
+    def action = args.action
+    if (!action) {
+        throw new IllegalArgumentException("action is required. Use 'create' or 'delete'.")
+    }
+    switch (action) {
+        case "create":
+            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller.")
+            if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
+            return toolCreateVirtualDevice(args)
+        case "delete":
+            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use list_virtual_devices to find the DNI.")
+            return toolDeleteVirtualDevice(args)
+        default:
+            throw new IllegalArgumentException("Unknown action '${action}'. Use 'create' or 'delete'.")
+    }
+}
+
 def toolCreateVirtualDevice(args) {
     requireHubAdminWrite(args.confirm)
 
@@ -6451,7 +6719,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.7.7"
+    return "0.8.0"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -6660,7 +6928,7 @@ All Hub Admin Write tools require these steps:
 MCP-managed virtual devices:
 - Auto-accessible to all MCP tools without manual selection
 - Appear in Hubitat UI for Maker API, Dashboard, Rule Machine
-- Use delete_virtual_device to remove (not delete_device)''',
+- Use manage_virtual_device(action="delete") to remove (not delete_device)''',
 
         update_device: '''## update_device Properties
 
