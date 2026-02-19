@@ -97,6 +97,8 @@ The app shows two endpoint URLs:
 
 ### 3. Connect Your AI Client
 
+> **Transport**: This server uses **Streamable HTTP** (not SSE or stdio). Your MCP client must support HTTP transport — most do by default.
+
 <details>
 <summary><b>Claude Code (CLI)</b></summary>
 

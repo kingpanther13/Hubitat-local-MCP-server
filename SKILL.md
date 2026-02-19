@@ -481,7 +481,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 ### MCP Protocol Implementation
 
 The server implements MCP protocol version `2024-11-05`:
-- **Transport**: HTTP with OAuth access token (`?access_token=<token>`)
+- **Transport**: Streamable HTTP (not SSE/stdio) with OAuth access token (`?access_token=<token>`)
 - **Format**: JSON-RPC 2.0 (supports batch requests)
 - **Methods**: `initialize`, `tools/list`, `tools/call`, `ping`
 - **Notifications**: Handled silently (HTTP 204)
