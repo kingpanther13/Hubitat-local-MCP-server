@@ -970,7 +970,7 @@ For easier bug reporting:
   > *Native app preferred.* Hubitat's built-in Room Lighting app handles this well. The MCP can already control all the same devices, trigger on motion events, and use `if_then_else` / `delay` / `cancel_delayed` to build equivalent logic via `create_rule` if needed. No dedicated MCP tool required unless a gap is identified where MCP cannot interact with Room Lighting's behavior.
 
 - [ ] **Zone Motion Controller (multi-sensor zones)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `manage_virtual_device` + `create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
+  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
 
 - [ ] **Mode Manager (automated mode changes)** — `Low priority`
   > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `get_modes`/`set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
@@ -1162,7 +1162,7 @@ For easier bug reporting:
 
 ### Advanced Automation Patterns
 
-> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `create_rule`, `set_variable`, `manage_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
+> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `create_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
 
 - [ ] **Occupancy / room state machine** — `No new tools needed`
   > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `create_rule` and `set_variable`.
@@ -1273,7 +1273,7 @@ For easier bug reporting:
   > 2. Discover built-in driver type IDs for Virtual Switch, Virtual Dimmer, etc.
   > 3. Create `create_standalone_device` MCP tool (Hub Admin Write required)
   > 4. Note: device won't auto-appear in MCP's device list without user selection
-  > 5. Fallback: use existing `manage_virtual_device` with `isComponent: false`
+  > 5. Fallback: use existing `create_virtual_device` with `isComponent: false`
 
 - [ ] **Scene management (create/modify beyond activate_scene)** — `Difficulty: 3 | Effort: M`
   > *Partially feasible.* Native Groups and Scenes CRUD is not possible (no API). However, the existing `capture_state`/`restore_state` system is already a de facto scene manager. Enhancement: wrap with scene-oriented terminology — `create_scene` (capture), `list_scenes` (list captures), `activate_scene` (restore), `delete_scene` (delete capture). Extend captured attributes beyond switch/level/color to include fan speed, shade position, thermostat setpoints.
@@ -1390,6 +1390,7 @@ For easier bug reporting:
 39. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
 40. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
 <!-- FUTURE_PLANS_END -->
+
 
 
 
