@@ -1,7 +1,7 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.8.3",
+    "version": "0.8.4",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-02-19",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",

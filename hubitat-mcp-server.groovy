@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.3 - Fix send_command parameter array handling, fix get_hub_logs source filter
+ * Version: 0.8.4 - Fix send_command parameter handling, fix get_hub_logs source filter
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -1742,10 +1742,13 @@ def toolSendCommand(deviceId, command, parameters) {
 
     if (parameters && parameters.size() > 0) {
         // DIAGNOSTIC: log raw parameter type and value to debug buffer
-        mcpLog("debug", "server", "send_command params: class=${parameters?.getClass()?.name}, size=${parameters?.size()}, value=${parameters}, elements=${parameters instanceof List ? parameters.collect { '[' + it?.getClass()?.name + '] ' + it } : 'N/A'}")
+        def paramType = (parameters instanceof List) ? "List" : (parameters instanceof String) ? "String" : (parameters instanceof CharSequence) ? "CharSequence" : "Other"
+        def elemInfo = (parameters instanceof List) ? parameters.collect { def t = (it instanceof Map) ? "Map" : (it instanceof List) ? "List" : (it instanceof String) ? "String" : (it instanceof Number) ? "Number" : "Other"; "[${t}] ${it}" } : "N/A"
+        mcpLog("debug", "server", "send_command raw: type=${paramType}, size=${parameters?.size()}, elements=${elemInfo}, toString=${parameters}")
         // Normalize parameters to a flat List of properly typed values
         parameters = normalizeCommandParams(parameters)
-        mcpLog("debug", "server", "send_command normalized: ${parameters?.collect { '[' + it?.getClass()?.name + '] ' + it }}")
+        def normInfo = parameters.collect { def t = (it instanceof Map) ? "Map" : (it instanceof List) ? "List" : (it instanceof String) ? "String" : (it instanceof Number) ? "Number" : "Other"; "[${t}] ${it}" }
+        mcpLog("debug", "server", "send_command normalized: ${normInfo}")
         device."${command}"(*parameters)
     } else {
         device."${command}"()
@@ -6753,7 +6756,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.3"
+    return "0.8.4"
 }
 
 def isNewerVersion(String remote, String local) {
