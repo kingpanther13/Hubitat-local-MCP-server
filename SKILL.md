@@ -305,7 +305,7 @@ All three:
 | `buildRuleExport(ruleData)` | Build portable rule export map (used by export and delete backup) |
 | `toolInstallItem(type, args)` | Shared install logic for apps and drivers |
 | `toolDeleteItem(type, idParam, deletePath, args)` | Shared delete logic for apps and drivers |
-| `toolToggleRule(ruleId, enable)` | Shared enable/disable logic (called by `update_rule` with `enabled=true/false`) |
+| `updateRuleFromParent(data)` | Child app method — handles all rule updates including enable/disable via `enabled=true/false` |
 | `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |
 | `clampPercent(value)` | Clamp integer to 0-100 range (in rule.groovy) |
 | `rescheduleSunTrigger(type, handler)` | Shared sunrise/sunset trigger rescheduling (in rule.groovy, v0.7.7+) |

@@ -73,7 +73,7 @@ All Hub Admin Write tools require these steps:
 - List affected devices to user before proceeding
 - Dashboard layouts and automations referencing room may be affected
 
-**delete_app / delete_driver** (via `manage_apps_drivers`)
+**delete_app / delete_driver** (via `manage_app_driver_code`)
 - Remove app instances via Hubitat UI first (for apps)
 - Change devices to different driver first (for drivers)
 - Source code auto-backed up before deletion

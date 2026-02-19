@@ -1,4 +1,6 @@
-# Bot Acceptance Test (BAT) Suite
+# Bot Acceptance Test (BAT) Suite — v1 (Superseded)
+
+> **Note:** This is the original BAT v1 test suite, written for the pre-v0.8.0 architecture (8 gateways, separate enable_rule/disable_rule, separate create_virtual_device/delete_virtual_device). For the current test suite targeting the v0.8.0+ architecture (9 gateways, merged tools), see **[BAT-v2.md](BAT-v2.md)**.
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 

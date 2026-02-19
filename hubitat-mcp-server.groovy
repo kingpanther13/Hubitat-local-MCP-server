@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.0 - Category gateway proxy: consolidate 48 tools behind 9 domain-named gateways (69→30 on tools/list)
+ * Version: 0.8.1 - Bug fixes: remove dead code, fix stale tool references in messages
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -2080,30 +2080,7 @@ def toolDeleteRule(args) {
     return result
 }
 
-def toolEnableRule(ruleId) {
-    return toolToggleRule(ruleId, true)
-}
-
-def toolDisableRule(ruleId) {
-    return toolToggleRule(ruleId, false)
-}
-
-private Map toolToggleRule(ruleId, boolean enable) {
-    def childApp = getChildAppById(ruleId)
-    if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${ruleId}")
-    }
-
-    if (enable) { childApp.enableRule() } else { childApp.disableRule() }
-
-    def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
-    def action = enable ? "enabled" : "disabled"
-    return [
-        success: true,
-        ruleId: ruleId,
-        message: "Rule '${ruleName}' ${action}"
-    ]
-}
+// toolEnableRule/toolDisableRule/toolToggleRule removed in v0.8.1 (dead code since v0.8.0 merged into update_rule)
 
 def toolTestRule(ruleId) {
     def childApp = getChildAppById(ruleId)
@@ -5980,7 +5957,7 @@ def toolListVirtualDevices(args) {
         return [
             devices: [],
             count: 0,
-            message: "No MCP-managed virtual devices found. Use create_virtual_device to create one."
+            message: "No MCP-managed virtual devices found. Use manage_virtual_device(action=\"create\") to create one."
         ]
     }
 
@@ -6719,7 +6696,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.0"
+    return "0.8.1"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -6872,7 +6849,7 @@ def getToolGuideSections() {
 - Example: User says "use test switch" but only "Virtual Test Switch" exists → ask "Did you mean 'Virtual Test Switch'?"
 
 **Tool failure rule:**
-- If a tool fails (e.g., create_virtual_device returns an error), report the failure to the user
+- If a tool fails (e.g., manage_virtual_device returns an error), report the failure to the user
 - Do NOT silently fall back to using existing devices as a workaround
 - Example: If creating a virtual device fails, don't just grab an existing device to use instead
 

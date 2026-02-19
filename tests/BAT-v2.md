@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for v0.8.0 4-pronged gateway architecture (21 core + 10 gateways = 31 on tools/list, 53 proxied).
+Updated for v0.8.0+ final architecture (21 core + 9 gateways = 30 on tools/list, 48 proxied).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -173,7 +173,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `update_rule` with modified trigger.
 
-### T12 — enable_rule / disable_rule
+### T12 — update_rule enable/disable
 
 ```json
 {
@@ -183,7 +183,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `disable_rule`, verifies, calls `enable_rule`, verifies.
+**Expected**: Calls `update_rule` with `enabled=false`, verifies, calls `update_rule` with `enabled=true`, verifies.
 
 ### T13 — update_device (label)
 
@@ -247,7 +247,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `get_modes`. Reads only, does not call `set_mode`.
 
-### T19 — create_virtual_device
+### T19 — manage_virtual_device (create)
 
 ```json
 {
@@ -256,7 +256,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `create_virtual_device`. Creates virtual device.
+**Expected**: Calls `manage_virtual_device` with `action="create"`. Creates virtual device.
 
 ### T19b — list_virtual_devices
 
@@ -268,7 +268,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `list_virtual_devices`. Lists MCP-managed virtual devices.
 
-### T19c — delete_virtual_device
+### T19c — manage_virtual_device (delete)
 
 ```json
 {
@@ -277,7 +277,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `delete_virtual_device`. Deletes virtual device.
+**Expected**: Calls `manage_virtual_device` with `action="delete"`. Deletes virtual device.
 
 ---
 
@@ -424,7 +424,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_rooms` → `delete_room`.
 
-### T35 — Discover get_hub_details (manage_hub_info)
+### T35 — Discover get_hub_info (core)
 
 ```json
 {
@@ -432,9 +432,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_hub_info` → `get_hub_details`.
+**Expected v0.8.0**: Calls `get_hub_info` directly (core tool — includes hardware, health, MCP stats; PII gated behind Hub Admin Read).
 
-### T36 — Discover get_zwave_details (manage_hub_info)
+### T36 — Discover get_zwave_details (manage_diagnostics)
 
 ```json
 {
@@ -442,9 +442,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_hub_info` → `get_zwave_details`.
+**Expected v0.8.0**: Discovers `manage_diagnostics` → `get_zwave_details`.
 
-### T37 — Discover get_zigbee_details (manage_hub_info)
+### T37 — Discover get_zigbee_details (manage_diagnostics)
 
 ```json
 {
@@ -452,9 +452,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_hub_info` → `get_zigbee_details`.
+**Expected v0.8.0**: Discovers `manage_diagnostics` → `get_zigbee_details`.
 
-### T38 — Discover get_hub_health (manage_hub_info)
+### T38 — Discover get_hub_info for health (core)
 
 ```json
 {
@@ -462,9 +462,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_hub_info` → `get_hub_health`.
+**Expected v0.8.0**: Calls `get_hub_info` directly (core tool — health data merged into get_hub_info in v0.8.0).
 
-### T39 — Discover check_for_update (manage_hub_info)
+### T39 — Discover check_for_update (core)
 
 ```json
 {
@@ -472,9 +472,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_hub_info` → `check_for_update`.
+**Expected v0.8.0**: Calls `check_for_update` directly (promoted to core in v0.8.0).
 
-### T40 — Discover create_hub_backup (manage_hub_maintenance)
+### T40 — Discover create_hub_backup (core)
 
 ```json
 {
@@ -482,7 +482,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_hub_maintenance` → `create_hub_backup`.
+**Expected v0.8.0**: Calls `create_hub_backup` directly (promoted to core in v0.8.0).
 
 ### T41 — Discover list_hub_apps (manage_apps_drivers)
 
@@ -567,7 +567,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_logs` → `get_device_history`.
 
-### T49 — Discover get_hub_performance (manage_diagnostics)
+### T49 — Discover get_set_hub_metrics (manage_diagnostics)
 
 ```json
 {
@@ -575,7 +575,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_diagnostics` → `get_hub_performance`.
+**Expected v0.8.0**: Discovers `manage_diagnostics` → `get_set_hub_metrics`.
 
 ### T50 — Discover device_health_check (manage_diagnostics)
 
@@ -764,7 +764,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `get_hub_health` or `get_hub_details`.
+**Expected**: Routes to `get_hub_info` (core tool — includes health, hardware, and MCP stats).
 
 ### T71 — "What variables do I have?" → hub variables
 
@@ -883,7 +883,7 @@ Complex scenarios spanning multiple tools and gateways.
 1. `create_rule` (core)
 2. `get_rule` (core)
 3. `manage_rules_admin(tool=test_rule)` (gateway)
-4. `disable_rule` (core)
+4. `update_rule` with `enabled=false` (core)
 5. `manage_rules_admin(tool=export_rule)` (gateway)
 6. `manage_rules_admin(tool=delete_rule)` (gateway)
 
@@ -895,7 +895,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: All core tools: `create_virtual_device`, `list_virtual_devices`, `send_command`, `get_attribute`, `delete_virtual_device`.
+**Expected (v0.8.0)**: All core tools: `manage_virtual_device(action="create")`, `list_virtual_devices`, `send_command`, `get_attribute`, `manage_virtual_device(action="delete")`.
 
 ### T82 — Room management workflow
 
@@ -915,7 +915,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: Split across `manage_diagnostics` (get_hub_performance, device_health_check) and `manage_logs` (get_hub_logs, get_debug_logs).
+**Expected**: Split across `manage_diagnostics` (get_set_hub_metrics, device_health_check) and `manage_logs` (get_hub_logs, get_debug_logs).
 
 ### T84 — Cross-gateway workflow
 
@@ -925,7 +925,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: Uses 6 gateways plus core: `manage_rooms` (list_rooms), core (`list_virtual_devices`), `manage_hub_variables` (list_variables), `manage_files` (list_files), `manage_apps_drivers` (list_item_backups), `manage_hub_info` (get_hub_health), `manage_diagnostics` (device_health_check).
+**Expected (v0.8.0)**: Uses 5 gateways plus core: `manage_rooms` (list_rooms), core (`list_virtual_devices`), `manage_hub_variables` (list_variables), `manage_files` (list_files), `manage_apps_drivers` (list_item_backups), core (`get_hub_info`), `manage_diagnostics` (device_health_check).
 
 ### T85 — Rule with virtual device end-to-end
 
@@ -936,7 +936,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: Core tools (`create_virtual_device` x2, `create_rule`, `get_rule`) and `manage_rules_admin` (`test_rule`).
+**Expected**: Core tools (`manage_virtual_device` x2, `create_rule`, `get_rule`) and `manage_rules_admin` (`test_rule`).
 
 ### T86 — Variable round-trip workflow
 
@@ -974,7 +974,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: Could call `get_hub_health` or `device_health_check` or both. Should not call unrelated tools.
+**Expected**: Could call `get_hub_info` or `device_health_check` or both. Should not call unrelated tools.
 
 ### T92 — "Status" ambiguity (comprehensive)
 
@@ -1004,7 +1004,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `get_hub_performance` (in `manage_diagnostics`), not `get_hub_health` (in `manage_hub_info`).
+**Expected**: `get_set_hub_metrics` (in `manage_diagnostics`), not `get_hub_info` (core). Performance metrics = diagnostics gateway.
 
 ### T95 — User references wrong gateway domain
 
@@ -1014,7 +1014,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `device_health_check` is in `manage_diagnostics`, NOT `manage_hub_info`. AI should find the right gateway despite the misdirection.
+**Expected**: `device_health_check` is in `manage_diagnostics`. AI should find the right gateway despite the misdirection.
 
 ### T96 — Same-name artifact ambiguity
 
@@ -1077,7 +1077,7 @@ These test correct routing when the request is ambiguous.
 
 ```json
 {
-  "test_prompt": "Try to use manage_hub_info to call manage_rooms. Report what happens."
+  "test_prompt": "Try to use manage_diagnostics to call manage_rooms. Report what happens."
 }
 ```
 
@@ -1218,7 +1218,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 }
 ```
 
-**Expected**: 10 calls across 9 different gateways (manage_rooms, manage_hub_variables, manage_hub_info, manage_hub_maintenance, manage_files, manage_apps_drivers, manage_diagnostics, manage_logs, manage_rules_admin). `manage_code_changes` excluded — all its tools are destructive. All should succeed.
+**Expected**: 10 calls across core tools and gateways (manage_rooms, manage_hub_variables, get_hub_info (core), create_hub_backup (core), manage_files, manage_apps_drivers, manage_diagnostics, manage_logs, check_for_update (core), manage_rules_admin). `manage_app_driver_code` excluded — all its tools are destructive. All should succeed.
 
 ### T121 — Rapid rule create-delete cycles
 
@@ -1409,7 +1409,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `disable_rule`, verify, `enable_rule`, verify.
+**Expected**: `update_rule` with `enabled=false`, verify, `update_rule` with `enabled=true`, verify.
 **Equivalent to**: T12
 
 #### T215 — Save a backup of my automation
@@ -1489,7 +1489,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `create_virtual_device` with type Virtual Switch.
+**Expected**: `manage_virtual_device` with `action="create"`, type Virtual Switch.
 **Equivalent to**: T19
 
 #### T221 — What simulated devices do I have?
@@ -1512,7 +1512,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `delete_virtual_device`.
+**Expected**: `manage_virtual_device` with `action="delete"`.
 **Equivalent to**: T19c
 
 #### T223 — Rename a device
@@ -1692,7 +1692,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_hub_details`.
+**Expected**: `get_hub_info` (core).
 **Equivalent to**: T35
 
 #### T261 — Z-Wave network info
@@ -1725,7 +1725,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_hub_health`.
+**Expected**: `get_hub_info` (core).
 **Equivalent to**: T38
 
 #### T264 — Am I up to date?
@@ -1855,7 +1855,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_hub_performance`.
+**Expected**: `get_set_hub_metrics` (via `manage_diagnostics`).
 **Equivalent to**: T49
 
 #### T278 — Dead or unresponsive devices
@@ -1994,7 +1994,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected tools**: `create_rule` → `get_rule` → `test_rule` → `disable_rule` → `export_rule` → `delete_rule`.
+**Expected tools**: `create_rule` → `get_rule` → `test_rule` → `update_rule(enabled=false)` → `export_rule` → `delete_rule`.
 **Equivalent to**: T80
 
 #### T296 — Virtual device end-to-end
@@ -2005,7 +2005,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `create_virtual_device` → `list_virtual_devices` (or `get_device`) → `send_command` → `get_attribute` → `delete_virtual_device`.
+**Expected**: `manage_virtual_device(action="create")` → `list_virtual_devices` (or `get_device`) → `send_command` → `get_attribute` → `manage_virtual_device(action="delete")`.
 **Equivalent to**: T81
 
 #### T297 — Room management end-to-end
@@ -2027,7 +2027,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `get_hub_performance` + `device_health_check` + `get_hub_logs` + `get_debug_logs`.
+**Expected**: `get_set_hub_metrics` + `device_health_check` + `get_hub_logs` + `get_debug_logs`.
 **Equivalent to**: T83
 
 #### T299 — Complete smart home inventory
@@ -2038,7 +2038,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `list_rooms` + `list_virtual_devices` + `list_variables` + `list_files` + `list_item_backups` + `get_hub_health` + `device_health_check`.
+**Expected**: `list_rooms` + `list_virtual_devices` + `list_variables` + `list_files` + `list_item_backups` + `get_hub_info` + `device_health_check`.
 **Equivalent to**: T84
 
 #### T300 — Motion-activated light from scratch
@@ -2050,7 +2050,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `create_virtual_device` (x2) → `create_rule` → `get_rule` → `test_rule`.
+**Expected**: `manage_virtual_device` (x2) → `create_rule` → `get_rule` → `test_rule`.
 **Equivalent to**: T85
 
 #### T301 — Variable round-trip
@@ -2073,17 +2073,17 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Operation | Tool | Gateway | Why Excluded |
 |-----------|------|---------|--------------|
-| Reboot hub | `reboot_hub` | manage_hub_maintenance | 1-3 min downtime, kills automations |
-| Shutdown hub | `shutdown_hub` | manage_hub_maintenance | Requires physical restart |
-| Z-Wave repair | `zwave_repair` | manage_hub_maintenance | 5-30 min, devices unresponsive |
-| Delete real device | `delete_device` | manage_hub_maintenance | Permanent, no undo |
-| Install app | `install_app` | manage_code_changes | Modifies hub code |
-| Install driver | `install_driver` | manage_code_changes | Modifies hub code |
-| Update app code | `update_app_code` | manage_code_changes | Modifies production code |
-| Update driver code | `update_driver_code` | manage_code_changes | Modifies production code |
-| Delete app | `delete_app` | manage_code_changes | Permanent code removal |
-| Delete driver | `delete_driver` | manage_code_changes | Permanent code removal |
-| Restore item backup | `restore_item_backup` | manage_code_changes | Overwrites current code |
+| Reboot hub | `reboot_hub` | manage_destructive_hub_ops | 1-3 min downtime, kills automations |
+| Shutdown hub | `shutdown_hub` | manage_destructive_hub_ops | Requires physical restart |
+| Z-Wave repair | `zwave_repair` | manage_diagnostics | 5-30 min, devices unresponsive |
+| Delete real device | `delete_device` | manage_destructive_hub_ops | Permanent, no undo |
+| Install app | `install_app` | manage_app_driver_code | Modifies hub code |
+| Install driver | `install_driver` | manage_app_driver_code | Modifies hub code |
+| Update app code | `update_app_code` | manage_app_driver_code | Modifies production code |
+| Update driver code | `update_driver_code` | manage_app_driver_code | Modifies production code |
+| Delete app | `delete_app` | manage_app_driver_code | Permanent code removal |
+| Delete driver | `delete_driver` | manage_app_driver_code | Permanent code removal |
+| Restore item backup | `restore_item_backup` | manage_app_driver_code | Overwrites current code |
 | Set HSM | `set_hsm` | core | Changes security system state |
 | Set Mode | `set_mode` | core | Changes hub mode (may trigger automations) |
 
@@ -2137,16 +2137,16 @@ These operations are too destructive for automated testing. Test manually with e
 | Component | Count |
 |-----------|-------|
 | Core tools on `tools/list` | 21 |
-| Gateways on `tools/list` | 10 |
-| Total visible on `tools/list` | 31 |
-| Tools proxied behind gateways | 53 |
-| Total tools in codebase | 74 |
+| Gateways on `tools/list` | 9 |
+| Total visible on `tools/list` | 30 |
+| Tools proxied behind gateways | 48 |
+| Total tools in codebase | 69 |
 
-**10 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_hub_info` (5), `manage_hub_maintenance` (5), `manage_apps_drivers` (6), `manage_code_changes` (7), `manage_logs` (6), `manage_diagnostics` (7), `manage_files` (4)
+**9 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (6), `manage_diagnostics` (9), `manage_files` (4)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 74 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 69 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist.
 
@@ -2156,17 +2156,15 @@ Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests 
 
 ## Changes from BAT v1
 
-Key differences from the original BAT.md (which targets the 8-gateway architecture):
+Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **21 core + 10 gateways (31 total)**
-2. **Virtual device tools promoted to core**: `create_virtual_device`, `list_virtual_devices`, `delete_virtual_device` moved from `manage_virtual_devices` gateway to core `tools/list` — tests T19/T19b/T19c added to Section 1, T32-T34 removed from Section 2
-3. **Gateway splits**:
-   - `manage_hub_admin` → `manage_hub_info` (5 read) + `manage_hub_maintenance` (5 write)
-   - `manage_apps_drivers` → `manage_apps_drivers` (6 read) + `manage_code_changes` (7 write)
-   - `manage_logs_diagnostics` → `manage_logs` (6) + `manage_diagnostics` (7)
-4. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
-5. **T104 updated**: `manage_hub_admin` → `manage_hub_info` in anti-recursion test
-6. **T105 updated**: Now tests Option D pre-validation (returns all params on error)
-7. **T120 expanded**: 8 gateway stress test → 10 gateway stress test with setup prompt for rule export
-8. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-9. **Corrected test count**: 159 → 172 (was undercounted in v1)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **21 core + 9 gateways (30 total, 69 tools)**
+2. **Merged tools**: `enable_rule`/`disable_rule` → `update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
+3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
+4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
+5. **Gateway renames**: `manage_hub_maintenance` → `manage_destructive_hub_ops` (3 tools); `manage_code_changes` → `manage_app_driver_code` (7 tools)
+6. **Gateway splits from v1**: `manage_apps_drivers` → `manage_apps_drivers` (6 read) + `manage_app_driver_code` (7 write); `manage_logs_diagnostics` → `manage_logs` (6) + `manage_diagnostics` (9)
+7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
+8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
+9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1)
