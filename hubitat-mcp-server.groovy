@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.1 - Bug fixes: remove dead code, fix stale tool references in messages
+ * Version: 0.8.2 - Fix rule execution crash (log.isDebugEnabled), fix setColor string-vs-Map parameter handling
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -1749,6 +1749,14 @@ def toolSendCommand(deviceId, command, parameters) {
                 }
             } catch (Exception e) {
                 // If numeric conversion fails (e.g., overflow, scientific notation), pass as string
+            }
+            // Parse JSON strings into Maps/Lists (e.g., setColor's color map parameter)
+            if (param instanceof String && (s.startsWith("{") || s.startsWith("["))) {
+                try {
+                    return new groovy.json.JsonSlurper().parseText(s)
+                } catch (Exception e) {
+                    // Not valid JSON, pass as string
+                }
             }
             return param
         }
@@ -6696,7 +6704,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.1"
+    return "0.8.2"
 }
 
 def isNewerVersion(String remote, String local) {

@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.8.1
+ * Version: 0.8.2
  */
 
 definition(
@@ -3309,7 +3309,7 @@ def resumeDelayedActions(data) {
 }
 
 def executeAction(action, actionIndex = null, evt = null) {
-    if (log.isDebugEnabled()) log.debug "Executing action: ${describeAction(action)}"
+    log.debug "Executing action: ${describeAction(action)}"
 
     try {
     switch (action.type) {
