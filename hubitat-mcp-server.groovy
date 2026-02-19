@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.0 - Category gateway proxy: consolidate 52 tools behind 10 domain-named gateways (73→31 on tools/list)
+ * Version: 0.8.0 - Category gateway proxy: consolidate 51 tools behind 10 domain-named gateways (72→31 on tools/list)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -458,10 +458,9 @@ def getGatewayConfig() {
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
         // Option B: manage_hub_admin split into info (read) + maintenance (write)
         manage_hub_info: [
-            description: "Hub information: detailed specs, radio status, and update checks.",
-            tools: ["get_hub_details", "get_zwave_details", "get_zigbee_details", "check_for_update"],
+            description: "Hub information: radio details and update checks.",
+            tools: ["get_zwave_details", "get_zigbee_details", "check_for_update"],
             summaries: [
-                get_hub_details: "Extended hub info (model, firmware, memory, temp, network)",
                 get_zwave_details: "Z-Wave radio info (firmware, device count)",
                 get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count)",
                 check_for_update: "Check if a newer MCP server version is available"
@@ -816,7 +815,7 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "get_hub_info",
-            description: "Get hub info including name, IP, firmware, uptime, and health data (memory, temperature, database size) when Hub Admin Read is enabled.",
+            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -1010,14 +1009,7 @@ Verify rule after creation.""",
         ],
 
         // ==================== HUB ADMIN READ TOOLS ====================
-        [
-            name: "get_hub_details",
-            description: "Extended hub info: model, firmware, memory, temperature, network, radios. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [:]
-            ]
-        ],
+        // get_hub_details merged into get_hub_info (core tool)
         [
             name: "list_hub_apps",
             description: "List all installed apps on the hub (not just MCP rules). Requires Hub Admin Read.",
@@ -1556,7 +1548,7 @@ def executeTool(toolName, args) {
         case "check_for_update": return toolCheckForUpdate(args)
 
         // Hub Admin Read Tools
-        case "get_hub_details": return toolGetHubDetails(args)
+        // get_hub_details merged into get_hub_info
         case "list_hub_apps": return toolListHubApps(args)
         case "list_hub_drivers": return toolListHubDrivers(args)
         case "get_zwave_details": return toolGetZwaveDetails(args)
@@ -2448,18 +2440,16 @@ def applyDeviceMapping(data, Map mapping) {
 def toolGetHubInfo() {
     def hub = location.hub
     def info = [
-        name: hub?.name,
-        localIP: hub?.localIP,
-        timeZone: location.timeZone?.ID,
-        temperatureScale: location.temperatureScale,
-        latitude: location.latitude,
-        longitude: location.longitude
+        temperatureScale: location.temperatureScale
     ]
 
-    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = null }
-    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = null }
-    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = null }
-    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = null }
+    // Hub hardware and radio info (always available)
+    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = "unavailable" }
+    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
+    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
+    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }
+    try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable" }
+    try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable" }
 
     // Uptime (always available)
     try {
@@ -2473,58 +2463,73 @@ def toolGetHubInfo() {
         }
     } catch (Exception e) { info.uptimeSeconds = "unavailable" }
 
-    // Health data requires Hub Admin Read
+    // Health data (always available — uses internal API)
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) {
+            info.freeMemoryKB = freeMemory.trim()
+            try {
+                def memKB = freeMemory.trim() as Integer
+                if (memKB < 50000) {
+                    info.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+                } else if (memKB < 100000) {
+                    info.memoryNote = "Memory is moderate: ${memKB}KB free."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.freeMemoryKB = "unavailable" }
+
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) {
+            info.internalTempCelsius = tempC.trim()
+            try {
+                def temp = tempC.trim() as Double
+                if (temp > 70) {
+                    info.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+                } else if (temp > 60) {
+                    info.temperatureNote = "Temperature is warm: ${temp}°C."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.internalTempCelsius = "unavailable" }
+
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) {
+            info.databaseSizeKB = dbSize.trim()
+            try {
+                def dbKB = dbSize.trim() as Integer
+                if (dbKB > 500000) {
+                    info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.databaseSizeKB = "unavailable" }
+
+    // MCP-specific stats (always available)
+    info.mcpServerVersion = currentVersion()
+    info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    info.mcpRuleCount = getChildApps()?.size() ?: 0
+    info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+    info.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+
+    // Settings visibility (always available)
+    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
+    info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
+
+    // PII/location data requires Hub Admin Read
     if (settings.enableHubAdminRead) {
-        try {
-            def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
-            if (freeMemory) {
-                info.freeMemoryKB = freeMemory.trim()
-                try {
-                    def memKB = freeMemory.trim() as Integer
-                    if (memKB < 50000) {
-                        info.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
-                    } else if (memKB < 100000) {
-                        info.memoryNote = "Memory is moderate: ${memKB}KB free."
-                    }
-                } catch (NumberFormatException nfe) { /* non-numeric */ }
-            }
-        } catch (Exception e) { info.freeMemoryKB = "unavailable" }
-
-        try {
-            def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
-            if (tempC) {
-                info.internalTempCelsius = tempC.trim()
-                try {
-                    def temp = tempC.trim() as Double
-                    if (temp > 70) {
-                        info.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
-                    } else if (temp > 60) {
-                        info.temperatureNote = "Temperature is warm: ${temp}°C."
-                    }
-                } catch (NumberFormatException nfe) { /* non-numeric */ }
-            }
-        } catch (Exception e) { info.internalTempCelsius = "unavailable" }
-
-        try {
-            def dbSize = hubInternalGet("/hub/advanced/databaseSize")
-            if (dbSize) {
-                info.databaseSizeKB = dbSize.trim()
-                try {
-                    def dbKB = dbSize.trim() as Integer
-                    if (dbKB > 500000) {
-                        info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-                    }
-                } catch (NumberFormatException nfe) { /* non-numeric */ }
-            }
-        } catch (Exception e) { info.databaseSizeKB = "unavailable" }
-
-        // MCP-specific stats
-        info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
-        info.mcpRuleCount = getChildApps()?.size() ?: 0
-        info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
-        info.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+        info.name = hub?.name
+        info.localIP = hub?.localIP
+        info.timeZone = location.timeZone?.ID
+        info.latitude = location.latitude
+        info.longitude = location.longitude
+        info.zipCode = location.zipCode
+        try { info.hubData = hub?.data } catch (Exception e) { info.hubData = null }
     } else {
-        info.hubAdminReadDisabled = "Hub Admin Read is not enabled. The following data is excluded: free memory, internal temperature, database size, and MCP statistics. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
+        info.hubAdminReadRequired = "Hub Admin Read is not enabled. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
     }
 
     return info
