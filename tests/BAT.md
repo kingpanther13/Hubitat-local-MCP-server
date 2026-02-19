@@ -1239,6 +1239,830 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (18 + 8 gatew
 
 ---
 
+## Section 10: Natural Language Discovery Tests
+
+These tests cover the same tool capabilities as earlier sections, but use **purely conversational prompts**. No tool names, no parameter names, no implementation-specific terms. The LLM must figure out which tool(s) to use from context alone.
+
+**Purpose**: Measure whether the LLM can map real user intent to the correct MCP tools without being told which tools exist. Compare results with the explicit-tool versions in earlier sections.
+
+**Rules**:
+- `test_prompt` MUST NOT contain any tool names, gateway names, or parameter names
+- `test_prompt` reads like something a real person would say to their smart home assistant
+- Setup/teardown prompts remain direct for reliability (they're infrastructure, not under test)
+- All test artifacts use `BAT NL` prefix for easy identification and cleanup
+
+---
+
+### Device Discovery & Control
+
+#### T200 — What devices do I have?
+
+```json
+{
+  "test_prompt": "I just connected to my smart home hub. What gadgets do I have hooked up? Just give me a quick overview — how many and what are some of them called?"
+}
+```
+
+**Expected**: `list_devices` with `detailed=false`. Returns count and names.
+**Equivalent to**: T01
+
+#### T201 — Show me everything about a device
+
+```json
+{
+  "setup_prompt": "List my devices briefly so I can see what's available.",
+  "test_prompt": "That first one looks interesting. Tell me everything about it — what can it do, what state is it in, what room is it in?"
+}
+```
+
+**Expected**: `get_device` with a valid device ID.
+**Equivalent to**: T03
+
+#### T202 — Is this thing on?
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL Switch Check'.",
+  "test_prompt": "Hey, is 'BAT NL Switch Check' turned on or off right now?",
+  "teardown_prompt": "Delete the virtual device 'BAT NL Switch Check'."
+}
+```
+
+**Expected**: `get_attribute` with attribute=switch.
+**Equivalent to**: T04
+
+#### T203 — Flip a switch and verify
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL Flip Test'.",
+  "test_prompt": "Can you flip on 'BAT NL Flip Test' for me? And double-check that it actually turned on.",
+  "teardown_prompt": "Turn off 'BAT NL Flip Test', then delete the virtual device."
+}
+```
+
+**Expected**: `send_command` (on), then `get_attribute` to verify.
+**Equivalent to**: T05
+
+#### T204 — Dim a light
+
+```json
+{
+  "setup_prompt": "Create a virtual dimmer called 'BAT NL Dimmer'.",
+  "test_prompt": "'BAT NL Dimmer' is too bright. Bring it down to about half and confirm it changed.",
+  "teardown_prompt": "Turn off 'BAT NL Dimmer', then delete the virtual device."
+}
+```
+
+**Expected**: `send_command` with setLevel ~50, then verify.
+**Equivalent to**: T06
+
+#### T205 — What's been happening with this device?
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL Activity'. Turn it on, then off, then on again.",
+  "test_prompt": "What's been going on with 'BAT NL Activity'? Show me its recent activity.",
+  "teardown_prompt": "Delete the virtual device 'BAT NL Activity'."
+}
+```
+
+**Expected**: `get_device_events`.
+**Equivalent to**: T07
+
+#### T206 — I want full details on everything
+
+```json
+{
+  "test_prompt": "I want to see detailed info on all my devices — what they can do, what state they're in, everything. There's a lot of them so don't dump it all at once, just show me the first batch."
+}
+```
+
+**Expected**: `list_devices` with `detailed=true`, paginated.
+**Equivalent to**: T02
+
+---
+
+### Automations & Rules
+
+#### T210 — What automations do I have?
+
+```json
+{
+  "test_prompt": "What automations do I have set up? Are they all running or are some paused?"
+}
+```
+
+**Expected**: `list_rules`.
+**Equivalent to**: T08
+
+#### T211 — Walk me through this automation
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Rule View' with a time trigger at 23:59 and a log action saying 'test'. Mark as test rule.",
+  "test_prompt": "I want to understand how 'BAT NL Rule View' works. Walk me through what triggers it and what it does."
+}
+```
+
+**Expected**: `get_rule`.
+**Teardown**: Covered by T219 or separate cleanup.
+**Equivalent to**: T09
+
+#### T212 — Build me an automation
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL Rule Device'.",
+  "test_prompt": "I want an automation that writes a log message every night at 11:59 PM. Call it 'BAT NL Auto Test' and make sure it's flagged as a test rule.",
+  "teardown_prompt": "Delete the rule 'BAT NL Auto Test'. Delete the virtual device 'BAT NL Rule Device'."
+}
+```
+
+**Expected**: `create_rule` with time trigger and log action, `testRule=true`.
+**Equivalent to**: T10
+
+#### T213 — Change when my automation runs
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Reschedule' with a time trigger at 23:59 and a log action. Mark as test rule.",
+  "test_prompt": "The timing on 'BAT NL Reschedule' is wrong — I actually want it to fire at 6 AM, not midnight.",
+  "teardown_prompt": "Delete the rule 'BAT NL Reschedule'."
+}
+```
+
+**Expected**: `update_rule` with modified trigger time.
+**Equivalent to**: T11
+
+#### T214 — Pause and unpause an automation
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Pause Test' with a time trigger at 23:59 and a log action. Mark as test rule.",
+  "test_prompt": "I want to temporarily stop 'BAT NL Pause Test' from running. Pause it and confirm it's not active. Then turn it back on and make sure it's good to go again.",
+  "teardown_prompt": "Delete the rule 'BAT NL Pause Test'."
+}
+```
+
+**Expected**: `disable_rule`, verify, `enable_rule`, verify.
+**Equivalent to**: T12
+
+#### T215 — Save a backup of my automation
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Backup' with a time trigger at 12:00 and a log action. Mark as test rule.",
+  "test_prompt": "I want to save a copy of 'BAT NL Backup' — give me the full configuration as JSON so I could restore it later if something goes wrong.",
+  "teardown_prompt": "Delete the rule 'BAT NL Backup'."
+}
+```
+
+**Expected**: `export_rule`.
+**Equivalent to**: T20
+
+#### T216 — Duplicate an automation
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Original' with a time trigger at 08:00 and a log action. Mark as test rule.",
+  "test_prompt": "I like how 'BAT NL Original' works. Can you make a copy of it so I can tweak the duplicate without breaking the original?",
+  "teardown_prompt": "Delete any rules that start with 'BAT NL Original' or 'Copy of BAT NL Original'."
+}
+```
+
+**Expected**: `clone_rule`.
+**Equivalent to**: T21
+
+#### T217 — Simulate an automation
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Simulate' with a time trigger at 12:00 and a log action. Mark as test rule.",
+  "test_prompt": "I'm curious what would happen if 'BAT NL Simulate' triggered right now. Can you walk me through it without actually running anything?",
+  "teardown_prompt": "Delete the rule 'BAT NL Simulate'."
+}
+```
+
+**Expected**: `test_rule` (dry run).
+**Equivalent to**: T22
+
+#### T218 — Restore an automation from backup
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Restore Test' with a time trigger at 14:00 and a log action. Mark as test rule. Export it as JSON, save the data, then delete the original rule.",
+  "test_prompt": "Remember that automation you backed up? Bring it back from the JSON data you saved. Make sure it's there.",
+  "teardown_prompt": "Delete any rules containing 'BAT NL Restore Test'."
+}
+```
+
+**Expected**: `import_rule`.
+**Equivalent to**: T23
+
+#### T219 — Get rid of an automation
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Trash Rule' with a time trigger and log action. Mark as test rule.",
+  "test_prompt": "I don't need 'BAT NL Trash Rule' anymore. Get rid of it."
+}
+```
+
+**Expected**: `delete_rule`.
+**Equivalent to**: T115
+
+---
+
+### Virtual Devices
+
+#### T220 — Set up a fake device for testing
+
+```json
+{
+  "test_prompt": "I need a simulated switch for testing purposes — something that acts like a real switch but isn't connected to any physical hardware. Call it 'BAT NL Fake Switch'.",
+  "teardown_prompt": "Delete the virtual device 'BAT NL Fake Switch'."
+}
+```
+
+**Expected**: `create_virtual_device` with type Virtual Switch.
+**Equivalent to**: T32
+
+#### T221 — What simulated devices do I have?
+
+```json
+{
+  "test_prompt": "Do I have any simulated or fake devices set up for testing?"
+}
+```
+
+**Expected**: `list_virtual_devices`.
+**Equivalent to**: T33
+
+#### T222 — Remove a test device
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL Cleanup Device'.",
+  "test_prompt": "I'm done testing with 'BAT NL Cleanup Device'. Take it off my hub."
+}
+```
+
+**Expected**: `delete_virtual_device`.
+**Equivalent to**: T34
+
+#### T223 — Rename a device
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL Ugly Name'.",
+  "test_prompt": "The name 'BAT NL Ugly Name' is terrible. Can you change it to 'BAT NL Better Name'? Make sure the change actually stuck.",
+  "teardown_prompt": "Delete the virtual device 'BAT NL Better Name'."
+}
+```
+
+**Expected**: `update_device` with label change, then `get_device` to verify.
+**Equivalent to**: T13
+
+---
+
+### Rooms
+
+#### T230 — How is my hub organized?
+
+```json
+{
+  "test_prompt": "How is my smart home organized? What rooms do I have and how many gadgets are in each one?"
+}
+```
+
+**Expected**: `list_rooms`.
+**Equivalent to**: T27
+
+#### T231 — What's in this room?
+
+```json
+{
+  "setup_prompt": "List the rooms on the hub.",
+  "test_prompt": "Tell me about the first room you found — what devices are in it and what are they doing?"
+}
+```
+
+**Expected**: `get_room`.
+**Equivalent to**: T28
+
+#### T232 — Add a new room
+
+```json
+{
+  "test_prompt": "I'm rearranging my house. I need a new room added to the hub — call it 'BAT NL New Room'.",
+  "teardown_prompt": "Delete the room called 'BAT NL New Room'."
+}
+```
+
+**Expected**: `create_room`.
+**Equivalent to**: T29
+
+#### T233 — Change a room's name
+
+```json
+{
+  "setup_prompt": "Create a room called 'BAT NL Placeholder'.",
+  "test_prompt": "I came up with a better name. Can you change 'BAT NL Placeholder' to 'BAT NL Final Name'?",
+  "teardown_prompt": "Delete the room 'BAT NL Final Name'."
+}
+```
+
+**Expected**: `rename_room`.
+**Equivalent to**: T30
+
+#### T234 — Remove a room
+
+```json
+{
+  "setup_prompt": "Create a room called 'BAT NL Temp Room'.",
+  "test_prompt": "Never mind about 'BAT NL Temp Room'. I don't need it anymore, take it down."
+}
+```
+
+**Expected**: `delete_room`.
+**Equivalent to**: T31
+
+---
+
+### System & Hub Info
+
+#### T240 — What hub is this?
+
+```json
+{
+  "test_prompt": "What kind of hub am I running? Give me the basics — name, model, software version."
+}
+```
+
+**Expected**: `get_hub_info`.
+**Equivalent to**: T14
+
+#### T241 — What modes can my hub be in?
+
+```json
+{
+  "test_prompt": "Does my hub have different modes like Home, Away, or Night? What are the options and which one is active right now? Don't change anything."
+}
+```
+
+**Expected**: `get_modes`. Should NOT call `set_mode`.
+**Equivalent to**: T15, T18
+
+#### T242 — Is my security system armed?
+
+```json
+{
+  "test_prompt": "Is my alarm system armed right now? Just tell me the status, don't touch it."
+}
+```
+
+**Expected**: `get_hsm_status`.
+**Equivalent to**: T16
+
+#### T243 — How should I safely control devices?
+
+```json
+{
+  "test_prompt": "Before I start telling you to control things in my home, are there safety rules I should know about? Like how do you make sure you're controlling the right device?"
+}
+```
+
+**Expected**: `get_tool_guide` with a section related to device authorization.
+**Equivalent to**: T17
+
+---
+
+### Variables
+
+#### T250 — What values have I stored?
+
+```json
+{
+  "test_prompt": "Have I saved any custom values or counters on my hub?"
+}
+```
+
+**Expected**: `list_variables`.
+**Equivalent to**: T24
+
+#### T251 — Remember a number for me
+
+```json
+{
+  "test_prompt": "I need to remember a number. Store the value 42 under the name 'bat_nl_counter'.",
+  "teardown_prompt": "Set the variable 'bat_nl_counter' to empty string."
+}
+```
+
+**Expected**: `set_variable`.
+**Equivalent to**: T25
+
+#### T252 — What did I store?
+
+```json
+{
+  "setup_prompt": "Set a hub variable called 'bat_nl_lookup' to 'found_it'.",
+  "test_prompt": "What did I save under 'bat_nl_lookup'?",
+  "teardown_prompt": "Set 'bat_nl_lookup' to empty string."
+}
+```
+
+**Expected**: `get_variable`.
+**Equivalent to**: T26
+
+---
+
+### Hub Administration
+
+#### T260 — Full hub specs
+
+```json
+{
+  "test_prompt": "I want the full specs on my hub — model number, firmware, how much memory it has, the temperature, how big the database is. The whole picture."
+}
+```
+
+**Expected**: `get_hub_details`.
+**Equivalent to**: T35
+
+#### T261 — Z-Wave network info
+
+```json
+{
+  "test_prompt": "I'm having trouble with some wireless devices. Can you show me what's going on with the Z-Wave network?"
+}
+```
+
+**Expected**: `get_zwave_details`.
+**Equivalent to**: T36
+
+#### T262 — Zigbee network info
+
+```json
+{
+  "test_prompt": "I heard Zigbee and Wi-Fi can interfere with each other. What channel is my Zigbee radio on?"
+}
+```
+
+**Expected**: `get_zigbee_details`.
+**Equivalent to**: T37
+
+#### T263 — Is my hub healthy?
+
+```json
+{
+  "test_prompt": "Give my hub a checkup. Anything I should be worried about?"
+}
+```
+
+**Expected**: `get_hub_health`.
+**Equivalent to**: T38
+
+#### T264 — Am I up to date?
+
+```json
+{
+  "test_prompt": "Am I running the latest version of this server or is there something newer I should be updating to?"
+}
+```
+
+**Expected**: `check_for_update`.
+**Equivalent to**: T39
+
+#### T265 — Save a safety net
+
+```json
+{
+  "test_prompt": "I'm about to make some changes and I want a safety net. Can you snapshot everything first in case I need to roll back?"
+}
+```
+
+**Expected**: `create_hub_backup`.
+**Equivalent to**: T40
+
+#### T266 — What software is on my hub?
+
+```json
+{
+  "test_prompt": "What apps are installed on my hub? I want to see what's running."
+}
+```
+
+**Expected**: `list_hub_apps`.
+**Equivalent to**: T41
+
+#### T267 — What drivers are loaded?
+
+```json
+{
+  "test_prompt": "I got a new device and I'm not sure the hub has the right driver. What drivers do I have?"
+}
+```
+
+**Expected**: `list_hub_drivers`.
+**Equivalent to**: T42
+
+#### T268 — Peek at app code
+
+```json
+{
+  "setup_prompt": "List the apps on the hub so I can see what's available.",
+  "test_prompt": "I want to peek at the code for one of my apps. Show me the beginning of the first one — just the first 50 lines."
+}
+```
+
+**Expected**: `get_app_source`.
+**Equivalent to**: T43
+
+#### T269 — Peek at driver code
+
+```json
+{
+  "setup_prompt": "List the drivers on the hub.",
+  "test_prompt": "Show me the code for the first driver — just the top 50 lines or so."
+}
+```
+
+**Expected**: `get_driver_source`.
+**Equivalent to**: T44
+
+#### T270 — Are there code backups?
+
+```json
+{
+  "test_prompt": "Have any code backups been saved automatically? I want to see what's available in case I need to roll something back."
+}
+```
+
+**Expected**: `list_item_backups`.
+**Equivalent to**: T45
+
+#### T271 — Show me a backup
+
+```json
+{
+  "setup_prompt": "List the item backups to find one I can inspect.",
+  "test_prompt": "Let me see what's in the first backup. Just show me the code, don't restore anything."
+}
+```
+
+**Expected**: `get_item_backup`.
+**Equivalent to**: T46
+
+---
+
+### Logs & Diagnostics
+
+#### T275 — Show me system logs
+
+```json
+{
+  "test_prompt": "Something weird happened earlier. Can you pull up the system logs? Just show me warnings and errors from the last little while."
+}
+```
+
+**Expected**: `get_hub_logs` with level filter.
+**Equivalent to**: T47
+
+#### T276 — Device event history
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL History'. Turn it on and off a few times.",
+  "test_prompt": "Show me what 'BAT NL History' has been up to over the last 24 hours.",
+  "teardown_prompt": "Delete the virtual device 'BAT NL History'."
+}
+```
+
+**Expected**: `get_device_history`.
+**Equivalent to**: T48
+
+#### T277 — Hub performance
+
+```json
+{
+  "test_prompt": "How is my hub performing right now? Memory, temperature, that kind of thing."
+}
+```
+
+**Expected**: `get_hub_performance`.
+**Equivalent to**: T49
+
+#### T278 — Dead or unresponsive devices
+
+```json
+{
+  "test_prompt": "Are any of my devices dead or not reporting? I want to find anything that's gone silent."
+}
+```
+
+**Expected**: `device_health_check`.
+**Equivalent to**: T50
+
+#### T279 — Internal diagnostic logs
+
+```json
+{
+  "test_prompt": "Something seems off with the server. Can you pull up the internal diagnostic logs to see if there are any errors?"
+}
+```
+
+**Expected**: `get_debug_logs`.
+**Equivalent to**: T51
+
+#### T280 — Clean up diagnostic logs
+
+```json
+{
+  "test_prompt": "The diagnostic logs are cluttered from all my testing. Wipe them clean and then confirm they're empty.",
+  "teardown_prompt": "Set the MCP log level back to 'info' if it was changed."
+}
+```
+
+**Expected**: `clear_debug_logs`, then `get_debug_logs` to verify.
+**Equivalent to**: T59
+
+#### T281 — Troubleshoot a broken automation
+
+```json
+{
+  "setup_prompt": "Create a disabled test rule called 'BAT NL Broken' with a time trigger and log action. Mark as test rule.",
+  "test_prompt": "The automation 'BAT NL Broken' isn't working and I can't figure out why. Can you run a health check on it and tell me what's wrong?",
+  "teardown_prompt": "Delete the rule 'BAT NL Broken'."
+}
+```
+
+**Expected**: `get_rule_diagnostics` or `get_rule`. Should notice the rule is disabled.
+**Equivalent to**: T53, T74
+
+#### T282 — Too much noise in the logs
+
+```json
+{
+  "test_prompt": "There's way too much noise in the logs. Can you dial it back so only important stuff gets recorded? Then show me what the logging settings look like now.",
+  "teardown_prompt": "Set the MCP log level back to 'info'."
+}
+```
+
+**Expected**: `set_log_level` (to 'warn' or 'error'), then `get_logging_status`.
+**Equivalent to**: T54
+
+#### T283 — Generate a bug report
+
+```json
+{
+  "test_prompt": "I think I found a bug. Can you put together a diagnostic report I can submit?"
+}
+```
+
+**Expected**: `generate_bug_report`.
+**Equivalent to**: T52
+
+#### T284 — Have I saved any device snapshots?
+
+```json
+{
+  "test_prompt": "Have I taken any snapshots of how my devices were configured? I want to see if there are any saved."
+}
+```
+
+**Expected**: `list_captured_states`.
+**Equivalent to**: T55
+
+---
+
+### Files
+
+#### T290 — What's stored on my hub?
+
+```json
+{
+  "test_prompt": "What files are saved on the hub's local storage? I want to see everything that's there."
+}
+```
+
+**Expected**: `list_files`.
+**Equivalent to**: T56
+
+#### T291 — Read a file
+
+```json
+{
+  "setup_prompt": "List the files in the file manager. Find a small file.",
+  "test_prompt": "Let me see what's inside the first file you found."
+}
+```
+
+**Expected**: `read_file`.
+**Equivalent to**: T57
+
+#### T292 — Save a note on the hub
+
+```json
+{
+  "test_prompt": "I want to save a little text note on my hub. Call it 'bat-nl-note.txt' and put 'Hello from the natural language test' inside it.",
+  "teardown_prompt": "Delete the file 'bat-nl-note.txt' from the file manager."
+}
+```
+
+**Expected**: `write_file` (and `delete_file` in teardown).
+**Equivalent to**: T58
+
+---
+
+### Natural Language Workflows
+
+Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM must figure out the right sequence of tools.
+
+#### T295 — Full automation lifecycle
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NL Lifecycle Switch'.",
+  "test_prompt": "I want to build an automation called 'BAT NL Lifecycle' that turns on 'BAT NL Lifecycle Switch' every night at 11 PM — mark it as a test rule. Once it's built, show me what it looks like, then simulate what would happen if it fired right now. After that, pause it so it won't actually run tonight. Before you clean it up, save me a copy as JSON in case I want it back, then go ahead and remove the rule.",
+  "teardown_prompt": "Delete the virtual device 'BAT NL Lifecycle Switch'. Delete any rules named 'BAT NL Lifecycle'."
+}
+```
+
+**Expected tools**: `create_rule` → `get_rule` → `test_rule` → `disable_rule` → `export_rule` → `delete_rule`.
+**Equivalent to**: T80
+
+#### T296 — Virtual device end-to-end
+
+```json
+{
+  "test_prompt": "Let me run a quick test: set up a fake switch called 'BAT NL Workflow Switch', make sure it shows up in my device list, turn it on and verify it's actually on, then tear everything down when you're done."
+}
+```
+
+**Expected**: `create_virtual_device` → `list_virtual_devices` (or `get_device`) → `send_command` → `get_attribute` → `delete_virtual_device`.
+**Equivalent to**: T81
+
+#### T297 — Room management end-to-end
+
+```json
+{
+  "test_prompt": "I want to reorganize my rooms. Show me what I have now, then add a new one called 'BAT NL Room Flow'. Show me its details, then rename it to 'BAT NL Room Renamed' because I changed my mind. Actually, I don't need it at all — get rid of it."
+}
+```
+
+**Expected**: `list_rooms` → `create_room` → `get_room` → `rename_room` → `delete_room`.
+**Equivalent to**: T82
+
+#### T298 — Full diagnostic workup
+
+```json
+{
+  "test_prompt": "I want a comprehensive health report on my smart home. Tell me how the hub is performing, whether any devices seem dead or unresponsive, show me any warnings or errors from the system logs, and check the internal diagnostic logs too. Give me a summary of each."
+}
+```
+
+**Expected**: `get_hub_performance` + `device_health_check` + `get_hub_logs` + `get_debug_logs`.
+**Equivalent to**: T83
+
+#### T299 — Complete smart home inventory
+
+```json
+{
+  "test_prompt": "I want a complete inventory of my entire smart home setup. Tell me about my rooms, any simulated devices, what custom values are stored, what files are on the hub, any code backups, the hub's overall health, and whether any real devices have gone offline. Give me a one-line summary for each area."
+}
+```
+
+**Expected**: `list_rooms` + `list_virtual_devices` + `list_variables` + `list_files` + `list_item_backups` + `get_hub_health` + `device_health_check`.
+**Equivalent to**: T84
+
+#### T300 — Motion-activated light from scratch
+
+```json
+{
+  "test_prompt": "I want to build a motion-activated light from scratch. Set up a fake motion sensor called 'BAT NL Motion' and a fake light called 'BAT NL Light'. Then create an automation called 'BAT NL Motion Light' that turns the light on when motion is detected and turns it off 30 seconds later — mark it as a test rule. Show me what you built and simulate it firing.",
+  "teardown_prompt": "Delete the rule 'BAT NL Motion Light'. Delete both virtual devices 'BAT NL Motion' and 'BAT NL Light'."
+}
+```
+
+**Expected**: `create_virtual_device` (×2) → `create_rule` → `get_rule` → `test_rule`.
+**Equivalent to**: T85
+
+#### T301 — Variable round-trip
+
+```json
+{
+  "test_prompt": "Let me test that variable storage works properly. Save 'step1' in something called 'bat_nl_flow', read it back to confirm, change it to 'step2', read it again, then show me where it sits among all the other stored values.",
+  "teardown_prompt": "Set variable 'bat_nl_flow' to empty string."
+}
+```
+
+**Expected**: `set_variable` → `get_variable` → `set_variable` → `get_variable` → `list_variables`.
+**Equivalent to**: T86
+
+---
+
 ## Excluded Tests (Destructive — Manual Only)
 
 These operations are too destructive for automated testing. Test manually with extreme caution:
@@ -1274,6 +2098,7 @@ These operations are too destructive for automated testing. Test manually with e
 2. Setup → Test → Teardown all happen in the **same session**
 3. Record metrics per the tracking table
 4. For Section 8 (Comparison): run same prompts on v0.7.7 and v0.8.0
+5. For Section 10 (NL Discovery): compare results with the equivalent explicit tests from earlier sections — same tool should be triggered, but the LLM must discover it without hints
 
 ### Results Template
 
@@ -1298,9 +2123,12 @@ These operations are too destructive for automated testing. Test manually with e
 | 7. Edge Cases | T100-T108 | Error handling and boundary conditions |
 | 8. Comparison | T110-T116 | v0.7.7 vs v0.8.0 regression |
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
+| 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
 
 ### Tool Coverage (non-destructive tools only)
 
 All 74 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
-**Total: 94 test scenarios** (plus 10 excluded destructive operations documented for manual testing)
+Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist.
+
+**Total: 145 test scenarios** (94 explicit + 51 natural language) plus 10 excluded destructive operations documented for manual testing
