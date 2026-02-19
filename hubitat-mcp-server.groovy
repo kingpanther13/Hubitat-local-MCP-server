@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.4 - Fix send_command parameter handling, fix get_hub_logs source filter
+ * Version: 0.8.5 - Fix send_command Map parameter handling, fix get_hub_logs source filter
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -1741,14 +1741,8 @@ def toolSendCommand(deviceId, command, parameters) {
     }
 
     if (parameters && parameters.size() > 0) {
-        // DIAGNOSTIC: log raw parameter type and value to debug buffer
-        def paramType = (parameters instanceof List) ? "List" : (parameters instanceof String) ? "String" : (parameters instanceof CharSequence) ? "CharSequence" : "Other"
-        def elemInfo = (parameters instanceof List) ? parameters.collect { def t = (it instanceof Map) ? "Map" : (it instanceof List) ? "List" : (it instanceof String) ? "String" : (it instanceof Number) ? "Number" : "Other"; "[${t}] ${it}" } : "N/A"
-        mcpLog("debug", "server", "send_command raw: type=${paramType}, size=${parameters?.size()}, elements=${elemInfo}, toString=${parameters}")
         // Normalize parameters to a flat List of properly typed values
         parameters = normalizeCommandParams(parameters)
-        def normInfo = parameters.collect { def t = (it instanceof Map) ? "Map" : (it instanceof List) ? "List" : (it instanceof String) ? "String" : (it instanceof Number) ? "Number" : "Other"; "[${t}] ${it}" }
-        mcpLog("debug", "server", "send_command normalized: ${normInfo}")
         device."${command}"(*parameters)
     } else {
         device."${command}"()
@@ -1764,43 +1758,53 @@ def toolSendCommand(deviceId, command, parameters) {
 
 /**
  * Normalize command parameters to a flat List of properly typed values.
- * Handles: String input, nested JSON arrays, JSON object strings, numeric strings.
+ *
+ * Hubitat's JSON parser handles simple parameter arrays like ["75"] fine (returns List [75]),
+ * but chokes on nested JSON objects like ["{"hue":0,"sat":100}"] — the inner quotes break
+ * the parser and it falls back to a raw String with unescaped quotes. This function handles
+ * both cases: proper Lists pass through element conversion, and String fallbacks get the
+ * embedded JSON object extracted by brace-matching.
  */
 def normalizeCommandParams(params) {
-    // Step 1: Ensure we have a List
-    def list = params
-    if (list instanceof CharSequence || list instanceof String) {
-        list = [list.toString()]
-    }
-    if (!(list instanceof List)) {
-        list = [list]
+    // Case 1: Already a List (Hubitat parsed it successfully) — go straight to element conversion
+    if (params instanceof List) {
+        return convertParamElements(params)
     }
 
-    // Step 2: Unwrap nested JSON array strings — e.g., ['["{\\"hue\\":0}"]'] → ['{"hue":0}']
-    // Keep unwrapping until we have a flat list of non-array-string elements
-    def maxDepth = 3
-    for (int depth = 0; depth < maxDepth; depth++) {
-        if (list.size() == 1 && list[0] instanceof CharSequence) {
-            def s = list[0].toString().trim()
-            if (s.startsWith("[")) {
-                try {
-                    def parsed = new groovy.json.JsonSlurper().parseText(s)
-                    if (parsed instanceof List) {
-                        list = parsed
-                        continue
-                    }
-                } catch (Exception e) {
-                    // Not valid JSON array, stop unwrapping
-                }
-            }
+    // Case 2: String (Hubitat parser failed on nested JSON)
+    // Example: '["{"hue":0,"saturation":100,"level":50}"]'
+    def s = params.toString().trim()
+
+    // Try to extract an embedded JSON object between first { and last }
+    def firstBrace = s.indexOf("{")
+    def lastBrace = s.lastIndexOf("}")
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+        def jsonContent = s.substring(firstBrace, lastBrace + 1)
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(jsonContent)
+            return [parsed]
+        } catch (Exception e) {
+            // Not valid JSON object, fall through
         }
-        break
     }
 
-    // Step 3: Convert individual elements to proper types
-    return list.collect { param ->
+    // No JSON object found — strip outer ["..."] wrapper and split into string params
+    if (s.startsWith("[\"") && s.endsWith("\"]")) {
+        def inner = s.substring(2, s.length() - 2)
+        return convertParamElements(inner.split('","').toList())
+    }
+
+    // Last resort: treat the whole string as a single parameter
+    return convertParamElements([s])
+}
+
+/**
+ * Convert a List of raw parameter values to proper Groovy types.
+ * Numbers become Integer/Double, JSON strings become Maps/Lists, everything else passes through.
+ */
+def convertParamElements(List params) {
+    return params.collect { param ->
         if (param == null) return param
-        // Already a Map or List (parsed JSON) — use directly
         if (param instanceof Map || param instanceof List) return param
         def s = param.toString()
         // Numeric conversion
@@ -1810,12 +1814,10 @@ def normalizeCommandParams(params) {
             }
         } catch (Exception e) {}
         // JSON object/array string → parse to Map/List
-        if (param instanceof CharSequence && (s.startsWith("{") || s.startsWith("["))) {
+        if ((s.startsWith("{") || s.startsWith("[")) && s.length() > 1) {
             try {
                 return new groovy.json.JsonSlurper().parseText(s)
-            } catch (Exception e) {
-                // Not valid JSON, pass as string
-            }
+            } catch (Exception e) {}
         }
         return param
     }
@@ -6756,7 +6758,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.4"
+    return "0.8.5"
 }
 
 def isNewerVersion(String remote, String local) {
