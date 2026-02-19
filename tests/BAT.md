@@ -1361,12 +1361,12 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 ```json
 {
   "setup_prompt": "Create a test rule called 'BAT NL Rule View' with a time trigger at 23:59 and a log action saying 'test'. Mark as test rule.",
-  "test_prompt": "I want to understand how 'BAT NL Rule View' works. Walk me through what triggers it and what it does."
+  "test_prompt": "I want to understand how 'BAT NL Rule View' works. Walk me through what triggers it and what it does.",
+  "teardown_prompt": "Delete the rule 'BAT NL Rule View'."
 }
 ```
 
 **Expected**: `get_rule`.
-**Teardown**: Covered by T219 or separate cleanup.
 **Equivalent to**: T09
 
 #### T212 — Build me an automation
@@ -2131,4 +2131,4 @@ All 74 tools are covered by at least one test, excluding the destructive operati
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist.
 
-**Total: 145 test scenarios** (94 explicit + 51 natural language) plus 10 excluded destructive operations documented for manual testing
+**Total: 159 test scenarios** (94 explicit + 65 natural language) plus 10 excluded destructive operations documented for manual testing
