@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.5 - Fix send_command Map parameter handling, fix get_hub_logs source filter
+ * Version: 0.8.6 - Fix send_command Map parameter handling, fix get_hub_logs source filter
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -6758,7 +6758,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.5"
+    return "0.8.6"
 }
 
 def isNewerVersion(String remote, String local) {

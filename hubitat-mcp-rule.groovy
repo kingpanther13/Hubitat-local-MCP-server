@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.8.5
+ * Version: 0.8.6
  */
 
 definition(
@@ -3095,7 +3095,7 @@ def evaluateCondition(condition) {
             }
 
         case "days_of_week":
-            def today = new Date().format("EEEE", Locale.US)
+            def today = new Date().format("EEEE")
             return condition.days ? condition.days.contains(today) : false
 
         case "sun_position":
