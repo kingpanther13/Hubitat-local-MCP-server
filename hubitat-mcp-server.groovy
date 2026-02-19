@@ -1741,35 +1741,12 @@ def toolSendCommand(deviceId, command, parameters) {
     }
 
     if (parameters && parameters.size() > 0) {
-        // Ensure parameters is a List (may arrive as JSON string from some MCP clients)
-        if (parameters instanceof String) {
-            try {
-                def parsed = new groovy.json.JsonSlurper().parseText(parameters)
-                parameters = (parsed instanceof List) ? parsed : [parsed]
-            } catch (Exception e) {
-                parameters = [parameters]
-            }
-        }
-        def convertedParams = parameters.collect { param ->
-            def s = param.toString()
-            try {
-                if (s.isNumber()) {
-                    return s.contains(".") ? s.toDouble() : s.toInteger()
-                }
-            } catch (Exception e) {
-                // If numeric conversion fails (e.g., overflow, scientific notation), pass as string
-            }
-            // Parse JSON strings into Maps/Lists (e.g., setColor's color map parameter)
-            if (param instanceof String && (s.startsWith("{") || s.startsWith("["))) {
-                try {
-                    return new groovy.json.JsonSlurper().parseText(s)
-                } catch (Exception e) {
-                    // Not valid JSON, pass as string
-                }
-            }
-            return param
-        }
-        device."${command}"(*convertedParams)
+        // DIAGNOSTIC: log raw parameter type and value to debug buffer
+        mcpLog("debug", "server", "send_command params: class=${parameters?.getClass()?.name}, size=${parameters?.size()}, value=${parameters}, elements=${parameters instanceof List ? parameters.collect { '[' + it?.getClass()?.name + '] ' + it } : 'N/A'}")
+        // Normalize parameters to a flat List of properly typed values
+        parameters = normalizeCommandParams(parameters)
+        mcpLog("debug", "server", "send_command normalized: ${parameters?.collect { '[' + it?.getClass()?.name + '] ' + it }}")
+        device."${command}"(*parameters)
     } else {
         device."${command}"()
     }
@@ -1780,6 +1757,65 @@ def toolSendCommand(deviceId, command, parameters) {
         command: command,
         parameters: parameters
     ]
+}
+
+/**
+ * Normalize command parameters to a flat List of properly typed values.
+ * Handles: String input, nested JSON arrays, JSON object strings, numeric strings.
+ */
+def normalizeCommandParams(params) {
+    // Step 1: Ensure we have a List
+    def list = params
+    if (list instanceof CharSequence || list instanceof String) {
+        list = [list.toString()]
+    }
+    if (!(list instanceof List)) {
+        list = [list]
+    }
+
+    // Step 2: Unwrap nested JSON array strings — e.g., ['["{\\"hue\\":0}"]'] → ['{"hue":0}']
+    // Keep unwrapping until we have a flat list of non-array-string elements
+    def maxDepth = 3
+    for (int depth = 0; depth < maxDepth; depth++) {
+        if (list.size() == 1 && list[0] instanceof CharSequence) {
+            def s = list[0].toString().trim()
+            if (s.startsWith("[")) {
+                try {
+                    def parsed = new groovy.json.JsonSlurper().parseText(s)
+                    if (parsed instanceof List) {
+                        list = parsed
+                        continue
+                    }
+                } catch (Exception e) {
+                    // Not valid JSON array, stop unwrapping
+                }
+            }
+        }
+        break
+    }
+
+    // Step 3: Convert individual elements to proper types
+    return list.collect { param ->
+        if (param == null) return param
+        // Already a Map or List (parsed JSON) — use directly
+        if (param instanceof Map || param instanceof List) return param
+        def s = param.toString()
+        // Numeric conversion
+        try {
+            if (s.isNumber()) {
+                return s.contains(".") ? s.toDouble() : s.toInteger()
+            }
+        } catch (Exception e) {}
+        // JSON object/array string → parse to Map/List
+        if (param instanceof CharSequence && (s.startsWith("{") || s.startsWith("["))) {
+            try {
+                return new groovy.json.JsonSlurper().parseText(s)
+            } catch (Exception e) {
+                // Not valid JSON, pass as string
+            }
+        }
+        return param
+    }
 }
 
 def toolGetDeviceEvents(deviceId, limit) {
