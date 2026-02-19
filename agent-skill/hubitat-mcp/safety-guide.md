@@ -25,9 +25,9 @@ Always confirm device identity before acting on critical systems.
 
 ## Gateway Calling Convention (v0.8.0+)
 
-Many safety-critical tools are now accessed via gateways (e.g., `manage_hub_admin`, `manage_apps_drivers`). The gateway does **not** bypass any safety checks — all Hub Admin Read/Write gates, backup requirements, and confirm flags are enforced in the handler functions. When calling a tool through a gateway, the same pre-flight checklists apply.
+Many safety-critical tools are now accessed via gateways (e.g., `manage_hub_maintenance`, `manage_code_changes`). The gateway does **not** bypass any safety checks — all Hub Admin Read/Write gates, backup requirements, and confirm flags are enforced in the handler functions. When calling a tool through a gateway, the same pre-flight checklists apply.
 
-Example: To reboot the hub, call `manage_hub_admin(tool="reboot_hub", args={"confirm": true})` — the same backup and confirmation requirements apply as if `reboot_hub` were called directly.
+Example: To reboot the hub, call `manage_hub_maintenance(tool="reboot_hub", args={"confirm": true})` — the same backup and confirmation requirements apply as if `reboot_hub` were called directly.
 
 ---
 

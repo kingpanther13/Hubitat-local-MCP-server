@@ -428,11 +428,11 @@ def getGatewayConfig() {
             description: "Rule administration: delete, test, export, import, and clone rules.",
             tools: ["delete_rule", "test_rule", "export_rule", "import_rule", "clone_rule"],
             summaries: [
-                delete_rule: "Permanently delete a rule (auto-backs up first)",
-                test_rule: "Dry-run a rule without executing actions",
-                export_rule: "Export rule to JSON for backup/sharing",
-                import_rule: "Import rule from exported JSON",
-                clone_rule: "Clone an existing rule (starts disabled)"
+                delete_rule: "Permanently delete a rule (auto-backs up first). Args: ruleId",
+                test_rule: "Dry-run a rule without executing actions. Args: ruleId",
+                export_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
+                import_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
+                clone_rule: "Clone an existing rule (starts disabled). Args: ruleId"
             ]
         ],
         manage_hub_variables: [
@@ -440,8 +440,8 @@ def getGatewayConfig() {
             tools: ["list_variables", "get_variable", "set_variable"],
             summaries: [
                 list_variables: "List all hub connector and rule engine variables",
-                get_variable: "Get a variable value",
-                set_variable: "Set a variable value (creates if doesn't exist)"
+                get_variable: "Get a variable value. Args: name",
+                set_variable: "Set a variable value (creates if doesn't exist). Args: name, value"
             ]
         ],
         manage_rooms: [
@@ -449,72 +449,85 @@ def getGatewayConfig() {
             tools: ["list_rooms", "get_room", "create_room", "delete_room", "rename_room"],
             summaries: [
                 list_rooms: "List all rooms with IDs, names, and device counts",
-                get_room: "Get room details with assigned devices",
-                create_room: "Create a new room (Hub Admin Write + confirm)",
-                delete_room: "Permanently delete a room (Hub Admin Write + confirm)",
-                rename_room: "Rename a room (Hub Admin Write + confirm)"
+                get_room: "Get room details with assigned devices. Args: room (name or ID)",
+                create_room: "Create a new room. Args: name, confirm=true",
+                delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
+                rename_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
             ]
         ],
-        manage_virtual_devices: [
-            description: "Create, list, and delete MCP-managed virtual devices.",
-            tools: ["create_virtual_device", "list_virtual_devices", "delete_virtual_device"],
-            summaries: [
-                create_virtual_device: "Create an MCP-managed virtual device (Hub Admin Write)",
-                list_virtual_devices: "List MCP-managed virtual devices with states",
-                delete_virtual_device: "Delete an MCP-managed virtual device (Hub Admin Write)"
-            ]
-        ],
-        manage_hub_admin: [
-            description: "Hub administration: detailed info, radio details, health, backups, reboot, maintenance, device deletion, and updates.",
-            tools: ["get_hub_details", "get_zwave_details", "get_zigbee_details", "get_hub_health", "create_hub_backup", "reboot_hub", "shutdown_hub", "zwave_repair", "delete_device", "check_for_update"],
+        // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
+        // Option B: manage_hub_admin split into info (read) + maintenance (write)
+        manage_hub_info: [
+            description: "Hub information: detailed specs, radio status, health dashboard, and update checks.",
+            tools: ["get_hub_details", "get_zwave_details", "get_zigbee_details", "get_hub_health", "check_for_update"],
             summaries: [
                 get_hub_details: "Extended hub info (model, firmware, memory, temp, network)",
-                get_zwave_details: "Z-Wave radio info (firmware, devices)",
-                get_zigbee_details: "Zigbee radio info (channel, PAN ID, devices)",
-                get_hub_health: "Hub health (memory, temperature, uptime, DB size)",
-                create_hub_backup: "Create full hub backup (required before admin writes)",
-                reboot_hub: "Reboot the hub (DISRUPTIVE, 1-3 min downtime)",
-                shutdown_hub: "Power OFF the hub (EXTREME, requires physical restart)",
-                zwave_repair: "Z-Wave network repair (DISRUPTIVE, 5-30 min)",
-                delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo)",
-                check_for_update: "Check if a newer version is available"
+                get_zwave_details: "Z-Wave radio info (firmware, device count)",
+                get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count)",
+                get_hub_health: "Hub health dashboard (memory, temperature, uptime, DB size)",
+                check_for_update: "Check if a newer MCP server version is available"
             ]
         ],
+        manage_hub_maintenance: [
+            description: "Hub maintenance: backups, reboot, shutdown, Z-Wave repair, and device deletion. All operations are DISRUPTIVE — confirm with user first.",
+            tools: ["create_hub_backup", "reboot_hub", "shutdown_hub", "zwave_repair", "delete_device"],
+            summaries: [
+                create_hub_backup: "Create full hub backup (required before admin writes). Args: confirm=true",
+                reboot_hub: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
+                shutdown_hub: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
+                zwave_repair: "Z-Wave network repair (DISRUPTIVE, 5-30 min). Args: confirm=true",
+                delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
+            ]
+        ],
+        // Option B: manage_apps_drivers split into browse (read) + changes (write)
         manage_apps_drivers: [
-            description: "Manage hub apps and drivers: list, view source, install, update, delete, and backup/restore code.",
-            tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "list_item_backups", "get_item_backup", "restore_item_backup"],
+            description: "Browse installed apps and drivers: list, view source code, and view code backups.",
+            tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "list_item_backups", "get_item_backup"],
             summaries: [
                 list_hub_apps: "List all installed apps on the hub",
                 list_hub_drivers: "List all installed drivers on the hub",
-                get_app_source: "Get app Groovy source code",
-                get_driver_source: "Get driver Groovy source code",
-                install_app: "Install new app from Groovy source (Hub Admin Write)",
-                install_driver: "Install new driver from Groovy source (Hub Admin Write)",
-                update_app_code: "Modify existing app code (Hub Admin Write, CRITICAL)",
-                update_driver_code: "Modify existing driver code (Hub Admin Write, CRITICAL)",
-                delete_app: "Permanently delete an app (Hub Admin Write, DESTRUCTIVE)",
-                delete_driver: "Permanently delete a driver (Hub Admin Write, DESTRUCTIVE)",
+                get_app_source: "Get app Groovy source code. Args: appId",
+                get_driver_source: "Get driver Groovy source code. Args: driverId",
                 list_item_backups: "List auto-created source code backups",
-                get_item_backup: "Get source from a backup",
-                restore_item_backup: "Restore app/driver to backed-up version (Hub Admin Write)"
+                get_item_backup: "Get source from a backup. Args: backupId"
             ]
         ],
-        manage_logs_diagnostics: [
-            description: "Logs, monitoring, and diagnostics: system logs, device history, performance, health checks, debug logs, rule diagnostics, and captured states.",
-            tools: ["get_hub_logs", "get_device_history", "get_hub_performance", "device_health_check", "get_debug_logs", "clear_debug_logs", "get_rule_diagnostics", "set_log_level", "get_logging_status", "generate_bug_report", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+        manage_code_changes: [
+            description: "Install, update, and delete hub apps and drivers. All operations modify hub code and require Hub Admin Write.",
+            tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup"],
             summaries: [
-                get_hub_logs: "Get Hubitat system logs (filter by level/source)",
-                get_device_history: "Get device event history (up to 7 days)",
-                get_hub_performance: "Hub performance snapshot with trend tracking",
+                install_app: "Install new app from Groovy source. Args: source, confirm=true",
+                install_driver: "Install new driver from Groovy source. Args: source, confirm=true",
+                update_app_code: "Modify existing app code (CRITICAL). Args: appId, source|sourceFile|resave, confirm=true",
+                update_driver_code: "Modify existing driver code (CRITICAL). Args: driverId, source|sourceFile|resave, confirm=true",
+                delete_app: "Permanently delete an app (DESTRUCTIVE). Args: appId, confirm=true",
+                delete_driver: "Permanently delete a driver (DESTRUCTIVE). Args: driverId, confirm=true",
+                restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true"
+            ]
+        ],
+        // Option B: manage_logs_diagnostics split into logs + diagnostics
+        manage_logs: [
+            description: "System logs and log settings: hub logs, device event history, MCP debug logs, and log level configuration.",
+            tools: ["get_hub_logs", "get_device_history", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
+            summaries: [
+                get_hub_logs: "Get Hubitat system logs. Args: level (debug/info/warn/error), source, limit",
+                get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
+                get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
+                clear_debug_logs: "Clear all MCP debug log entries",
+                set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)",
+                get_logging_status: "Get logging system status and capacity"
+            ]
+        ],
+        manage_diagnostics: [
+            description: "Health monitoring and diagnostics: hub performance, device health checks, rule diagnostics, bug reports, and device state snapshots.",
+            tools: ["get_hub_performance", "device_health_check", "get_rule_diagnostics", "generate_bug_report", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            summaries: [
+                get_hub_performance: "Hub performance snapshot with CSV trend tracking",
                 device_health_check: "Check all devices for stale/offline status",
-                get_debug_logs: "Get MCP debug logs",
-                clear_debug_logs: "Clear all debug log entries",
-                get_rule_diagnostics: "Comprehensive rule diagnostics",
-                set_log_level: "Set minimum log level threshold",
-                get_logging_status: "Get logging system status and capacity",
+                get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
                 generate_bug_report: "Generate formatted GitHub bug report",
-                list_captured_states: "List captured device states",
-                delete_captured_state: "Delete a specific captured state",
+                list_captured_states: "List saved device state snapshots",
+                delete_captured_state: "Delete a specific captured state. Args: stateId",
                 clear_captured_states: "Clear all captured device states"
             ]
         ],
@@ -523,9 +536,9 @@ def getGatewayConfig() {
             tools: ["list_files", "read_file", "write_file", "delete_file"],
             summaries: [
                 list_files: "List files in File Manager (names, sizes, URLs)",
-                read_file: "Read file content (supports chunked reading)",
-                write_file: "Write file to File Manager (Hub Admin Write)",
-                delete_file: "Delete file from File Manager (Hub Admin Write)"
+                read_file: "Read file content. Args: fileName, offset, limit",
+                write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
+                delete_file: "Delete file from File Manager. Args: fileName, confirm=true"
             ]
         ]
     ]
@@ -561,7 +574,31 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         throw new IllegalArgumentException("Cannot call a gateway from within a gateway")
     }
 
-    return executeTool(toolName, toolArgs ?: [:])
+    // Option D: Pre-validate required parameters and return helpful error with full schema
+    def safeArgs = toolArgs ?: [:]
+    def defMap = getAllToolDefinitions().collectEntries { [(it.name): it] }
+    def toolDef = defMap[toolName]
+    if (toolDef?.inputSchema?.required) {
+        def missing = toolDef.inputSchema.required.findAll { !safeArgs.containsKey(it) }
+        if (missing) {
+            def props = toolDef.inputSchema.properties ?: [:]
+            def paramList = props.collect { pName, pDef ->
+                def req = toolDef.inputSchema.required.contains(pName) ? "REQUIRED" : "optional"
+                def hint = "  ${pName} (${pDef.type ?: 'any'}, ${req})"
+                if (pDef.enum) hint += " — one of: ${pDef.enum.join(', ')}"
+                else if (pDef.description) hint += " — ${pDef.description}"
+                hint
+            }.join("\n")
+            return [
+                isError: true,
+                error: "Missing required parameter(s): ${missing.join(', ')}",
+                tool: toolName,
+                parameters: paramList
+            ]
+        }
+    }
+
+    return executeTool(toolName, safeArgs)
 }
 
 // Returns tool definitions visible to the MCP client (base tools + gateway tools)
@@ -1592,10 +1629,12 @@ def executeTool(toolName, args) {
         case "manage_rules_admin":
         case "manage_hub_variables":
         case "manage_rooms":
-        case "manage_virtual_devices":
-        case "manage_hub_admin":
+        case "manage_hub_info":
+        case "manage_hub_maintenance":
         case "manage_apps_drivers":
-        case "manage_logs_diagnostics":
+        case "manage_code_changes":
+        case "manage_logs":
+        case "manage_diagnostics":
         case "manage_files":
             return handleGateway(toolName, args.tool, args.args)
 

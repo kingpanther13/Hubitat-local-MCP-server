@@ -4,13 +4,13 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize 56 lesser-used tools behind 8 gateway tools. The MCP `tools/list` shows 26 items (18 core + 8 gateways) instead of 74.
+As of v0.8.0, the server uses **domain-named gateways** to organize 53 lesser-used tools behind 10 gateway tools. The MCP `tools/list` shows 31 items (21 core + 10 gateways) instead of 74.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin`, `manage_hub_variables`, `manage_rooms`, `manage_virtual_devices`, `manage_hub_admin`, `manage_apps_drivers`, `manage_logs_diagnostics`, `manage_files`
+**Gateways:** `manage_rules_admin`, `manage_hub_variables`, `manage_rooms`, `manage_hub_info`, `manage_hub_maintenance`, `manage_apps_drivers`, `manage_code_changes`, `manage_logs`, `manage_diagnostics`, `manage_files`
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 

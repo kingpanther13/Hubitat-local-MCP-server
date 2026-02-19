@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 74 MCP tools (26 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 74 MCP tools (31 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 74 tools total — 18 core tools are always visible, while 56 additional tools are organized behind 8 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 74 tools total — 21 core tools are always visible, while 53 additional tools are organized behind 10 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -212,11 +212,11 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (74 total — 26 on tools/list)
+### MCP Tools (74 total — 31 on tools/list)
 
-The server has 74 tools total. To keep the MCP `tools/list` manageable, **18 core tools** are always visible and **56 additional tools** are organized behind **8 domain-named gateways**. The AI sees 26 items on `tools/list` (18 + 8 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 74 tools total. To keep the MCP `tools/list` manageable, **21 core tools** are always visible and **53 additional tools** are organized behind **10 domain-named gateways**. The AI sees 31 items on `tools/list` (21 + 10 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (18) — Always visible on tools/list
+#### Core Tools (21) — Always visible on tools/list
 
 <details>
 <summary><b>Devices</b> (5) — Control and query devices</summary>
@@ -268,6 +268,17 @@ The server has 74 tools total. To keep the MCP `tools/list` manageable, **18 cor
 </details>
 
 <details>
+<summary><b>Virtual Devices</b> (3) — MCP-managed virtual devices</summary>
+
+| Tool | Description |
+|------|-------------|
+| `create_virtual_device` | Create an MCP-managed virtual device (Hub Admin Write) |
+| `list_virtual_devices` | List MCP-managed virtual devices with states |
+| `delete_virtual_device` | Delete an MCP-managed virtual device (Hub Admin Write) |
+
+</details>
+
+<details>
 <summary><b>Reference</b> (1)</summary>
 
 | Tool | Description |
@@ -276,7 +287,7 @@ The server has 74 tools total. To keep the MCP `tools/list` manageable, **18 cor
 
 </details>
 
-#### Gateway Tools (8) — Each gateway proxies multiple tools
+#### Gateway Tools (10) — Each gateway proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -318,18 +329,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>manage_virtual_devices</b> (3) — MCP-managed virtual devices</summary>
-
-| Tool | Description |
-|------|-------------|
-| `create_virtual_device` | Create an MCP-managed virtual device (Hub Admin Write) |
-| `list_virtual_devices` | List MCP-managed virtual devices with states |
-| `delete_virtual_device` | Delete an MCP-managed virtual device (Hub Admin Write) |
-
-</details>
-
-<details>
-<summary><b>manage_hub_admin</b> (10) — Hub administration and maintenance</summary>
+<summary><b>manage_hub_info</b> (5) — Hub information (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -337,19 +337,27 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `get_zwave_details` | Z-Wave radio info (firmware, devices) |
 | `get_zigbee_details` | Zigbee radio info (channel, PAN ID, devices) |
 | `get_hub_health` | Hub health (memory, temperature, uptime, DB size) |
+| `check_for_update` | Check if a newer MCP server version is available |
+
+</details>
+
+<details>
+<summary><b>manage_hub_maintenance</b> (5) — Hub maintenance and destructive operations</summary>
+
+| Tool | Description |
+|------|-------------|
 | `create_hub_backup` | Create full hub backup (required before admin writes) |
 | `reboot_hub` | Reboot the hub (1-3 min downtime) |
 | `shutdown_hub` | Power OFF the hub (requires physical restart) |
 | `zwave_repair` | Z-Wave network repair (5-30 min) |
 | `delete_device` | Permanently delete any device (**no undo**) |
-| `check_for_update` | Check if a newer version is available |
 
-Hub admin tools require Hub Admin Read/Write to be enabled in settings. Write tools enforce a **three-layer safety gate**: Hub Admin Write enabled + hub backup within 24 hours + explicit `confirm=true`.
+All operations are disruptive. Hub admin tools require Hub Admin Read/Write to be enabled in settings. Write tools enforce a **three-layer safety gate**: Hub Admin Write enabled + hub backup within 24 hours + explicit `confirm=true`.
 
 </details>
 
 <details>
-<summary><b>manage_apps_drivers</b> (13) — App/driver management and backups</summary>
+<summary><b>manage_apps_drivers</b> (6) — App/driver listing, source code, and backups (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -357,14 +365,22 @@ Hub admin tools require Hub Admin Read/Write to be enabled in settings. Write to
 | `list_hub_drivers` | List all installed drivers on the hub |
 | `get_app_source` | Get app Groovy source code |
 | `get_driver_source` | Get driver Groovy source code |
+| `list_item_backups` | List auto-created source code backups |
+| `get_item_backup` | Get source from a backup |
+
+</details>
+
+<details>
+<summary><b>manage_code_changes</b> (7) — Install, update, delete apps/drivers and restore backups</summary>
+
+| Tool | Description |
+|------|-------------|
 | `install_app` | Install new app from Groovy source |
 | `install_driver` | Install new driver from Groovy source |
 | `update_app_code` | Modify existing app code |
 | `update_driver_code` | Modify existing driver code |
 | `delete_app` | Permanently delete an app (auto-backs up) |
 | `delete_driver` | Permanently delete a driver (auto-backs up) |
-| `list_item_backups` | List auto-created source code backups |
-| `get_item_backup` | Get source from a backup |
 | `restore_item_backup` | Restore app/driver to backed-up version |
 
 Source code is automatically backed up before any modify/delete operation.
@@ -372,25 +388,33 @@ Source code is automatically backed up before any modify/delete operation.
 </details>
 
 <details>
-<summary><b>manage_logs_diagnostics</b> (13) — Logs, monitoring, diagnostics, and state capture</summary>
+<summary><b>manage_logs</b> (6) — Logs and log configuration</summary>
 
 | Tool | Description |
 |------|-------------|
 | `get_hub_logs` | Hub log entries with level/source filtering |
 | `get_device_history` | Up to 7 days of device event history |
-| `get_hub_performance` | Memory, temperature, database size |
-| `device_health_check` | Find stale/offline devices |
 | `get_debug_logs` | Retrieve MCP debug log entries |
 | `clear_debug_logs` | Clear all MCP debug logs |
-| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
 | `set_log_level` | Set MCP log level (debug/info/warn/error) |
-| `get_logging_status` | View logging system statistics |
+| `get_logging_status` | Get logging system status and capacity |
+
+Monitoring tools require Hub Admin Read to be enabled.
+
+</details>
+
+<details>
+<summary><b>manage_diagnostics</b> (7) — Diagnostics, performance, and state capture</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_hub_performance` | Memory, temperature, database size |
+| `device_health_check` | Find stale/offline devices |
+| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
 | `generate_bug_report` | Generate comprehensive diagnostic report |
 | `list_captured_states` | List saved device state snapshots |
 | `delete_captured_state` | Delete a specific state snapshot |
 | `clear_captured_states` | Delete all state snapshots |
-
-Monitoring tools require Hub Admin Read to be enabled.
 
 </details>
 
@@ -1379,7 +1403,7 @@ For easier bug reporting:
 <details>
 <summary><b>Recent versions (v0.7.0 – v0.8.0)</b></summary>
 
-- **v0.8.0** - Category gateway proxy: consolidate 56 tools behind 8 domain-named gateways, reducing `tools/list` from 74 to 26. 18 core tools stay ungrouped (devices, rules, modes, HSM, update_device, get_tool_guide). Each gateway shows tool summaries in its description (always visible to LLMs) and returns full schemas on demand. Modeled after ha-mcp PR #637. Breaking change: proxied tools removed from `tools/list` but accessible via gateways.
+- **v0.8.0** - Category gateway proxy: consolidate 53 tools behind 10 domain-named gateways, reducing `tools/list` from 74 to 31. 21 core tools stay ungrouped (devices, rules, modes, HSM, update_device, virtual devices, get_tool_guide). Each gateway shows tool summaries in its description (always visible to LLMs) and returns full schemas on demand. Gateways: manage_rules_admin, manage_hub_variables, manage_rooms, manage_hub_info, manage_hub_maintenance, manage_apps_drivers (read-only), manage_code_changes, manage_logs, manage_diagnostics, manage_files. Modeled after ha-mcp PR #637. Breaking change: proxied tools removed from `tools/list` but accessible via gateways.
 - **v0.7.7** - Code review round 2: MCP protocol fix (tool errors use isError flag per spec), fix formatAge() singular grammar, short-circuit condition evaluation, fix CI sed double-demotion, consolidate redundant API calls, guard eager debug logging, deduplicate sunrise/sunset reschedule, fix variable_math double atomicState read, efficiency improvements
 - **v0.7.6** - Code review: fix hoursAgo calculation bug, fix variable shadowing, centralize version string, extract shared helpers (~90 lines reduced)
 - **v0.7.5** - Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% token reduction)

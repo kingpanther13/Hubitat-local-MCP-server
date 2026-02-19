@@ -1,10 +1,10 @@
 # Tool Reference
 
-Quick reference for all 74 MCP tools. The server exposes **26 items on `tools/list`**: 18 core tools + 8 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 74 MCP tools. The server exposes **31 items on `tools/list`**: 21 core tools + 10 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
-## Core Tools (18) — Always visible on tools/list
+## Core Tools (21) — Always visible on tools/list
 
 ### Device Tools (5)
 
@@ -33,6 +33,14 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 |------|-------------|-------------|
 | `update_device` | Update device properties (label, name, room, preferences, enabled). | Varies by property |
 
+### Virtual Device Tools (3)
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `create_virtual_device` | Create an MCP-managed virtual device (15 types available). | Hub Admin Write |
+| `list_virtual_devices` | List all MCP-managed virtual devices. | None |
+| `delete_virtual_device` | Delete an MCP-managed virtual device. | Hub Admin Write |
+
 ### System Tools (5)
 
 | Tool | Description | Access Gate |
@@ -51,7 +59,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 
 ---
 
-## Gateway Tools (8) — Each proxies multiple tools
+## Gateway Tools (10) — Each proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas for all its tools. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -89,19 +97,9 @@ Manage hub rooms: list, view details, create, delete, and rename.
 | `delete_room` | Delete a room (devices become unassigned). | Hub Admin Write |
 | `rename_room` | Rename an existing room. | Hub Admin Write |
 
-### manage_virtual_devices (3 tools)
+### manage_hub_info (5 tools)
 
-Create, list, and delete MCP-managed virtual devices.
-
-| Tool | Description | Access Gate |
-|------|-------------|-------------|
-| `create_virtual_device` | Create an MCP-managed virtual device (15 types available). | Hub Admin Write |
-| `list_virtual_devices` | List all MCP-managed virtual devices. | None |
-| `delete_virtual_device` | Delete an MCP-managed virtual device. | Hub Admin Write |
-
-### manage_hub_admin (10 tools)
-
-Hub administration: detailed info, radio details, health, backups, reboot, maintenance, device deletion, and updates.
+Hub information: detailed info, radio details, health, and update checks.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -109,16 +107,23 @@ Hub administration: detailed info, radio details, health, backups, reboot, maint
 | `get_zwave_details` | Z-Wave radio info. | Hub Admin Read |
 | `get_zigbee_details` | Zigbee radio info. | Hub Admin Read |
 | `get_hub_health` | Health dashboard with warnings. | Hub Admin Read |
+| `check_for_update` | Check for MCP server updates. | None |
+
+### manage_hub_maintenance (5 tools)
+
+Hub maintenance: backups, reboot, shutdown, Z-Wave repair, and device deletion.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
 | `create_hub_backup` | Create full hub database backup. | Hub Admin Write |
 | `reboot_hub` | Reboot hub (1-3 min downtime). | Hub Admin Write |
 | `shutdown_hub` | Power off hub (needs manual restart). | Hub Admin Write |
 | `zwave_repair` | Start Z-Wave network repair (5-30 min). | Hub Admin Write |
 | `delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Hub Admin Write |
-| `check_for_update` | Check for MCP server updates. | None |
 
-### manage_apps_drivers (13 tools)
+### manage_apps_drivers (6 tools)
 
-Manage hub apps and drivers: list, view source, install, update, delete, and backup/restore code.
+Read-only access to hub apps and drivers: list, view source, and browse backups.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -126,31 +131,45 @@ Manage hub apps and drivers: list, view source, install, update, delete, and bac
 | `list_hub_drivers` | List installed user drivers. | Hub Admin Read |
 | `get_app_source` | Get app source code. Large files auto-saved to File Manager. | Hub Admin Read |
 | `get_driver_source` | Get driver source code. Large files auto-saved to File Manager. | Hub Admin Read |
+| `list_item_backups` | List all source code backups. | None |
+| `get_item_backup` | Retrieve source from a backup. | None |
+
+### manage_code_changes (7 tools)
+
+Write operations for apps and drivers: install, update, delete, and restore code.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
 | `install_app` | Install a new Groovy app from source. | Hub Admin Write |
 | `install_driver` | Install a new Groovy driver from source. | Hub Admin Write |
 | `update_app_code` | Update existing app source code. | Hub Admin Write |
 | `update_driver_code` | Update existing driver source code. | Hub Admin Write |
 | `delete_app` | Delete an installed app (auto-backs up). | Hub Admin Write |
 | `delete_driver` | Delete an installed driver (auto-backs up). | Hub Admin Write |
-| `list_item_backups` | List all source code backups. | None |
-| `get_item_backup` | Retrieve source from a backup. | None |
 | `restore_item_backup` | Restore app/driver to backed-up version. | Hub Admin Write |
 
-### manage_logs_diagnostics (13 tools)
+### manage_logs (6 tools)
 
-Logs, monitoring, diagnostics, and state capture.
+Hub and MCP log access and configuration.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_hub_logs` | Hub log entries. Default 100, max 500. Use filters. | Hub Admin Read |
 | `get_device_history` | Up to 7 days of device event history. | Hub Admin Read |
-| `get_hub_performance` | Memory, temperature, database size. | Hub Admin Read |
-| `device_health_check` | Find stale/offline devices. | Hub Admin Read |
 | `get_debug_logs` | Retrieve MCP debug log entries. Filter by level. | None |
 | `clear_debug_logs` | Clear all MCP debug logs. | None |
-| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule. | None |
 | `set_log_level` | Set MCP log level (debug/info/warn/error). | None |
 | `get_logging_status` | View logging system statistics. | None |
+
+### manage_diagnostics (7 tools)
+
+Performance monitoring, health checks, diagnostics, and state capture.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `get_hub_performance` | Memory, temperature, database size. | Hub Admin Read |
+| `device_health_check` | Find stale/offline devices. | Hub Admin Read |
+| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule. | None |
 | `generate_bug_report` | Generate comprehensive diagnostic report. | None |
 | `list_captured_states` | List saved device state snapshots. | None |
 | `delete_captured_state` | Delete a specific state snapshot. | None |
