@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.2 - Fix rule execution crash (log.isDebugEnabled), fix setColor string-vs-Map parameter handling
+ * Version: 0.8.3 - Fix send_command parameter array handling, fix get_hub_logs source filter
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -1741,6 +1741,15 @@ def toolSendCommand(deviceId, command, parameters) {
     }
 
     if (parameters && parameters.size() > 0) {
+        // Ensure parameters is a List (may arrive as JSON string from some MCP clients)
+        if (parameters instanceof String) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(parameters)
+                parameters = (parsed instanceof List) ? parsed : [parsed]
+            } catch (Exception e) {
+                parameters = [parameters]
+            }
+        }
         def convertedParams = parameters.collect { param ->
             def s = param.toString()
             try {
@@ -4933,7 +4942,11 @@ def toolGetHubLogs(args) {
 
         // Apply filters
         if (levelFilter && entry.level?.toLowerCase() != levelFilter.toLowerCase()) continue
-        if (sourceFilter && !entry.name?.toLowerCase()?.contains(sourceFilter.toLowerCase())) continue
+        if (sourceFilter) {
+            def src = sourceFilter.toLowerCase()
+            // Source info is in the message field (format: "app|ID|AppName|..." or "dev|ID|DevName|...")
+            if (!entry.message?.toLowerCase()?.contains(src) && !entry.name?.toLowerCase()?.contains(src)) continue
+        }
 
         logs << entry
         if (logs.size() >= limit) break
@@ -6704,7 +6717,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.2"
+    return "0.8.3"
 }
 
 def isNewerVersion(String remote, String local) {

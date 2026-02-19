@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 0.8.2
+ * Version: 0.8.3
  */
 
 definition(
@@ -3318,10 +3318,28 @@ def executeAction(action, actionIndex = null, evt = null) {
             if (device) {
                 try {
                     if (action.parameters) {
-                        def convertedParams = action.parameters.collect { param ->
+                        def params = action.parameters
+                        // Ensure params is a List (may arrive as JSON string)
+                        if (params instanceof String) {
+                            try {
+                                def parsed = new groovy.json.JsonSlurper().parseText(params)
+                                params = (parsed instanceof List) ? parsed : [parsed]
+                            } catch (Exception e) {
+                                params = [params]
+                            }
+                        }
+                        def convertedParams = params.collect { param ->
                             def s = param.toString()
                             if (s.isNumber()) {
                                 return s.contains(".") ? s.toDouble() : s.toInteger()
+                            }
+                            // Parse JSON strings into Maps/Lists (e.g., setColor map parameter)
+                            if (param instanceof String && (s.startsWith("{") || s.startsWith("["))) {
+                                try {
+                                    return new groovy.json.JsonSlurper().parseText(s)
+                                } catch (Exception e) {
+                                    // Not valid JSON, pass as string
+                                }
                             }
                             return param
                         }
