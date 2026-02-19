@@ -163,7 +163,7 @@ Via `manage_logs` gateway (6 tools):
 - `get_logging_status` - View logging system statistics
 
 Via `manage_diagnostics` gateway (7 tools):
-- `get_hub_performance` - Memory, temperature, database size
+- `get_set_hub_metrics` - Record/retrieve hub metrics with CSV trend history
 - `device_health_check` - Find stale/offline devices
 - `get_rule_diagnostics` - Comprehensive diagnostics for a specific rule
 - `generate_bug_report` - Comprehensive diagnostic report

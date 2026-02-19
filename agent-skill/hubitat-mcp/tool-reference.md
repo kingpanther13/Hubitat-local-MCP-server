@@ -165,7 +165,7 @@ Performance monitoring, health checks, diagnostics, and state capture.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `get_hub_performance` | Memory, temperature, database size. | Hub Admin Read |
+| `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history. | Hub Admin Read |
 | `device_health_check` | Find stale/offline devices. | Hub Admin Read |
 | `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule. | None |
 | `generate_bug_report` | Generate comprehensive diagnostic report. | None |

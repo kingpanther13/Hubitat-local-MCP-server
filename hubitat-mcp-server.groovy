@@ -518,9 +518,9 @@ def getGatewayConfig() {
         ],
         manage_diagnostics: [
             description: "Health monitoring and diagnostics: hub performance, device health checks, rule diagnostics, bug reports, and device state snapshots.",
-            tools: ["get_hub_performance", "device_health_check", "get_rule_diagnostics", "generate_bug_report", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            tools: ["get_set_hub_metrics", "device_health_check", "get_rule_diagnostics", "generate_bug_report", "list_captured_states", "delete_captured_state", "clear_captured_states"],
             summaries: [
-                get_hub_performance: "Hub performance snapshot with CSV trend tracking",
+                get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
                 device_health_check: "Check all devices for stale/offline status",
                 get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
                 generate_bug_report: "Generate formatted GitHub bug report",
@@ -1070,8 +1070,8 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_hub_performance",
-            description: "Hub performance snapshot with optional CSV trend tracking in File Manager. Requires Hub Admin Read.",
+            name: "get_set_hub_metrics",
+            description: "Record and retrieve hub metrics (memory, temp, DB size) with CSV trend history. Use recordSnapshot=false to read without recording. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1558,7 +1558,7 @@ def executeTool(toolName, args) {
         // Monitoring Tools
         case "get_hub_logs": return toolGetHubLogs(args)
         case "get_device_history": return toolGetDeviceHistory(args)
-        case "get_hub_performance": return toolGetHubPerformance(args)
+        case "get_set_hub_metrics": return toolGetHubPerformance(args)
         case "device_health_check": return toolDeviceHealthCheck(args)
 
         // Hub Admin Write Tools

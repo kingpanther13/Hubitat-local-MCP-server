@@ -406,7 +406,7 @@ Monitoring tools require Hub Admin Read to be enabled.
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_performance` | Memory, temperature, database size |
+| `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history |
 | `device_health_check` | Find stale/offline devices |
 | `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
 | `generate_bug_report` | Generate comprehensive diagnostic report |
@@ -1213,7 +1213,7 @@ For easier bug reporting:
   > 5. Note: computation-heavy analytics may time out with many devices
 
 - [x] **Hub performance trend monitoring** — `Difficulty: 1 | Effort: S`
-  > *Mostly already implemented.* The `get_hub_performance` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
+  > *Mostly already implemented.* The `get_set_hub_metrics` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
   >
   > **Implementation plan (incremental):**
   > 1. Add `schedule("0 0 */4 ? * *", "recordPerformanceSnapshot")` to parent
