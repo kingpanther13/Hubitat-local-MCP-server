@@ -1,0 +1,5 @@
+{
+  "hub_url": "http://192.168.1.XXX",
+  "app_id": "YOUR_APP_ID",
+  "access_token": "YOUR_ACCESS_TOKEN"
+}

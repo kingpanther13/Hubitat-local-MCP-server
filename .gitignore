@@ -15,3 +15,6 @@ Thumbs.db
 # Personal config (if any)
 config.local.*
 *.local.json
+
+# E2E test config (contains hub IP and access token)
+tests/e2e_config.json
