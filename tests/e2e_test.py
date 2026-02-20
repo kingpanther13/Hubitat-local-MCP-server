@@ -304,14 +304,14 @@ class TestRunner:
                          value: str = "test") -> None:
         """Create a hub variable via the gateway."""
         self.client.call_tool("manage_hub_variables", {
-            "action": "set_variable", "name": name, "type": var_type, "value": value,
+            "tool": "set_variable", "args": {"name": name, "type": var_type, "value": value},
         })
         self.created_variable_names.append(name)
 
     def _delete_variable_safe(self, name: str) -> None:
         try:
             self.client.call_tool("manage_hub_variables", {
-                "action": "delete_variable", "name": name,
+                "tool": "delete_variable", "args": {"name": name},
             })
         except Exception:
             pass
@@ -842,7 +842,7 @@ class TestRunner:
     @test("system_tools")
     def test_manage_hub_variables_list(self) -> None:
         result = self.client.call_tool("manage_hub_variables", {
-            "action": "list_variables",
+            "tool": "list_variables",
         })
         # Should return a list or dict with variables
         assert result is not None, "list_variables returned None"
@@ -856,14 +856,16 @@ class TestRunner:
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
         result = self.client.call_tool("manage_diagnostics", {
-            "action": "get_hub_health",
+            "tool": "get_set_hub_metrics",
+            "args": {"recordSnapshot": False},
         })
-        assert result is not None, "get_hub_health returned None"
+        assert isinstance(result, dict), f"get_set_hub_metrics returned {type(result)}"
+        assert "current" in result, "get_set_hub_metrics missing 'current'"
 
     @test("system_tools")
     def test_get_memory_history(self) -> None:
         result = self.client.call_tool("manage_diagnostics", {
-            "action": "get_memory_history",
+            "tool": "get_memory_history",
         })
         assert isinstance(result, dict), f"get_memory_history returned {type(result)}"
         assert "entries" in result, "get_memory_history missing 'entries'"
@@ -881,7 +883,7 @@ class TestRunner:
     @test("system_tools")
     def test_force_garbage_collection(self) -> None:
         result = self.client.call_tool("manage_diagnostics", {
-            "action": "force_garbage_collection",
+            "tool": "force_garbage_collection",
         })
         assert isinstance(result, dict), f"force_garbage_collection returned {type(result)}"
         assert "beforeFreeMemoryKB" in result, "Missing 'beforeFreeMemoryKB'"
@@ -894,7 +896,7 @@ class TestRunner:
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:
         result = self.client.call_tool("manage_rooms", {
-            "action": "list_rooms",
+            "tool": "list_rooms",
         })
         # May be empty list, but should not error
         assert result is not None, "list_rooms returned None"
@@ -908,8 +910,8 @@ class TestRunner:
         """Soft check: look for hub errors logged during the test window."""
         try:
             result = self.client.call_tool("manage_logs", {
-                "action": "get_hub_logs",
-                "level": "error",
+                "tool": "get_hub_logs",
+                "args": {"level": "error"},
             })
             logs = result if isinstance(result, list) else result.get("logs", [])
             if logs:
@@ -969,8 +971,8 @@ class TestRunner:
             try:
                 print(f"  Deleting tracked variable {var_name}")
                 self.client.call_tool("manage_hub_variables", {
-                    "action": "delete_variable",
-                    "name": var_name,
+                    "tool": "delete_variable",
+                    "args": {"name": var_name},
                 })
             except Exception as exc:
                 print(f"  [WARN] Failed to delete variable {var_name}: {exc}")
