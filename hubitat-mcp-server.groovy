@@ -5205,20 +5205,21 @@ def toolGetMemoryHistory(args) {
         // Format: "datetime,freeKB,cpuLoad" or similar CSV
         def parts = trimmed.split(",", -1)
         if (parts.size() >= 3) {
+            // Skip header/non-numeric lines by parsing memory value first
+            def memKB = null
             try {
-                def entry = [
-                    timestamp: parts[0]?.trim(),
-                    freeMemoryKB: parts[1]?.trim(),
-                    cpuLoad5min: parts[2]?.trim()
-                ]
-                entries << entry
-
-                try {
-                    memValues << (parts[1]?.trim() as Integer)
-                } catch (Exception nfe) { /* skip non-numeric */ }
+                memKB = parts[1]?.trim() as Integer
             } catch (Exception e) {
-                // Skip malformed lines
+                // Header or non-numeric line — skip
+                continue
             }
+
+            entries << [
+                timestamp: parts[0]?.trim(),
+                freeMemoryKB: memKB,
+                cpuLoad5min: parts[2]?.trim()
+            ]
+            memValues << memKB
         }
     }
 

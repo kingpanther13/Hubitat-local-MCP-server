@@ -861,6 +861,37 @@ class TestRunner:
         assert result is not None, "get_hub_health returned None"
 
     @test("system_tools")
+    def test_get_memory_history(self) -> None:
+        result = self.client.call_tool("manage_diagnostics", {
+            "action": "get_memory_history",
+        })
+        assert isinstance(result, dict), f"get_memory_history returned {type(result)}"
+        assert "entries" in result, "get_memory_history missing 'entries'"
+        assert "summary" in result, "get_memory_history missing 'summary'"
+        entries = result["entries"]
+        assert isinstance(entries, list), "entries should be a list"
+        if entries:
+            first = entries[0]
+            assert "timestamp" in first, "Entry missing 'timestamp'"
+            assert "freeMemoryKB" in first, "Entry missing 'freeMemoryKB'"
+            assert "cpuLoad5min" in first, "Entry missing 'cpuLoad5min'"
+        summary = result["summary"]
+        assert "entryCount" in summary, "Summary missing 'entryCount'"
+
+    @test("system_tools")
+    def test_force_garbage_collection(self) -> None:
+        result = self.client.call_tool("manage_diagnostics", {
+            "action": "force_garbage_collection",
+        })
+        assert isinstance(result, dict), f"force_garbage_collection returned {type(result)}"
+        assert "beforeFreeMemoryKB" in result, "Missing 'beforeFreeMemoryKB'"
+        assert "afterFreeMemoryKB" in result, "Missing 'afterFreeMemoryKB'"
+        assert "summary" in result, "Missing 'summary'"
+        # deltaKB should exist if both memory reads succeeded
+        if result["beforeFreeMemoryKB"] is not None and result["afterFreeMemoryKB"] is not None:
+            assert "deltaKB" in result, "Missing 'deltaKB'"
+
+    @test("system_tools")
     def test_manage_rooms_list(self) -> None:
         result = self.client.call_tool("manage_rooms", {
             "action": "list_rooms",
