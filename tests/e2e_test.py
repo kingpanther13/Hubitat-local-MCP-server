@@ -197,6 +197,56 @@ class TestRunner:
             self._first_device_id = str(devices[0]["id"])
         return self._first_device_id
 
+    def get_test_switch_id(self) -> str:
+        """Get or create a BAT_E2E_ virtual switch for tests needing a commandable device.
+
+        Tests NEVER send commands to real devices — only to virtual devices we create.
+        """
+        if hasattr(self, "_test_switch_id") and self._test_switch_id:
+            return self._test_switch_id
+
+        # Check if one already exists from a previous test group
+        try:
+            vdevs = self.client.call_tool("list_virtual_devices")
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+            for d in dev_list:
+                lbl = d.get("label") or d.get("name") or ""
+                if f"{PREFIX}Action_Switch" in lbl:
+                    self._test_switch_id = str(d["id"])
+                    return self._test_switch_id
+        except Exception:
+            pass
+
+        # Create one
+        result = self.client.call_tool("manage_virtual_device", {
+            "action": "create",
+            "deviceType": "Virtual Switch",
+            "deviceLabel": f"{PREFIX}Action_Switch",
+            "confirm": True,
+        })
+        dni = result.get("deviceNetworkId", result.get("dni", ""))
+        if dni:
+            self.created_device_dnis.append(str(dni))
+        dev_id = result.get("id", result.get("deviceId", ""))
+
+        # Response may not include ID directly — look it up
+        if not dev_id:
+            time.sleep(0.3)
+            vdevs = self.client.call_tool("list_virtual_devices")
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+            for d in dev_list:
+                lbl = d.get("label") or d.get("name") or ""
+                if f"{PREFIX}Action_Switch" in lbl:
+                    dev_id = str(d["id"])
+                    found_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if found_dni and found_dni not in self.created_device_dnis:
+                        self.created_device_dnis.append(found_dni)
+                    break
+
+        self._test_switch_id = str(dev_id) if dev_id else ""
+        assert self._test_switch_id, "Failed to create test switch"
+        return self._test_switch_id
+
     def _record(self, name: str, group: str, status: str,
                 message: str = "", duration: float = 0.0) -> None:
         tag = {"pass": "[PASS]", "fail": "[FAIL]", "skip": "[SKIP]"}[status]
@@ -244,7 +294,7 @@ class TestRunner:
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
         try:
-            self.client.call_tool("delete_rule", {"ruleId": rule_id})
+            self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
         except Exception:
             pass
         if rule_id in self.created_rule_ids:
@@ -340,9 +390,9 @@ class TestRunner:
                 "deviceId": "99999",
                 "command": "on",
             })
-            raise AssertionError("send_command with bogus device should have raised McpToolError")
-        except McpToolError:
-            pass  # expected
+            raise AssertionError("send_command with bogus device should have raised an error")
+        except (McpToolError, McpError):
+            pass  # expected — server may return JSON-RPC error or tool error
 
     # -----------------------------------------------------------------------
     # GROUP 3: virtual_device_lifecycle (4 tests)
@@ -351,23 +401,34 @@ class TestRunner:
     @test("virtual_device_lifecycle")
     def test_create_virtual_switch(self) -> None:
         result = self.client.call_tool("manage_virtual_device", {
-            "action": "create_virtual_device",
-            "type": "Virtual Switch",
-            "name": f"{PREFIX}Switch_Test",
+            "action": "create",
+            "deviceType": "Virtual Switch",
+            "deviceLabel": f"{PREFIX}Switch_Test",
+            "confirm": True,
         })
-        # Track for cleanup — store DNI
+        # Response may be {success: true, message: "..."} without device IDs at top level
+        # Track DNI if available, otherwise look it up from list_virtual_devices
         dni = result.get("deviceNetworkId", result.get("dni", ""))
         if dni:
             self.created_device_dnis.append(str(dni))
-        assert result.get("id") or result.get("deviceId") or dni, \
-            f"create_virtual_device did not return device info: {result}"
+        elif result.get("success"):
+            # Look up the created device to get its DNI for cleanup
+            vdevs = self.client.call_tool("list_virtual_devices")
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+            for d in dev_list:
+                lbl = d.get("label") or d.get("name") or ""
+                if f"{PREFIX}Switch_Test" in lbl:
+                    found_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if found_dni:
+                        self.created_device_dnis.append(found_dni)
+                    break
+        assert result.get("success") or result.get("id") or result.get("deviceId") or dni, \
+            f"create virtual device failed: {result}"
 
     @test("virtual_device_lifecycle")
     def test_command_virtual_switch(self) -> None:
-        # Find the device we just created
-        vdevs = self.client.call_tool("manage_virtual_device", {
-            "action": "list_virtual_devices",
-        })
+        # Find the device we just created via list_virtual_devices (core tool)
+        vdevs = self.client.call_tool("list_virtual_devices")
         dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
         target = None
         for d in dev_list:
@@ -398,9 +459,7 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
-        result = self.client.call_tool("manage_virtual_device", {
-            "action": "list_virtual_devices",
-        })
+        result = self.client.call_tool("list_virtual_devices")
         dev_list = result if isinstance(result, list) else result.get("devices", [])
         found = any(
             f"{PREFIX}Switch_Test" in (d.get("label") or d.get("name") or "")
@@ -411,9 +470,7 @@ class TestRunner:
     @test("virtual_device_lifecycle")
     def test_delete_virtual_switch(self) -> None:
         # Find DNI of our test device
-        vdevs = self.client.call_tool("manage_virtual_device", {
-            "action": "list_virtual_devices",
-        })
+        vdevs = self.client.call_tool("list_virtual_devices")
         dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
         target_dni = None
         for d in dev_list:
@@ -425,16 +482,15 @@ class TestRunner:
             raise SkipTest(f"{PREFIX}Switch_Test not found for deletion")
 
         self.client.call_tool("manage_virtual_device", {
-            "action": "delete_virtual_device",
+            "action": "delete",
             "deviceNetworkId": target_dni,
+            "confirm": True,
         })
         if target_dni in self.created_device_dnis:
             self.created_device_dnis.remove(target_dni)
 
         # Verify it is gone
-        vdevs2 = self.client.call_tool("manage_virtual_device", {
-            "action": "list_virtual_devices",
-        })
+        vdevs2 = self.client.call_tool("list_virtual_devices")
         dev_list2 = vdevs2 if isinstance(vdevs2, list) else vdevs2.get("devices", [])
         still_there = any(
             f"{PREFIX}Switch_Test" in (d.get("label") or d.get("name") or "")
@@ -485,14 +541,14 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to delete")
-        self.client.call_tool("delete_rule", {"ruleId": rule_id})
+        self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)
         # Verify it's gone
         try:
             self.client.call_tool("get_rule", {"ruleId": rule_id})
             raise AssertionError("get_rule should fail after deletion")
-        except McpToolError:
+        except (McpToolError, McpError):
             pass
 
     def _last_rule_id(self) -> Optional[str]:
@@ -527,7 +583,7 @@ class TestRunner:
     @test("trigger_types")
     def test_trigger_periodic(self) -> None:
         self._test_trigger("periodic", {
-            "type": "periodic", "interval": 60, "unit": "minutes",
+            "type": "periodic", "interval": 30, "unit": "minutes",
         })
 
     @test("trigger_types")
@@ -576,7 +632,7 @@ class TestRunner:
     def test_condition_device_was(self) -> None:
         self._test_condition("device_was", {
             "type": "device_was", "deviceId": "PLACEHOLDER",
-            "attribute": "switch", "value": "on", "duration": 5, "unit": "minutes",
+            "attribute": "switch", "operator": "==", "value": "on", "forSeconds": 300,
         })
 
     @test("condition_types")
@@ -588,7 +644,7 @@ class TestRunner:
     @test("condition_types")
     def test_condition_mode(self) -> None:
         self._test_condition("mode", {
-            "type": "mode", "operator": "==", "value": "Home",
+            "type": "mode", "mode": "Day",
         })
 
     @test("condition_types")
@@ -596,7 +652,7 @@ class TestRunner:
         var_name = f"{PREFIX}TestVar"
         self._test_condition(
             "variable",
-            {"type": "variable", "name": var_name, "operator": "==", "value": "1"},
+            {"type": "variable", "variableName": var_name, "operator": "==", "value": "1"},
             setup=lambda: self._create_variable(var_name, "String", "test"),
             teardown=lambda: self._delete_variable_safe(var_name),
         )
@@ -610,7 +666,7 @@ class TestRunner:
     @test("condition_types")
     def test_condition_sun_position(self) -> None:
         self._test_condition("sun_position", {
-            "type": "sun_position", "operator": "after", "event": "sunrise", "offset": 30,
+            "type": "sun_position", "position": "up",
         })
 
     # -----------------------------------------------------------------------
@@ -637,14 +693,16 @@ class TestRunner:
 
     @test("action_types")
     def test_action_device_command(self) -> None:
+        switch_id = self.get_test_switch_id()
         self._test_action("device_command", [
-            {"type": "device_command", "deviceId": "PLACEHOLDER", "command": "on"},
+            {"type": "device_command", "deviceId": switch_id, "command": "on"},
         ])
 
     @test("action_types")
     def test_action_toggle(self) -> None:
+        switch_id = self.get_test_switch_id()
         self._test_action("toggle", [
-            {"type": "toggle", "deviceId": "PLACEHOLDER", "attribute": "switch"},
+            {"type": "toggle_device", "deviceId": switch_id},
         ])
 
     @test("action_types")
@@ -652,7 +710,7 @@ class TestRunner:
         var_name = f"{PREFIX}ActionVar"
         self._test_action(
             "set_variable",
-            [{"type": "set_variable", "name": var_name, "value": "hello"}],
+            [{"type": "set_variable", "variableName": var_name, "value": "hello"}],
             setup=lambda: self._create_variable(var_name, "String", "initial"),
             teardown=lambda: self._delete_variable_safe(var_name),
         )
@@ -660,13 +718,13 @@ class TestRunner:
     @test("action_types")
     def test_action_set_local_variable(self) -> None:
         self._test_action("set_local_variable", [
-            {"type": "set_local_variable", "name": "localTestVar", "value": "42"},
+            {"type": "set_local_variable", "variableName": "localTestVar", "value": "42"},
         ])
 
     @test("action_types")
     def test_action_set_mode(self) -> None:
         self._test_action("set_mode", [
-            {"type": "set_mode", "mode": "Home"},
+            {"type": "set_mode", "mode": "Day"},
         ])
 
     @test("action_types")
@@ -680,10 +738,10 @@ class TestRunner:
         dev_id = self.get_first_device_id()
         self._test_action("if_then_else", [{
             "type": "if_then_else",
-            "conditions": [{
+            "condition": {
                 "type": "device_state", "deviceId": dev_id,
                 "attribute": "switch", "operator": "==", "value": "on",
-            }],
+            },
             "thenActions": [{"type": "log", "message": "then branch"}],
             "elseActions": [{"type": "log", "message": "else branch"}],
         }])
@@ -735,15 +793,15 @@ class TestRunner:
             "triggers": [{"type": "time", "time": "03:00"}],
             "actions": [{
                 "type": "if_then_else",
-                "conditions": [{
+                "condition": {
                     "type": "device_state", "deviceId": dev_id,
                     "attribute": "switch", "operator": "==", "value": "on",
-                }],
+                },
                 "thenActions": [{
                     "type": "if_then_else",
-                    "conditions": [{
-                        "type": "mode", "operator": "==", "value": "Home",
-                    }],
+                    "condition": {
+                        "type": "mode", "mode": "Day",
+                    },
                     "thenActions": [{"type": "log", "message": "nested then"}],
                     "elseActions": [{"type": "log", "message": "nested else"}],
                 }],
@@ -760,7 +818,7 @@ class TestRunner:
             "conditions": [
                 {"type": "device_state", "deviceId": dev_id,
                  "attribute": "switch", "operator": "==", "value": "on"},
-                {"type": "mode", "operator": "==", "value": "Home"},
+                {"type": "mode", "mode": "Day"},
             ],
             "conditionLogic": "OR",
             "actions": [{"type": "log", "message": "OR condition test"}],
@@ -859,7 +917,7 @@ class TestRunner:
         for rule_id in list(self.created_rule_ids):
             try:
                 print(f"  Deleting tracked rule {rule_id}")
-                self.client.call_tool("delete_rule", {"ruleId": rule_id})
+                self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
             except Exception as exc:
                 print(f"  [WARN] Failed to delete rule {rule_id}: {exc}")
         self.created_rule_ids.clear()
@@ -868,8 +926,9 @@ class TestRunner:
             try:
                 print(f"  Deleting tracked device DNI={dni}")
                 self.client.call_tool("manage_virtual_device", {
-                    "action": "delete_virtual_device",
+                    "action": "delete",
                     "deviceNetworkId": dni,
+                    "confirm": True,
                 })
             except Exception as exc:
                 print(f"  [WARN] Failed to delete device DNI={dni}: {exc}")
@@ -888,9 +947,7 @@ class TestRunner:
 
         # Layer 2: sweep virtual devices with BAT_E2E_ prefix
         try:
-            vdevs = self.client.call_tool("manage_virtual_device", {
-                "action": "list_virtual_devices",
-            })
+            vdevs = self.client.call_tool("list_virtual_devices")
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -900,8 +957,9 @@ class TestRunner:
                         try:
                             print(f"  Sweep: deleting virtual device '{lbl}' (DNI={dni})")
                             self.client.call_tool("manage_virtual_device", {
-                                "action": "delete_virtual_device",
+                                "action": "delete",
                                 "deviceNetworkId": dni,
+                                "confirm": True,
                             })
                         except Exception as exc:
                             print(f"  [WARN] Sweep delete failed for '{lbl}': {exc}")
@@ -919,7 +977,7 @@ class TestRunner:
                     if rid:
                         try:
                             print(f"  Sweep: deleting rule '{rname}' (id={rid})")
-                            self.client.call_tool("delete_rule", {"ruleId": rid})
+                            self.client.call_tool("delete_rule", {"ruleId": rid, "confirm": True})
                         except Exception as exc:
                             print(f"  [WARN] Sweep delete failed for rule '{rname}': {exc}")
         except Exception as exc:
