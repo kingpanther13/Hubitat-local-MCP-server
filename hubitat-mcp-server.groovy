@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.6 - Fix send_command Map parameter handling, fix get_hub_logs source filter
+ * Version: 0.8.7 - Add memory diagnostic tools (get_memory_history, force_garbage_collection)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -507,10 +507,12 @@ def getGatewayConfig() {
             ]
         ],
         manage_diagnostics: [
-            description: "Health monitoring, diagnostics, and radio details: hub metrics, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
-            tools: ["get_set_hub_metrics", "device_health_check", "get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
+            tools: ["get_set_hub_metrics", "get_memory_history", "force_garbage_collection", "device_health_check", "get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
             summaries: [
                 get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
+                get_memory_history: "Get free OS memory and CPU load history. Returns timestamped entries with summary stats. Requires Hub Admin Read",
+                force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
                 device_health_check: "Check all devices for stale/offline status",
                 get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
                 get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
@@ -1062,6 +1064,22 @@ Verify rule after creation.""",
                 ]
             ]
         ],
+        [
+            name: "get_memory_history",
+            description: "Get free OS memory and CPU load history. Returns timestamped entries with freeMemoryKB and cpuLoad5min. Requires Hub Admin Read.",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "force_garbage_collection",
+            description: "Force JVM garbage collection to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires Hub Admin Read.",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
 
         // ==================== HUB ADMIN WRITE TOOLS ====================
         [
@@ -1524,6 +1542,8 @@ def executeTool(toolName, args) {
         case "get_device_history": return toolGetDeviceHistory(args)
         case "get_set_hub_metrics": return toolGetHubPerformance(args)
         case "device_health_check": return toolDeviceHealthCheck(args)
+        case "get_memory_history": return toolGetMemoryHistory(args)
+        case "force_garbage_collection": return toolForceGarbageCollection(args)
 
         // Hub Admin Write Tools
         case "create_hub_backup": return toolCreateHubBackup(args)
@@ -5166,6 +5186,101 @@ def toolGetHubPerformance(args) {
     ]
 }
 
+def toolGetMemoryHistory(args) {
+    requireHubAdminRead()
+
+    def rawText = hubInternalGet("/hub/advanced/freeOSMemoryHistory")
+    if (!rawText) {
+        return [entries: [], summary: [message: "No memory history data available"]]
+    }
+
+    def lines = rawText.trim().split("\n")
+    def entries = []
+    def memValues = []
+
+    for (line in lines) {
+        def trimmed = line?.trim()
+        if (!trimmed) continue
+
+        // Format: "datetime,freeKB,cpuLoad" or similar CSV
+        def parts = trimmed.split(",", -1)
+        if (parts.size() >= 3) {
+            try {
+                def entry = [
+                    timestamp: parts[0]?.trim(),
+                    freeMemoryKB: parts[1]?.trim(),
+                    cpuLoad5min: parts[2]?.trim()
+                ]
+                entries << entry
+
+                try {
+                    memValues << (parts[1]?.trim() as Integer)
+                } catch (Exception nfe) { /* skip non-numeric */ }
+            } catch (Exception e) {
+                // Skip malformed lines
+            }
+        }
+    }
+
+    def summary = [entryCount: entries.size()]
+    if (memValues) {
+        summary.currentMemoryKB = memValues[-1]
+        summary.minMemoryKB = memValues.min()
+        summary.maxMemoryKB = memValues.max()
+        summary.avgMemoryKB = (memValues.sum() / memValues.size()).toInteger()
+
+        if (summary.currentMemoryKB < 50000) {
+            summary.memoryWarning = "LOW MEMORY: ${summary.currentMemoryKB}KB free. Consider rebooting or running force_garbage_collection."
+        }
+    }
+
+    mcpLog("info", "diagnostics", "Memory history retrieved: ${entries.size()} entries")
+    return [entries: entries, summary: summary]
+}
+
+def toolForceGarbageCollection(args) {
+    requireHubAdminRead()
+
+    // Read free memory before GC
+    def beforeKB = null
+    try {
+        beforeKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim() as Integer
+    } catch (Exception e) {
+        beforeKB = null
+    }
+
+    // Trigger garbage collection
+    hubInternalGet("/hub/forceGC")
+
+    // Brief pause to let GC complete
+    pauseExecution(1000)
+
+    // Read free memory after GC
+    def afterKB = null
+    try {
+        afterKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim() as Integer
+    } catch (Exception e) {
+        afterKB = null
+    }
+
+    def result = [
+        beforeFreeMemoryKB: beforeKB,
+        afterFreeMemoryKB: afterKB,
+        timestamp: formatTimestamp(now())
+    ]
+
+    if (beforeKB != null && afterKB != null) {
+        result.deltaKB = afterKB - beforeKB
+        result.memoryReclaimed = result.deltaKB > 0
+        result.summary = "GC complete: ${beforeKB}KB → ${afterKB}KB (${result.deltaKB > 0 ? '+' : ''}${result.deltaKB}KB)"
+    } else {
+        result.summary = "GC triggered but could not read memory values for comparison"
+    }
+
+    mcpLog("info", "diagnostics", "Forced GC: before=${beforeKB}KB, after=${afterKB}KB")
+    return result
+}
+
 def toolDeviceHealthCheck(args) {
     if (!settings.selectedDevices) {
         return [message: "No devices selected for MCP access", summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]]
@@ -6758,7 +6873,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.6"
+    return "0.8.7"
 }
 
 def isNewerVersion(String remote, String local) {
