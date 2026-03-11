@@ -732,7 +732,8 @@ For easier bug reporting:
 ---
 
 <!-- FUTURE_PLANS_START -->
-## Future Plans
+<details>
+<summary><h2>Future Plans</h2></summary>
 
 
 > **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to.
@@ -1389,6 +1390,7 @@ For easier bug reporting:
 38. **Button Controller** — Use native app; MCP already has `button_event` triggers
 39. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
 40. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
+</details>
 <!-- FUTURE_PLANS_END -->
 
 
