@@ -500,7 +500,7 @@ def getGatewayConfig() {
             summaries: [
                 get_hub_logs: "Get Hubitat system logs. Args: level (debug/info/warn/error), source, limit",
                 get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
-                get_performance_stats: "Get device/app performance stats (count, % busy, state size, events). Args: type (device/app/both), sortBy, limit",
+                get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
                 get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
                 clear_debug_logs: "Clear all MCP debug log entries",
@@ -1025,7 +1025,7 @@ Verify rule after creation.""",
                 type: "object",
                 properties: [
                     type: [type: "string", description: "Which stats to return: device, app, or both. Default: device.", enum: ["device", "app", "both"], default: "device"],
-                    sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "name"], default: "pct"],
+                    sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
                     limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20]
                 ]
             ]
@@ -5134,6 +5134,7 @@ def toolGetPerformanceStats(args) {
         switch (sortBy) {
             case "count": statsList = statsList.sort { -(it.count ?: 0) }; break
             case "stateSize": statsList = statsList.sort { -(it.stateSize ?: 0) }; break
+            case "totalMs": statsList = statsList.sort { -(it.total ?: 0) }; break
             case "name": statsList = statsList.sort { (it.name ?: "").toLowerCase() }; break
             default: statsList = statsList.sort { -(it.pct ?: 0) }; break
         }
@@ -5141,22 +5142,25 @@ def toolGetPerformanceStats(args) {
         if (limit > 0 && statsList.size() > limit) {
             statsList = statsList.take(limit)
         }
-        // Slim down to essential fields
+        // Slim down to essential fields + useful diagnostics
         return statsList.collect { entry ->
-            [
+            def item = [
                 id: entry.id,
                 name: entry.name,
                 count: entry.count,
                 pctBusy: entry.formattedPct,
                 pctTotal: entry.formattedPctTotal,
                 stateSize: entry.stateSize,
+                totalMs: entry.total,
+                averageMs: entry.average != null ? Math.round(entry.average * 100) / 100.0 : null,
                 totalEvents: entry.customAttributes?.eventsCount,
                 states: entry.customAttributes?.statesCount,
                 hubActions: entry.hubActionCount,
                 pendingEvents: entry.pendingEventsCount,
-                cloudCalls: entry.cloudCallCount,
-                averageMs: entry.average != null ? Math.round(entry.average * 100) / 100.0 : null
+                cloudCalls: entry.cloudCallCount
             ]
+            if (entry.largeState) item.largeState = true
+            return item
         }
     }
 
@@ -5365,7 +5369,7 @@ def toolGetMemoryHistory(args) {
         def trimmed = line?.trim()
         if (!trimmed) continue
 
-        // Format: "datetime,freeKB,cpuLoad" or similar CSV
+        // Format: "Date/time,Free OS,5m CPU avg,Total Java,Free Java,Direct Java"
         def parts = trimmed.split(",", -1)
         if (parts.size() >= 3) {
             // Skip header/non-numeric lines by parsing memory value first
@@ -5377,11 +5381,20 @@ def toolGetMemoryHistory(args) {
                 continue
             }
 
-            allEntries << [
+            def entry = [
                 timestamp: parts[0]?.trim(),
                 freeMemoryKB: memKB,
                 cpuLoad5min: parts[2]?.trim()
             ]
+
+            // Parse Java heap and direct memory columns if present
+            if (parts.size() >= 6) {
+                try { entry.totalJavaKB = parts[3]?.trim() as Integer } catch (Exception e) {}
+                try { entry.freeJavaKB = parts[4]?.trim() as Integer } catch (Exception e) {}
+                try { entry.directJavaKB = parts[5]?.trim() as Integer } catch (Exception e) {}
+            }
+
+            allEntries << entry
             memValues << memKB
         }
     }
@@ -5396,6 +5409,20 @@ def toolGetMemoryHistory(args) {
 
         if (summary.currentMemoryKB < 50000) {
             summary.memoryWarning = "LOW MEMORY: ${summary.currentMemoryKB}KB free. Consider rebooting or running force_garbage_collection."
+        }
+
+        // Java heap and direct memory summary from latest entry
+        def latest = allEntries[-1]
+        if (latest.totalJavaKB != null) summary.totalJavaKB = latest.totalJavaKB
+        if (latest.freeJavaKB != null) summary.freeJavaKB = latest.freeJavaKB
+        if (latest.directJavaKB != null) {
+            summary.directJavaKB = latest.directJavaKB
+            // Track direct memory growth (potential NIO buffer leak indicator)
+            def directValues = allEntries.findAll { it.directJavaKB != null }.collect { it.directJavaKB }
+            if (directValues.size() >= 2) {
+                summary.directJavaMinKB = directValues.min()
+                summary.directJavaMaxKB = directValues.max()
+            }
         }
     }
 
