@@ -1400,8 +1400,12 @@ For easier bug reporting:
 
 ## Version History
 
+- **v0.9.0** - New tools: `get_performance_stats` (device/app performance stats — method call counts, % busy, cumulative total ms, state size, events, large state flag; sortable by `pct`/`count`/`stateSize`/`totalMs`/`name`) and `get_hub_jobs` (scheduled/running jobs, hub actions), both in `manage_logs` gateway. Enhanced `get_memory_history`: `limit` parameter (default 100) to prevent response-too-large errors, now includes Java heap (`totalJavaKB`, `freeJavaKB`) and direct/NIO buffer memory (`directJavaKB`) per entry with min/max tracking in summary for leak detection. 73 MCP tools total (30 on `tools/list`).
+- **v0.8.7** - Add memory diagnostic tools: `get_memory_history` and `force_garbage_collection`, both in `manage_diagnostics` gateway. 71 MCP tools total.
+- **v0.8.6** - Bug fix: `days_of_week` condition crash (`Date.format(String, Locale)` not available in Hubitat sandbox).
+
 <details>
-<summary><b>Recent versions (v0.7.0 – v0.8.5)</b></summary>
+<summary><b>Older versions (v0.7.0 – v0.8.5)</b></summary>
 
 - **v0.8.5** - Bug fixes: fix `send_command` Map-parameter handling (Hubitat's JSON parser chokes on nested JSON objects in parameter arrays, falling back to raw String — now extracts embedded JSON objects by brace-matching), fix `get_hub_logs` source filter (was checking timestamp field instead of message field — source searches never matched app/device names), add JSON string-to-Map parsing in rule action parameter converter
 - **v0.8.2** - Critical bug fixes: fix rule action execution crash (`log.isDebugEnabled()` not available in Hubitat sandbox — all rule actions were silently failing), fix `send_command` setColor/map-parameter handling (JSON string parameters now auto-parsed into Maps for commands like `setColor` that expect Map arguments)

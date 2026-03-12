@@ -114,7 +114,7 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 | `manage_destructive_hub_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
 | `manage_apps_drivers` | 6 | List/get apps, drivers, backups (read-only) |
 | `manage_app_driver_code` | 7 | Install/update/delete apps+drivers, restore backup (write) |
-| `manage_logs` | 6 | Logs, monitoring, debug tools |
+| `manage_logs` | 8 | Logs, monitoring, performance stats, hub jobs, debug tools |
 | `manage_diagnostics` | 9 | Diagnostics, state capture, zwave/zigbee details, zwave repair |
 | `manage_files` | 4 | File Manager CRUD |
 

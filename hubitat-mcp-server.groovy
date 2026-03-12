@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.7 - Add memory diagnostic tools (get_memory_history, force_garbage_collection)
+ * Version: 0.9.0 - Performance stats, hub jobs, memory history pagination
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -495,11 +495,13 @@ def getGatewayConfig() {
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         manage_logs: [
-            description: "System logs and log settings: hub logs, device event history, MCP debug logs, and log level configuration.",
-            tools: ["get_hub_logs", "get_device_history", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
+            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, device event history, MCP debug logs, and log level configuration.",
+            tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
             summaries: [
                 get_hub_logs: "Get Hubitat system logs. Args: level (debug/info/warn/error), source, limit",
                 get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
+                get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
+                get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
                 get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
                 clear_debug_logs: "Clear all MCP debug log entries",
                 set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)",
@@ -511,7 +513,7 @@ def getGatewayConfig() {
             tools: ["get_set_hub_metrics", "get_memory_history", "force_garbage_collection", "device_health_check", "get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
             summaries: [
                 get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
-                get_memory_history: "Get free OS memory and CPU load history. Returns timestamped entries with summary stats. Requires Hub Admin Read",
+                get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
                 force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
                 device_health_check: "Check all devices for stale/offline status",
                 get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
@@ -1017,6 +1019,26 @@ Verify rule after creation.""",
         ],
         // ==================== MONITORING TOOLS ====================
         [
+            name: "get_performance_stats",
+            description: "Get device and/or app performance stats from the hub's logs page. Shows method call counts, % busy, state size, events, states, hub actions, pending events per device/app. Requires Hub Admin Read.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    type: [type: "string", description: "Which stats to return: device, app, or both. Default: device.", enum: ["device", "app", "both"], default: "device"],
+                    sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
+                    limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20]
+                ]
+            ]
+        ],
+        [
+            name: "get_hub_jobs",
+            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Shows what's scheduled to run and when. Requires Hub Admin Read.",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
             name: "get_hub_logs",
             description: "Get Hubitat system logs. Filter by level/source. Default 100 entries, max 500. Requires Hub Admin Read.",
             inputSchema: [
@@ -1069,7 +1091,9 @@ Verify rule after creation.""",
             description: "Get free OS memory and CPU load history. Returns timestamped entries with freeMemoryKB and cpuLoad5min. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    limit: [type: "integer", description: "Max entries to return (most recent). Default: 100, 0 for all. Hub may have thousands of entries.", default: 100]
+                ]
             ]
         ],
         [
@@ -1540,6 +1564,8 @@ def executeTool(toolName, args) {
         // Monitoring Tools
         case "get_hub_logs": return toolGetHubLogs(args)
         case "get_device_history": return toolGetDeviceHistory(args)
+        case "get_performance_stats": return toolGetPerformanceStats(args)
+        case "get_hub_jobs": return toolGetHubJobs(args)
         case "get_set_hub_metrics": return toolGetHubPerformance(args)
         case "device_health_check": return toolDeviceHealthCheck(args)
         case "get_memory_history": return toolGetMemoryHistory(args)
@@ -5075,6 +5101,145 @@ def toolGetDeviceHistory(args) {
     ]
 }
 
+// Shared helper: fetch /logs/json from hub internal API
+def fetchLogsJson() {
+    requireHubAdminRead()
+    def responseText = hubInternalGet("/logs/json", null, 30)
+    if (!responseText) throw new RuntimeException("No data returned from /logs/json")
+    return new groovy.json.JsonSlurper().parseText(responseText)
+}
+
+def toolGetPerformanceStats(args) {
+    def type = args.type ?: "device"
+    def sortBy = args.sortBy ?: "pct"
+    def limit = args.limit != null ? args.limit : 20
+
+    mcpLog("info", "monitoring", "Fetching performance stats (type=${type}, sortBy=${sortBy}, limit=${limit})")
+
+    def data
+    try {
+        data = fetchLogsJson()
+    } catch (Exception e) {
+        mcpLog("error", "monitoring", "Failed to fetch performance stats: ${e.message}")
+        return [error: "Failed to fetch performance stats: ${e.message}"]
+    }
+
+    def result = [
+        uptime: data.uptime
+    ]
+
+    def formatStats = { statsList ->
+        if (!statsList) return []
+        // Sort
+        switch (sortBy) {
+            case "count": statsList = statsList.sort { -(it.count ?: 0) }; break
+            case "stateSize": statsList = statsList.sort { -(it.stateSize ?: 0) }; break
+            case "totalMs": statsList = statsList.sort { -(it.total ?: 0) }; break
+            case "name": statsList = statsList.sort { (it.name ?: "").toLowerCase() }; break
+            default: statsList = statsList.sort { -(it.pct ?: 0) }; break
+        }
+        // Limit
+        if (limit > 0 && statsList.size() > limit) {
+            statsList = statsList.take(limit)
+        }
+        // Slim down to essential fields + useful diagnostics
+        return statsList.collect { entry ->
+            def item = [
+                id: entry.id,
+                name: entry.name,
+                count: entry.count,
+                pctBusy: entry.formattedPct,
+                pctTotal: entry.formattedPctTotal,
+                stateSize: entry.stateSize,
+                totalMs: entry.total,
+                averageMs: entry.average != null ? Math.round(entry.average * 100) / 100.0 : null,
+                totalEvents: entry.customAttributes?.eventsCount,
+                states: entry.customAttributes?.statesCount,
+                hubActions: entry.hubActionCount,
+                pendingEvents: entry.pendingEventsCount,
+                cloudCalls: entry.cloudCallCount
+            ]
+            if (entry.largeState) item.largeState = true
+            return item
+        }
+    }
+
+    if (type == "device" || type == "both") {
+        result.deviceSummary = [
+            totalRuntime: data.totalDevicesRuntime,
+            pctOfUptime: data.devicePct,
+            deviceCount: data.deviceStats?.size() ?: 0
+        ]
+        result.deviceStats = formatStats(data.deviceStats)
+    }
+
+    if (type == "app" || type == "both") {
+        result.appSummary = [
+            totalRuntime: data.totalAppsRuntime,
+            pctOfUptime: data.appPct,
+            appCount: data.appStats?.size() ?: 0
+        ]
+        result.appStats = formatStats(data.appStats)
+    }
+
+    // Size guard: estimate response and warn if large
+    def statsCount = (result.deviceStats?.size() ?: 0) + (result.appStats?.size() ?: 0)
+    if (limit == 0) {
+        result.note = "Returning all ${statsCount} entries. Use limit parameter to reduce response size."
+    }
+
+    mcpLog("info", "monitoring", "Retrieved performance stats: ${statsCount} entries (type=${type})")
+    return result
+}
+
+def toolGetHubJobs(args) {
+    mcpLog("info", "monitoring", "Fetching hub jobs")
+
+    def data
+    try {
+        data = fetchLogsJson()
+    } catch (Exception e) {
+        mcpLog("error", "monitoring", "Failed to fetch hub jobs: ${e.message}")
+        return [error: "Failed to fetch hub jobs: ${e.message}"]
+    }
+
+    def scheduledJobs = (data.jobs ?: []).collect { job ->
+        [
+            id: job.id,
+            name: job.name,
+            recurring: job.recurring,
+            method: job.methodName,
+            nextRun: job.nextRun
+        ]
+    }
+
+    def runningJobs = (data.runningJobs ?: []).collect { job ->
+        [
+            id: job.id,
+            name: job.name,
+            method: job.methodName
+        ]
+    }
+
+    def hubActions = data.hubCommands ?: []
+
+    return [
+        uptime: data.uptime,
+        scheduledJobs: [
+            count: scheduledJobs.size(),
+            jobs: scheduledJobs
+        ],
+        runningJobs: [
+            count: runningJobs.size(),
+            jobs: runningJobs
+        ],
+        hubActions: [
+            count: hubActions.size(),
+            actions: hubActions
+        ]
+    ]
+}
+
 def toolGetHubPerformance(args) {
     requireHubAdminRead()
 
@@ -5189,20 +5354,22 @@ def toolGetHubPerformance(args) {
 def toolGetMemoryHistory(args) {
     requireHubAdminRead()
 
+    def limit = args.limit != null ? args.limit : 100
+
     def rawText = hubInternalGet("/hub/advanced/freeOSMemoryHistory")
     if (!rawText) {
         return [entries: [], summary: [message: "No memory history data available"]]
     }
 
     def lines = rawText.trim().split("\n")
-    def entries = []
+    def allEntries = []
     def memValues = []
 
     for (line in lines) {
         def trimmed = line?.trim()
         if (!trimmed) continue
 
-        // Format: "datetime,freeKB,cpuLoad" or similar CSV
+        // Format: "Date/time,Free OS,5m CPU avg,Total Java,Free Java,Direct Java"
         def parts = trimmed.split(",", -1)
         if (parts.size() >= 3) {
             // Skip header/non-numeric lines by parsing memory value first
@@ -5214,16 +5381,26 @@ def toolGetMemoryHistory(args) {
                 continue
             }
 
-            entries << [
+            def entry = [
                 timestamp: parts[0]?.trim(),
                 freeMemoryKB: memKB,
                 cpuLoad5min: parts[2]?.trim()
             ]
+
+            // Parse Java heap and direct memory columns if present
+            if (parts.size() >= 6) {
+                try { entry.totalJavaKB = parts[3]?.trim() as Integer } catch (Exception e) {}
+                try { entry.freeJavaKB = parts[4]?.trim() as Integer } catch (Exception e) {}
+                try { entry.directJavaKB = parts[5]?.trim() as Integer } catch (Exception e) {}
+            }
+
+            allEntries << entry
             memValues << memKB
         }
     }
 
-    def summary = [entryCount: entries.size()]
+    // Summary is computed from ALL entries regardless of limit
+    def summary = [totalEntries: allEntries.size()]
     if (memValues) {
         summary.currentMemoryKB = memValues[-1]
         summary.minMemoryKB = memValues.min()
@@ -5233,9 +5410,31 @@ def toolGetMemoryHistory(args) {
         if (summary.currentMemoryKB < 50000) {
             summary.memoryWarning = "LOW MEMORY: ${summary.currentMemoryKB}KB free. Consider rebooting or running force_garbage_collection."
         }
+
+        // Java heap and direct memory summary from latest entry
+        def latest = allEntries[-1]
+        if (latest.totalJavaKB != null) summary.totalJavaKB = latest.totalJavaKB
+        if (latest.freeJavaKB != null) summary.freeJavaKB = latest.freeJavaKB
+        if (latest.directJavaKB != null) {
+            summary.directJavaKB = latest.directJavaKB
+            // Track direct memory growth (potential NIO buffer leak indicator)
+            def directValues = allEntries.findAll { it.directJavaKB != null }.collect { it.directJavaKB }
+            if (directValues.size() >= 2) {
+                summary.directJavaMinKB = directValues.min()
+                summary.directJavaMaxKB = directValues.max()
+            }
+        }
     }
 
-    mcpLog("info", "diagnostics", "Memory history retrieved: ${entries.size()} entries")
+    // Apply limit — return most recent entries
+    def entries = allEntries
+    if (limit > 0 && allEntries.size() > limit) {
+        entries = allEntries.takeRight(limit)
+        summary.truncated = true
+        summary.showing = "${entries.size()} of ${allEntries.size()} (most recent)"
+    }
+
+    mcpLog("info", "diagnostics", "Memory history retrieved: ${entries.size()} entries (${allEntries.size()} total)")
     return [entries: entries, summary: summary]
 }
 
@@ -6874,7 +7073,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.7"
+    return "0.9.0"
 }
 
 def isNewerVersion(String remote, String local) {
