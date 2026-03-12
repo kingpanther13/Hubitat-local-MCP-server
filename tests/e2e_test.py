@@ -892,6 +892,89 @@ class TestRunner:
             assert "deltaKB" in result, "Missing 'deltaKB'"
 
     @test("system_tools")
+    def test_get_memory_history_with_limit(self) -> None:
+        """Verify limit parameter works (v0.9.0 fix for response-too-large)."""
+        result = self.client.call_tool("manage_diagnostics", {
+            "action": "get_memory_history",
+            "limit": 5,
+        })
+        assert isinstance(result, dict), f"get_memory_history returned {type(result)}"
+        assert "entries" in result, "Missing 'entries'"
+        entries = result["entries"]
+        assert len(entries) <= 5, f"limit=5 but got {len(entries)} entries"
+        summary = result["summary"]
+        assert "entryCount" in summary, "Summary missing 'entryCount'"
+
+    @test("system_tools")
+    def test_get_performance_stats_device(self) -> None:
+        """Test get_performance_stats with type=device (default)."""
+        result = self.client.call_tool("manage_logs", {
+            "action": "get_performance_stats",
+        })
+        assert isinstance(result, dict), f"get_performance_stats returned {type(result)}"
+        assert "uptime" in result, "Missing 'uptime'"
+        assert "deviceSummary" in result, "Missing 'deviceSummary'"
+        assert "deviceStats" in result, "Missing 'deviceStats'"
+        assert isinstance(result["deviceStats"], list), "deviceStats should be a list"
+        ds = result["deviceSummary"]
+        assert "deviceCount" in ds, "deviceSummary missing 'deviceCount'"
+        # Default limit is 20
+        assert len(result["deviceStats"]) <= 20, \
+            f"Default limit is 20 but got {len(result['deviceStats'])} entries"
+        if result["deviceStats"]:
+            entry = result["deviceStats"][0]
+            assert "name" in entry, "Stats entry missing 'name'"
+            assert "count" in entry, "Stats entry missing 'count'"
+
+    @test("system_tools")
+    def test_get_performance_stats_app(self) -> None:
+        """Test get_performance_stats with type=app."""
+        result = self.client.call_tool("manage_logs", {
+            "action": "get_performance_stats",
+            "type": "app",
+            "limit": 5,
+        })
+        assert isinstance(result, dict), f"get_performance_stats returned {type(result)}"
+        assert "appSummary" in result, "Missing 'appSummary'"
+        assert "appStats" in result, "Missing 'appStats'"
+        assert isinstance(result["appStats"], list), "appStats should be a list"
+        assert len(result["appStats"]) <= 5, \
+            f"limit=5 but got {len(result['appStats'])} entries"
+        # Should NOT have device stats when type=app
+        assert "deviceStats" not in result, "type=app should not include deviceStats"
+
+    @test("system_tools")
+    def test_get_performance_stats_both(self) -> None:
+        """Test get_performance_stats with type=both."""
+        result = self.client.call_tool("manage_logs", {
+            "action": "get_performance_stats",
+            "type": "both",
+            "limit": 3,
+        })
+        assert isinstance(result, dict), f"get_performance_stats returned {type(result)}"
+        assert "deviceStats" in result, "type=both missing 'deviceStats'"
+        assert "appStats" in result, "type=both missing 'appStats'"
+
+    @test("system_tools")
+    def test_get_hub_jobs(self) -> None:
+        """Test get_hub_jobs returns scheduled jobs and hub actions."""
+        result = self.client.call_tool("manage_logs", {
+            "action": "get_hub_jobs",
+        })
+        assert isinstance(result, dict), f"get_hub_jobs returned {type(result)}"
+        assert "uptime" in result, "Missing 'uptime'"
+        assert "scheduledJobs" in result, "Missing 'scheduledJobs'"
+        assert "runningJobs" in result, "Missing 'runningJobs'"
+        assert "hubActions" in result, "Missing 'hubActions'"
+        sj = result["scheduledJobs"]
+        assert "count" in sj, "scheduledJobs missing 'count'"
+        assert "jobs" in sj, "scheduledJobs missing 'jobs'"
+        assert isinstance(sj["jobs"], list), "scheduledJobs.jobs should be a list"
+        if sj["jobs"]:
+            job = sj["jobs"][0]
+            assert "name" in job, "Job missing 'name'"
+
+    @test("system_tools")
     def test_manage_rooms_list(self) -> None:
         result = self.client.call_tool("manage_rooms", {
             "action": "list_rooms",
