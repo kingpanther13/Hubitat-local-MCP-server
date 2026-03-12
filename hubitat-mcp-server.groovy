@@ -5402,7 +5402,7 @@ def toolGetMemoryHistory(args) {
     // Apply limit — return most recent entries
     def entries = allEntries
     if (limit > 0 && allEntries.size() > limit) {
-        entries = allEntries.drop(allEntries.size() - limit)
+        entries = allEntries.takeRight(limit)
         summary.truncated = true
         summary.showing = "${entries.size()} of ${allEntries.size()} (most recent)"
     }
