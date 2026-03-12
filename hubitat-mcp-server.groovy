@@ -1500,6 +1500,19 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
                     section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, update_device, rules, backup, file_manager, performance. Full guide only if absolutely necessary."]
                 ]
             ]
+        ],
+        // Tool Search (BM25)
+        [
+            name: "search_tools",
+            description: "Search all MCP tools by natural language query (BM25 ranking). Searches tool names, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    query: [type: "string", description: "Natural language search query (e.g. 'zigbee radio', 'delete app', 'memory leak', 'room management')"],
+                    maxResults: [type: "integer", description: "Max results to return. Default: 5.", default: 5]
+                ],
+                required: ["query"]
+            ]
         ]
     ]
 }
@@ -1615,6 +1628,9 @@ def executeTool(toolName, args) {
 
         // Tool Guide
         case "get_tool_guide": return toolGetToolGuide(args.section)
+
+        // Tool Search (BM25)
+        case "search_tools": return toolSearchTools(args)
 
         // Category Gateway Proxy Tools
         case "manage_rules_admin":
@@ -7073,7 +7089,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.9.0"
+    return "0.9.1"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -7178,6 +7194,138 @@ def toolCheckForUpdate(args) {
             installedVersion: currentVersion()
         ]
     }
+}
+
+// ==================== TOOL SEARCH (BM25) ====================
+
+def toolSearchTools(args) {
+    def query = args.query
+    if (!query?.trim()) return [error: "query is required"]
+    def maxResults = args.maxResults != null ? args.maxResults : 5
+
+    // Build searchable corpus: all tools (core + gateway sub-tools) with metadata
+    def corpus = buildToolSearchCorpus()
+
+    // Tokenize all documents and the query
+    def docTokens = corpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''}") }
+    def queryTokens = bm25Tokenize(query)
+
+    if (!queryTokens) return [results: [], message: "No searchable terms in query"]
+
+    // BM25 scoring
+    def scores = bm25Score(docTokens, queryTokens)
+
+    // Rank and return top results
+    def ranked = []
+    scores.eachWithIndex { score, idx ->
+        if (score > 0) ranked << [index: idx, score: score]
+    }
+    ranked.sort { -it.score }
+    if (ranked.size() > maxResults) ranked = ranked.take(maxResults)
+
+    def results = ranked.collect { r ->
+        def tool = corpus[r.index]
+        def entry = [
+            tool: tool.name,
+            description: tool.description,
+            relevance: Math.round(r.score * 100) / 100.0
+        ]
+        if (tool.gateway) {
+            entry.gateway = tool.gateway
+            entry.callAs = "Call via ${tool.gateway}(tool=\"${tool.name}\", args={...})"
+        } else {
+            entry.callAs = "Call directly: ${tool.name}({...})"
+        }
+        return entry
+    }
+
+    return [
+        query: query,
+        resultsCount: results.size(),
+        totalToolsSearched: corpus.size(),
+        results: results
+    ]
+}
+
+// Build a flat list of all tools (core + proxied) with gateway attribution
+private buildToolSearchCorpus() {
+    def gatewayConfig = getGatewayConfig()
+    def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
+
+    def corpus = []
+
+    // Core tools (not behind a gateway, and not gateway tools themselves)
+    def gatewayNames = gatewayConfig.keySet()
+    getAllToolDefinitions().each { toolDef ->
+        if (!proxiedNames.contains(toolDef.name)) {
+            def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
+            corpus << [name: toolDef.name, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
+        }
+    }
+
+    // Gateway sub-tools
+    gatewayConfig.each { gwName, config ->
+        config.tools.each { toolName ->
+            def summary = config.summaries[toolName] ?: ""
+            // Also grab param names from the full tool definition
+            def fullDef = getAllToolDefinitions().find { it.name == toolName }
+            def params = fullDef?.inputSchema?.properties?.keySet()?.join(" ") ?: ""
+            corpus << [name: toolName, description: "${summary} [${config.description}]", params: params, gateway: gwName]
+        }
+    }
+
+    return corpus
+}
+
+// BM25 tokenizer: lowercase, split on non-alphanumeric, drop tokens < 2 chars
+private bm25Tokenize(String text) {
+    if (!text) return []
+    return text.toLowerCase().split(/[^a-z0-9]+/).findAll { it.length() > 1 }
+}
+
+// BM25 Okapi scoring
+private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
+    def k1 = 1.5
+    def b = 0.75
+    def n = docTokens.size()
+
+    // Document lengths and average
+    def docLengths = docTokens.collect { it.size() }
+    def avgDl = docLengths.sum() / (double) n
+
+    // Document frequency: how many docs contain each token
+    def df = [:]
+    docTokens.each { tokens ->
+        tokens.toSet().each { token ->
+            df[token] = (df[token] ?: 0) + 1
+        }
+    }
+
+    // Score each document
+    def scores = new double[n]
+    docTokens.eachWithIndex { tokens, docIdx ->
+        // Term frequency for this doc
+        def tf = [:]
+        tokens.each { t -> tf[t] = (tf[t] ?: 0) + 1 }
+
+        def dl = docLengths[docIdx]
+        double score = 0.0
+
+        queryTokens.each { qt ->
+            def termFreq = tf[qt] ?: 0
+            if (termFreq > 0) {
+                def docFreq = df[qt] ?: 0
+                def idf = Math.log((n - docFreq + 0.5) / (docFreq + 0.5) + 1.0)
+                def num = termFreq * (k1 + 1)
+                def den = termFreq + k1 * (1 - b + b * dl / avgDl)
+                score += idf * num / den
+            }
+        }
+
+        scores[docIdx] = score
+    }
+
+    return scores as List
 }
 
 // ==================== TOOL GUIDE ====================

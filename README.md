@@ -1400,6 +1400,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v0.9.1** - New `search_tools`: BM25 natural language search across all 74 MCP tools (core + gateway sub-tools). Searches tool names, descriptions, and parameter names. Returns matching tools ranked by relevance with gateway attribution so the LLM knows how to call them. Inspired by FastMCP 3.1 Tool Search transform. 74 MCP tools total (31 on `tools/list`).
 - **v0.9.0** - New tools: `get_performance_stats` (device/app performance stats — method call counts, % busy, cumulative total ms, state size, events, large state flag; sortable by `pct`/`count`/`stateSize`/`totalMs`/`name`) and `get_hub_jobs` (scheduled/running jobs, hub actions), both in `manage_logs` gateway. Enhanced `get_memory_history`: `limit` parameter (default 100) to prevent response-too-large errors, now includes Java heap (`totalJavaKB`, `freeJavaKB`) and direct/NIO buffer memory (`directJavaKB`) per entry with min/max tracking in summary for leak detection. 73 MCP tools total (30 on `tools/list`).
 - **v0.8.7** - Add memory diagnostic tools: `get_memory_history` and `force_garbage_collection`, both in `manage_diagnostics` gateway. 71 MCP tools total.
 - **v0.8.6** - Bug fix: `days_of_week` condition crash (`Date.format(String, Locale)` not available in Hubitat sandbox).
