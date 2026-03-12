@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.9.0 - Performance stats, hub jobs, memory history pagination
+ * Version: 0.9.1 - BM25 tool search, performance stats, hub jobs, memory history pagination
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -433,6 +433,14 @@ def getGatewayConfig() {
                 export_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
                 import_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
                 clone_rule: "Clone an existing rule (starts disabled). Args: ruleId"
+            ],
+            // BM25 search hints — extra keywords that don't appear in summaries but help discovery
+            searchHints: [
+                delete_rule: "remove automation",
+                test_rule: "simulate preview validate check automation",
+                export_rule: "save download share automation",
+                import_rule: "load upload restore automation",
+                clone_rule: "copy duplicate automation"
             ]
         ],
         manage_hub_variables: [
@@ -442,6 +450,11 @@ def getGatewayConfig() {
                 list_variables: "List all hub connector and rule engine variables",
                 get_variable: "Get a variable value. Args: name",
                 set_variable: "Set a variable value (creates if doesn't exist). Args: name, value"
+            ],
+            searchHints: [
+                list_variables: "show all global state connector",
+                get_variable: "read fetch lookup global state",
+                set_variable: "write update change store global state"
             ]
         ],
         manage_rooms: [
@@ -453,6 +466,13 @@ def getGatewayConfig() {
                 create_room: "Create a new room. Args: name, confirm=true",
                 delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
                 rename_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
+            ],
+            searchHints: [
+                list_rooms: "show all locations areas groups",
+                get_room: "view location area group",
+                create_room: "add new location area group",
+                delete_room: "remove location area group",
+                rename_room: "change name location area group"
             ]
         ],
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
@@ -465,6 +485,11 @@ def getGatewayConfig() {
                 reboot_hub: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
                 shutdown_hub: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
+            ],
+            searchHints: [
+                reboot_hub: "restart reset power cycle",
+                shutdown_hub: "power off turn off stop halt",
+                delete_device: "remove ghost orphan zwave zigbee stuck failed pairing"
             ]
         ],
         // Option B: manage_apps_drivers split into browse (read) + changes (write)
@@ -478,6 +503,14 @@ def getGatewayConfig() {
                 get_driver_source: "Get driver Groovy source code. Args: driverId",
                 list_item_backups: "List auto-created source code backups",
                 get_item_backup: "Get source from a backup. Args: backupId"
+            ],
+            searchHints: [
+                list_hub_apps: "show installed applications integrations",
+                list_hub_drivers: "show installed device handlers types",
+                get_app_source: "view read application groovy code",
+                get_driver_source: "view read device handler type groovy code",
+                list_item_backups: "show saved previous versions revisions",
+                get_item_backup: "view read saved previous version revision"
             ]
         ],
         manage_app_driver_code: [
@@ -491,6 +524,15 @@ def getGatewayConfig() {
                 delete_app: "Permanently delete an app (DESTRUCTIVE). Args: appId, confirm=true",
                 delete_driver: "Permanently delete a driver (DESTRUCTIVE). Args: driverId, confirm=true",
                 restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true"
+            ],
+            searchHints: [
+                install_app: "add new application integration groovy",
+                install_driver: "add new device handler type groovy",
+                update_app_code: "modify change edit application groovy push deploy",
+                update_driver_code: "modify change edit device handler type groovy push deploy",
+                delete_app: "remove uninstall application integration",
+                delete_driver: "remove uninstall device handler type",
+                restore_item_backup: "rollback revert undo previous version"
             ]
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
@@ -506,6 +548,16 @@ def getGatewayConfig() {
                 clear_debug_logs: "Clear all MCP debug log entries",
                 set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)",
                 get_logging_status: "Get logging system status and capacity"
+            ],
+            searchHints: [
+                get_hub_logs: "errors warnings messages trace syslog output print",
+                get_device_history: "events timeline past activity what happened sensor",
+                get_performance_stats: "slow cpu busy resource usage hog bottleneck",
+                get_hub_jobs: "scheduled cron timer recurring what is running next automation",
+                get_debug_logs: "mcp internal troubleshoot trace",
+                clear_debug_logs: "wipe reset mcp internal",
+                set_log_level: "verbosity debug trace quiet",
+                get_logging_status: "buffer capacity how many"
             ]
         ],
         manage_diagnostics: [
@@ -523,6 +575,19 @@ def getGatewayConfig() {
                 list_captured_states: "List saved device state snapshots",
                 delete_captured_state: "Delete a specific captured state. Args: stateId",
                 clear_captured_states: "Clear all captured device states"
+            ],
+            searchHints: [
+                get_set_hub_metrics: "temperature database size trending monitoring over time",
+                get_memory_history: "ram free used leak trending over time java heap nio",
+                force_garbage_collection: "free reclaim ram cleanup java heap",
+                device_health_check: "stale offline dead unresponsive battery not reporting",
+                get_rule_diagnostics: "automation troubleshoot broken not working debug why",
+                get_zwave_details: "zwave mesh network frequency firmware 908mhz 700 800 series",
+                get_zigbee_details: "zigbee mesh network channel pan coordinator 2400mhz",
+                zwave_repair: "fix heal network mesh routing neighbor rebuild",
+                list_captured_states: "saved snapshot bookmark remember device values",
+                delete_captured_state: "remove saved snapshot bookmark",
+                clear_captured_states: "remove all saved snapshots bookmarks"
             ]
         ],
         manage_files: [
@@ -533,6 +598,12 @@ def getGatewayConfig() {
                 read_file: "Read file content. Args: fileName, offset, limit",
                 write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
                 delete_file: "Delete file from File Manager. Args: fileName, confirm=true"
+            ],
+            searchHints: [
+                list_files: "show uploaded stored csv json text data",
+                read_file: "view open contents download stored data",
+                write_file: "upload save store create csv json text data",
+                delete_file: "remove clean up stored data"
             ]
         ]
     ]
@@ -7207,7 +7278,7 @@ def toolSearchTools(args) {
     def corpus = buildToolSearchCorpus()
 
     // Tokenize all documents and the query
-    def docTokens = corpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''}") }
+    def docTokens = corpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
     def queryTokens = bm25Tokenize(query)
 
     if (!queryTokens) return [results: [], message: "No searchable terms in query"]
@@ -7263,14 +7334,15 @@ private buildToolSearchCorpus() {
         }
     }
 
-    // Gateway sub-tools
+    // Gateway sub-tools (with search hints for synonym matching)
     gatewayConfig.each { gwName, config ->
         config.tools.each { toolName ->
             def summary = config.summaries[toolName] ?: ""
+            def hints = config.searchHints?."${toolName}" ?: ""
             // Also grab param names from the full tool definition
             def fullDef = getAllToolDefinitions().find { it.name == toolName }
             def params = fullDef?.inputSchema?.properties?.keySet()?.join(" ") ?: ""
-            corpus << [name: toolName, description: "${summary} [${config.description}]", params: params, gateway: gwName]
+            corpus << [name: toolName, description: "${summary} [${config.description}]", params: params, hints: hints, gateway: gwName]
         }
     }
 
