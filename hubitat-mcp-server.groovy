@@ -7273,7 +7273,7 @@ def toolCheckForUpdate(args) {
 def toolSearchTools(args) {
     def query = args.query
     if (!query?.trim()) return [error: "query is required"]
-    def maxResults = args.maxResults != null ? args.maxResults : 5
+    def maxResults = args.maxResults != null ? Math.max(0, args.maxResults as Integer) : 5
 
     // Build searchable corpus (cached in state for performance on resource-constrained hub)
     def corpus = state.toolSearchCorpus
