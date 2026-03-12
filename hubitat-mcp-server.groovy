@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.8.7 - Add memory diagnostic tools (get_memory_history, force_garbage_collection)
+ * Version: 0.9.0 - Hub prefix for all tool names, performance stats, hub jobs, memory history pagination
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -424,7 +424,7 @@ def handleToolsCall(msg) {
 
 def getGatewayConfig() {
     return [
-        manage_rules_admin: [
+        hub_manage_rules_admin: [
             description: "Rule administration: delete, test, export, import, and clone rules.",
             tools: ["delete_rule", "test_rule", "export_rule", "import_rule", "clone_rule"],
             summaries: [
@@ -435,7 +435,7 @@ def getGatewayConfig() {
                 clone_rule: "Clone an existing rule (starts disabled). Args: ruleId"
             ]
         ],
-        manage_hub_variables: [
+        hub_manage_hub_variables: [
             description: "Manage hub connector and rule engine variables.",
             tools: ["list_variables", "get_variable", "set_variable"],
             summaries: [
@@ -444,7 +444,7 @@ def getGatewayConfig() {
                 set_variable: "Set a variable value (creates if doesn't exist). Args: name, value"
             ]
         ],
-        manage_rooms: [
+        hub_manage_rooms: [
             description: "Manage hub rooms: list, view details, create, delete, and rename rooms.",
             tools: ["list_rooms", "get_room", "create_room", "delete_room", "rename_room"],
             summaries: [
@@ -458,7 +458,7 @@ def getGatewayConfig() {
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
         // manage_hub_info dissolved — zwave/zigbee moved to manage_diagnostics, check_for_update promoted to core
         // create_hub_backup promoted to core, zwave_repair moved to manage_diagnostics
-        manage_destructive_hub_ops: [
+        hub_manage_destructive_hub_ops: [
             description: "DESTRUCTIVE hub operations: reboot, shutdown, and permanent device deletion. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["reboot_hub", "shutdown_hub", "delete_device"],
             summaries: [
@@ -468,7 +468,7 @@ def getGatewayConfig() {
             ]
         ],
         // Option B: manage_apps_drivers split into browse (read) + changes (write)
-        manage_apps_drivers: [
+        hub_manage_apps_drivers: [
             description: "Browse installed apps and drivers: list, view source code, and view code backups.",
             tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "list_item_backups", "get_item_backup"],
             summaries: [
@@ -480,7 +480,7 @@ def getGatewayConfig() {
                 get_item_backup: "Get source from a backup. Args: backupId"
             ]
         ],
-        manage_app_driver_code: [
+        hub_manage_app_driver_code: [
             description: "Install, update, and delete hub apps and drivers. All operations modify hub code and require Hub Admin Write.",
             tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup"],
             summaries: [
@@ -494,24 +494,26 @@ def getGatewayConfig() {
             ]
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
-        manage_logs: [
-            description: "System logs and log settings: hub logs, device event history, MCP debug logs, and log level configuration.",
-            tools: ["get_hub_logs", "get_device_history", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
+        hub_manage_logs: [
+            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, device event history, MCP debug logs, and log level configuration.",
+            tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
             summaries: [
                 get_hub_logs: "Get Hubitat system logs. Args: level (debug/info/warn/error), source, limit",
                 get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
+                get_performance_stats: "Get device/app performance stats (count, % busy, state size, events). Args: type (device/app/both), sortBy, limit",
+                get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
                 get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
                 clear_debug_logs: "Clear all MCP debug log entries",
                 set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)",
                 get_logging_status: "Get logging system status and capacity"
             ]
         ],
-        manage_diagnostics: [
+        hub_manage_diagnostics: [
             description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
             tools: ["get_set_hub_metrics", "get_memory_history", "force_garbage_collection", "device_health_check", "get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
             summaries: [
                 get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
-                get_memory_history: "Get free OS memory and CPU load history. Returns timestamped entries with summary stats. Requires Hub Admin Read",
+                get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
                 force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
                 device_health_check: "Check all devices for stale/offline status",
                 get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
@@ -523,7 +525,7 @@ def getGatewayConfig() {
                 clear_captured_states: "Clear all captured device states"
             ]
         ],
-        manage_files: [
+        hub_manage_files: [
             description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
             tools: ["list_files", "read_file", "write_file", "delete_file"],
             summaries: [
@@ -628,7 +630,7 @@ def getAllToolDefinitions() {
     return [
         // Device Tools
         [
-            name: "list_devices",
+            name: "hub_list_devices",
             description: """List all devices available to MCP with current states.
 
 DEVICE AUTHORIZATION: Exact name match → use directly. No exact match → suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
@@ -644,41 +646,41 @@ Use detailed=false for discovery; detailed=true with limit=20-30. Sequential cal
             ]
         ],
         [
-            name: "get_device",
+            name: "hub_get_device",
             description: """Get detailed information about a specific device.
 
 Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"]
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices"]
                 ],
                 required: ["deviceId"]
             ]
         ],
         [
-            name: "get_attribute",
+            name: "hub_get_attribute",
             description: """Get a specific attribute value from a device.
 
 Only query devices the user has mentioned or that are relevant to their request.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"],
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices"],
                     attribute: [type: "string", description: "Attribute name"]
                 ],
                 required: ["deviceId", "attribute"]
             ]
         ],
         [
-            name: "send_command",
+            name: "hub_send_command",
             description: """Send a command to a device. Always verify state changed after.
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices - must be confirmed by user if not an exact match"],
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name"],
                     parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
                 ],
@@ -686,7 +688,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             ]
         ],
         [
-            name: "get_device_events",
+            name: "hub_get_device_events",
             description: "Get recent events for a device. Default limit 10; higher values (50+) may slow hub.",
             inputSchema: [
                 type: "object",
@@ -699,15 +701,15 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         // Rule Management
         [
-            name: "list_rules",
-            description: "List all MCP automation rules. Returns summary; use get_rule for details.",
+            name: "hub_list_rules",
+            description: "List all MCP automation rules. Returns summary; use hub_get_rule for details.",
             inputSchema: [
                 type: "object",
                 properties: [:]
             ]
         ],
         [
-            name: "get_rule",
+            name: "hub_get_rule",
             description: "Get detailed information about a specific rule",
             inputSchema: [
                 type: "object",
@@ -718,8 +720,8 @@ If no exact device match: suggest similar devices and get user confirmation befo
             ]
         ],
         [
-            name: "create_rule",
-            description: """Create a new automation rule. Use get_tool_guide section=rules for structure, syntax, and examples.
+            name: "hub_create_rule",
+            description: """Create a new automation rule. Use hub_get_tool_guide section=rules for structure, syntax, and examples.
 
 Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
 Condition types: device_state, device_was, time_range, mode, variable, days_of_week, sun_position, hsm_status
@@ -742,7 +744,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "update_rule",
+            name: "hub_update_rule",
             description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after.",
             inputSchema: [
                 type: "object",
@@ -787,17 +789,17 @@ Verify rule after creation.""",
         ],
         // System Tools
         [
-            name: "get_hub_info",
+            name: "hub_get_hub_info",
             description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "get_modes",
+            name: "hub_get_modes",
             description: "Get available location modes and current mode",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "set_mode",
+            name: "hub_set_mode",
             description: "Set the location mode. Always verify mode changed after.",
             inputSchema: [
                 type: "object",
@@ -836,12 +838,12 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_hsm_status",
+            name: "hub_get_hsm_status",
             description: "Get the current HSM (Hubitat Safety Monitor) status",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "set_hsm",
+            name: "hub_set_hsm",
             description: "Set HSM mode (armAway, armHome, armNight, disarm). Always verify HSM changed after.",
             inputSchema: [
                 type: "object",
@@ -921,7 +923,7 @@ Verify rule after creation.""",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "generate_bug_report",
+            name: "hub_generate_bug_report",
             description: "Generate a formatted GitHub bug report with system info, error logs, and issue description.",
             inputSchema: [
                 type: "object",
@@ -973,7 +975,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "check_for_update",
+            name: "hub_check_for_update",
             description: "Check if a newer version of MCP Rule Server is available on GitHub",
             inputSchema: [
                 type: "object",
@@ -1016,6 +1018,26 @@ Verify rule after creation.""",
             ]
         ],
         // ==================== MONITORING TOOLS ====================
+        [
+            name: "get_performance_stats",
+            description: "Get device and/or app performance stats from the hub's logs page. Shows method call counts, % busy, state size, events, states, hub actions, pending events per device/app. Requires Hub Admin Read.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    type: [type: "string", description: "Which stats to return: device, app, or both. Default: device.", enum: ["device", "app", "both"], default: "device"],
+                    sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "name"], default: "pct"],
+                    limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20]
+                ]
+            ]
+        ],
+        [
+            name: "get_hub_jobs",
+            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Shows what's scheduled to run and when. Requires Hub Admin Read.",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
         [
             name: "get_hub_logs",
             description: "Get Hubitat system logs. Filter by level/source. Default 100 entries, max 500. Requires Hub Admin Read.",
@@ -1069,7 +1091,9 @@ Verify rule after creation.""",
             description: "Get free OS memory and CPU load history. Returns timestamped entries with freeMemoryKB and cpuLoad5min. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    limit: [type: "integer", description: "Max entries to return (most recent). Default: 100, 0 for all. Hub may have thousands of entries.", default: 100]
+                ]
             ]
         ],
         [
@@ -1083,7 +1107,7 @@ Verify rule after creation.""",
 
         // ==================== HUB ADMIN WRITE TOOLS ====================
         [
-            name: "create_hub_backup",
+            name: "hub_create_hub_backup",
             description: """Create a full hub backup. REQUIRED before any Hub Admin Write operation (24h validity).
 
 Requires Hub Admin Write + confirm. This is the only write tool that doesn't require a prior backup.""",
@@ -1144,7 +1168,7 @@ Requires Hub Admin Write.""",
             name: "delete_device",
             description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. For ghost/orphaned/stuck devices only.
 
-PRE-FLIGHT: 1) Backup <24h 2) get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
+PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
 Device + history lost, automations break. Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
@@ -1158,11 +1182,11 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
 
         // Virtual Device Management
         [
-            name: "manage_virtual_device",
+            name: "hub_manage_virtual_device",
             description: """Create or delete MCP-managed virtual devices. Requires Hub Admin Write + confirm.
 
 action="create": Provide deviceType (see enum), deviceLabel, optional deviceNetworkId.
-action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_devices to find DNIs.""",
+action="delete": Provide deviceNetworkId of device to delete. Use hub_list_virtual_devices to find DNIs.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1177,7 +1201,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
             ]
         ],
         [
-            name: "list_virtual_devices",
+            name: "hub_list_virtual_devices",
             description: "List MCP-managed virtual devices with IDs, labels, types, states, and capabilities.",
             inputSchema: [
                 type: "object",
@@ -1185,14 +1209,14 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
             ]
         ],
         [
-            name: "update_device",
+            name: "hub_update_device",
             description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
 
-Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. See get_tool_guide section=update_device for preferences format.""",
+Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. See hub_get_tool_guide section=update_device for preferences format.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "The device ID to update (from list_devices or list_virtual_devices)"],
+                    deviceId: [type: "string", description: "The device ID to update (from hub_list_devices or hub_list_virtual_devices)"],
                     label: [type: "string", description: "New display label for the device"],
                     name: [type: "string", description: "New device name"],
                     deviceNetworkId: [type: "string", description: "New device network ID (must be unique across all hub devices)"],
@@ -1468,7 +1492,7 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
         ],
         // Tool Guide
         [
-            name: "get_tool_guide",
+            name: "hub_get_tool_guide",
             description: "Get detailed reference for MCP tools. USE SPARINGLY - tool descriptions should suffice for most cases. When needed, ALWAYS specify a section to minimize token usage.",
             inputSchema: [
                 type: "object",
@@ -1483,30 +1507,30 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
 def executeTool(toolName, args) {
     switch (toolName) {
         // Device Tools
-        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0)
-        case "get_device": return toolGetDevice(args.deviceId)
-        case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
-        case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
-        case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
+        case "hub_list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0)
+        case "hub_get_device": return toolGetDevice(args.deviceId)
+        case "hub_send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
+        case "hub_get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
+        case "hub_get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
 
         // Rule Management - now using child apps
-        case "list_rules": return toolListRules()
-        case "get_rule": return toolGetRule(args.ruleId)
-        case "create_rule": return toolCreateRule(args)
-        case "update_rule": return toolUpdateRule(args.ruleId, args)
+        case "hub_list_rules": return toolListRules()
+        case "hub_get_rule": return toolGetRule(args.ruleId)
+        case "hub_create_rule": return toolCreateRule(args)
+        case "hub_update_rule": return toolUpdateRule(args.ruleId, args)
         case "delete_rule": return toolDeleteRule(args)
         // enable_rule/disable_rule merged into update_rule
         case "test_rule": return toolTestRule(args.ruleId)
 
         // System Tools
-        case "get_hub_info": return toolGetHubInfo()
-        case "get_modes": return toolGetModes()
-        case "set_mode": return toolSetMode(args.mode)
+        case "hub_get_hub_info": return toolGetHubInfo()
+        case "hub_get_modes": return toolGetModes()
+        case "hub_set_mode": return toolSetMode(args.mode)
         case "list_variables": return toolListVariables()
         case "get_variable": return toolGetVariable(args.name)
         case "set_variable": return toolSetVariable(args.name, args.value)
-        case "get_hsm_status": return toolGetHsmStatus()
-        case "set_hsm": return toolSetHsm(args.mode)
+        case "hub_get_hsm_status": return toolGetHsmStatus()
+        case "hub_set_hsm": return toolSetHsm(args.mode)
 
         // Captured State Management
         case "list_captured_states": return toolListCapturedStates()
@@ -1519,7 +1543,7 @@ def executeTool(toolName, args) {
         case "get_rule_diagnostics": return toolGetRuleDiagnostics(args)
         case "set_log_level": return toolSetLogLevel(args)
         case "get_logging_status": return toolGetLoggingStatus(args)
-        case "generate_bug_report": return toolGenerateBugReport(args)
+        case "hub_generate_bug_report": return toolGenerateBugReport(args)
 
         // Rule Export/Import/Clone
         case "export_rule": return toolExportRule(args)
@@ -1527,7 +1551,7 @@ def executeTool(toolName, args) {
         case "clone_rule": return toolCloneRule(args)
 
         // Version Check
-        case "check_for_update": return toolCheckForUpdate(args)
+        case "hub_check_for_update": return toolCheckForUpdate(args)
 
         // Hub Admin Read Tools
         // get_hub_details merged into get_hub_info
@@ -1540,13 +1564,15 @@ def executeTool(toolName, args) {
         // Monitoring Tools
         case "get_hub_logs": return toolGetHubLogs(args)
         case "get_device_history": return toolGetDeviceHistory(args)
+        case "get_performance_stats": return toolGetPerformanceStats(args)
+        case "get_hub_jobs": return toolGetHubJobs(args)
         case "get_set_hub_metrics": return toolGetHubPerformance(args)
         case "device_health_check": return toolDeviceHealthCheck(args)
         case "get_memory_history": return toolGetMemoryHistory(args)
         case "force_garbage_collection": return toolForceGarbageCollection(args)
 
         // Hub Admin Write Tools
-        case "create_hub_backup": return toolCreateHubBackup(args)
+        case "hub_create_hub_backup": return toolCreateHubBackup(args)
         case "reboot_hub": return toolRebootHub(args)
         case "shutdown_hub": return toolShutdownHub(args)
         case "zwave_repair": return toolZwaveRepair(args)
@@ -1555,9 +1581,9 @@ def executeTool(toolName, args) {
         case "delete_device": return toolDeleteDevice(args)
 
         // Virtual Device Management
-        case "manage_virtual_device": return toolManageVirtualDevice(args)
-        case "list_virtual_devices": return toolListVirtualDevices(args)
-        case "update_device": return toolUpdateDevice(args)
+        case "hub_manage_virtual_device": return toolManageVirtualDevice(args)
+        case "hub_list_virtual_devices": return toolListVirtualDevices(args)
+        case "hub_update_device": return toolUpdateDevice(args)
 
         // Room Management
         case "list_rooms": return toolListRooms()
@@ -1588,18 +1614,18 @@ def executeTool(toolName, args) {
         case "delete_file": return toolDeleteFile(args)
 
         // Tool Guide
-        case "get_tool_guide": return toolGetToolGuide(args.section)
+        case "hub_get_tool_guide": return toolGetToolGuide(args.section)
 
         // Category Gateway Proxy Tools
-        case "manage_rules_admin":
-        case "manage_hub_variables":
-        case "manage_rooms":
-        case "manage_destructive_hub_ops":
-        case "manage_apps_drivers":
-        case "manage_app_driver_code":
-        case "manage_logs":
-        case "manage_diagnostics":
-        case "manage_files":
+        case "hub_manage_rules_admin":
+        case "hub_manage_hub_variables":
+        case "hub_manage_rooms":
+        case "hub_manage_destructive_hub_ops":
+        case "hub_manage_apps_drivers":
+        case "hub_manage_app_driver_code":
+        case "hub_manage_logs":
+        case "hub_manage_diagnostics":
+        case "hub_manage_files":
             return handleGateway(toolName, args.tool, args.args)
 
         default:
@@ -3588,11 +3614,11 @@ def requireHubAdminWrite(Boolean confirmParam) {
         throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
     }
     if (!confirmParam) {
-        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with create_hub_backup first? Review the tool description for the mandatory pre-flight checklist.")
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_hub_backup first? Review the tool description for the mandatory pre-flight checklist.")
     }
     // Check for recent hub backup (within 24 hours)
     if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
-        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call create_hub_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call hub_create_hub_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
     }
 }
 
@@ -5075,6 +5101,141 @@ def toolGetDeviceHistory(args) {
     ]
 }
 
+// Shared helper: fetch /logs/json from hub internal API
+def fetchLogsJson() {
+    requireHubAdminRead()
+    def responseText = hubInternalGet("/logs/json", null, 30)
+    if (!responseText) throw new RuntimeException("No data returned from /logs/json")
+    return new groovy.json.JsonSlurper().parseText(responseText)
+}
+
+def toolGetPerformanceStats(args) {
+    def type = args.type ?: "device"
+    def sortBy = args.sortBy ?: "pct"
+    def limit = args.limit != null ? args.limit : 20
+
+    mcpLog("info", "monitoring", "Fetching performance stats (type=${type}, sortBy=${sortBy}, limit=${limit})")
+
+    def data
+    try {
+        data = fetchLogsJson()
+    } catch (Exception e) {
+        mcpLog("error", "monitoring", "Failed to fetch performance stats: ${e.message}")
+        return [error: "Failed to fetch performance stats: ${e.message}"]
+    }
+
+    def result = [
+        uptime: data.uptime
+    ]
+
+    def formatStats = { statsList ->
+        if (!statsList) return []
+        // Sort
+        switch (sortBy) {
+            case "count": statsList = statsList.sort { -(it.count ?: 0) }; break
+            case "stateSize": statsList = statsList.sort { -(it.stateSize ?: 0) }; break
+            case "name": statsList = statsList.sort { (it.name ?: "").toLowerCase() }; break
+            default: statsList = statsList.sort { -(it.pct ?: 0) }; break
+        }
+        // Limit
+        if (limit > 0 && statsList.size() > limit) {
+            statsList = statsList.take(limit)
+        }
+        // Slim down to essential fields
+        return statsList.collect { entry ->
+            [
+                id: entry.id,
+                name: entry.name,
+                count: entry.count,
+                pctBusy: entry.formattedPct,
+                pctTotal: entry.formattedPctTotal,
+                stateSize: entry.stateSize,
+                totalEvents: entry.customAttributes?.eventsCount,
+                states: entry.customAttributes?.statesCount,
+                hubActions: entry.hubActionCount,
+                pendingEvents: entry.pendingEventsCount,
+                cloudCalls: entry.cloudCallCount,
+                averageMs: entry.average != null ? Math.round(entry.average * 100) / 100.0 : null
+            ]
+        }
+    }
+
+    if (type == "device" || type == "both") {
+        result.deviceSummary = [
+            totalRuntime: data.totalDevicesRuntime,
+            pctOfUptime: data.devicePct,
+            deviceCount: data.deviceStats?.size() ?: 0
+        ]
+        result.deviceStats = formatStats(data.deviceStats)
+    }
+
+    if (type == "app" || type == "both") {
+        result.appSummary = [
+            totalRuntime: data.totalAppsRuntime,
+            pctOfUptime: data.appPct,
+            appCount: data.appStats?.size() ?: 0
+        ]
+        result.appStats = formatStats(data.appStats)
+    }
+
+    // Size guard: estimate response and warn if large
+    def statsCount = (result.deviceStats?.size() ?: 0) + (result.appStats?.size() ?: 0)
+    if (limit == 0) {
+        result.note = "Returning all ${statsCount} entries. Use limit parameter to reduce response size."
+    }
+
+    mcpLog("info", "monitoring", "Retrieved performance stats: ${statsCount} entries (type=${type})")
+    return result
+}
+
+def toolGetHubJobs(args) {
+    mcpLog("info", "monitoring", "Fetching hub jobs")
+
+    def data
+    try {
+        data = fetchLogsJson()
+    } catch (Exception e) {
+        mcpLog("error", "monitoring", "Failed to fetch hub jobs: ${e.message}")
+        return [error: "Failed to fetch hub jobs: ${e.message}"]
+    }
+
+    def scheduledJobs = (data.jobs ?: []).collect { job ->
+        [
+            id: job.id,
+            name: job.name,
+            recurring: job.recurring,
+            method: job.methodName,
+            nextRun: job.nextRun
+        ]
+    }
+
+    def runningJobs = (data.runningJobs ?: []).collect { job ->
+        [
+            id: job.id,
+            name: job.name,
+            method: job.methodName
+        ]
+    }
+
+    def hubActions = data.hubCommands ?: []
+
+    return [
+        uptime: data.uptime,
+        scheduledJobs: [
+            count: scheduledJobs.size(),
+            jobs: scheduledJobs
+        ],
+        runningJobs: [
+            count: runningJobs.size(),
+            jobs: runningJobs
+        ],
+        hubActions: [
+            count: hubActions.size(),
+            actions: hubActions
+        ]
+    ]
+}
+
 def toolGetHubPerformance(args) {
     requireHubAdminRead()
 
@@ -5189,13 +5350,15 @@ def toolGetHubPerformance(args) {
 def toolGetMemoryHistory(args) {
     requireHubAdminRead()
 
+    def limit = args.limit != null ? args.limit : 100
+
     def rawText = hubInternalGet("/hub/advanced/freeOSMemoryHistory")
     if (!rawText) {
         return [entries: [], summary: [message: "No memory history data available"]]
     }
 
     def lines = rawText.trim().split("\n")
-    def entries = []
+    def allEntries = []
     def memValues = []
 
     for (line in lines) {
@@ -5214,7 +5377,7 @@ def toolGetMemoryHistory(args) {
                 continue
             }
 
-            entries << [
+            allEntries << [
                 timestamp: parts[0]?.trim(),
                 freeMemoryKB: memKB,
                 cpuLoad5min: parts[2]?.trim()
@@ -5223,7 +5386,8 @@ def toolGetMemoryHistory(args) {
         }
     }
 
-    def summary = [entryCount: entries.size()]
+    // Summary is computed from ALL entries regardless of limit
+    def summary = [totalEntries: allEntries.size()]
     if (memValues) {
         summary.currentMemoryKB = memValues[-1]
         summary.minMemoryKB = memValues.min()
@@ -5235,7 +5399,15 @@ def toolGetMemoryHistory(args) {
         }
     }
 
-    mcpLog("info", "diagnostics", "Memory history retrieved: ${entries.size()} entries")
+    // Apply limit — return most recent entries
+    def entries = allEntries
+    if (limit > 0 && allEntries.size() > limit) {
+        entries = allEntries.drop(allEntries.size() - limit)
+        summary.truncated = true
+        summary.showing = "${entries.size()} of ${allEntries.size()} (most recent)"
+    }
+
+    mcpLog("info", "diagnostics", "Memory history retrieved: ${entries.size()} entries (${allEntries.size()} total)")
     return [entries: entries, summary: summary]
 }
 
@@ -5359,7 +5531,7 @@ def toolDeviceHealthCheck(args) {
     if (stale.size() > 0 || unknown.size() > 0) {
         result.recommendation = "Found ${stale.size()} stale and ${unknown.size()} unknown devices. " +
             "Stale devices may have dead batteries, be out of range, or be orphaned/ghost devices. " +
-            "Use 'get_device' on individual devices for more details."
+            "Use 'hub_get_device' on individual devices for more details."
     }
 
     mcpLog("info", "monitoring", "Device health check: ${healthy.size()} healthy, ${stale.size()} stale, ${unknown.size()} unknown (threshold: ${staleHours}h)")
@@ -6024,7 +6196,7 @@ def toolManageVirtualDevice(args) {
             if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
             return toolCreateVirtualDevice(args)
         case "delete":
-            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use list_virtual_devices to find the DNI.")
+            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use hub_list_virtual_devices to find the DNI.")
             return toolDeleteVirtualDevice(args)
         default:
             throw new IllegalArgumentException("Unknown action '${action}'. Use 'create' or 'delete'.")
@@ -6118,10 +6290,10 @@ def toolCreateVirtualDevice(args) {
 
     return [
         success: true,
-        message: "Virtual device '${deviceLabel}' created successfully. It is now accessible via all MCP device tools (send_command, get_device, etc.) without needing to be added to the device selection list. It also appears in the Hubitat device list and can be shared with other apps like Maker API.",
+        message: "Virtual device '${deviceLabel}' created successfully. It is now accessible via all MCP device tools (hub_send_command, hub_get_device, etc.) without needing to be added to the device selection list. It also appears in the Hubitat device list and can be shared with other apps like Maker API.",
         device: deviceInfo,
         tips: [
-            "Use send_command with deviceId '${newDevice.id}' to control this device",
+            "Use hub_send_command with deviceId '${newDevice.id}' to control this device",
             "The device is visible in Hubitat web UI under Devices for sharing with other apps",
             "To add it to Maker API: open Maker API app settings and select this device"
         ]
@@ -6135,7 +6307,7 @@ def toolListVirtualDevices(args) {
         return [
             devices: [],
             count: 0,
-            message: "No MCP-managed virtual devices found. Use manage_virtual_device(action=\"create\") to create one."
+            message: "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one."
         ]
     }
 
@@ -6174,7 +6346,7 @@ def toolDeleteVirtualDevice(args) {
 
     def childDevice = getChildDevices()?.find { it.deviceNetworkId == dni }
     if (!childDevice) {
-        throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use list_virtual_devices to see available devices.")
+        throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use hub_list_virtual_devices to see available devices.")
     }
 
     def deviceLabel = childDevice.label ?: childDevice.name ?: "Unknown"
@@ -6874,7 +7046,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.8.7"
+    return "0.9.0"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -7027,7 +7199,7 @@ def getToolGuideSections() {
 - Example: User says "use test switch" but only "Virtual Test Switch" exists → ask "Did you mean 'Virtual Test Switch'?"
 
 **Tool failure rule:**
-- If a tool fails (e.g., manage_virtual_device returns an error), report the failure to the user
+- If a tool fails (e.g., hub_manage_virtual_device returns an error), report the failure to the user
 - Do NOT silently fall back to using existing devices as a workaround
 - Example: If creating a virtual device fails, don't just grab an existing device to use instead
 
@@ -7038,7 +7210,7 @@ def getToolGuideSections() {
         hub_admin_write: '''## Hub Admin Write Tools - Pre-Flight Checklist
 
 All Hub Admin Write tools require these steps:
-1. Backup check: Ensure create_hub_backup was called within the last 24 hours
+1. Backup check: Ensure hub_create_hub_backup was called within the last 24 hours
 2. Inform user: Tell them what you're about to do
 3. Get confirmation: Wait for explicit "yes", "confirm", or "proceed"
 4. Set confirm=true: Pass the confirm parameter
@@ -7052,7 +7224,7 @@ All Hub Admin Write tools require these steps:
 **zwave_repair** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours.
 
 **delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
-- Use get_device to verify correct device
+- Use hub_get_device to verify correct device
 - Warn if recent activity or Z-Wave/Zigbee (do exclusion first)
 - All details logged to MCP debug logs for audit
 
@@ -7083,7 +7255,7 @@ All Hub Admin Write tools require these steps:
 MCP-managed virtual devices:
 - Auto-accessible to all MCP tools without manual selection
 - Appear in Hubitat UI for Maker API, Dashboard, Rule Machine
-- Use manage_virtual_device(action="delete") to remove (not delete_device)''',
+- Use hub_manage_virtual_device(action="delete") to remove (not delete_device)''',
 
         update_device: '''## update_device Properties
 
@@ -7153,7 +7325,7 @@ MCP-managed virtual devices:
         backup: '''## Backup System
 
 ### Hub Backups
-- create_hub_backup creates full hub database backup
+- hub_create_hub_backup creates full hub database backup
 - Required within 24 hours before any Hub Admin Write operation
 - Only write tool that doesn't require a prior backup
 
@@ -7185,12 +7357,12 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         performance: '''## Performance Tips
 
-**list_devices:**
+**hub_list_devices:**
 - Use detailed=false for initial discovery
 - With detailed=true, paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel
 
-**get_device_events:**
+**hub_get_device_events:**
 - Default limit 10, recommended max 50
 - Higher values (100+) may cause delays
 
