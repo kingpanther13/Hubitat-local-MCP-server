@@ -228,6 +228,7 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
+    state.remove("toolSearchCorpus")  // Invalidate BM25 search cache on app update
     initialize()
 }
 
@@ -7274,8 +7275,12 @@ def toolSearchTools(args) {
     if (!query?.trim()) return [error: "query is required"]
     def maxResults = args.maxResults != null ? args.maxResults : 5
 
-    // Build searchable corpus: all tools (core + gateway sub-tools) with metadata
-    def corpus = buildToolSearchCorpus()
+    // Build searchable corpus (cached in state for performance on resource-constrained hub)
+    def corpus = state.toolSearchCorpus
+    if (!corpus) {
+        corpus = buildToolSearchCorpus()
+        state.toolSearchCorpus = corpus
+    }
 
     // Tokenize all documents and the query
     def docTokens = corpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
@@ -7322,12 +7327,13 @@ def toolSearchTools(args) {
 private buildToolSearchCorpus() {
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
+    def allDefs = getAllToolDefinitions()
+    def allDefsMap = allDefs.collectEntries { [(it.name): it] }
 
     def corpus = []
 
-    // Core tools (not behind a gateway, and not gateway tools themselves)
-    def gatewayNames = gatewayConfig.keySet()
-    getAllToolDefinitions().each { toolDef ->
+    // Core tools (not behind a gateway)
+    allDefs.each { toolDef ->
         if (!proxiedNames.contains(toolDef.name)) {
             def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
             corpus << [name: toolDef.name, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
@@ -7339,8 +7345,7 @@ private buildToolSearchCorpus() {
         config.tools.each { toolName ->
             def summary = config.summaries[toolName] ?: ""
             def hints = config.searchHints?."${toolName}" ?: ""
-            // Also grab param names from the full tool definition
-            def fullDef = getAllToolDefinitions().find { it.name == toolName }
+            def fullDef = allDefsMap[toolName]
             def params = fullDef?.inputSchema?.properties?.keySet()?.join(" ") ?: ""
             corpus << [name: toolName, description: "${summary} [${config.description}]", params: params, hints: hints, gateway: gwName]
         }
@@ -7361,9 +7366,12 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     def b = 0.75
     def n = docTokens.size()
 
+    if (n == 0) return []
+
     // Document lengths and average
     def docLengths = docTokens.collect { it.size() }
     def avgDl = docLengths.sum() / (double) n
+    if (avgDl == 0) return new double[n] as List
 
     // Document frequency: how many docs contain each token
     def df = [:]
