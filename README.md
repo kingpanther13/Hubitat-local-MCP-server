@@ -117,6 +117,8 @@ Add to your MCP settings file (`~/.claude.json` or project `.mcp.json`):
 
 For remote access, use the Hubitat Cloud URL instead.
 
+Alternatively, some people have had luck just simply giving Claude access to its own directory, giving it the URL and asking it to set up its own connection.
+
 </details>
 
 <details>
@@ -136,6 +138,7 @@ Add to your Claude Desktop config file:
   }
 }
 ```
+Alternatively, some people have had luck just simply giving Claude access to its own directory, giving it the URL and asking it to set up its own connection.
 
 </details>
 
@@ -149,6 +152,10 @@ Claude.ai supports MCP servers through **Connectors**:
 3. Use the **Cloud Endpoint** URL for remote access, or use a Cloudflare Tunnel URL
 
 With Hubitat Cloud, you can control your smart home from claude.ai anywhere — no local setup required!
+
+**NOTE**: when connecting on claude.ai, you will see a message stating "Couldn't reach the MCP server. You can check the server URL and verify the server is running. If this persists, share this reference with support: "ofid_1234"".
+
+This is a known bug with Claude.ai's UI. Click on "configure" after you see this message and you will find that you are actually connected. Try asking claude to check the health of your Hubitat in a chat, and you will see it work its magic!
 
 </details>
 
