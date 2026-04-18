@@ -260,7 +260,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 **list_devices:**
 - Use `detailed=false` for initial discovery
-- Summary response (always returned) includes: id, name (driver type), label, room, currentStates, `disabled`, `deviceNetworkId`, `lastActivity` (v0.11.0+) — enough for most filtering without `get_device` round-trips
+- Summary response (always returned) includes: id, name (driver type), label, room, currentStates, `disabled`, `deviceNetworkId`, `lastActivity` (v0.10.0+) — enough for most filtering without `get_device` round-trips
 - Use `filter` for server-side narrowing before pagination: `'enabled'`, `'disabled'`, or `'stale:<hours>'` (e.g. `'stale:24'` = devices with no activity in the last 24h). Use this for boolean and time-relative queries; leave name/label/capability filtering to client-side (AI scans returned JSON)
 - With `detailed=true`, paginate: 20-30 devices per request. Detailed adds capabilities, attributes, commands, parentDeviceId, childCount
 - Make tool calls sequentially, not in parallel
