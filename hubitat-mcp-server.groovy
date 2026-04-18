@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.9.1 - BM25 tool search, performance stats, hub jobs, memory history pagination
+ * Version: 0.11.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -707,13 +707,16 @@ def getAllToolDefinitions() {
 
 DEVICE AUTHORIZATION: Exact name match → use directly. No exact match → suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
-Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.""",
+Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
+
+Summary response always includes: id, name (driver type), label (user name), room, currentStates (dict), disabled (bool), deviceNetworkId, lastActivity (ISO timestamp). Use filter to narrow on common patterns (much more efficient than fetching all and client-side filtering).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
+                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands, parentDeviceId, childCount). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
-                    limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0]
+                    limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
+                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale). For filtering by room/label/capability, omit filter and use client-side logic on the returned list."]
                 ]
             ]
         ],
@@ -1592,7 +1595,7 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
 def executeTool(toolName, args) {
     switch (toolName) {
         // Device Tools
-        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0)
+        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter)
         case "get_device": return toolGetDevice(args.deviceId)
         case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
         case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
@@ -1723,7 +1726,7 @@ def executeTool(toolName, args) {
 
 // ==================== DEVICE TOOLS ====================
 
-def toolListDevices(detailed, offset, limit) {
+def toolListDevices(detailed, offset, limit, filter = null) {
     // Combine selected devices and MCP-managed child devices (virtual devices)
     def allDevices = (selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
@@ -1739,9 +1742,52 @@ def toolListDevices(detailed, offset, limit) {
         return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices", total: 0]
     }
 
+    def unfilteredTotal = allDevices.size()
+
+    // Parse and apply server-side filter BEFORE pagination so limit/offset respect the filtered set.
+    // Supported filters: null/"all" (default), "enabled", "disabled", "stale:<hours>" (e.g. "stale:24").
+    // Filtering happens in-memory against device properties already loaded, no extra hub API calls.
+    def filterType = null
+    def staleMs = 0L
+    if (filter && filter != "all") {
+        if (filter == "enabled" || filter == "disabled") {
+            filterType = filter
+        } else if (filter.startsWith("stale:")) {
+            def hoursStr = filter.substring(6).trim()
+            def hours
+            try {
+                hours = hoursStr as Double
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Invalid stale filter '${filter}'. Expected format: stale:<hours> (e.g. stale:24)")
+            }
+            if (hours <= 0) {
+                throw new IllegalArgumentException("stale filter hours must be positive, got: ${hours}")
+            }
+            filterType = "stale"
+            staleMs = (long)(hours * 3600000L)
+        } else {
+            throw new IllegalArgumentException("Invalid filter '${filter}'. Must be one of: all, enabled, disabled, stale:<hours>")
+        }
+    }
+
+    if (filterType) {
+        def nowMs = now()
+        allDevices = allDevices.findAll { d ->
+            switch (filterType) {
+                case "enabled": return !isDeviceDisabled(d)
+                case "disabled": return isDeviceDisabled(d)
+                case "stale":
+                    def la = safeLastActivity(d)
+                    if (la == null) return true  // never-reported device counts as stale
+                    return (nowMs - la.time) >= staleMs
+                default: return true
+            }
+        }
+    }
+
     def totalCount = allDevices.size()
 
-    // Apply pagination
+    // Apply pagination (post-filter)
     def startIndex = offset ?: 0
     if (startIndex < 0) startIndex = 0
     def endIndex = totalCount
@@ -1750,17 +1796,19 @@ def toolListDevices(detailed, offset, limit) {
     }
 
     // Validate offset
-    if (startIndex >= totalCount) {
+    if (totalCount > 0 && startIndex >= totalCount) {
         return [
             devices: [],
             total: totalCount,
+            unfilteredTotal: unfilteredTotal,
             offset: startIndex,
             limit: limit ?: 0,
-            message: "Offset ${startIndex} exceeds total device count ${totalCount}"
+            filter: filter ?: "all",
+            message: "Offset ${startIndex} exceeds filtered device count ${totalCount}"
         ]
     }
 
-    def pagedDevices = allDevices.subList(startIndex, endIndex)
+    def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
     def childDeviceIds = childDevs.collect { it.id.toString() } as Set
 
     def devices = pagedDevices.collect { device ->
@@ -1769,7 +1817,10 @@ def toolListDevices(detailed, offset, limit) {
             id: deviceIdStr,
             name: device.name,
             label: device.label ?: device.name,
-            room: device.roomName
+            room: device.roomName,
+            disabled: isDeviceDisabled(device),
+            deviceNetworkId: safeDni(device),
+            lastActivity: formatLastActivity(safeLastActivity(device))
         ]
         if (childDeviceIds.contains(deviceIdStr)) {
             info.mcpManaged = true
@@ -1781,6 +1832,15 @@ def toolListDevices(detailed, offset, limit) {
                 [name: attr.name, value: device.currentValue(attr.name)]
             }
             info.commands = device.supportedCommands?.collect { it.name }
+            // Parent/child fields — only in detailed mode because getChildDevices() is
+            // a per-device hub call and would slow bulk listing at scale.
+            try {
+                info.parentDeviceId = device.parentDeviceId?.toString()
+            } catch (Exception e) { info.parentDeviceId = null }
+            try {
+                def kids = device.childDevices
+                info.childCount = kids ? kids.size() : 0
+            } catch (Exception e) { info.childCount = 0 }
         } else {
             info.currentStates = [:]
             ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
@@ -1797,6 +1857,10 @@ def toolListDevices(detailed, offset, limit) {
         count: devices.size(),
         total: totalCount
     ]
+    if (filter && filter != "all") {
+        result.filter = filter
+        result.unfilteredTotal = unfilteredTotal
+    }
 
     // Include pagination info if pagination was used
     if (limit && limit > 0) {
@@ -1809,6 +1873,57 @@ def toolListDevices(detailed, offset, limit) {
     }
 
     return result
+}
+
+/**
+ * Check if a device is disabled. Hubitat's device object exposes several property names
+ * across firmware versions; try the most common ones and fall back to false.
+ */
+private Boolean isDeviceDisabled(device) {
+    try {
+        if (device.hasProperty("disabled") && device.disabled != null) return device.disabled == true
+    } catch (Exception ignore) {}
+    try {
+        return device.isDisabled() == true
+    } catch (Exception ignore) {}
+    try {
+        if (device.hasProperty("status") && device.status?.toString()?.toLowerCase() == "disabled") return true
+    } catch (Exception ignore) {}
+    return false
+}
+
+/**
+ * Safely fetch device.deviceNetworkId — some virtual devices or mid-transition states can throw.
+ */
+private String safeDni(device) {
+    try {
+        return device.deviceNetworkId?.toString()
+    } catch (Exception ignore) {
+        return null
+    }
+}
+
+/**
+ * Safely fetch device.getLastActivity() — returns Date or null. Some drivers don't set this.
+ */
+private Date safeLastActivity(device) {
+    try {
+        return device.getLastActivity()
+    } catch (Exception ignore) {
+        return null
+    }
+}
+
+/**
+ * Format a Date as ISO 8601 string, or null if the Date is null.
+ */
+private String formatLastActivity(Date d) {
+    if (d == null) return null
+    try {
+        return d.format("yyyy-MM-dd'T'HH:mm:ssXXX")
+    } catch (Exception ignore) {
+        return d.toString()
+    }
 }
 
 def toolGetDevice(deviceId) {
@@ -7161,7 +7276,7 @@ def toolRenameRoom(args) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.9.1"
+    return "0.11.0"
 }
 
 def isNewerVersion(String remote, String local) {
