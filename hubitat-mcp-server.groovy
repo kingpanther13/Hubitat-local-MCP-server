@@ -709,11 +709,11 @@ DEVICE AUTHORIZATION: Exact name match → use directly. No exact match → sugg
 
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
 
-Summary response always includes: id, name (driver type), label (user name), room, currentStates (dict), disabled (bool), deviceNetworkId, lastActivity (ISO timestamp). Use filter to narrow on common patterns (much more efficient than fetching all and client-side filtering).""",
+Summary response always includes: id, name (driver type), label (user name), room, currentStates (dict), disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Use filter to narrow on common patterns (much more efficient than fetching all and client-side filtering). To count children of a parent device, group the response by parentDeviceId.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands, parentDeviceId, childCount). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
+                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale). For filtering by room/label/capability, omit filter and use client-side logic on the returned list."]
@@ -1820,7 +1820,8 @@ def toolListDevices(detailed, offset, limit, filter = null) {
             room: device.roomName,
             disabled: isDeviceDisabled(device),
             deviceNetworkId: safeDni(device),
-            lastActivity: formatLastActivity(safeLastActivity(device))
+            lastActivity: formatLastActivity(safeLastActivity(device)),
+            parentDeviceId: safeParentDeviceId(device)
         ]
         if (childDeviceIds.contains(deviceIdStr)) {
             info.mcpManaged = true
@@ -1832,15 +1833,6 @@ def toolListDevices(detailed, offset, limit, filter = null) {
                 [name: attr.name, value: device.currentValue(attr.name)]
             }
             info.commands = device.supportedCommands?.collect { it.name }
-            // Parent/child fields — only in detailed mode because getChildDevices() is
-            // a per-device hub call and would slow bulk listing at scale.
-            try {
-                info.parentDeviceId = device.parentDeviceId?.toString()
-            } catch (Exception e) { info.parentDeviceId = null }
-            try {
-                def kids = device.childDevices
-                info.childCount = kids ? kids.size() : 0
-            } catch (Exception e) { info.childCount = 0 }
         } else {
             info.currentStates = [:]
             ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
@@ -1898,6 +1890,20 @@ private Boolean isDeviceDisabled(device) {
 private String safeDni(device) {
     try {
         return device.deviceNetworkId?.toString()
+    } catch (Exception ignore) {
+        return null
+    }
+}
+
+/**
+ * Safely fetch device.parentDeviceId — direct property access, not a hub call.
+ * Cheap enough to include in the summary response. Consumers can derive child
+ * counts client-side by grouping the devices list on this field, avoiding the
+ * per-device getChildDevices() call that childCount required in earlier versions.
+ */
+private String safeParentDeviceId(device) {
+    try {
+        return device.parentDeviceId?.toString()
     } catch (Exception ignore) {
         return null
     }
