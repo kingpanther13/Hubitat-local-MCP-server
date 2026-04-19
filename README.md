@@ -1407,6 +1407,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v0.9.6** - fix: drop PR reference from packageManifest.json releaseNotes. PRs: [#80](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/80)
 - **v0.9.5** - feat: include PR main-commit extended description in release notes. PRs: [#78](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/78)
 - **v0.9.4** - fix: release workflow pushes the version tag explicitly; chore: drop unused json import in sandbox_lint.py. PRs: [#67](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/67), [#68](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/68)
 - **v0.9.3** - Release automation: bot-driven version bumps + CHANGELOG + release notes sync. PRs: [#66](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/66)
