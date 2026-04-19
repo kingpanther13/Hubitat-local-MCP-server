@@ -123,11 +123,13 @@ Serializes all release workflow runs. If PRs A and B merge seconds apart, B's wo
 2. **Determine current version** from the latest git tag matching `v*.*.*`. Fall back to reading `packageManifest.json` `version` if no tags exist.
 3. **Compute next version** per the label. Minor bumps reset patch to zero; major bumps reset minor and patch to zero.
 4. **Gather PRs merged since the last tag** via `git log <last-tag>..HEAD --merges --format=%s` and parse `Merge pull request #NN` from each merge commit subject. Fallback to the triggering PR (from env) if no prior tag exists.
-5. **For each PR**, fetch metadata via `gh pr view <N> --json number,title,url,body,author`. Build a markdown bullet per PR: `- <title-or-release-notes-override> ([#NN](url), @author)`. If the PR body contains a `## Release notes` section, use that content in place of the title.
+5. **For each PR**, fetch metadata + commit list via `gh pr view <N> --json number,title,url,author,commits`. Build a markdown bullet per PR with two parts:
+   - Title line: `- <PR title> ([#NN](url), @author)`
+   - Extended description (optional, renders as indented list-item continuation): the extended commit description (body) from the PR's **main commit** — i.e. the first commit on the branch. That's the commit where authors explain the WHY in a multi-paragraph body. Follow-up commits (fixups, doc tweaks) typically have no body and aren't release-notes material, so we don't walk past the first commit if its body is empty. Auto-generated trailers (`Co-authored-by:`, `🤖 Generated with...`) are stripped. The merge commit's body is NOT used — under merge-commit strategy it's usually just the PR title, which is useless noise.
 6. **Rewrite all four version strings** to the new version.
 7. **Prepend the new entry to `CHANGELOG.md`** as `## [X.Y.Z] - YYYY-MM-DD` followed by the bullets.
-8. **Flatten the bullets into a prose paragraph** (converting `[#NN](url)` → `#NN (url)` so HPM, which may render releaseNotes as plain text, still shows usable links) and prepend to `packageManifest.json` `releaseNotes`.
-9. **Generate a compact README bullet** summarizing the release and prepend under `## Version History` with the PR references at the end (`PRs: [#NN](url), ...`).
+8. **Flatten the bullets (title + body) into a prose paragraph** (converting `[#NN](url)` → `#NN (url)` so HPM, which may render releaseNotes as plain text, still shows usable links) and prepend to `packageManifest.json` `releaseNotes`. Each PR appears as `Title (#NN (url), @author): body…` with PRs separated by ` / `.
+9. **Generate a compact README bullet** summarizing the release — titles and PR refs only, no bodies — and prepend under `## Version History`. README stays scannable; the rich per-PR descriptions live in CHANGELOG.md and `releaseNotes`.
 10. **Update `dateReleased`** in `packageManifest.json` to today (UTC).
 11. **Commit** as `chore(release): X.Y.Z` directly to `main`, with `Co-authored-by: <PR author>` for the triggering PR.
 12. **Create and push tag** `vX.Y.Z` pointing at the release commit.
