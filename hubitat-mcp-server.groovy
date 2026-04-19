@@ -6188,6 +6188,36 @@ private String stripAppConfigHtml(value) {
 }
 
 /**
+ * Walk an input's options structure and strip HTML from any label values. Hubitat's
+ * SDK emits options in two shapes depending on input type:
+ *   - List of single-entry maps: [{"<value>": "<label>"}, ...]  (enum)
+ *   - Map of value-to-label: {"<value>": "<label>"}  (some capability inputs)
+ * Both can contain color-span HTML on labels (e.g. state badges). Leaves unknown
+ * shapes alone rather than guessing wrong and breaking them.
+ */
+private stripOptionsHtml(options) {
+    if (options instanceof List) {
+        def out = []
+        for (entry in options) {
+            if (entry instanceof Map) {
+                def cleaned = [:]
+                entry.each { k, v -> cleaned[k] = (v instanceof String) ? stripAppConfigHtml(v) : v }
+                out << cleaned
+            } else {
+                out << entry
+            }
+        }
+        return out
+    }
+    if (options instanceof Map) {
+        def cleaned = [:]
+        options.each { k, v -> cleaned[k] = (v instanceof String) ? stripAppConfigHtml(v) : v }
+        return cleaned
+    }
+    return options
+}
+
+/**
  * Read an installed app's configuration via the hub's SDK-level rendering endpoint
  * /installedapp/configure/json/<appId>[/<pageName>]. Returns a normalized structure
  * covering app identity, page sections, inputs, and optionally the raw settings map.
@@ -6305,7 +6335,7 @@ def toolGetAppConfig(args) {
             if (i.required == true) input.required = true
             def desc = stripAppConfigHtml(i.description)
             if (desc && desc != "Click to set") input.description = desc
-            if (i.options) input.options = i.options
+            if (i.options) input.options = stripOptionsHtml(i.options)
             // Current values: 'defaultValue' is the rendered value for most input types
             // (despite the misleading name), 'value' is used on some. Include whichever
             // is non-null and not the boolean 'true' sentinel the SDK uses for "has value".
@@ -6313,12 +6343,14 @@ def toolGetAppConfig(args) {
             else if (i.value != null && i.value != true) input.value = i.value
             section.inputs << input
         }
-        // Paragraph/body content (informational text in the config page)
+        // Paragraph/body content (informational text in the config page). Keep any
+        // non-"Click to set" string — including short labels like "Enabled" / "Warning!"
+        // that the SDK emits as standalone body paragraphs.
         def paragraphs = []
         for (b in (s.body ?: [])) {
             if (!(b instanceof Map)) continue
             def text = stripAppConfigHtml(b.description ?: b.title)
-            if (text && text.length() > 10 && text != "Click to set") paragraphs << text
+            if (text && text != "Click to set") paragraphs << text
         }
         if (paragraphs) section.paragraphs = paragraphs
         sections << section
