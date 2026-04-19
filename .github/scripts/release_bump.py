@@ -282,14 +282,18 @@ def prepend_readme_bullet(new_version: str, bullets: list[str]) -> None:
 def paragraph_from_bullets(bullets: list[str]) -> str:
     """Flatten bullets into one prose paragraph for packageManifest.json releaseNotes.
 
-    Each bullet can be a single-line title-only bullet or a multi-line bullet
-    with a title line followed by an indented continuation (PR body). This
-    function flattens both shapes to 'Title (link): body…' per PR and joins
-    all PRs with ' / '. Paragraph breaks inside a bullet body are preserved
-    as sentence breaks (`. `) so the flattened prose remains readable rather
-    than becoming one undifferentiated run-on. Converts '[#NN](url)' →
-    '#NN (url)' so HPM, which may render releaseNotes as plain text, still
-    shows a usable link.
+    HPM shows this string to end users when they consider updating, so the
+    goal is the commit message content (title + main commit description), not
+    developer-facing metadata. We strip the PR reference (number, URL,
+    author) from the title line — it's not useful to an HPM user in the
+    update-prompt UI. CHANGELOG.md keeps the full PR reference for
+    developers browsing the repo; the manifest stays terse.
+
+    Each bullet can be single-line (title only) or multi-line (title plus an
+    indented continuation from the main commit's extended description).
+    Paragraph breaks inside a bullet body are preserved as sentence breaks
+    (`. `) so the flattened prose reads as a series of sentences rather than
+    a run-on.
     """
     parts = []
     for b in bullets:
@@ -300,6 +304,14 @@ def paragraph_from_bullets(bullets: list[str]) -> str:
         if title_line.startswith("- "):
             title_line = title_line[2:]
         title_line = title_line.strip()
+        # Strip the PR reference suffix '([#NN](url), @author)' (or without
+        # the author). Author suffix is optional; the regex makes that group
+        # optional too.
+        title_line = re.sub(
+            r"\s*\(\[#\d+\]\([^)]+\)(?:,?\s*@[\w-]*)?\)\s*$",
+            "",
+            title_line,
+        ).strip()
 
         # Group continuation lines into paragraphs (separated by blank lines).
         paragraphs: list[list[str]] = []
@@ -318,7 +330,6 @@ def paragraph_from_bullets(bullets: list[str]) -> str:
         )
 
         combined = f"{title_line}: {body_flat}" if body_flat else title_line
-        combined = re.sub(r"\[#(\d+)\]\(([^)]+)\)", r"#\1 (\2)", combined)
         parts.append(_strip_trailing_period(combined.strip()))
     return " / ".join(parts) + "."
 
