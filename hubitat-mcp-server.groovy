@@ -1408,6 +1408,26 @@ Requires Hub Admin Write.""",
             ]
         ],
 
+        // Hub Admin App Configuration Read
+        [
+            name: "get_app_config",
+            description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
+
+Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
+
+Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
+
+Requires Hub Admin Read.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: ["integer", "string"], description: "Installed-app ID (decimal). From list_installed_apps, list_rm_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
+                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Known examples: HPM's 'prefPkgModify' lists installed packages; RM 5.1 has per-section sub-pages."],
+                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false — large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
+                ],
+                required: ["appId"]
+            ]
+        ],
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
@@ -1809,6 +1829,9 @@ def executeTool(toolName, args) {
         case "create_room": return toolCreateRoom(args)
         case "delete_room": return toolDeleteRoom(args)
         case "rename_room": return toolRenameRoom(args)
+
+        // Hub Admin App Configuration Read
+        case "get_app_config": return toolGetAppConfig(args)
 
         // Hub Admin App/Driver Management
         case "get_app_source": return toolGetAppSource(args)
@@ -6150,6 +6173,186 @@ def toolGetItemSource(String type, String idParam, args) {
         mcpLog("error", "hub-admin", "Failed to get ${type} source: ${e.message}")
         return [success: false, error: "Failed to get ${type} source: ${e.message}"]
     }
+}
+
+/**
+ * Strip HTML tags from a string (Hubitat frequently embeds color spans in app labels
+ * and page titles). Null-safe. Does not try to be a real HTML parser — SDK-generated
+ * tags are predictable (<span>, <b>, <i>) and this is adequate.
+ */
+private String stripAppConfigHtml(value) {
+    if (value == null) return null
+    def s = value.toString()
+    if (!s.contains("<")) return s
+    return s.replaceAll(/<[^>]+>/, "").trim()
+}
+
+/**
+ * Read an installed app's configuration via the hub's SDK-level rendering endpoint
+ * /installedapp/configure/json/<appId>[/<pageName>]. Returns a normalized structure
+ * covering app identity, page sections, inputs, and optionally the raw settings map.
+ *
+ * This endpoint is what the Hubitat Web UI itself consumes to render each app's
+ * config page. The top-level shape {configPage, app, settings, childApps} is SDK-level
+ * and consistent across every legacy SmartApp (Rule Machine, Room Lighting, Basic
+ * Rules, HPM, Mode Manager, etc.). The runtime fingerprint check below asserts the
+ * shape invariants; if Hubitat firmware drifts the contract, callers see a clear
+ * error rather than malformed data.
+ */
+def toolGetAppConfig(args) {
+    requireHubAdminRead()
+
+    if (args?.appId == null || args.appId.toString().trim() == "") {
+        throw new IllegalArgumentException("appId is required")
+    }
+    def appIdStr = args.appId.toString().trim()
+    if (!appIdStr.isInteger()) {
+        throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
+    }
+
+    def pageName = args?.pageName?.toString()?.trim()
+    if (pageName && !pageName.matches(/[A-Za-z0-9_]+/)) {
+        throw new IllegalArgumentException("pageName must be alphanumeric/underscore only: ${pageName}")
+    }
+
+    boolean includeSettings = args?.includeSettings == true
+
+    def path = "/installedapp/configure/json/${appIdStr}"
+    if (pageName) path += "/${pageName}"
+
+    mcpLog("info", "hub-admin", "get_app_config appId=${appIdStr} page=${pageName ?: 'main'} includeSettings=${includeSettings}")
+
+    def responseText
+    try {
+        responseText = hubInternalGet(path, null, 30)
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "get_app_config failed: ${e.message}")
+        return [success: false, error: "Failed to fetch app config: ${e.message}", appId: appIdStr as Integer]
+    }
+
+    if (!responseText) {
+        return [success: false, error: "Empty response from ${path}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+    }
+
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+    }
+
+    // Runtime fingerprint: confirm the SDK-level shape this tool depends on.
+    // The /installedapp/configure/json/<id> endpoint returns {app, configPage, settings, childApps, ...}
+    // consistently across every legacy SmartApp. If any of these top-level invariants are
+    // missing, the firmware likely changed the contract — fail explicitly rather than
+    // returning malformed data.
+    if (!(parsed instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+    }
+    if (!(parsed.app instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
+    }
+    if (!(parsed.configPage instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
+    }
+    if (!(parsed.configPage.sections instanceof List)) {
+        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+    }
+
+    // Hub returns app.appType as a ~30-key metadata object (author, classLocation,
+    // createTime, deprecated, etc.). Extract only the useful fields — the rest is
+    // either internal SDK state or duplicates what's already on app itself.
+    def appTypeRaw = parsed.app.appType
+    def appTypeSummary = null
+    if (appTypeRaw instanceof Map) {
+        appTypeSummary = [
+            name: appTypeRaw.name,
+            namespace: appTypeRaw.namespace,
+            author: appTypeRaw.author,
+            category: appTypeRaw.category,
+            classLocation: appTypeRaw.classLocation,
+            deprecated: appTypeRaw.deprecated == true,
+            system: appTypeRaw.system == true,
+            documentationLink: appTypeRaw.documentationLink
+        ]
+    }
+
+    def appObj = [
+        id: parsed.app.id,
+        label: stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label),
+        name: parsed.app.name,
+        appType: appTypeSummary,
+        disabled: parsed.app.disabled == true,
+        parentAppId: parsed.app.parentAppId,
+        installed: parsed.app.installed == true
+    ]
+
+    def sections = []
+    for (s in parsed.configPage.sections) {
+        if (!(s instanceof Map)) continue
+        def section = [
+            title: stripAppConfigHtml(s.title),
+            inputs: []
+        ]
+        for (i in (s.input ?: [])) {
+            if (!(i instanceof Map)) continue
+            def input = [
+                name: i.name,
+                type: i.type,
+                title: stripAppConfigHtml(i.title)
+            ]
+            if (i.multiple == true) input.multiple = true
+            if (i.required == true) input.required = true
+            def desc = stripAppConfigHtml(i.description)
+            if (desc && desc != "Click to set") input.description = desc
+            if (i.options) input.options = i.options
+            // Current values: 'defaultValue' is the rendered value for most input types
+            // (despite the misleading name), 'value' is used on some. Include whichever
+            // is non-null and not the boolean 'true' sentinel the SDK uses for "has value".
+            if (i.defaultValue != null && i.defaultValue != true) input.value = i.defaultValue
+            else if (i.value != null && i.value != true) input.value = i.value
+            section.inputs << input
+        }
+        // Paragraph/body content (informational text in the config page)
+        def paragraphs = []
+        for (b in (s.body ?: [])) {
+            if (!(b instanceof Map)) continue
+            def text = stripAppConfigHtml(b.description ?: b.title)
+            if (text && text.length() > 10 && text != "Click to set") paragraphs << text
+        }
+        if (paragraphs) section.paragraphs = paragraphs
+        sections << section
+    }
+
+    def children = []
+    for (c in (parsed.childApps ?: [])) {
+        if (!(c instanceof Map)) continue
+        children << [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
+    }
+
+    def result = [
+        success: true,
+        app: appObj,
+        page: [
+            name: parsed.configPage.name,
+            title: stripAppConfigHtml(parsed.configPage.title),
+            install: parsed.configPage.install == true,
+            refreshInterval: parsed.configPage.refreshInterval,
+            sections: sections
+        ],
+        childApps: children,
+        endpoint: path
+    ]
+
+    int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
+    result.settingsKeyCount = settingsCount
+    if (includeSettings) {
+        result.settings = parsed.settings ?: [:]
+    } else if (settingsCount > 0) {
+        result.settingsNote = "Raw settings omitted — pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. 'dm~<deviceId>~<scene>' for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
+    }
+
+    return result
 }
 
 def toolGetAppSource(args) {

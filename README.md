@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 81 tools total — 22 core tools are always visible, while 59 additional tools are organized behind 11 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 82 tools total — 23 core tools are always visible, while 59 additional tools are organized behind 11 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,11 +221,11 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (81 total — 33 on tools/list)
+### MCP Tools (82 total — 34 on tools/list)
 
-The server has 81 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **59 additional tools** are organized behind **11 domain-named gateways**. The AI sees 33 items on `tools/list` (22 + 11 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 82 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **59 additional tools** are organized behind **11 domain-named gateways**. The AI sees 34 items on `tools/list` (23 + 11 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (22) — Always visible on tools/list
+#### Core Tools (23) — Always visible on tools/list
 
 <details>
 <summary><b>Devices</b> (5) — Control and query devices</summary>
@@ -292,6 +292,15 @@ The server has 81 tools total. To keep the MCP `tools/list` manageable, **22 cor
 | `create_hub_backup` | Create full hub backup (required before admin writes) |
 | `check_for_update` | Check if a newer MCP server version is available |
 | `generate_bug_report` | Generate comprehensive diagnostic report |
+
+</details>
+
+<details>
+<summary><b>App Introspection</b> (1) — Read installed app configurations</summary>
+
+| Tool | Description |
+|------|-------------|
+| `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Hub Admin Read. |
 
 </details>
 

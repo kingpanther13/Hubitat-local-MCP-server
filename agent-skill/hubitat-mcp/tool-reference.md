@@ -1,10 +1,10 @@
 # Tool Reference
 
-Quick reference for all 81 MCP tools. The server exposes **33 items on `tools/list`**: 22 core tools + 11 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 82 MCP tools. The server exposes **34 items on `tools/list`**: 23 core tools + 11 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
-## Core Tools (22) — Always visible on tools/list
+## Core Tools (23) — Always visible on tools/list
 
 ### Device Tools (5)
 
@@ -51,12 +51,18 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | `check_for_update` | Check for MCP server updates. | None |
 | `generate_bug_report` | Generate comprehensive diagnostic report. | None |
 
+### App Introspection (1)
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Read-only. | Hub Admin Read |
+
 ### Reference (2)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 81 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 82 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 

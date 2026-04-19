@@ -279,6 +279,13 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - Up to 7 days of history
 - Use attribute filter to reduce data volume
 
+**get_app_config:**
+- Reads any legacy SmartApp's configuration page: RM rules, Room Lighting instances, Basic Rules, HPM, Mode Manager, Button Controllers, third-party community apps
+- Default response includes `app` (identity), `page` (section/input structure with current values), `childApps` summary
+- Raw app-internal `settings` map (~100-1000 keys with app-specific encoding) omitted by default — pass `includeSettings=true` for power-user inspection
+- Multi-page apps (RM 5.1, HPM) expose sub-pages via `pageName` — e.g. `get_app_config(appId=35, pageName="prefPkgModify")` lists HPM's installed packages
+- Read-only, does not modify anything. Requires Hub Admin Read.
+
 ---
 
 ## Built-in App Tools
