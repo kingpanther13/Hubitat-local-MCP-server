@@ -7635,18 +7635,22 @@ def toolListRmRules(args) {
     def v4Error = null
     def v5Error = null
 
+    // Catch Throwable (not just Exception) so NoClassDefFoundError / ClassNotFoundException
+    // from a hub without Rule Machine installed degrade gracefully rather than propagating
+    // as an unhandled JVM error. RMUtils is an optional platform class — absent on hubs
+    // that have never installed Rule Machine as a built-in app.
     try {
         def rules4 = hubitat.helper.RMUtils.getRuleList() ?: []
         rules4.each { r -> registerRmRule(combined, r, "4.x") }
-    } catch (Exception e) {
-        v4Error = e.message
+    } catch (Throwable e) {
+        v4Error = e.message ?: e.toString()
     }
 
     try {
         def rules5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
         rules5.each { r -> registerRmRule(combined, r, "5.x") }
-    } catch (Exception e) {
-        v5Error = e.message
+    } catch (Throwable e) {
+        v5Error = e.message ?: e.toString()
     }
 
     def rules = combined.values().sort { it.label ?: "" }
@@ -7655,11 +7659,27 @@ def toolListRmRules(args) {
         rules: rules,
         count: rules.size()
     ]
-    // Only surface errors if BOTH versions failed (otherwise it's just RM 4.x not installed, which is normal)
+    // Classify the failures. A "missing class" error (RM not installed) is normal if the
+    // OTHER version succeeded — only quiet when at least one call returned a list. If both
+    // calls failed with any error, or if one call returned data while the other had a
+    // non-missing-class error (e.g. timeout, internal platform issue), surface the details
+    // so operators can investigate rather than get silent empty results.
+    def classMissingHint = { String msg ->
+        msg && (msg.contains("NoClassDefFoundError") || msg.contains("ClassNotFoundException") ||
+                msg.contains("unable to resolve class") || msg.contains("No such property"))
+    }
+    def hardErrors = []
+    if (v4Error && !classMissingHint(v4Error)) hardErrors << "v4=${v4Error}"
+    if (v5Error && !classMissingHint(v5Error)) hardErrors << "v5=${v5Error}"
+
     if (rules.isEmpty() && v4Error && v5Error) {
         result.success = false
         result.error = "RMUtils calls failed: v4=${v4Error} v5=${v5Error}"
         result.note = "Rule Machine may not be installed on this hub."
+    } else if (hardErrors) {
+        // One version succeeded but the other had a non-missing-class error — surface it
+        // as a warning without blocking the successful results.
+        result.warning = "Partial RMUtils failure (results from the other version shown): ${hardErrors.join('; ')}"
     }
     return result
 }
@@ -7781,20 +7801,24 @@ def toolSetRmRuleBoolean(args) {
  */
 private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
     def appLabel = app?.label ?: "MCP Rule Server"
+    // Catch Throwable (not just Exception) so NoClassDefFoundError / ClassNotFoundException
+    // from a hub without Rule Machine installed degrade gracefully.
     try {
         hubitat.helper.RMUtils.sendAction([ruleId], rmAction, appLabel, "5.0")
         mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule ${ruleId}")
         return [success: true, ruleId: ruleId, rmAction: rmAction]
-    } catch (Exception e) {
+    } catch (Throwable e) {
         // Fallback: RMUtils may not accept the 4-arg form on very old firmware.
         // Retry with the 3-arg form. If that also fails, surface both errors.
         try {
             hubitat.helper.RMUtils.sendAction([ruleId], rmAction, appLabel)
             mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule ${ruleId} (3-arg fallback)")
             return [success: true, ruleId: ruleId, rmAction: rmAction, fallback: "3-arg"]
-        } catch (Exception e2) {
-            mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${e.message}, 3-arg=${e2.message}")
-            return [success: false, error: "RMUtils.sendAction failed: ${e2.message}", note: "Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
+        } catch (Throwable e2) {
+            def m1 = e.message ?: e.toString()
+            def m2 = e2.message ?: e2.toString()
+            mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${m1}, 3-arg=${m2}")
+            return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
         }
     }
 }
