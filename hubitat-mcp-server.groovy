@@ -1120,7 +1120,7 @@ Verify rule after creation.""",
                     source: [type: "string", description: "Filter by source/app name (case-insensitive substring match against the log entry)"],
                     deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
-                    limit: [type: "integer", description: "Max entries to return (newest first). Default: 100, max: 500.", default: 100]
+                    limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100]
                 ]
             ]
         ],
@@ -5064,20 +5064,34 @@ def toolGetHubLogs(args) {
     def limit = Math.min(args.limit ?: 100, maxLimit)
     def levelFilter = args.level
     def sourceFilter = args.source
-    def deviceIdFilter = args.deviceId?.toString()
-    def appIdFilter = args.appId?.toString()
+    def deviceIdFilter = args.deviceId?.toString()?.trim()
+    def appIdFilter = args.appId?.toString()?.trim()
+
+    if (deviceIdFilter && appIdFilter) {
+        throw new IllegalArgumentException("deviceId and appId are mutually exclusive: set only one")
+    }
 
     // Server-side scoping: the hub's /logs/past/json endpoint accepts ?type=dev&id=<N>
     // or ?type=app&id=<N> to filter at the source (same mechanism the UI's device- and
     // app-specific log pages use). Much cheaper than returning the whole buffer and
-    // filtering client-side when the caller only wants one device/app.
+    // filtering client-side when the caller only wants one device/app. The level and
+    // source filters plus the limit below still apply client-side on top of the scoped
+    // result; they are not replaced by deviceId/appId.
+    //
+    // Both ids must be validated before the HTTP call. The hub returns 200 OK with an
+    // empty array for unknown or non-numeric ids, which would otherwise be indistinguishable
+    // from a real device that simply has no log entries.
     def query = null
-    if (deviceIdFilter && appIdFilter) {
-        throw new IllegalArgumentException("deviceId and appId are mutually exclusive — set only one")
-    }
     if (deviceIdFilter) {
+        def device = findDevice(deviceIdFilter)
+        if (!device) {
+            throw new IllegalArgumentException("Device not found: ${deviceIdFilter}")
+        }
         query = [type: "dev", id: deviceIdFilter]
     } else if (appIdFilter) {
+        if (!appIdFilter.isInteger()) {
+            throw new IllegalArgumentException("appId must be numeric: ${appIdFilter}")
+        }
         query = [type: "app", id: appIdFilter]
     }
 
@@ -5109,8 +5123,12 @@ def toolGetHubLogs(args) {
 
     // Hub returns chronological order (oldest-first). Callers overwhelmingly want
     // the most recent N entries — reverse so the limit trims the tail of the buffer
-    // rather than the head. Matches what the official Hubitat Vue UI does client-side
-    // on its "Past Logs" page (reverses the fetch result before rendering).
+    // rather than the head. Guard against non-List parse results (a String or Map
+    // from the newline-split fallback or a firmware variant) since List.reverse()
+    // only makes sense on the array case.
+    if (!(logArray instanceof List)) {
+        return [logs: [], error: "Unexpected log format from hub", count: 0]
+    }
     logArray = logArray.reverse()
 
     def totalParsed = logArray.size()
