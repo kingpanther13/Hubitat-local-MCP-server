@@ -709,7 +709,7 @@ DEVICE AUTHORIZATION: Exact name match → use directly. No exact match → sugg
 
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
 
-Summary response always includes: id, name (driver type), label (user name), room, currentStates (dict), disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Use filter to narrow on common patterns (much more efficient than fetching all and client-side filtering). To count children of a parent device, group the response by parentDeviceId.""",
+Summary response always includes: id, name (driver type), label (user name), room, disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Summary mode also returns currentStates (dict); detailed mode replaces currentStates with capabilities, attributes, and commands. Use filter to narrow on common patterns (much more efficient than fetching all and client-side filtering). To count children of a parent device, group the response by parentDeviceId.""",
             inputSchema: [
                 type: "object",
                 properties: [
