@@ -330,6 +330,11 @@ def paragraph_from_bullets(bullets: list[str]) -> str:
         )
 
         combined = f"{title_line}: {body_flat}" if body_flat else title_line
+        # Convert any remaining '[#NN](url)' markdown links that appeared
+        # inside the commit body (e.g. a cross-reference to another PR) into
+        # '#NN (url)' plain text. HPM renders releaseNotes as plain text,
+        # so raw markdown links would show up ugly.
+        combined = re.sub(r"\[#(\d+)\]\(([^)]+)\)", r"#\1 (\2)", combined)
         parts.append(_strip_trailing_period(combined.strip()))
     return " / ".join(parts) + "."
 
