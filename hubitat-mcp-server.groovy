@@ -551,7 +551,7 @@ def getGatewayConfig() {
                 get_logging_status: "Get logging system status and capacity"
             ],
             searchHints: [
-                get_hub_logs: "errors warnings messages trace syslog output print",
+                get_hub_logs: "errors warnings messages trace syslog output print recent latest newest device app scope",
                 get_device_history: "events timeline past activity what happened sensor",
                 get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 get_hub_jobs: "scheduled cron timer recurring what is running next automation",
