@@ -1570,6 +1570,7 @@ MIT License - see [LICENSE](LICENSE)
 - Inspired by the [Home Assistant MCP](https://github.com/homeassistant-ai/ha-mcp/)
 - Thanks to the Hubitat community for documentation and examples
 - [@ashwinma14](https://github.com/ashwinma14) - Fix for StackOverflowError on app install ([#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
+- [@level99](https://github.com/level99) - Enriched `list_devices` summary + server-side `filter` arg ([#63](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/63)) and `get_hub_logs` ordering fix + `deviceId`/`appId` server-side scope ([#64](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/64))
 
 ## Disclaimer
 
