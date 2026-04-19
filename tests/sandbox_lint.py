@@ -13,7 +13,6 @@ Outputs GitHub Actions annotations when running in CI.
 import re
 import sys
 import os
-import json
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
