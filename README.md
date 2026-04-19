@@ -1407,6 +1407,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v0.9.4** - fix: release workflow pushes the version tag explicitly; chore: drop unused json import in sandbox_lint.py. PRs: [#67](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/67), [#68](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/68)
 - **v0.9.3** - Release automation: bot-driven version bumps + CHANGELOG + release notes sync. PRs: [#66](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/66)
 - **v0.9.2** - Enriched `list_devices` summary (new fields: `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`) + server-side `filter` arg (`enabled` / `disabled` / `stale:<hours>`) applied before pagination — closes the N+1 roundtrip problem for common bulk questions. Fix `get_hub_logs` ordering (now returns most recent entries first; previously returned oldest from the ring buffer) + new `deviceId` / `appId` server-side scope args (~93% payload reduction when scoped).
 - **v0.9.1** - New `search_tools`: BM25 natural language search across all 74 MCP tools (core + gateway sub-tools). Searches tool names, descriptions, and parameter names. Returns matching tools ranked by relevance with gateway attribution so the LLM knows how to call them. Inspired by FastMCP 3.1 Tool Search transform. 74 MCP tools total (31 on `tools/list`).
