@@ -73,19 +73,27 @@ def compute_next(current: str, label: str) -> str:
 
 
 def merged_pr_numbers_since(tag: str | None) -> list[int]:
-    """Return PR numbers from merge commits between `tag` (exclusive) and HEAD,
-    in chronological order (oldest first)."""
+    """Return PR numbers referenced in commit subjects between `tag` (exclusive)
+    and HEAD, in chronological order (oldest first). Handles both merge-commit
+    format ('Merge pull request #NN') and squash-merge format ('Title (#NN)').
+    Deduplicates in case multiple commits reference the same PR.
+    """
     if tag is None:
         return []
     try:
-        result = run("git", "log", f"{tag}..HEAD", "--merges", "--format=%s")
+        result = run("git", "log", f"{tag}..HEAD", "--format=%s")
     except subprocess.CalledProcessError:
         return []
-    numbers = []
+    numbers: list[int] = []
+    seen: set[int] = set()
+    pr_re = re.compile(r"(?:Merge pull request #| \(#)(\d+)\b")
     for line in result.stdout.splitlines():
-        m = re.match(r"Merge pull request #(\d+)", line)
+        m = pr_re.search(line)
         if m:
-            numbers.append(int(m.group(1)))
+            n = int(m.group(1))
+            if n not in seen:
+                seen.add(n)
+                numbers.append(n)
     return list(reversed(numbers))
 
 
@@ -131,6 +139,8 @@ def build_bullets(pr_numbers: list[int]) -> list[str]:
         url = pr["url"]
         override = extract_release_notes_override(pr.get("body") or "")
         body = override or pr["title"]
+        # Flatten multi-line overrides so bullets stay valid markdown on one line.
+        body = " ".join(body.splitlines()).strip()
         suffix = f"([#{n}]({url}), @{author})" if author else f"([#{n}]({url}))"
         bullets.append(f"- {body} {suffix}")
     return bullets
@@ -192,7 +202,12 @@ def prepend_readme_bullet(new_version: str, bullets: list[str]) -> None:
         link_match = re.search(r"\[#(\d+)\]\(([^)]+)\)", body)
         if link_match:
             refs.append(link_match.group(0))
-            body = re.sub(r"\s*\(\[#\d+\]\([^)]+\),?\s*@[\w-]*\)\s*$", "", body).strip()
+            # Author suffix is optional (author may be empty).
+            body = re.sub(
+                r"\s*\(\[#\d+\]\([^)]+\)(?:,?\s*@[\w-]*)?\)\s*$",
+                "",
+                body,
+            ).strip()
         summaries.append(body.rstrip("."))
     summary = "; ".join(summaries)
     bullet = (
@@ -201,7 +216,7 @@ def prepend_readme_bullet(new_version: str, bullets: list[str]) -> None:
         else f"- **v{new_version}** - {summary}\n"
     )
     new_text, n = re.subn(
-        r"(## Version History\s*\n\n)",
+        r"(## Version History\s*\n+)",
         rf"\g<1>{bullet}",
         text,
         count=1,

@@ -42,8 +42,10 @@ def extract_first(text: str, pattern: str, flags: int = 0) -> str | None:
 
 
 def extract_version_history(readme: str) -> str:
+    # `|\Z` handles the case where Version History is the last section in the
+    # file — otherwise the lookahead fails and we silently return empty.
     m = re.search(
-        r"^## Version History\s*\n(.*?)(?=^## )",
+        r"^## Version History\s*\n(.*?)(?=^## |\Z)",
         readme,
         re.MULTILINE | re.DOTALL,
     )
