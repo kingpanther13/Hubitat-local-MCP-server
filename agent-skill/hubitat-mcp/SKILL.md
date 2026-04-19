@@ -153,7 +153,7 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 Core tool: `get_device_events` (always visible)
 
 Via `manage_logs` gateway (6 tools):
-- `get_hub_logs` - Hub log entries (filter by level and source)
+- `get_hub_logs` - Hub log entries, most recent first (filter by level/source, or scope server-side to a single `deviceId` / `appId` — mutually exclusive)
 - `get_device_history` - Device event history (up to 7 days)
 - `get_debug_logs` / `clear_debug_logs` - MCP-specific debug logs
 - `set_log_level` - Set MCP log level

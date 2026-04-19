@@ -394,7 +394,7 @@ Source code is automatically backed up before any modify/delete operation.
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_logs` | Hub log entries with level/source filtering |
+| `get_hub_logs` | Hub log entries (most recent first) with level/source filters and server-side deviceId/appId scoping |
 | `get_device_history` | Up to 7 days of device event history |
 | `get_debug_logs` | Retrieve MCP debug log entries |
 | `clear_debug_logs` | Clear all MCP debug logs |

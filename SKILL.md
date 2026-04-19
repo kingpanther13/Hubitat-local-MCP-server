@@ -491,6 +491,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
 | `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
 | `/hub2/roomsList` | List of rooms as JSON (alternative to `getRooms()` SDK method) |
+| `/logs/past/json` | Hub log buffer as JSON array of tab-delimited strings (chronological order, oldest first — reverse client-side for newest-first). Accepts optional `?type=dev&id=<deviceId>` or `?type=app&id=<appId>` to scope server-side to a single source. |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |
