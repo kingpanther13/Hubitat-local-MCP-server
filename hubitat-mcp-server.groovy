@@ -7666,7 +7666,15 @@ def toolListRmRules(args) {
     // so operators can investigate rather than get silent empty results.
     def classMissingHint = { String msg ->
         msg && (msg.contains("NoClassDefFoundError") || msg.contains("ClassNotFoundException") ||
-                msg.contains("unable to resolve class") || msg.contains("No such property"))
+                msg.contains("unable to resolve class") || msg.contains("No such property") ||
+                // Hubitat's Groovy sandbox returns null for unresolved `hubitat.helper.X`
+                // namespace lookups; the subsequent property dereference throws
+                // "Cannot get property 'helper' on null object". Verified live on the hub.
+                msg.contains("Cannot get property") ||
+                // Very old firmware that has RMUtils but lacks the getRuleList("5.0") overload
+                // throws MissingMethodException rather than a class-resolution error — same
+                // "this variant isn't here" semantic, so treat it quietly as well.
+                msg.contains("MissingMethodException") || msg.contains("No signature of method"))
     }
     def hardErrors = []
     if (v4Error && !classMissingHint(v4Error)) hardErrors << "v4=${v4Error}"
