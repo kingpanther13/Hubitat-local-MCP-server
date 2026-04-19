@@ -7328,6 +7328,19 @@ def currentVersion() {
 }
 
 def isNewerVersion(String remote, String local) {
+    // Strict semver only. Non-numeric or suffixed versions (e.g., "0.10.0-rc1",
+    // "v0.10.0", whitespace) would otherwise throw NumberFormatException inside
+    // the tokenize/collect below — caught but silently returning false, which
+    // means users stop getting update prompts without knowing why.
+    def semverPattern = ~/^\d+\.\d+\.\d+$/
+    if (!(remote ==~ semverPattern)) {
+        mcpLog("warn", "server", "Remote version not strict semver: '${remote}' — skipping comparison")
+        return false
+    }
+    if (!(local ==~ semverPattern)) {
+        mcpLog("warn", "server", "Local version not strict semver: '${local}' — skipping comparison")
+        return false
+    }
     try {
         def remoteParts = remote.tokenize('.').collect { it as int }
         def localParts = local.tokenize('.').collect { it as int }
