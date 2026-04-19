@@ -302,6 +302,26 @@ def check_versions() -> list[dict]:
             }
         )
 
+    # Check strict semver (catches typos like 0.10.0-rc1, v0.10.0, stray whitespace)
+    # that would silently break isNewerVersion() on user hubs.
+    strict_re = re.compile(r"^\d+\.\d+\.\d+$")
+    for label, version in versions.items():
+        if not strict_re.match(version):
+            findings.append(
+                {
+                    "file": str(VERSION_SOURCES[label]["file"].relative_to(REPO_ROOT)),
+                    "line": 0,
+                    "rule": "VERSION",
+                    "message": (
+                        f"Version {version!r} in {label} is not strict semver "
+                        "(X.Y.Z only, no prefixes or suffixes). "
+                        "Non-numeric versions silently break the update checker."
+                    ),
+                    "severity": "error",
+                    "source": "",
+                }
+            )
+
     return findings
 
 

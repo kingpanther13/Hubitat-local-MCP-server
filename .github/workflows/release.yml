@@ -1,0 +1,76 @@
+name: Release on merge
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine release label
+        id: label
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          RELEASE_LABELS=$(echo "$LABELS_JSON" | jq -r '[.[] | select(.name | startswith("release:")) | .name]')
+          COUNT=$(echo "$RELEASE_LABELS" | jq 'length')
+          if [ "$COUNT" = "0" ]; then
+            echo "::notice::No release:* label — skipping version bump (PR accumulates for the next labeled release)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::Multiple release:* labels found; expected exactly one: $RELEASE_LABELS"
+            exit 1
+          fi
+          LABEL=$(echo "$RELEASE_LABELS" | jq -r '.[0]')
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout main
+        if: steps.label.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        if: steps.label.outputs.skip != 'true'
+        with:
+          python-version: '3.x'
+
+      - name: Bump version and rewrite files
+        if: steps.label.outputs.skip != 'true'
+        id: bump
+        env:
+          LABEL: ${{ steps.label.outputs.label }}
+          TRIGGER_PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python .github/scripts/release_bump.py
+
+      - name: Commit, tag, and push
+        if: steps.label.outputs.skip != 'true'
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md README.md packageManifest.json hubitat-mcp-server.groovy hubitat-mcp-rule.groovy
+          git commit \
+            -m "chore(release): ${NEW_VERSION}" \
+            -m "Co-authored-by: ${PR_AUTHOR} <${PR_AUTHOR_ID}+${PR_AUTHOR}@users.noreply.github.com>"
+          git tag "v${NEW_VERSION}"
+          git push origin main --follow-tags

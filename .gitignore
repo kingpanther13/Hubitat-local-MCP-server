@@ -21,3 +21,7 @@ tests/e2e_config.json
 
 # Gemini Code Assist config (may contain access tokens)
 .gemini/
+
+# Python bytecode cache (from running lint / release scripts locally)
+__pycache__/
+*.pyc
