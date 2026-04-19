@@ -541,7 +541,7 @@ def getGatewayConfig() {
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, device event history, MCP debug logs, and log level configuration.",
             tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
             summaries: [
-                get_hub_logs: "Get Hubitat system logs. Args: level (debug/info/warn/error), source, limit",
+                get_hub_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), deviceId or appId (server-side scope), limit",
                 get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
                 get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
@@ -1112,13 +1112,15 @@ Verify rule after creation.""",
         ],
         [
             name: "get_hub_logs",
-            description: "Get Hubitat system logs. Filter by level/source. Default 100 entries, max 500. Requires Hub Admin Read.",
+            description: "Get Hubitat system logs, most recent first. Filter by level, source substring, or scope server-side to a single device or app. Default 100 entries, max 500. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
                     level: [type: "string", description: "Filter by log level: trace, debug, info, warn, error. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error"]],
-                    source: [type: "string", description: "Filter by source/app name (case-insensitive substring match)"],
-                    limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100]
+                    source: [type: "string", description: "Filter by source/app name (case-insensitive substring match against the log entry)"],
+                    deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
+                    appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
+                    limit: [type: "integer", description: "Max entries to return (newest first). Default: 100, max: 500.", default: 100]
                 ]
             ]
         ],
@@ -5062,12 +5064,28 @@ def toolGetHubLogs(args) {
     def limit = Math.min(args.limit ?: 100, maxLimit)
     def levelFilter = args.level
     def sourceFilter = args.source
+    def deviceIdFilter = args.deviceId?.toString()
+    def appIdFilter = args.appId?.toString()
 
-    mcpLog("info", "monitoring", "Fetching hub logs (level=${levelFilter}, source=${sourceFilter}, limit=${limit})")
+    // Server-side scoping: the hub's /logs/past/json endpoint accepts ?type=dev&id=<N>
+    // or ?type=app&id=<N> to filter at the source (same mechanism the UI's device- and
+    // app-specific log pages use). Much cheaper than returning the whole buffer and
+    // filtering client-side when the caller only wants one device/app.
+    def query = null
+    if (deviceIdFilter && appIdFilter) {
+        throw new IllegalArgumentException("deviceId and appId are mutually exclusive — set only one")
+    }
+    if (deviceIdFilter) {
+        query = [type: "dev", id: deviceIdFilter]
+    } else if (appIdFilter) {
+        query = [type: "app", id: appIdFilter]
+    }
+
+    mcpLog("info", "monitoring", "Fetching hub logs (level=${levelFilter}, source=${sourceFilter}, deviceId=${deviceIdFilter}, appId=${appIdFilter}, limit=${limit})")
 
     def responseText = null
     try {
-        responseText = hubInternalGet("/logs/past/json", null, 30)
+        responseText = hubInternalGet("/logs/past/json", query, 30)
     } catch (Exception e) {
         mcpLog("error", "monitoring", "Failed to fetch hub logs: ${e.message}")
         return [logs: [], error: "Failed to fetch hub logs: ${e.message}", count: 0]
@@ -5088,6 +5106,12 @@ def toolGetHubLogs(args) {
         mcpLog("debug", "monitoring", "Hub logs response not JSON, falling back to line-split: ${e.message}")
         logArray = responseText.split("\n").toList()
     }
+
+    // Hub returns chronological order (oldest-first). Callers overwhelmingly want
+    // the most recent N entries — reverse so the limit trims the tail of the buffer
+    // rather than the head. Matches what the official Hubitat Vue UI does client-side
+    // on its "Past Logs" page (reverses the fetch result before rendering).
+    logArray = logArray.reverse()
 
     def totalParsed = logArray.size()
     for (logEntry in logArray) {

@@ -140,7 +140,7 @@ Hub and MCP log access and configuration.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `get_hub_logs` | Hub log entries. Default 100, max 500. Use filters. | Hub Admin Read |
+| `get_hub_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source, or scope to a single `deviceId` / `appId` (server-side). | Hub Admin Read |
 | `get_device_history` | Up to 7 days of device event history. | Hub Admin Read |
 | `get_debug_logs` | Retrieve MCP debug log entries. Filter by level. | None |
 | `clear_debug_logs` | Clear all MCP debug logs. | None |

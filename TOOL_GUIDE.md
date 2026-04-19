@@ -268,8 +268,10 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - Higher values (100+) may cause delays on busy devices
 
 **get_hub_logs:**
+- Returns most recent entries first
 - Default 100 entries, max 500
 - Use level and source filters to narrow results
+- For single-device or single-app logs, pass `deviceId` or `appId` — this is a server-side scope filter (mutually exclusive) and is much cheaper than post-filtering the full buffer
 
 **get_device_history:**
 - Up to 7 days of history
