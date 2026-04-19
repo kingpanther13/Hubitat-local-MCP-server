@@ -4,13 +4,13 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize 48 lesser-used tools behind 9 gateway tools. The MCP `tools/list` shows 31 items (22 core + 9 gateways). Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 33 items (22 core + 11 gateways) covering 81 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (6), `manage_diagnostics` (9), `manage_files` (4)
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (2), `manage_rule_machine` (5)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -260,7 +260,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 **list_devices:**
 - Use `detailed=false` for initial discovery
-- Summary response (always returned) includes: id, name (driver type), label, room, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId` (v0.10.0+) — enough for most filtering without `get_device` round-trips. Summary mode also returns `currentStates`; detailed mode replaces it with `capabilities`/`attributes`/`commands`. To count children of a parent device, group the response on `parentDeviceId` client-side
+- Summary response (always returned) includes: id, name (driver type), label, room, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId` — enough for most filtering without `get_device` round-trips. Summary mode also returns `currentStates`; detailed mode replaces it with `capabilities`/`attributes`/`commands`. To count children of a parent device, group the response on `parentDeviceId` client-side
 - Use `filter` for server-side narrowing before pagination: `'enabled'`, `'disabled'`, or `'stale:<hours>'` (e.g. `'stale:24'` = devices with no activity in the last 24h). Use this for boolean and time-relative queries; leave name/label/capability filtering to client-side (AI scans returned JSON)
 - With `detailed=true`, paginate: 20-30 devices per request. Detailed adds capabilities, attributes, commands
 - Make tool calls sequentially, not in parallel
@@ -278,3 +278,48 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 **get_device_history:**
 - Up to 7 days of history
 - Use attribute filter to reduce data volume
+
+---
+
+## Built-in App Tools
+
+All tools in `manage_installed_apps` and `manage_rule_machine` gateways require the **Enable Built-in App Tools** toggle in MCP Rule Server app settings. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+
+### manage_installed_apps (2 tools)
+
+- **`list_installed_apps`** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
+  - `filter="all"` (default) | `"builtin"` | `"user"` | `"disabled"` | `"parents"` | `"children"`
+  - Each entry: `id`, `name`, `type`, `disabled`, `user`, `hidden`, `parentId`, `hasChildren`, `childCount`
+  - Built-in apps have `user=false` (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
+  - User apps have `user=true` (Awair, Ecobee, HPM, etc.)
+  - Parent/child tree flattened with `parentId` pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor (or `null` at root).
+
+- **`get_device_in_use_by`** — find apps that reference a specific device
+  - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
+  - Returns `appsUsing` array with each app's `id`, `name` (type like "Room Lights" or "Rule-5.1"), `label` (user-visible), `trueLabel` (HTML-stripped), `disabled`
+  - Answers "if I delete/disable this device, which automations break?"
+
+### manage_rule_machine (5 tools)
+
+**Read + trigger existing RM rules only. Cannot create, modify, or delete RM rules — Hubitat platform blocks third-party apps from mutating built-in app children.**
+
+- **`list_rm_rules`** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
+
+- **`run_rm_rule`** — trigger an existing RM rule via `RMUtils.sendAction`
+  - `action="rule"` (default, full evaluation): runs triggers + conditions + actions as if the rule fired
+  - `action="actions"`: runs only the actions, bypassing conditions (useful for manual override)
+  - `action="stop"`: stops running actions (cancels in-flight delays)
+
+- **`pause_rm_rule`** / **`resume_rm_rule`** — reversible toggle; paused rules don't fire on triggers
+
+- **`set_rm_rule_boolean`** — set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). RM rules can use "Private Boolean" in conditions — this lets MCP flip that flag from outside.
+
+### CRITICAL: Refuse invalid RM/RL operations
+
+If a user asks "create a new RM rule" or "set up a new Room Lighting":
+
+1. Explain this is not possible via MCP (platform limitation, not a missing feature)
+2. Offer the alternative: create an equivalent rule using MCP's own rule engine via `create_rule`
+3. Or direct them to the native Rule Machine / Room Lighting UI for configuration
+
+**Do NOT invent fake tools like `create_rm_rule` or pretend to call one.** This is the most important safety rule for these tools.

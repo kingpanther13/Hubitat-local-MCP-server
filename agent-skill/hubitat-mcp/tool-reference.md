@@ -1,10 +1,10 @@
 # Tool Reference
 
-Quick reference for all 69 MCP tools. The server exposes **30 items on `tools/list`**: 21 core tools + 9 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 81 MCP tools. The server exposes **33 items on `tools/list`**: 22 core tools + 11 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
-## Core Tools (21) — Always visible on tools/list
+## Core Tools (22) — Always visible on tools/list
 
 ### Device Tools (5)
 
@@ -51,15 +51,16 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | `check_for_update` | Check for MCP server updates. | None |
 | `generate_bug_report` | Generate comprehensive diagnostic report. | None |
 
-### Reference (1)
+### Reference (2)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
+| `search_tools` | BM25 natural language search across all 81 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
-## Gateway Tools (9) — Each proxies multiple tools
+## Gateway Tools (11) — Each proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas for all its tools. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -134,22 +135,24 @@ Write operations for apps and drivers: install, update, delete, and restore code
 | `delete_driver` | Delete an installed driver (auto-backs up). | Hub Admin Write |
 | `restore_item_backup` | Restore app/driver to backed-up version. | Hub Admin Write |
 
-### manage_logs (6 tools)
+### manage_logs (8 tools)
 
-Hub and MCP log access and configuration.
+Hub and MCP log access, performance stats, and log configuration.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_hub_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source, or scope to a single `deviceId` / `appId` (server-side). | Hub Admin Read |
 | `get_device_history` | Up to 7 days of device event history. | Hub Admin Read |
+| `get_performance_stats` | Device/app performance stats from `/logs`: method call counts, % busy, cumulative total ms, state size, events. Sortable. | Hub Admin Read |
+| `get_hub_jobs` | Scheduled and running jobs on the hub. | Hub Admin Read |
 | `get_debug_logs` | Retrieve MCP debug log entries. Filter by level. | None |
 | `clear_debug_logs` | Clear all MCP debug logs. | None |
 | `set_log_level` | Set MCP log level (debug/info/warn/error). | None |
 | `get_logging_status` | View logging system statistics. | None |
 
-### manage_diagnostics (9 tools)
+### manage_diagnostics (11 tools)
 
-Performance monitoring, health checks, diagnostics, radio info, and state capture.
+Performance monitoring, health checks, diagnostics, radio info, memory / GC, and state capture.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -158,6 +161,8 @@ Performance monitoring, health checks, diagnostics, radio info, and state captur
 | `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule. | None |
 | `get_zwave_details` | Z-Wave radio info. | Hub Admin Read |
 | `get_zigbee_details` | Zigbee radio info. | Hub Admin Read |
+| `get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Hub Admin Read |
+| `force_garbage_collection` | Force JVM GC and return before/after memory comparison. | Hub Admin Read |
 | `zwave_repair` | Start Z-Wave network repair (5-30 min). | Hub Admin Write |
 | `list_captured_states` | List saved device state snapshots. | None |
 | `delete_captured_state` | Delete a specific state snapshot. | None |
@@ -173,3 +178,24 @@ Manage hub File Manager: list, read, write, and delete files stored on the hub.
 | `read_file` | Read a file (inline for <60KB, URL for larger). | None |
 | `write_file` | Create/update a file (auto-backs up existing). | Hub Admin Write |
 | `delete_file` | Delete a file (auto-backs up first). | Hub Admin Write |
+
+### manage_installed_apps (2 tools)
+
+Read-only visibility into all installed apps (built-in + user): enumerate with parent/child tree, find apps using a specific device. Requires Built-in App Tools enabled in MCP app settings.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. | Built-in App Read |
+| `get_device_in_use_by` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Built-in App Read |
+
+### manage_rule_machine (5 tools)
+
+Rule Machine interop via the official `hubitat.helper.RMUtils` helper class: list, trigger, pause/resume, and set Private Boolean on existing RM rules. **Cannot create, modify, or delete RM rules** — Hubitat platform blocks third-party apps from mutating built-in app children; use the native RM UI for configuration. Requires Built-in App Tools enabled.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `list_rm_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Built-in App Read |
+| `run_rm_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Read |
+| `pause_rm_rule` | Pause an RM rule (reversible; paused rules don't fire on triggers). | Built-in App Read |
+| `resume_rm_rule` | Resume a paused RM rule. | Built-in App Read |
+| `set_rm_rule_boolean` | Set an RM rule's private boolean (true/false) — flips the flag that rules can reference in conditions. | Built-in App Read |

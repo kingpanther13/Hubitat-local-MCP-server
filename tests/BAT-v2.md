@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for v0.8.0+ final architecture (21 core + 9 gateways = 30 on tools/list, 48 proxied).
+Updated for the installed-apps + Rule Machine interop architecture (22 core + 11 gateways = 33 on tools/list, 59 proxied, 81 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2132,25 +2132,189 @@ These operations are too destructive for automated testing. Test manually with e
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
 
-### Architecture (v0.8.0)
+### Architecture (post installed-apps + RM interop)
 
 | Component | Count |
 |-----------|-------|
-| Core tools on `tools/list` | 21 |
-| Gateways on `tools/list` | 9 |
-| Total visible on `tools/list` | 30 |
-| Tools proxied behind gateways | 48 |
-| Total tools in codebase | 69 |
+| Core tools on `tools/list` | 22 |
+| Gateways on `tools/list` | 11 |
+| Total visible on `tools/list` | 33 |
+| Tools proxied behind gateways | 59 |
+| Total tools in codebase | 81 |
 
-**9 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (6), `manage_diagnostics` (9), `manage_files` (4)
+**11 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (2), `manage_rule_machine` (5)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 69 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 81 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
-Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist.
+Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 172 test scenarios** (107 explicit + 65 natural language) plus 13 excluded destructive operations documented for manual testing
+**Total: 186 test scenarios** (107 explicit + 65 natural language + 14 built-in-app integration) plus 13 excluded destructive operations documented for manual testing
+
+---
+
+## Section 11: Built-in App Integration Tests
+
+These tools require `Enable Built-in App Tools` to be enabled in the MCP Rule Server app settings. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+
+### Safety Rules for Section 11
+
+- Tests are **read-only or reversibly-trigger** — no create/modify/delete of RM rules or RL instances (platform blocks that anyway)
+- `run_rm_rule`, `pause_rm_rule`, `resume_rm_rule`, `set_rm_rule_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
+- Tests skip entirely if Built-in App Tools is disabled — that's the expected behavior of `requireBuiltinAppRead()`
+
+### T200 — List installed apps (default)
+
+```json
+{
+  "test_prompt": "List all installed apps on my hub."
+}
+```
+
+**Expected**: Calls `manage_installed_apps` with `tool='list_installed_apps'` (via gateway). Returns list with at least one entry; each entry has id, name, type, disabled, user, parentId, hasChildren. AI reports the count.
+
+### T201 — List only built-in apps
+
+```json
+{
+  "test_prompt": "Show me only the built-in Hubitat apps, not my custom ones."
+}
+```
+
+**Expected**: Calls `list_installed_apps` with `filter='builtin'`. Returns apps where `user` is false. AI doesn't show user-installed apps like Ecobee or Awair.
+
+### T202 — List Rule Machine rules
+
+```json
+{
+  "test_prompt": "What Rule Machine rules do I have?"
+}
+```
+
+**Expected**: Calls `manage_rule_machine.list_rm_rules`. Returns list with ids and labels. AI reports count. If Rule Machine is not installed, AI gracefully reports "none found" or equivalent.
+
+### T203 — Find apps using a device
+
+```json
+{
+  "setup_prompt": "List devices briefly so I can see IDs.",
+  "test_prompt": "Which apps are using device ID {first_device_id}?"
+}
+```
+
+**Expected**: Calls `get_device_in_use_by` with valid deviceId. Returns `appsUsing` array. AI lists app names/labels.
+
+### T204 — Find apps using a fake device (error handling)
+
+```json
+{
+  "test_prompt": "Which apps are using device ID 99999999?"
+}
+```
+
+**Expected**: Tool returns `{success: false}` or similar error. AI reports device not found — does NOT fabricate results.
+
+### T205 — Gateway catalog discovery (manage_installed_apps)
+
+```json
+{
+  "test_prompt": "What can the manage_installed_apps gateway do?"
+}
+```
+
+**Expected**: AI calls `manage_installed_apps` with no args, sees catalog of 2 tools (`list_installed_apps`, `get_device_in_use_by`) with full parameter schemas.
+
+### T206 — Gateway catalog discovery (manage_rule_machine)
+
+```json
+{
+  "test_prompt": "What Rule Machine operations does the MCP support?"
+}
+```
+
+**Expected**: AI calls `manage_rule_machine` with no args, sees 5 tools. AI describes them (list/run/pause/resume/set_boolean).
+
+### T207 — AI correctly refuses RM rule creation
+
+```json
+{
+  "test_prompt": "Create a new Rule Machine rule that turns on Kitchen Light when motion is detected."
+}
+```
+
+**Expected**: AI recognizes RM creation is not supported and either (a) creates an MCP rule via `create_rule` instead (and explains the distinction), or (b) tells the user to use the native RM UI. Does NOT invent a fake RM create tool or pretend to call one.
+
+### T208 — AI correctly refuses Room Lighting creation
+
+```json
+{
+  "test_prompt": "Create a new Room Lighting instance for the Study."
+}
+```
+
+**Expected**: AI explains Room Lighting cannot be created via MCP (platform blocks third-party apps from instantiating built-in app children). Suggests native RL UI. Does not fabricate a fake tool.
+
+### T209 — Pause and resume an RM rule (reversible)
+
+```json
+{
+  "setup_prompt": "List Rule Machine rules and identify one labeled with 'BAT' prefix, or if none exists, ask the user to identify a safe test rule.",
+  "test_prompt": "Pause the rule, wait for me to confirm, then resume it.",
+  "teardown_prompt": "Verify the rule is back in its original enabled/disabled state."
+}
+```
+
+**Expected**: Calls `pause_rm_rule` → confirms with user → calls `resume_rm_rule`. Both return `{success: true}`.
+
+**WARNING**: Only runs if user has a BAT-prefixed RM rule OR explicitly identifies a safe rule. Never use a production rule.
+
+### T209b — Run actions on an RM rule (bypasses conditions)
+
+```json
+{
+  "setup_prompt": "List Rule Machine rules and identify one labeled with 'BAT' prefix whose actions are safe to fire at any time.",
+  "test_prompt": "Run just the actions of that rule (skip the trigger/condition evaluation).",
+  "teardown_prompt": "Verify the actions executed by checking the logs or the affected device states."
+}
+```
+
+**Expected**: Calls `run_rm_rule` with `action='actions'`. Returns `{success: true, rmAction: 'runRuleAct'}`. AI reports success and any downstream device state changes.
+
+**WARNING**: Only use a BAT-prefixed rule whose actions are idempotent/reversible. Running arbitrary production rule actions could toggle locks or change HVAC.
+
+### T209c — Set an RM rule's private boolean
+
+```json
+{
+  "setup_prompt": "Identify a BAT-prefixed RM rule that uses Private Boolean in its conditions.",
+  "test_prompt": "Set the rule's private boolean to true, then set it back to false.",
+  "teardown_prompt": "Verify the rule's boolean is in its original state."
+}
+```
+
+**Expected**: Calls `set_rm_rule_boolean` with `value=true`, then `value=false`. Both return `{success: true, rmAction: 'setRuleBooleanTrue'}` and `{rmAction: 'setRuleBooleanFalse'}` respectively.
+
+### T210 — Filter for disabled apps
+
+```json
+{
+  "test_prompt": "List all installed apps that are currently disabled or paused."
+}
+```
+
+**Expected**: Calls `list_installed_apps` with `filter='disabled'`. AI reports the count and names.
+
+### T211 — Built-in App Tools feature flag disabled
+
+```json
+{
+  "setup_prompt": "For this test, assume Built-in App Tools is disabled in MCP settings.",
+  "test_prompt": "List my Rule Machine rules."
+}
+```
+
+**Expected**: `list_rm_rules` returns `IllegalArgumentException: Built-in App Tools are disabled...`. AI reports the feature flag requirement and points user to the MCP app settings page.
 
 ---
 
@@ -2158,7 +2322,7 @@ Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests 
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **21 core + 9 gateways (30 total, 69 tools)**
+1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 81 tools)** post installed-apps + RM interop (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
