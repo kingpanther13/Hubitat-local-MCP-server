@@ -83,7 +83,10 @@ class SubstituteVariablesSpec extends RuleHarnessSpec {
     def "unknown placeholder falls back to parent.getVariableValue"() {
         given:
         globalVars = [:]  // hub global returns null
-        parent = [getVariableValue: { String name -> name == 'ruleVar' ? 'fromParent' : null }]
+        parent = Stub(VariableResolver) {
+            getVariableValue('ruleVar') >> 'fromParent'
+            getVariableValue(_) >> null
+        }
 
         expect:
         script.substituteVariables('Rule: %ruleVar%') == 'Rule: fromParent'
@@ -92,9 +95,22 @@ class SubstituteVariablesSpec extends RuleHarnessSpec {
     def "placeholder with no source anywhere is left untouched"() {
         given:
         globalVars = [:]
-        parent = [getVariableValue: { String name -> null }]
+        parent = Stub(VariableResolver) {
+            getVariableValue(_) >> null
+        }
 
         expect:
         script.substituteVariables('Unknown: %neverDefined%') == 'Unknown: %neverDefined%'
+    }
+
+    /**
+     * Spock Stub() needs a type to mock, so define the slim parent contract
+     * the script actually uses. Spock's Map-of-closures mock pattern is more
+     * idiomatic + robust than a raw `[name: closure]` literal — Groovy's
+     * Map property-then-call dispatch can fail on subclasses or when the
+     * MOP is overridden.
+     */
+    interface VariableResolver {
+        Object getVariableValue(String name)
     }
 }

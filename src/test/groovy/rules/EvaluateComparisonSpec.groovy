@@ -83,4 +83,22 @@ class EvaluateComparisonSpec extends RuleHarnessSpec {
         script.evaluateComparison('on', 'like', 'on') == true
         script.evaluateComparison('on', 'unknown', 'off') == false
     }
+
+    def "numeric operator with null target falls through to string equality (caught path)"() {
+        // target?.toBigDecimal() returns null; comparing BigDecimal with null
+        // throws inside the try, so the catch falls back to
+        // current.toString() == target?.toString() — '10' == 'null' is false.
+        // Pinning this so a future "throw on null target" change is caught.
+        expect:
+        script.evaluateComparison(10, '>', null) == false
+        script.evaluateComparison(10, '<', null) == false
+        script.evaluateComparison(10, '>=', null) == false
+        script.evaluateComparison(10, '<=', null) == false
+    }
+
+    def "equals operator with null target on non-null current is false"() {
+        expect: 'distinct from the null-current branch — current present, target absent'
+        script.evaluateComparison(10, 'equals', null) == false
+        script.evaluateComparison('on', '==', null) == false
+    }
 }
