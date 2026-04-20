@@ -1,0 +1,44 @@
+# Dependabot config. See:
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # GitHub Actions. Weekly cadence picks up action releases — notably the
+  # Node.js 20 → 24 migrations that upstream actions publish as minor/patch
+  # bumps and that resolve the current Unit Tests CI deprecation notice.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+
+  # Gradle dependencies in build.gradle. Monthly cadence since test-only
+  # changes don't need aggressive freshness, and the set is small.
+  #
+  # Pinned intentionally (see ignores below):
+  #   - groovy-all stays on 2.5.x — matches joelwetzel's compiled-against
+  #     version and is closest to Hubitat's runtime Groovy 2.4.
+  #   - spock-core uses the "-groovy-2.5" variant suffix, which Dependabot
+  #     doesn't model as a version coordinator; manual bump only.
+  #   - com.github.joelwetzel:hubitat_ci is served by JitPack and pinned to a
+  #     specific commit SHA (no upstream release tags). Dependabot can't see
+  #     JitPack SHAs as versions; the hubitat-ci-version-check.yml workflow
+  #     polls joelwetzel's master branch and opens tracking issues instead.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    ignore:
+      - dependency-name: "org.codehaus.groovy:groovy-all"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "org.spockframework:spock-core"
+      - dependency-name: "com.github.joelwetzel:hubitat_ci"
+    groups:
+      gradle-dependencies:
+        patterns: ["*"]
+    open-pull-requests-limit: 2
