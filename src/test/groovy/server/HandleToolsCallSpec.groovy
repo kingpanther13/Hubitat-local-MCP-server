@@ -44,8 +44,20 @@ class HandleToolsCallSpec extends ToolSpecBase {
     }
 
     def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
-        given: 'getRooms() throws so list_rooms propagates a non-IAE'
+        given: 'getRooms() throws a non-IAE so list_rooms hits the generic catch'
         script.metaClass.getRooms = { throw new RuntimeException('boom') }
+
+        and: 'the generic-catch path calls log.error(String, Throwable), which is not on HubitatCI Log Mock — shim it'
+        def logShim = new Object() {
+            void error(Object... args) {}
+            void warn(Object... args) {}
+            void info(Object... args) {}
+            void debug(Object... args) {}
+            void trace(Object... args) {}
+        }
+        script.metaClass.getLog = { -> logShim }
+
+        and:
         def msg = [jsonrpc: '2.0', id: 5, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]]
 
         when:
