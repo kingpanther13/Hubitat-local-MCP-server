@@ -3,12 +3,12 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for handleGateway() — hubitat-mcp-server.groovy line 613.
+ * Spec for hubitat-mcp-server.groovy::handleGateway.
  *
  * Covers catalog mode (no toolName), unknown-gateway and unknown-tool
- * errors, recursive-gateway-call prevention, missing-required soft error
- * (Option D: isError response, not an exception), and valid dispatch
- * delegating to executeTool.
+ * errors, the effective rejection of gateway-as-tool, missing-required
+ * soft error (Option D: isError response, not an exception), and valid
+ * dispatch delegating to executeTool.
  */
 class HandleGatewaySpec extends ToolSpecBase {
 
@@ -46,12 +46,12 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "using a gateway name as a tool fails"() {
-        // The defensive recursive-call check at line 639
+        // handleGateway's defensive recursive-call guard
         // ("Cannot call a gateway from within a gateway") is unreachable
         // given current configs — gateway names and tool names are
-        // disjoint namespaces, so the unknown-tool check at line 634
-        // fires first. This test pins the effective behaviour: attempting
-        // to invoke a gateway by name as a tool is rejected.
+        // disjoint namespaces, so the unknown-tool check fires first.
+        // This test pins the effective behaviour: attempting to invoke a
+        // gateway by name as a tool is rejected.
         when:
         script.handleGateway('manage_rooms', 'manage_rooms', [:])
 

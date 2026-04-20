@@ -4,7 +4,7 @@ import support.TestDevice
 import support.ToolSpecBase
 
 /**
- * Spec for findDevice() — hubitat-mcp-server.groovy line 3607.
+ * Spec for hubitat-mcp-server.groovy::findDevice.
  *
  * Search order: settings.selectedDevices first, then getChildDevices().
  * Returns null on miss. Both String and Integer ids are accepted
@@ -38,6 +38,16 @@ class FindDeviceSpec extends ToolSpecBase {
 
         expect:
         script.findDevice('20')?.is(virtual)
+    }
+
+    def "finds device in getChildDevices by integer id (fallthrough branch coercion)"() {
+        given:
+        settingsMap.selectedDevices = []
+        def virtual = new TestDevice(id: 20, label: 'Virtual Child')
+        childDevicesList << virtual
+
+        expect:
+        script.findDevice(20)?.is(virtual)
     }
 
     def "settings.selectedDevices takes priority over getChildDevices on id collision"() {

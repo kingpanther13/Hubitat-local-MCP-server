@@ -5,10 +5,11 @@ import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
- * Spec for handleToolsCall() — hubitat-mcp-server.groovy line 394.
+ * Spec for hubitat-mcp-server.groovy::handleToolsCall.
  *
- * Covers the JSON-RPC 2.0 envelope and IAE → -32602 error mapping that
- * wraps executeTool (and, transitively, handleGateway).
+ * Covers the JSON-RPC 2.0 envelope, IAE → -32602 error mapping for
+ * validation errors, and the generic-exception path that returns an
+ * isError success envelope per the MCP spec.
  */
 class HandleToolsCallSpec extends ToolSpecBase {
 
@@ -40,6 +41,25 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.error.code == -32602
         response.error.message.startsWith('Invalid params:')
         response.error.message.contains('Hub Admin Read')
+    }
+
+    def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
+        given: 'getRooms() throws so list_rooms propagates a non-IAE'
+        script.metaClass.getRooms = { throw new RuntimeException('boom') }
+        def msg = [jsonrpc: '2.0', id: 5, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]]
+
+        when:
+        def response = script.handleToolsCall(msg)
+
+        then: 'MCP spec: tool execution errors return a success envelope with isError flag'
+        response.jsonrpc == '2.0'
+        response.id == 5
+        response.error == null
+        response.result.isError == true
+        response.result.content instanceof List
+        response.result.content[0].type == 'text'
+        response.result.content[0].text.startsWith('Tool error:')
+        response.result.content[0].text.contains('boom')
     }
 
     def "successful tool call returns wrapped content as JSON text"() {
