@@ -4,8 +4,15 @@ plugins {
 
 repositories {
     mavenCentral()
-    // hubitat_ci is published to Azure Artifacts (publicly readable, no credentials needed)
-    maven { url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1' }
+    // hubitat_ci is published to Azure Artifacts (publicly readable, no credentials needed).
+    // content { includeGroup } scopes the repo to just its group, which avoids
+    // dependency-confusion lookups against it for anything else (Gemini note).
+    maven {
+        url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1'
+        content {
+            includeGroup 'me.biocomp.hubitat_ci'
+        }
+    }
 }
 
 dependencies {
@@ -13,8 +20,6 @@ dependencies {
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
     testImplementation 'me.biocomp.hubitat_ci:hubitat_ci:0.17'
-    testImplementation 'cglib:cglib-nodep:3.3.0'
-    testImplementation 'org.objenesis:objenesis:3.3'
 }
 
 java {
@@ -25,6 +30,10 @@ java {
 
 test {
     useJUnitPlatform()
+    // Keep specs single-threaded. RMUtilsMock and NetworkUtilsMock inject static
+    // metaclass methods on hubitat.helper.RMUtils / .NetworkUtils — concurrent
+    // specs installing and uninstalling these at the same time would race.
+    maxParallelForks = 1
     testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat 'full'

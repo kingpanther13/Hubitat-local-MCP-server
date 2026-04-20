@@ -1,5 +1,10 @@
 package support
 
+/**
+ * install() mutates the global metaclass of hubitat.helper.NetworkUtils —
+ * see RMUtilsMock for the same constraint. maxParallelForks = 1 in
+ * build.gradle keeps specs sequential so these static overrides don't race.
+ */
 class NetworkUtilsMock {
     final List<Map> calls = []
     Map stubResponse = [status: 200, body: '{}']

@@ -1,5 +1,12 @@
 package support
 
+/**
+ * install() mutates the global metaclass of hubitat.helper.RMUtils, so any
+ * test harness using this mock must run specs sequentially. The project's
+ * build.gradle sets maxParallelForks = 1 for exactly this reason; do not
+ * enable parallel test execution without first moving these statics off
+ * the shared class metaclass.
+ */
 class RMUtilsMock {
     final List<Map> calls = []
     List<Map> stubRuleList = []
