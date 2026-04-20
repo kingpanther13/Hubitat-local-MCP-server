@@ -39,6 +39,11 @@ test {
     // metaclass methods on hubitat.helper.RMUtils / .NetworkUtils — concurrent
     // specs installing and uninstalling these at the same time would race.
     maxParallelForks = 1
+    // Silence Groovy 2.5.23's reflective access to Object.finalize() under JDK
+    // 11+. We're pinned to Groovy 2.5 by hubitat_ci's compiled-against version;
+    // opening java.lang grants the access CachedClass needs without affecting
+    // behaviour. Remove if/when hubitat_ci moves to Groovy 4.
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
     testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat 'full'

@@ -16,7 +16,7 @@ jobs:
           java-version: '11'
       - uses: gradle/actions/setup-gradle@v4
       - name: Run unit tests
-        run: ./gradlew test --info
+        run: ./gradlew test --info --warning-mode all
       - name: Upload test report on failure
         if: failure()
         uses: actions/upload-artifact@v4
