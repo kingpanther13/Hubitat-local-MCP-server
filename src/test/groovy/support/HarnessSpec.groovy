@@ -25,7 +25,15 @@ abstract class HarnessSpec extends Specification {
             _ * getState() >> stateMap
             _ * getAtomicState() >> atomicStateMap
         }
-        script = sandbox.run(
+        // compile() skips running the preferences/definition blocks but still
+        // compiles all `def method() { }` definitions into the returned script
+        // object. HubitatCI's page(name:...) handling doesn't tolerate the
+        // multi-page form the server uses (page(name:"mainPage") without a
+        // content closure), so running the body fails with "wrong number of
+        // arguments" even with DontValidate* flags set. compile() avoids the
+        // run path entirely; tests only need the tool-handler methods, not
+        // the preferences tree.
+        script = sandbox.compile(
             api: appExecutor,
             validationFlags: [
                 Flags.DontValidatePreferences,
