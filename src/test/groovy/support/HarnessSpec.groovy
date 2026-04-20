@@ -1,7 +1,6 @@
 package support
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
-import me.biocomp.hubitat_ci.api.common_api.Log
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
@@ -46,7 +45,20 @@ abstract class HarnessSpec extends Specification {
         def childDevicesRef = childDevicesList
         def childAppsRef = childAppsList
         def self = this
-        def logMock = Mock(Log)
+        // Permissive log shim instead of Mock(Log): HubitatCI's Log interface
+        // declares error(String) but the real Hubitat runtime also accepts
+        // error(String, Throwable), which the server calls via
+        // log.error(msg, e). A Proxy-based Mock rejects the 2-arg call with
+        // MissingMethodException. A Map of varargs closures lets any
+        // log.<level>(...) invocation no-op under Groovy's map-as-duck-type
+        // dispatch without the spec needing to stub per-call.
+        def logMock = [
+            error: { Object... args -> },
+            warn: { Object... args -> },
+            info: { Object... args -> },
+            debug: { Object... args -> },
+            trace: { Object... args -> }
+        ]
         appExecutor = Mock(AppExecutor) {
             _ * getState() >> stateRef
             _ * getAtomicState() >> atomicStateRef
