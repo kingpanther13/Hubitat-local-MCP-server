@@ -1,10 +1,12 @@
 package rules
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
+import me.biocomp.hubitat_ci.api.common_api.Location
 import me.biocomp.hubitat_ci.api.common_api.Log
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
+import support.TestChildApp
 
 /**
  * Loads hubitat-mcp-rule.groovy (the rule-engine child app — separate
@@ -41,10 +43,16 @@ abstract class RuleHarnessSpec extends Specification {
             // app / location are in HubitatCI's AppExecutor interface (so they
             // resolve via @Delegate, not metaClass). Script code calls
             // `app.id` (ruleLog) and `location.mode` (substituteVariables)
-            // unconditionally; providing non-null stubs keeps those NPE-free
-            // in all specs without per-test wiring.
-            _ * getApp() >> [id: 1L]
-            _ * getLocation() >> [mode: 'Home', sunrise: null, sunset: null, hsmStatus: null]
+            // unconditionally; provide non-null stubs typed to the interface
+            // Spock expects (raw Map returns trip a GroovyCastException).
+            _ * getApp() >> new TestChildApp(id: 1L, label: 'TestRuleApp')
+            _ * getLocation() >> ([
+                getMode    : { -> 'Home' },
+                getCurrentMode: { -> null },
+                getModes   : { -> [] },
+                getName    : { -> 'TestLocation' },
+                getId      : { -> 1L }
+            ] as Location)
             _ * now() >> 1234567890000L
             _ * getLog() >> logMock
         }
