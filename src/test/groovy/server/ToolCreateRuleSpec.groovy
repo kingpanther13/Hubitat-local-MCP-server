@@ -1,24 +1,59 @@
 package server
 
+import support.TestChildApp
 import support.ToolSpecBase
 
 /**
  * Spec for toolCreateRule (hubitat-mcp-server.groovy line 2163).
  *
- * The golden path requires a functioning addChildApp that returns a mock
- * MCP Rule child app plus the server-internal normalizeTrigger /
- * validateTrigger / validateAction chain accepting the test trigger shape.
- * Covers here: required-field validation (error paths) — the cheapest and
- * most regression-valuable surface. The golden path is deferred to a
- * follow-up spec once the mock-child-app fixture matures.
+ * Golden path uses trigger type "time" and action type "delay" — both
+ * validate without needing a device lookup (validateTrigger / validateAction
+ * require a findable device for device_event / device_command / toggle_device
+ * etc., and seeding real devices into childDevicesList would coupling the
+ * test to the wider findDevice machinery without adding value here).
  */
 class ToolCreateRuleSpec extends ToolSpecBase {
+
+    def "creates rule via addChildApp and returns the child app id"() {
+        given: 'a TestChildApp Spy returned by addChildApp'
+        def childApp = Spy(TestChildApp) {
+            getId() >> 42
+        }
+        mockChildAppForCreate = childApp
+
+        when:
+        def result = script.toolCreateRule([
+            name: 'Test Rule',
+            description: 'smoke test',
+            triggers: [[type: 'time', time: '08:30']],
+            actions: [[type: 'delay', seconds: 5]]
+        ])
+
+        then: 'the child app was configured and received the rule data'
+        1 * childApp.updateSetting('ruleName', 'Test Rule')
+        1 * childApp.updateSetting('ruleDescription', 'smoke test')
+        1 * childApp.updateRuleFromParent({
+            it instanceof Map &&
+            it.triggers?.size() == 1 &&
+            it.triggers[0].type == 'time' &&
+            it.actions?.size() == 1 &&
+            it.actions[0].type == 'delay' &&
+            it.enabled == true
+        })
+
+        and: 'the return shape reflects success and reports the new rule id'
+        result.success == true
+        result.ruleId == '42'
+        result.message.contains('Test Rule')
+        result.diagnostics.storedTriggers == 1
+        result.diagnostics.storedActions == 1
+    }
 
     def "rejects missing rule name"() {
         when:
         script.toolCreateRule([
-            triggers: [[type: 'device', deviceId: 1, attribute: 'switch', value: 'on']],
-            actions: [[type: 'command', deviceId: 1, command: 'off']]
+            triggers: [[type: 'time', time: '08:30']],
+            actions: [[type: 'delay', seconds: 5]]
         ])
 
         then:
@@ -31,7 +66,7 @@ class ToolCreateRuleSpec extends ToolSpecBase {
         script.toolCreateRule([
             name: 'Test Rule',
             triggers: [],
-            actions: [[type: 'command', deviceId: 1, command: 'off']]
+            actions: [[type: 'delay', seconds: 5]]
         ])
 
         then:
@@ -43,7 +78,7 @@ class ToolCreateRuleSpec extends ToolSpecBase {
         when:
         script.toolCreateRule([
             name: 'Test Rule',
-            triggers: [[type: 'device', deviceId: 1, attribute: 'switch', value: 'on']],
+            triggers: [[type: 'time', time: '08:30']],
             actions: []
         ])
 
