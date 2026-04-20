@@ -20,8 +20,8 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.gateway == 'manage_rooms'
         result.mode == 'catalog'
         result.tools instanceof List
-        result.tools*.name.containsAll(['list_rooms', 'get_room', 'create_room', 'delete_room', 'rename_room'])
-        result.tools.every { it.containsKey('description') && it.containsKey('inputSchema') }
+        result.tools*.name == ['list_rooms', 'get_room', 'create_room', 'delete_room', 'rename_room']
+        result.tools.every { it.description && it.inputSchema }
     }
 
     def "throws IllegalArgumentException for unknown gateway"() {
