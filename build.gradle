@@ -37,9 +37,19 @@ repositories {
 }
 
 dependencies {
-    // groovy-all stays on 2.5 — matches joelwetzel's compiled-against
-    // Groovy, and is closest to Hubitat's runtime Groovy 2.4.
-    testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
+    // groovy-all on the main compile classpath — needed because
+    // src/main/groovy/hubitat/helper/{RMUtils,NetworkUtils}.groovy are
+    // build-time stubs that compile under the main source-set so the
+    // HubitatCI SandboxClassLoader can resolve hubitat.helper.* refs from
+    // sandbox-loaded production code (the test classpath is invisible to
+    // SandboxClassLoader). This dep does NOT ship to Hubitat — only the
+    // top-level .groovy files in packageManifest.json get deployed; main
+    // source-set + JAR are local-build artifacts.
+    //
+    // Pinned to 2.5.23 — matches joelwetzel's compiled-against Groovy
+    // and is closest to Hubitat's runtime Groovy 2.4.
+    implementation 'org.codehaus.groovy:groovy-all:2.5.23'
+
     testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
     // joelwetzel/hubitat_ci pinned by commit SHA. JitPack's
     // 'master-<sha>-<build>' form publishes the POM with version
