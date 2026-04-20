@@ -41,12 +41,13 @@ dependencies {
     // Groovy, and is closest to Hubitat's runtime Groovy 2.4.
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
-    // joelwetzel/hubitat_ci pinned by JitPack's master-<sha>-<build> build
-    // identifier (reproducible, resolves instantly, avoids the read-timeout
-    // that 'master-SNAPSHOT' or a bare commit hash can trigger on first
-    // request). Bumped by tracking issues from
-    // .github/workflows/hubitat-ci-version-check.yml.
-    testImplementation 'com.github.joelwetzel:hubitat_ci:master-a62a351eed-1'
+    // joelwetzel/hubitat_ci pinned by commit SHA. JitPack's
+    // 'master-<sha>-<build>' form publishes the POM with version
+    // 'master-SNAPSHOT' (mismatch → Gradle rejects). The bare short-SHA
+    // form resolves cleanly once JitPack has built that commit — warmed
+    // via the api/builds endpoint before pushing. Bumped by tracking
+    // issues from .github/workflows/hubitat-ci-version-check.yml.
+    testImplementation 'com.github.joelwetzel:hubitat_ci:a62a351eed'
     // Required by Spock to Mock/Spy non-interface types (TestDevice, TestChildApp).
     // Spock 2.x can use either byte-buddy or cglib-nodep as its class-gen
     // backend; neither is a transitive dep of spock-core on the groovy-2.5 variant.

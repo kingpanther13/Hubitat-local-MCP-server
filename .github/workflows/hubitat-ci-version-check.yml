@@ -30,13 +30,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Pinned coord from build.gradle — JitPack build-identifier shape is
-          # 'com.github.joelwetzel:hubitat_ci:master-<sha>-<build-number>'.
-          # Extract the <sha> portion for comparison against master HEAD.
-          COORD=$(grep -oE "com\.github\.joelwetzel:hubitat_ci:[^'\"]+" build.gradle | head -1 | cut -d: -f3)
-          PINNED=$(echo "$COORD" | sed -nE 's/^master-([a-f0-9]+)-[0-9]+$/\1/p')
+          # Pinned SHA from build.gradle — coordinate shape is
+          # 'com.github.joelwetzel:hubitat_ci:<short-sha>'.
+          PINNED=$(grep -oE "com\.github\.joelwetzel:hubitat_ci:[^'\"]+" build.gradle | head -1 | cut -d: -f3)
           if [ -z "$PINNED" ]; then
-            echo "::error::Could not parse pinned com.github.joelwetzel:hubitat_ci SHA from build.gradle (coord: $COORD)"
+            echo "::error::Could not parse pinned com.github.joelwetzel:hubitat_ci SHA from build.gradle"
             exit 1
           fi
 
