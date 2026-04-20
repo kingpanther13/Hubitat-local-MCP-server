@@ -60,6 +60,7 @@ test {
             '--add-opens=java.base/java.util=ALL-UNNAMED',
             '--add-opens=java.base/java.util.concurrent=ALL-UNNAMED',
             '--add-opens=java.base/java.util.regex=ALL-UNNAMED',
+            '--add-opens=java.base/sun.util.calendar=ALL-UNNAMED',
             '--add-opens=java.xml/com.sun.org.apache.xerces.internal.dom=ALL-UNNAMED'
     testLogging {
         events 'passed', 'skipped', 'failed'
