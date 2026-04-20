@@ -1,9 +1,9 @@
 # Testing
 
-Groovy unit tests run under Spock + [HubitatCI](https://github.com/biocomp/hubitat_ci) via the Gradle wrapper. CI runs `./gradlew test` on every PR and push to `main` (`.github/workflows/unit-tests.yml`).
+Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `./gradlew test` on every PR and push to `main` (`.github/workflows/unit-tests.yml`).
 
 - **Test framework:** Spock 2.3 on Groovy 2.5 (matches the Hubitat hub runtime)
-- **Hubitat sandbox:** HubitatCI 0.17 from `me.biocomp.hubitat_ci:hubitat_ci:0.17` (Azure Artifacts public feed)
+- **Hubitat sandbox:** [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) — an actively-maintained fork of the original [biocomp/hubitat_ci](https://github.com/biocomp/hubitat_ci) (Apache 2.0). Consumed as `com.github.joelwetzel:hubitat_ci:<sha>` via JitPack; the pinned SHA in `build.gradle` is bumped by tracking issues from `.github/workflows/hubitat-ci-version-check.yml`.
 - **JVM:** OpenJDK 17 in CI; locally, JDK 11+ via the Gradle toolchain
 - **Build:** Gradle 8.10 via wrapper (`./gradlew test`)
 
