@@ -739,8 +739,7 @@ For easier bug reporting:
 ---
 
 <!-- FUTURE_PLANS_START -->
-<details>
-<summary><h2>Future Plans</h2></summary>
+## Future Plans
 
 
 > **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to.
@@ -774,14 +773,14 @@ For easier bug reporting:
   > 3. Parent dispatches to matching child rule via key lookup
   > 4. Package request body, headers, and query params into pseudo-event for variable substitution
 
-- [ ] **Hub variable change triggers** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* Hubitat does not expose a native `subscribe()` for hub variable changes. Two approaches: **(A)** Polling — use `schedule()` every 5–10 seconds to compare current value against last known value in `atomicState`. Adds latency and hub load. **(B)** Variable Connector workaround — Hubitat's Variable Connector feature (firmware ≥ 2.3.4) exposes hub variables as device attributes, which can be subscribed to via the existing `device_event` trigger. Option B is cleaner but requires the user to create Variable Connector devices.
+- [ ] **Hub variable change triggers** — `Difficulty: 2 | Effort: S`
+  > *Feasible — native subscription supported.* Per the [Hub Variable API docs](https://docs2.hubitat.com/en/developer/interfaces/hub-variable-api), hub variable changes fire Location Events named `variable:<name>`. Apps can subscribe directly with `subscribe(location, "variable:<name>", handler)` for all changes of a variable, or `subscribe(location, "variable:<name>.<value>", handler)` to fire only when the variable becomes a specific value (for example, `"variable:myVar.on"` fires only when `myVar` becomes `"on"`). No polling, no Variable Connector workaround required. The earlier "not natively subscribable" framing was incorrect.
   >
   > **Implementation plan:**
-  > 1. Add `variable_change` trigger type with configurable polling interval
-  > 2. Store last-known values in `atomicState.variableSnapshots`
-  > 3. On each poll cycle, compare and fire rule if changed
-  > 4. Document Variable Connector approach as the preferred alternative
+  > 1. Add `variable_change` trigger type with `variableName` and optional `value` filter
+  > 2. In `subscribeToTriggers()`, call `subscribe(location, "variable:${varName}", handler)` (or `"variable:${varName}.${value}"` if a value filter is set)
+  > 3. Register interest via `addInUseGlobalVar(varName)` so users cannot accidentally delete a variable a rule depends on; call `removeInUseGlobalVar()` on rule delete/update
+  > 4. Implement the `globalVarRenamed(oldName, newName)` app callback to auto-update trigger definitions when a variable is renamed
 
 - [ ] **System start trigger** — `Difficulty: 2 | Effort: S`
   > *Feasible.* Hubitat supports `subscribe(location, "systemStart", handler)`. Add a `system_start` trigger type. After hub reboot, the app restores, `initialize()` → `subscribeToTriggers()` runs, and the systemStart event fires the rule. Minor edge case: the event may fire before all apps finish restoring — needs testing on hardware.
@@ -922,19 +921,27 @@ For easier bug reporting:
   > 2. Reuse `rampValue()` utility from fade actions
   > 3. For devices with `startLevelChange`/`stopLevelChange`, offer a hardware ramp option
 
-- ~~[ ] **Ping IP address**~~ — `Difficulty: 3 | Effort: M`
-  > *Not directly feasible.* Hubitat's sandboxed Groovy environment does not provide ICMP, `HubAction`, raw sockets, or `Runtime.exec()`. Only driver code can use `HubAction` for certain protocols.
-  >
-  > **Alternative: HTTP reachability check** *(added below as a replacement item)*
-
-- [ ] **HTTP reachability check** *(alternative to Ping)* — `Difficulty: 2 | Effort: S`
-  > *Feasible.* Use `httpGet()` to make an HTTP request to the target IP and interpret success/failure as reachable/unreachable. Not a true ICMP ping, but achieves network reachability testing for devices with web servers. Another option: control a community driver that exposes ping functionality via the existing `device_command` action.
+- [ ] **Ping IP address (ICMP)** — `Difficulty: 1 | Effort: S`
+  > *Feasible — native ICMP supported from apps.* Hubitat exposes `hubitat.helper.NetworkUtils.ping(String ipAddress, Integer count)` to both apps and drivers per the [NetworkUtils docs](https://docs2.hubitat.com/en/developer/networkutils-object). Returns a `PingData` object with `rttAvg/rttMin/rttMax` (ms), `packetsTransmitted`, `packetsReceived`, and `packetLoss`. The earlier "no ICMP in the sandbox" framing was incorrect — no driver, `HubAction`, or `Runtime.exec()` needed. Default count is 3, max is 5.
   >
   > **Implementation plan:**
-  > 1. Add `http_check` action type with target URL and timeout
-  > 2. Use `httpGet()` in a try-catch block
-  > 3. Set result in a variable (reachable/unreachable) for use in conditions
-  > 4. Document as "HTTP reachability check" rather than "ping"
+  > 1. Add a `ping_host` MCP tool that accepts `ipAddress` and optional `count`, returns the full PingData map
+  > 2. Add a `ping_host` rule action type that stores result fields (`reachable`, `rttAvg`, `packetLoss`) into rule/local variables for use in conditions
+  > 3. Add `host_reachable` / `host_unreachable` as `ping_host` shortcut conditions (or just rely on variable conditions)
+  > 4. Validate `ipAddress` as a string before the call; surface platform errors as tool/action failure messages
+
+- [ ] **HTTP reachability check** — `Difficulty: 3 | Effort: M`
+  > *Feasible — complementary to ICMP ping above.* An HTTP GET against a target URL still has value for hosts that don't respond to ICMP or when you need to verify HTTP-layer health, not just network reachability. Keep as a secondary action type alongside the native ping.
+  >
+  > **Ordering caveat.** `asynchttpGet()` is non-blocking: any actions after `http_check` in a rule's action list would otherwise run before the response arrived and before the result variables (`reachable`, `statusCode`, `responseTimeMs`) were populated. A correct implementation must save rule execution state on the dispatch and resume from the async callback — the same save-state/resume pattern used by the existing `delay` action. Mandatory timeout required so a stalled request doesn't leave the rule suspended.
+  >
+  > **Implementation plan:**
+  > 1. Add `http_check` action type with target URL, optional expected status code, and mandatory timeout
+  > 2. Dispatch via `asynchttpGet()` (non-blocking, does not tie up the hub executor)
+  > 3. Save action-index + context to `atomicState` before dispatch, mirroring the `delay` action's resume pattern
+  > 4. In the async callback, populate result fields (`reachable`, `statusCode`, `responseTimeMs`) into rule/local variables and resume action execution from the saved index
+  > 5. Enforce a hard timeout that resumes with `reachable=false` if no response arrives in time
+  > 6. Synchronous `httpGet()` is not an acceptable shortcut — it blocks the hub event executor and can stall other apps
 
 #### Variable System
 
@@ -948,8 +955,8 @@ For easier bug reporting:
   > 4. Add driver to HPM package manifest
   > 5. Document that hub variables should use Hubitat's built-in connectors instead
 
-- [ ] **Variable change events** — `Difficulty: 3 | Effort: M`
-  > *Feasible.* For MCP rule engine variables: extend `setRuleVariable()` to fire `sendLocationEvent(name: "ruleVariableChanged", value: varName, data: newValue)`. Child rules with a `variable_change` trigger subscribe to this event. For hub variables: use the polling approach from "Hub variable change triggers" above or leverage Variable Connectors.
+- [ ] **Variable change events** — `Difficulty: 2 | Effort: S`
+  > *Feasible.* For MCP rule engine variables: extend `setRuleVariable()` to fire `sendLocationEvent(name: "ruleVariableChanged", value: varName, data: newValue)`. Child rules with a `variable_change` trigger subscribe to this event. For Hubitat hub variables: use the native `subscribe(location, "variable:<name>", handler)` pattern described under "Hub variable change triggers" above — no polling or Variable Connector needed.
   >
   > **Implementation plan:**
   > 1. Add `sendLocationEvent()` call to parent's `setRuleVariable()`
@@ -1336,8 +1343,6 @@ For easier bug reporting:
 
 - ~~**Groups and Scenes (Zigbee group messaging)**~~ — The `zigbee` object and `sendHubCommand(Protocol.ZIGBEE)` are driver-only APIs. No HTTP endpoint exists for Zigbee group management. **→ Use software group commands or the built-in Groups and Scenes app's activator devices via `send_command`**
 
-- ~~**Ping IP address**~~ — No ICMP, raw sockets, or `Runtime.exec()` in the app sandbox. **→ HTTP reachability check added as replacement**
-
 - ~~**MQTT client (direct)**~~ — `interfaces.mqtt` is driver-only. No raw TCP sockets in apps. **→ Companion driver approach added as alternative**
 
 - ~~**Device pairing assistance (active)**~~ — Radio inclusion is interactive and undocumented. MCP's request-response model can't handle multi-step pairing flows. **→ Pairing guidance tool added as alternative**
@@ -1350,55 +1355,56 @@ For easier bug reporting:
 
 #### Phase 1: Quick Wins (Small effort, high value)
 1. **Rule Machine Interoperability** (list, control, trigger, booleans) — All use `RMUtils`, implement as 1–2 tools
-2. **Search HPM repositories** — Public GraphQL API, immediate discovery value
-3. **Rate limiting / throttling** — Pure in-app logic, enables safer notifications
-4. **System start trigger** — Single `subscribe()` call
-5. **Date range condition** — Follows existing condition patterns
-6. **Device health watchdog** — Add scheduled task to existing tool
-7. **Private Boolean per rule** — Cross-rule coordination via parent mediation
-8. **Disable/Enable a device action** — Wraps existing `update_device` capability
-9. **File write/append/delete actions** — Wraps existing parent file methods
-10. **Music/siren control actions** — Convenience wrappers around `device_command`
+2. **Native hub variable change triggers** — `subscribe(location, "variable:<name>", handler)` + `addInUseGlobalVar()` registration
+3. **ICMP ping tool + rule action** — `hubitat.helper.NetworkUtils.ping(ip, count)` returns PingData directly
+4. **Search HPM repositories** — Public GraphQL API, immediate discovery value
+5. **Rate limiting / throttling** — Pure in-app logic, enables safer notifications
+6. **System start trigger** — Single `subscribe()` call
+7. **Date range condition** — Follows existing condition patterns
+8. **Device health watchdog** — Add scheduled task to existing tool
+9. **Private Boolean per rule** — Cross-rule coordination via parent mediation
+10. **Disable/Enable a device action** — Wraps existing `update_device` capability
+11. **File write/append/delete actions** — Wraps existing parent file methods
+12. **Music/siren control actions** — Convenience wrappers around `device_command`
 
 #### Phase 2: Core Enhancements (Medium effort, high value)
-11. **Webhook triggers** — New endpoint + trigger type
-12. **Event streaming / webhooks** — Subscribe + async POST
-13. **Pushover integration** — Simple API integration
-14. **Email via SendGrid** — Simple API integration
-15. **Fade dimmer / color temp** — Shared ramp utility
-16. **Rule-to-rule control** — Parent mediation, existing methods
-17. **Notification routing** — Layer on top of Pushover/SendGrid
-18. **Z-Wave ghost detection** — Node table cross-reference
-19. **Variable change events** — Location event on variable write
-20. **Per-mode actions** — Multi-branch action type
+13. **Webhook triggers** — New endpoint + trigger type
+14. **Event streaming / webhooks** — Subscribe + async POST
+15. **Pushover integration** — Simple API integration
+16. **Email via SendGrid** — Simple API integration
+17. **Fade dimmer / color temp** — Shared ramp utility
+18. **Rule-to-rule control** — Parent mediation, existing methods
+19. **Notification routing** — Layer on top of Pushover/SendGrid
+20. **Z-Wave ghost detection** — Node table cross-reference
+21. **Variable change events** — Location event on variable write
+22. **Per-mode actions** — Multi-branch action type
 
 #### Phase 3: Advanced Features (Large effort, specialized value)
-21. **Boolean expression builder** — Recursive tree evaluation + migration
-22. **Required expressions / gates** — Continuous monitoring architecture
-23. **MQTT via companion driver** — Third file, driver development
-24. **Dashboard create/modify/delete** — Internal endpoint approach, needs hub testing
-25. **Scheduled reports** — Aggregation + scheduling + delivery
-26. **Energy monitoring** — Aggregate power/energy across devices
-27. **Scene management** — Scene-oriented wrappers around captured state
+23. **Boolean expression builder** — Recursive tree evaluation + migration
+24. **Required expressions / gates** — Continuous monitoring architecture
+25. **MQTT via companion driver** — Third file, driver development
+26. **Dashboard create/modify/delete** — Internal endpoint approach, needs hub testing
+27. **Scheduled reports** — Aggregation + scheduling + delivery
+28. **Energy monitoring** — Aggregate power/energy across devices
+29. **Scene management** — Scene-oriented wrappers around captured state
 
 #### Phase 4: Exploratory (Needs testing or has significant limitations)
-28. **Hub variable change triggers** — Polling trade-offs
-29. **Wait for Event / Expression** — Complex state persistence
-30. **Repeat While / Until** — Loop safety concerns
-31. **Hub Variable Connectors** — Custom driver dependency
-32. **Install packages via HPM** — HPM sync fragmentation
-33. **Standalone virtual devices** — API endpoint unverified
-34. **Event history / analytics** — Platform 7-day limit
+30. **Wait for Event / Expression** — Complex state persistence
+31. **Repeat While / Until** — Loop safety concerns
+32. **Hub Variable Connectors** — Custom driver dependency
+33. **Install packages via HPM** — HPM sync fragmentation
+34. **Standalone virtual devices** — API endpoint unverified
+35. **Event history / analytics** — Platform 7-day limit
 
 #### Low Priority: Native App Equivalents (only if MCP interaction gaps found)
-35. **Room Lighting** — Use native app; review if MCP can't interact with its effects
-36. **Zone Motion Controller** — Use native app; MCP can already see its virtual device
-37. **Mode Manager** — Use native app; MCP already reads/sets modes
-38. **Button Controller** — Use native app; MCP already has `button_event` triggers
-39. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
-40. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
-</details>
+36. **Room Lighting** — Use native app; review if MCP can't interact with its effects
+37. **Zone Motion Controller** — Use native app; MCP can already see its virtual device
+38. **Mode Manager** — Use native app; MCP already reads/sets modes
+39. **Button Controller** — Use native app; MCP already has `button_event` triggers
+40. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
+41. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
 <!-- FUTURE_PLANS_END -->
+
 
 
 
