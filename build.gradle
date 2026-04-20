@@ -1,0 +1,32 @@
+plugins {
+    id 'groovy'
+}
+
+repositories {
+    mavenCentral()
+    // hubitat_ci is published to Azure Artifacts (publicly readable, no credentials needed)
+    maven { url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1' }
+}
+
+dependencies {
+    // groovy-all must match the version hubitat_ci was compiled against (2.5.x)
+    testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
+    testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
+    testImplementation 'me.biocomp.hubitat_ci:hubitat_ci:0.17'
+    testImplementation 'cglib:cglib-nodep:3.3.0'
+    testImplementation 'org.objenesis:objenesis:3.3'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+    }
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
