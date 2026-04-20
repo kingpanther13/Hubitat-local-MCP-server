@@ -1,0 +1,91 @@
+name: hubitat_ci version check
+
+# hubitat_ci is published to the biocomp Azure Artifacts Maven feed, which
+# Dependabot cannot resolve. This workflow polls the feed's maven-metadata.xml
+# weekly and opens a GitHub issue when a newer version appears, so the pinned
+# version in build.gradle has a notification channel.
+#
+# Upstream source: https://github.com/biocomp/hubitat_ci
+# Feed: https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Mondays 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest hubitat_ci version from Azure Artifacts
+        id: fetch
+        run: |
+          set -euo pipefail
+          URL="https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1/me/biocomp/hubitat_ci/hubitat_ci/maven-metadata.xml"
+          METADATA=$(curl -sSf "$URL")
+          LATEST=$(echo "$METADATA" | grep -oP '(?<=<latest>)[^<]+' | head -1 || true)
+          if [ -z "$LATEST" ]; then
+            LATEST=$(echo "$METADATA" | grep -oP '(?<=<release>)[^<]+' | head -1 || true)
+          fi
+          if [ -z "$LATEST" ]; then
+            echo "::error::Could not parse latest/release version from maven-metadata.xml"
+            echo "$METADATA"
+            exit 1
+          fi
+          PINNED=$(grep -oP "hubitat_ci:\K[^'\"]+" build.gradle | head -1)
+          if [ -z "$PINNED" ]; then
+            echo "::error::Could not parse pinned hubitat_ci version from build.gradle"
+            exit 1
+          fi
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+          echo "Pinned in build.gradle: $PINNED"
+          echo "Latest in feed:         $LATEST"
+          if [ "$LATEST" = "$PINNED" ]; then
+            echo "::notice::hubitat_ci is up to date."
+          else
+            echo "::notice::hubitat_ci update available: $PINNED -> $LATEST"
+          fi
+
+      - name: Open tracking issue when a newer version is available
+        if: steps.fetch.outputs.latest != steps.fetch.outputs.pinned
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST: ${{ steps.fetch.outputs.latest }}
+          PINNED: ${{ steps.fetch.outputs.pinned }}
+        run: |
+          set -euo pipefail
+          TITLE="chore: hubitat_ci update available (${LATEST})"
+          # Search open + closed so a closed "don't update yet" decision isn't
+          # re-opened every Monday. A newer version would produce a different
+          # title and trigger a fresh issue.
+          EXISTING=$(gh issue list --state all --search "\"${TITLE}\" in:title" --json number --jq '.[0].number // ""')
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #${EXISTING} already tracks ${LATEST} — no-op."
+            exit 0
+          fi
+          gh issue create \
+            --title "${TITLE}" \
+            --body "$(cat <<EOF
+          The weekly version check detected a newer \`hubitat_ci\` version on the biocomp Azure Artifacts feed.
+
+          - **Currently pinned:** \`${PINNED}\` (in \`build.gradle\`)
+          - **Latest available:** \`${LATEST}\`
+          - **Upstream source:** https://github.com/biocomp/hubitat_ci
+          - **Feed metadata:** https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1/me/biocomp/hubitat_ci/hubitat_ci/maven-metadata.xml
+
+          **To update:**
+          1. Edit \`build.gradle\` — change \`hubitat_ci:${PINNED}\` to \`hubitat_ci:${LATEST}\`.
+          2. If the Groovy version pinned by \`hubitat_ci\` changed, update \`org.codehaus.groovy:groovy-all\` and \`org.spockframework:spock-core\` (variant suffix) to match.
+          3. Run \`./gradlew test\` locally and in CI.
+          4. Review the upstream changelog on biocomp/hubitat_ci for breaking API changes that would require harness migration.
+
+          This issue was opened automatically by \`.github/workflows/hubitat-ci-version-check.yml\`. Closing it suppresses notifications for this specific version; a newer version produces a fresh issue.
+          EOF
+          )"
