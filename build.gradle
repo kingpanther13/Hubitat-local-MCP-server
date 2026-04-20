@@ -29,7 +29,7 @@ repositories {
     // Pinned by commit SHA since the fork doesn't cut release tags yet.
     // Tracked by .github/workflows/hubitat-ci-version-check.yml.
     maven {
-        url 'https://jitpack.io'
+        url = 'https://jitpack.io'
         content {
             includeGroup 'com.github.joelwetzel'
         }
@@ -88,6 +88,6 @@ test {
             '--add-opens=java.xml/com.sun.org.apache.xerces.internal.dom=ALL-UNNAMED'
     testLogging {
         events 'passed', 'skipped', 'failed'
-        exceptionFormat 'full'
+        exceptionFormat = 'full'
     }
 }
