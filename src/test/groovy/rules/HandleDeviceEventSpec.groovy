@@ -118,9 +118,15 @@ class HandleDeviceEventSpec extends RuleHarnessSpec {
         ]
     }
 
-    /** Minimal parent — findDevice(id) by Long coercion. */
+    /**
+     * Minimal parent — findDevice(id) by Long coercion. Also has a `settings`
+     * map because executeRule() reads `parent?.settings?.loopGuardMax` and
+     * Groovy's ?. short-circuits null but throws MissingPropertyException when
+     * the receiver is non-null and the property is absent.
+     */
     static class EventParent {
         Map<Long, TestDevice> devices = [:]
+        Map settings = [:]
 
         Object findDevice(id) {
             devices[(id as Long)]

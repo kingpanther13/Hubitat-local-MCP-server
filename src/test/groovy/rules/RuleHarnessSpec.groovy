@@ -38,6 +38,13 @@ abstract class RuleHarnessSpec extends Specification {
             // The closure re-reads the current value each call so specs can
             // assign `parent` in their given: block after setup() ran.
             _ * getParent() >> { specInstance.parent }
+            // app / location are in HubitatCI's AppExecutor interface (so they
+            // resolve via @Delegate, not metaClass). Script code calls
+            // `app.id` (ruleLog) and `location.mode` (substituteVariables)
+            // unconditionally; providing non-null stubs keeps those NPE-free
+            // in all specs without per-test wiring.
+            _ * getApp() >> [id: 1L]
+            _ * getLocation() >> [mode: 'Home', sunrise: null, sunset: null, hsmStatus: null]
             _ * now() >> 1234567890000L
             _ * getLog() >> logMock
         }

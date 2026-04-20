@@ -8,9 +8,10 @@ package rules
  * %mode% from location, atomicState.localVariables, getGlobalVar(),
  * parent.getVariableValue() fallback. Unknown placeholders are left as-is.
  *
- * The implementation dereferences `location.mode` and calls
- * `getGlobalVar()` unconditionally, so this spec stubs both via
- * metaClass in wireOverrides() before any substitution runs.
+ * The implementation dereferences `location.mode` unconditionally (handled
+ * by RuleHarnessSpec's default getLocation stub on AppExecutor) and calls
+ * `getGlobalVar()`, which is not on the AppExecutor interface so it's
+ * metaClass-stubbed here.
  */
 class SubstituteVariablesSpec extends RuleHarnessSpec {
 
@@ -20,11 +21,10 @@ class SubstituteVariablesSpec extends RuleHarnessSpec {
 
     @Override
     protected void wireOverrides() {
-        // `location.mode` is evaluated on every call; stub getLocation so null
-        // dereferences don't blow up the non-mode tests.
-        script.metaClass.getLocation = { -> [mode: 'Home'] }
-        // getGlobalVar is Hubitat SDK — return from our spec-controlled map,
-        // or null to force the parent.getVariableValue fallback.
+        // getGlobalVar is a Hubitat hub-variable accessor not declared on
+        // the AppExecutor interface, so metaClass override is the right hook.
+        // Returns from the spec-controlled map, or null to force the
+        // parent.getVariableValue fallback.
         def store = globalVars
         script.metaClass.getGlobalVar = { String name ->
             store.containsKey(name) ? [value: store[name]] : null
