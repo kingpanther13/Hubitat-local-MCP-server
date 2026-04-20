@@ -1,6 +1,7 @@
 package support
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
+import me.biocomp.hubitat_ci.api.common_api.Log
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
@@ -45,6 +46,7 @@ abstract class HarnessSpec extends Specification {
         def childDevicesRef = childDevicesList
         def childAppsRef = childAppsList
         def self = this
+        def logMock = Mock(Log)
         appExecutor = Mock(AppExecutor) {
             _ * getState() >> stateRef
             _ * getAtomicState() >> atomicStateRef
@@ -52,6 +54,7 @@ abstract class HarnessSpec extends Specification {
             _ * getChildApps() >> childAppsRef
             _ * addChildApp(_, _, _) >> { args -> self.mockChildAppForCreate }
             _ * now() >> 1234567890000L
+            _ * getLog() >> logMock
         }
         script = sandbox.compile(
             api: appExecutor,

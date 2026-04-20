@@ -1,6 +1,7 @@
 package rules
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
+import me.biocomp.hubitat_ci.api.common_api.Log
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
@@ -29,6 +30,7 @@ abstract class RuleHarnessSpec extends Specification {
         def stateRef = stateMap
         def atomicStateRef = atomicStateMap
         def specInstance = this
+        def logMock = Mock(Log)
         appExecutor = Mock(AppExecutor) {
             _ * getState() >> stateRef
             _ * getAtomicState() >> atomicStateRef
@@ -37,6 +39,7 @@ abstract class RuleHarnessSpec extends Specification {
             // assign `parent` in their given: block after setup() ran.
             _ * getParent() >> { specInstance.parent }
             _ * now() >> 1234567890000L
+            _ * getLog() >> logMock
         }
         script = sandbox.compile(
             api: appExecutor,
@@ -51,6 +54,8 @@ abstract class RuleHarnessSpec extends Specification {
     }
 
     protected void wireOverrides() {
-        script.metaClass.getLog = { -> new support.ToolSpecBase.LogStub() }
+        // All runtime shims (state, atomicState, parent, log, now) route through
+        // the AppExecutor mock. Subclasses override to add script-method overrides
+        // that can't be stubbed via the mock.
     }
 }
