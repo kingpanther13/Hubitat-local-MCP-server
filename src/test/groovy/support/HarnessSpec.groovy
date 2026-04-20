@@ -46,20 +46,16 @@ abstract class HarnessSpec extends Specification {
         def childDevicesRef = childDevicesList
         def childAppsRef = childAppsList
         def self = this
-        // Permissive log shim instead of Mock(Log): HubitatCI's Log interface
-        // declares error(String) but the real Hubitat runtime also accepts
-        // error(String, Throwable), which the server calls via
-        // log.error(msg, e). A Proxy-based Mock rejects the 2-arg call with
-        // MissingMethodException. A Map of varargs closures coerced to Log
-        // lets any log.<level>(...) invocation no-op regardless of signature;
-        // no spec currently asserts log interactions, so no behaviour regresses.
-        def logMock = [
-            error: { Object... args -> },
-            warn: { Object... args -> },
-            info: { Object... args -> },
-            debug: { Object... args -> },
-            trace: { Object... args -> }
-        ] as Log
+        // Permissive log shim instead of Mock(Log): HubitatCI's Log
+        // interface only declares single-arg level methods, but the real
+        // Hubitat runtime also accepts (String, Throwable). A Proxy-based
+        // Mock — or a Map coerced with `as Log` — rejects the 2-arg call
+        // with MissingMethodException, which makes
+        // handleToolsCall's generic-catch path (log.error(msg, e) at line
+        // 415) untestable. A concrete class that implements Log and adds
+        // the 2-arg overloads dispatches correctly under dynamic Groovy.
+        // No spec currently asserts log interactions, so no behaviour regresses.
+        def logMock = new PermissiveLog()
         appExecutor = Mock(AppExecutor) {
             _ * getState() >> stateRef
             _ * getAtomicState() >> atomicStateRef
