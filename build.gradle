@@ -20,6 +20,11 @@ dependencies {
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
     testImplementation 'me.biocomp.hubitat_ci:hubitat_ci:0.17'
+    // Required by Spock to Mock/Spy non-interface types (TestDevice, TestChildApp).
+    // Spock 2.x can use either byte-buddy or cglib-nodep as its class-gen
+    // backend; neither is a transitive dep of spock-core on the groovy-2.5
+    // variant.
+    testImplementation 'net.bytebuddy:byte-buddy:1.14.18'
 }
 
 java {
