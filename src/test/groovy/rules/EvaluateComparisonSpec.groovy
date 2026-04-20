@@ -84,15 +84,15 @@ class EvaluateComparisonSpec extends RuleHarnessSpec {
         script.evaluateComparison('on', 'unknown', 'off') == false
     }
 
-    def "numeric operator with null target falls through to string equality (caught path)"() {
-        // target?.toBigDecimal() returns null; comparing BigDecimal with null
-        // throws inside the try, so the catch falls back to
-        // current.toString() == target?.toString() — '10' == 'null' is false.
-        // Pinning this so a future "throw on null target" change is caught.
+    def "numeric operator with null target uses Groovy's null-as-smallest semantics"() {
+        // target?.toBigDecimal() returns null; Groovy treats `BigDecimal > null`
+        // as true (null sorts smallest). No exception → no string-fallback.
+        // Pinning the actual behaviour so a future "throw / fail-closed on
+        // null target" refactor is caught here.
         expect:
-        script.evaluateComparison(10, '>', null) == false
+        script.evaluateComparison(10, '>', null) == true
         script.evaluateComparison(10, '<', null) == false
-        script.evaluateComparison(10, '>=', null) == false
+        script.evaluateComparison(10, '>=', null) == true
         script.evaluateComparison(10, '<=', null) == false
     }
 
@@ -100,5 +100,6 @@ class EvaluateComparisonSpec extends RuleHarnessSpec {
         expect: 'distinct from the null-current branch — current present, target absent'
         script.evaluateComparison(10, 'equals', null) == false
         script.evaluateComparison('on', '==', null) == false
+        script.evaluateComparison(10, 'not_equals', null) == true
     }
 }
