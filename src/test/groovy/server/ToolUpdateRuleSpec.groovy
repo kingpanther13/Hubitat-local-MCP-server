@@ -16,7 +16,7 @@ class ToolUpdateRuleSpec extends ToolSpecBase {
         def mockChildApp = Spy(TestChildApp) {
             getId() >> 42
         }
-        mockChildApp.settings['ruleName'] = 'Updated Name'
+        mockChildApp.settingsStore['ruleName'] = 'Updated Name'
         childAppsList << mockChildApp
 
         when:
