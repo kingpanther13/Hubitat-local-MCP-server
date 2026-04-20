@@ -28,7 +28,11 @@ abstract class HarnessSpec extends Specification {
     protected script
     protected Map stateMap = [:]
     protected Map atomicStateMap = [:]
-    protected Map settingsMap = [:]
+    // Must be non-empty at setup() time — HubitatCI's readUserSettingValues
+    // uses a Groovy truthy check on the passed map and silently swaps in a
+    // fresh empty Map when it's empty, breaking the shared reference that
+    // specs rely on to mutate settings from their `given:` blocks.
+    protected Map settingsMap = [selectedDevices: []]
     protected List childDevicesList = []
     protected List childAppsList = []
     protected def mockChildAppForCreate  // tests set this to drive addChildApp's return value

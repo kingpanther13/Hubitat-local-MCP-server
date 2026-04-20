@@ -20,8 +20,9 @@ abstract class RuleHarnessSpec extends Specification {
     protected script
     protected Map stateMap = [:]
     protected Map atomicStateMap = [:]
-    protected Map settingsMap = [:]
-    protected def parent  // subclasses assign a Spock Mock
+    // Must be non-empty — see HarnessSpec for why.
+    protected Map settingsMap = [_harness: true]
+    protected def parent  // subclasses assign via given: block; wireOverrides() re-reads current value
 
     def setup() {
         def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-rule.groovy'))
@@ -45,8 +46,11 @@ abstract class RuleHarnessSpec extends Specification {
     }
 
     protected void wireOverrides() {
-        def parentRef = parent
-        script.metaClass.getParent = { -> parentRef }
+        // Closure re-reads `this.parent` on each invocation, so specs can
+        // assign to `parent` in their `given:` block AFTER setup() has run
+        // and the override still sees the fresh value.
+        def specInstance = this
+        script.metaClass.getParent = { -> specInstance.parent }
         script.metaClass.getLog = { -> new support.ToolSpecBase.LogStub() }
     }
 }

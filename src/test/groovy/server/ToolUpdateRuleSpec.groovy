@@ -1,21 +1,22 @@
 package server
 
+import support.TestChildApp
 import support.ToolSpecBase
 
 /**
  * Spec for toolUpdateRule (hubitat-mcp-server.groovy line 2263).
  *
- * Covers: golden-path update via a mock child app + the "Rule not found"
+ * Covers: golden-path update via a TestChildApp Spy + the "Rule not found"
  * error path.
  */
 class ToolUpdateRuleSpec extends ToolSpecBase {
 
     def "updates rule via child app and returns success"() {
         given:
-        def mockChildApp = Mock(Object) {
-            _ * getId() >> 42
-            _ * getSetting('ruleName') >> 'Updated Name'
+        def mockChildApp = Spy(TestChildApp) {
+            getId() >> 42
         }
+        mockChildApp.settings['ruleName'] = 'Updated Name'
         childAppsList << mockChildApp
 
         when:

@@ -1,5 +1,6 @@
 package server
 
+import support.TestDevice
 import support.ToolSpecBase
 
 /**
@@ -11,16 +12,16 @@ class ToolGetDeviceSpec extends ToolSpecBase {
 
     def "returns device summary shape for an existing device"() {
         given:
-        def device = Mock(Object) {
-            _ * getId() >> 10
-            _ * getName() >> 'TestSwitch'
-            _ * getLabel() >> 'Test Switch'
-            _ * getRoomName() >> 'Living Room'
-            _ * getCapabilities() >> [[name: 'Switch']]
-            _ * getSupportedAttributes() >> [[name: 'switch', dataType: 'ENUM']]
-            _ * getSupportedCommands() >> [[name: 'on', arguments: null], [name: 'off', arguments: null]]
-            _ * currentValue('switch') >> 'off'
-        }
+        def device = new TestDevice(
+            id: 10,
+            name: 'TestSwitch',
+            label: 'Test Switch',
+            roomName: 'Living Room',
+            capabilities: [[name: 'Switch']],
+            supportedAttributes: [[name: 'switch', dataType: 'ENUM']],
+            supportedCommands: [[name: 'on', arguments: null], [name: 'off', arguments: null]],
+            attributeValues: [switch: 'off']
+        )
         childDevicesList << device
 
         when:

@@ -1,5 +1,6 @@
 package server
 
+import support.TestDevice
 import support.ToolSpecBase
 
 /**
@@ -11,19 +12,19 @@ import support.ToolSpecBase
 class ToolSendCommandSpec extends ToolSpecBase {
 
     def "dispatches command to device and returns success"() {
-        given: 'a device that supports on/off'
-        def device = Mock(Object) {
-            _ * getId() >> 10
-            _ * getName() >> 'TestSwitch'
-            _ * getLabel() >> 'Test Switch'
-            _ * getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        given: 'a TestDevice that supports on/off'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
         }
         childDevicesList << device
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the device method is invoked'
+        then: 'the device method was invoked exactly once'
         1 * device.on()
 
         and: 'the result shape reflects success'
@@ -33,7 +34,7 @@ class ToolSendCommandSpec extends ToolSpecBase {
     }
 
     def "throws when device is not found"() {
-        given: 'no devices registered'
+        given:
         childDevicesList.clear()
 
         when:
