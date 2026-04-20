@@ -27,7 +27,11 @@ abstract class HarnessSpec extends Specification {
         }
         script = sandbox.run(
             api: appExecutor,
-            validationFlags: [Flags.DontValidatePreferences, Flags.DontValidateDefinition]
+            validationFlags: [
+                Flags.DontValidatePreferences,
+                Flags.DontValidateDefinition,
+                Flags.DontRestrictGroovy
+            ]
         )
         wireScriptOverrides()
     }
