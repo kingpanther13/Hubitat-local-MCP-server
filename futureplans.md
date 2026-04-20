@@ -32,7 +32,7 @@
   > 4. Package request body, headers, and query params into pseudo-event for variable substitution
 
 - [ ] **Hub variable change triggers** — `Difficulty: 2 | Effort: S`
-  > *Feasible — native subscription supported.* Per the [Hub Variable API docs](https://docs2.hubitat.com/en/developer/interfaces/hub-variable-api), hub variable changes fire Location Events named `variable:<name>`. Apps can subscribe directly with `subscribe(location, "variable:<name>", handler)` for all changes of a variable, or `subscribe(location, "variable:<name>.value", handler)` to fire only when the variable becomes a specific value. No polling, no Variable Connector workaround required. The earlier "not natively subscribable" framing was incorrect.
+  > *Feasible — native subscription supported.* Per the [Hub Variable API docs](https://docs2.hubitat.com/en/developer/interfaces/hub-variable-api), hub variable changes fire Location Events named `variable:<name>`. Apps can subscribe directly with `subscribe(location, "variable:<name>", handler)` for all changes of a variable, or `subscribe(location, "variable:<name>.<value>", handler)` to fire only when the variable becomes a specific value (for example, `"variable:myVar.on"` fires only when `myVar` becomes `"on"`). No polling, no Variable Connector workaround required. The earlier "not natively subscribable" framing was incorrect.
   >
   > **Implementation plan:**
   > 1. Add `variable_change` trigger type with `variableName` and optional `value` filter
@@ -188,13 +188,18 @@
   > 3. Add `host_reachable` / `host_unreachable` as `ping_host` shortcut conditions (or just rely on variable conditions)
   > 4. Validate `ipAddress` as a string before the call; surface platform errors as tool/action failure messages
 
-- [ ] **HTTP reachability check** — `Difficulty: 2 | Effort: S`
-  > *Feasible — complementary to ICMP ping above.* `httpGet()` (or `asynchttpGet`) against a target URL still has value for hosts that don't respond to ICMP or when you need to verify HTTP-layer health, not just network reachability. Keep as a secondary action type alongside the native ping.
+- [ ] **HTTP reachability check** — `Difficulty: 3 | Effort: M`
+  > *Feasible — complementary to ICMP ping above.* An HTTP GET against a target URL still has value for hosts that don't respond to ICMP or when you need to verify HTTP-layer health, not just network reachability. Keep as a secondary action type alongside the native ping.
+  >
+  > **Ordering caveat.** `asynchttpGet()` is non-blocking: any actions after `http_check` in a rule's action list would otherwise run before the response arrived and before the result variables (`reachable`, `statusCode`, `responseTimeMs`) were populated. A correct implementation must save rule execution state on the dispatch and resume from the async callback — the same save-state/resume pattern used by the existing `delay` action. Mandatory timeout required so a stalled request doesn't leave the rule suspended.
   >
   > **Implementation plan:**
-  > 1. Add `http_check` action type with target URL, optional expected status code, and timeout
-  > 2. Use `asynchttpGet()` (non-blocking) in a try-catch block
-  > 3. Set result fields (`reachable`, `statusCode`, `responseTimeMs`) in rule/local variables for use in conditions
+  > 1. Add `http_check` action type with target URL, optional expected status code, and mandatory timeout
+  > 2. Dispatch via `asynchttpGet()` (non-blocking, does not tie up the hub executor)
+  > 3. Save action-index + context to `atomicState` before dispatch, mirroring the `delay` action's resume pattern
+  > 4. In the async callback, populate result fields (`reachable`, `statusCode`, `responseTimeMs`) into rule/local variables and resume action execution from the saved index
+  > 5. Enforce a hard timeout that resumes with `reachable=false` if no response arrives in time
+  > 6. Synchronous `httpGet()` is not an acceptable shortcut — it blocks the hub event executor and can stall other apps
 
 ### Variable System
 
