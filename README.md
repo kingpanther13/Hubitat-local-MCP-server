@@ -1558,6 +1558,16 @@ For easier bug reporting:
 
 </details>
 
+## Testing
+
+Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper:
+
+```bash
+./gradlew test
+```
+
+See [docs/testing.md](docs/testing.md) for the full harness overview, how to add new specs, and the RMUtils mocking recipe for `manage_rule_machine` tools.
+
 ## Contributing
 
 Contributions welcome! Fork the repo, create a feature branch, make your changes, and submit a pull request. Please include a description of changes and any testing you've done.
