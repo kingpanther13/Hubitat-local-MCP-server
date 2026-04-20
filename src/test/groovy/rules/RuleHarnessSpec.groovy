@@ -28,9 +28,14 @@ abstract class RuleHarnessSpec extends Specification {
         def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-rule.groovy'))
         def stateRef = stateMap
         def atomicStateRef = atomicStateMap
+        def specInstance = this
         appExecutor = Mock(AppExecutor) {
             _ * getState() >> stateRef
             _ * getAtomicState() >> atomicStateRef
+            // getParent() goes through @Delegate → AppExecutor, not metaclass.
+            // The closure re-reads the current value each call so specs can
+            // assign `parent` in their given: block after setup() ran.
+            _ * getParent() >> { specInstance.parent }
             _ * now() >> 1234567890000L
         }
         script = sandbox.compile(
@@ -46,11 +51,6 @@ abstract class RuleHarnessSpec extends Specification {
     }
 
     protected void wireOverrides() {
-        // Closure re-reads `this.parent` on each invocation, so specs can
-        // assign to `parent` in their `given:` block AFTER setup() has run
-        // and the override still sees the fresh value.
-        def specInstance = this
-        script.metaClass.getParent = { -> specInstance.parent }
         script.metaClass.getLog = { -> new support.ToolSpecBase.LogStub() }
     }
 }
