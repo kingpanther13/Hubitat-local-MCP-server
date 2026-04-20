@@ -1,0 +1,44 @@
+# Dependabot config. See:
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # GitHub Actions. Weekly cadence picks up action releases — notably the
+  # Node.js 20 → 24 migrations that upstream actions publish as minor/patch
+  # bumps and that resolve the current Unit Tests CI deprecation notice.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+
+  # Gradle dependencies in build.gradle. Monthly cadence since test-only
+  # changes don't need aggressive freshness, and the set is small.
+  #
+  # Pinned intentionally (see ignores below):
+  #   - groovy-all is constrained to 2.5.x by hubitat_ci:0.17's compiled-
+  #     against version; minor/major bumps break the harness.
+  #   - spock-core uses the "-groovy-2.5" variant suffix, which Dependabot
+  #     doesn't model — ignore entirely, manual bump when Groovy is unpinned.
+  #   - hubitat_ci lives on biocomp Azure Artifacts (not Maven Central).
+  #     Dependabot can't resolve it anyway; explicit ignore keeps config
+  #     self-documenting. New versions are surfaced by the separate
+  #     hubitat-ci-version-check.yml workflow.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    ignore:
+      - dependency-name: "org.codehaus.groovy:groovy-all"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "org.spockframework:spock-core"
+      - dependency-name: "me.biocomp.hubitat_ci:hubitat_ci"
+    groups:
+      gradle-dependencies:
+        patterns: ["*"]
+    open-pull-requests-limit: 2
