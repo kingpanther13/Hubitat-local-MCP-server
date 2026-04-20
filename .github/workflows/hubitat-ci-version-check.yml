@@ -38,7 +38,9 @@ jobs:
             echo "$METADATA"
             exit 1
           fi
-          PINNED=$(grep -oP "hubitat_ci:\K[^'\"]+" build.gradle | head -1)
+          # Full GAV coordinate: group `hubitat_ci:` appears twice (group + artifact),
+          # so split on the last colon rather than relying on lookbehind.
+          PINNED=$(grep -oE "me\.biocomp\.hubitat_ci:hubitat_ci:[^'\"]+" build.gradle | head -1 | cut -d: -f3)
           if [ -z "$PINNED" ]; then
             echo "::error::Could not parse pinned hubitat_ci version from build.gradle"
             exit 1
