@@ -1,10 +1,12 @@
 package rules
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
+import me.biocomp.hubitat_ci.api.common_api.Location
 import me.biocomp.hubitat_ci.api.common_api.Log
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
+import support.TestChildApp
 
 /**
  * Loads hubitat-mcp-rule.groovy (the rule-engine child app — separate
@@ -38,6 +40,19 @@ abstract class RuleHarnessSpec extends Specification {
             // The closure re-reads the current value each call so specs can
             // assign `parent` in their given: block after setup() ran.
             _ * getParent() >> { specInstance.parent }
+            // app / location are in HubitatCI's AppExecutor interface (so they
+            // resolve via @Delegate, not metaClass). Script code calls
+            // `app.id` (ruleLog) and `location.mode` (substituteVariables)
+            // unconditionally; provide non-null stubs typed to the interface
+            // Spock expects (raw Map returns trip a GroovyCastException).
+            _ * getApp() >> new TestChildApp(id: 1L, label: 'TestRuleApp')
+            _ * getLocation() >> ([
+                getMode    : { -> 'Home' },
+                getCurrentMode: { -> null },
+                getModes   : { -> [] },
+                getName    : { -> 'TestLocation' },
+                getId      : { -> 1L }
+            ] as Location)
             _ * now() >> 1234567890000L
             _ * getLog() >> logMock
         }
