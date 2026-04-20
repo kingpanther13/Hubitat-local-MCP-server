@@ -1,0 +1,106 @@
+name: hubitat_ci version check
+
+# joelwetzel/hubitat_ci is consumed from JitPack at a pinned master-branch
+# commit SHA (the fork doesn't cut releases/tags). This workflow polls
+# joelwetzel's master HEAD weekly and opens a tracking issue when commits
+# beyond our pinned SHA are available.
+#
+# Upstream: https://github.com/joelwetzel/hubitat_ci
+# Fork of:  https://github.com/biocomp/hubitat_ci
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Mondays 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare pinned commit against joelwetzel master HEAD
+        id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Pinned SHA from build.gradle — coordinate shape is
+          # 'com.github.joelwetzel:hubitat_ci:<short-sha>'.
+          PINNED=$(grep -oE "com\.github\.joelwetzel:hubitat_ci:[^'\"]+" build.gradle | head -1 | cut -d: -f3)
+          if [ -z "$PINNED" ]; then
+            echo "::error::Could not parse pinned com.github.joelwetzel:hubitat_ci SHA from build.gradle"
+            exit 1
+          fi
+
+          # joelwetzel master HEAD. The default-branch commit SHA is the full
+          # 40-char form; we compare by startsWith to handle short-hash pins.
+          LATEST=$(gh api repos/joelwetzel/hubitat_ci/commits/master --jq .sha)
+          if [ -z "$LATEST" ]; then
+            echo "::error::Could not fetch joelwetzel/hubitat_ci master HEAD"
+            exit 1
+          fi
+
+          SHORT_LATEST=${LATEST:0:10}
+          echo "pinned=$PINNED"              >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"              >> "$GITHUB_OUTPUT"
+          echo "short_latest=$SHORT_LATEST"  >> "$GITHUB_OUTPUT"
+          echo "Pinned in build.gradle: $PINNED"
+          echo "joelwetzel master HEAD: $LATEST"
+
+          if [[ "$LATEST" == "$PINNED"* ]]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::joelwetzel/hubitat_ci is up to date."
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::joelwetzel/hubitat_ci update available: $PINNED -> $SHORT_LATEST"
+          fi
+
+      - name: Open tracking issue when new commits are available
+        if: steps.compare.outputs.up_to_date != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED: ${{ steps.compare.outputs.pinned }}
+          LATEST: ${{ steps.compare.outputs.latest }}
+          SHORT_LATEST: ${{ steps.compare.outputs.short_latest }}
+        run: |
+          set -euo pipefail
+          TITLE="chore: joelwetzel/hubitat_ci update available (${SHORT_LATEST})"
+
+          EXISTING=$(gh issue list --state all --search "\"${TITLE}\" in:title" --json number --jq '.[0].number // ""')
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #${EXISTING} already tracks ${SHORT_LATEST} — no-op."
+            exit 0
+          fi
+
+          COMMITS_SUMMARY=$(gh api "repos/joelwetzel/hubitat_ci/compare/${PINNED}...${LATEST}" \
+            --jq '.commits | map("- " + (.sha[0:10]) + " " + (.commit.message | split("\n")[0])) | .[0:20] | join("\n")' \
+            2>/dev/null || echo "(commit list unavailable — compare the two SHAs manually)")
+
+          BODY="The weekly version check detected new commits on \`joelwetzel/hubitat_ci\`'s master branch past our pinned SHA.
+
+          - **Currently pinned:** \`${PINNED}\` (in \`build.gradle\` via JitPack)
+          - **Latest master HEAD:** \`${LATEST}\`
+          - **Compare view:** https://github.com/joelwetzel/hubitat_ci/compare/${PINNED}...${LATEST}
+          - **Fork repo:** https://github.com/joelwetzel/hubitat_ci
+
+          ## Commits since pin (up to 20)
+
+          ${COMMITS_SUMMARY}
+
+          ## To update
+
+          1. Edit \`build.gradle\` — change \`com.github.joelwetzel:hubitat_ci:${PINNED}\` to \`com.github.joelwetzel:hubitat_ci:${SHORT_LATEST}\`.
+          2. Run \`./gradlew test\` locally or in CI. The harness may need adjustment if any API has moved (imports under \`me.biocomp.hubitat_ci.*\`).
+          3. Review the compare view above for any breaking changes.
+
+          This issue was opened automatically by \`.github/workflows/hubitat-ci-version-check.yml\`. Closing it suppresses notifications for this SHA; a newer HEAD triggers a fresh issue."
+
+          gh issue create \
+            --title "${TITLE}" \
+            --body "${BODY}"
