@@ -45,14 +45,20 @@ class HandleGatewaySpec extends ToolSpecBase {
         ex.message.contains('list_rooms')
     }
 
-    def "prevents recursive gateway calls"() {
+    def "using a gateway name as a tool fails"() {
+        // The defensive recursive-call check at line 639
+        // ("Cannot call a gateway from within a gateway") is unreachable
+        // given current configs — gateway names and tool names are
+        // disjoint namespaces, so the unknown-tool check at line 634
+        // fires first. This test pins the effective behaviour: attempting
+        // to invoke a gateway by name as a tool is rejected.
         when:
-        // toolName is itself a registered gateway name
         script.handleGateway('manage_rooms', 'manage_rooms', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message == 'Cannot call a gateway from within a gateway'
+        ex.message.startsWith("Unknown tool 'manage_rooms' in manage_rooms")
+        ex.message.contains('Available:')
     }
 
     def "missing required parameters returns isError response (does NOT throw)"() {
