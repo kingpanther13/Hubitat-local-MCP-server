@@ -1570,7 +1570,11 @@ See [docs/testing.md](docs/testing.md) for the full harness overview, how to add
 
 ## Contributing
 
-Contributions welcome! Fork the repo, create a feature branch, make your changes, and submit a pull request. Please include a description of changes and any testing you've done.
+Contributions welcome! Fork the repo, create a feature branch, make your changes, and submit a pull request.
+
+**New MCP tools must ship with unit tests** — both golden-path and error-path coverage. Tool handler tests go under `src/test/groovy/server/`; rule-engine tests under `src/test/groovy/rules/`. See [docs/testing.md](docs/testing.md) for the harness overview, the recipe for adding a new tool spec, and the RMUtils mocking pattern for `manage_rule_machine`-style tools.
+
+PRs that add tools without tests will be asked to add them before merge. CI (`./gradlew test`) runs on every PR via `.github/workflows/unit-tests.yml`.
 
 ## License
 

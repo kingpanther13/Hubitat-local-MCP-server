@@ -635,7 +635,11 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         throw new IllegalArgumentException("Unknown tool '${toolName}' in ${gatewayName}. Available: ${config.tools.join(', ')}")
     }
 
-    // Prevent recursive gateway calls
+    // Defensive: unreachable with current configs — gateway names and tool
+    // names are disjoint namespaces, so the unknown-tool check above always
+    // fires first if toolName matches a registered gateway. Kept as a guard
+    // in case a future gateway config ever lists another gateway's name in
+    // its tools array.
     if (getGatewayConfig().containsKey(toolName)) {
         throw new IllegalArgumentException("Cannot call a gateway from within a gateway")
     }
