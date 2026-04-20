@@ -39,6 +39,29 @@ test {
     // metaclass methods on hubitat.helper.RMUtils / .NetworkUtils — concurrent
     // specs installing and uninstalling these at the same time would race.
     maxParallelForks = 1
+    // Silence Groovy 2.5.23's reflective access under JDK 11+.
+    // We're pinned to Groovy 2.5 by hubitat_ci's compiled-against
+    // version; each --add-opens grants access to a java.base package
+    // that Groovy's CachedClass / CachedConstructor reflects into
+    // on initialization. Each suppression tends to reveal the next
+    // path the first time a spec exercises it — the set below covers
+    // the packages Groovy 2.5 is known to reach into. Add more as
+    // new warnings surface, or drop the whole block when hubitat_ci
+    // moves to Groovy 4.
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED',
+            '--add-opens=java.base/java.lang.invoke=ALL-UNNAMED',
+            '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+            '--add-opens=java.base/java.io=ALL-UNNAMED',
+            '--add-opens=java.base/java.math=ALL-UNNAMED',
+            '--add-opens=java.base/java.net=ALL-UNNAMED',
+            '--add-opens=java.base/java.nio=ALL-UNNAMED',
+            '--add-opens=java.base/java.text=ALL-UNNAMED',
+            '--add-opens=java.base/java.time=ALL-UNNAMED',
+            '--add-opens=java.base/java.util=ALL-UNNAMED',
+            '--add-opens=java.base/java.util.concurrent=ALL-UNNAMED',
+            '--add-opens=java.base/java.util.regex=ALL-UNNAMED',
+            '--add-opens=java.base/sun.util.calendar=ALL-UNNAMED',
+            '--add-opens=java.xml/com.sun.org.apache.xerces.internal.dom=ALL-UNNAMED'
     testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat 'full'

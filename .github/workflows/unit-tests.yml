@@ -13,10 +13,14 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          # Gradle daemon runs on this JVM. Gradle 9 requires JDK 17+
+          # for the daemon itself; project targets JDK 11 via the
+          # toolchain block in build.gradle, which Gradle locates from
+          # the runner's pre-installed temurin-11.
+          java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - name: Run unit tests
-        run: ./gradlew test --info
+        run: ./gradlew test --info --warning-mode all
       - name: Upload test report on failure
         if: failure()
         uses: actions/upload-artifact@v4
