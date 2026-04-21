@@ -28,6 +28,12 @@ updates:
   #     JitPack/Dependabot interop on tag-based version discovery is flaky,
   #     so we keep the manual bump tracked by the hubitat-ci-version-check
   #     workflow rather than relying on Dependabot here.
+  #   - su.litvak.chromecast:api-v2 stays on 0.11.1. 0.11.3's POM declares
+  #     jackson with a Maven-style *discontinuous* version range that
+  #     Gradle's resolver can't parse (see the pin note in build.gradle).
+  #     We only carry the dep to satisfy eighty20results' bytecode ref
+  #     to `common_api.ChromeCast`; we don't consume its API, so holding
+  #     the version is risk-free.
   - package-ecosystem: "gradle"
     directory: "/"
     schedule:
@@ -39,6 +45,7 @@ updates:
           - "version-update:semver-minor"
       - dependency-name: "org.spockframework:spock-core"
       - dependency-name: "com.github.eighty20results:hubitat_ci"
+      - dependency-name: "su.litvak.chromecast:api-v2"
     groups:
       gradle-dependencies:
         patterns: ["*"]

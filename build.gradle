@@ -80,7 +80,17 @@ dependencies {
     // don't silently drift from what the fork compiled against.
     testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
     testImplementation 'org.quartz-scheduler:quartz:2.5.2'
-    testImplementation 'su.litvak.chromecast:api-v2:0.11.3'
+    // Pinned to 0.11.1 — 0.11.3's POM declares jackson with a
+    // Maven-style *discontinuous* version range
+    // `[2.9.1,2.9.99],[2.10.1,2.10.99]`. Gradle's resolver reads the
+    // whole string as a single literal constraint and fails with
+    // "Could not find ... jackson-annotations:[2.9.1,2.9.99],[2.10.1,2.10.99]".
+    // 0.11.1 uses a single continuous range that Gradle handles. Dep
+    // is only on our classpath to satisfy eighty20results' bytecode
+    // reference to `common_api.ChromeCast` — we don't consume the
+    // API directly, so staying on the older version is harmless.
+    // Pinned in .github/dependabot.yml to suppress the weekly bump.
+    testImplementation 'su.litvak.chromecast:api-v2:0.11.1'
     // Required by Spock to Mock/Spy non-interface types (TestDevice, TestChildApp).
     // Spock 2.x can use either byte-buddy or cglib-nodep as its class-gen
     // backend; neither is a transitive dep of spock-core.
