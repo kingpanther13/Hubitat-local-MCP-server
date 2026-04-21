@@ -19,10 +19,15 @@ jobs:
           # and demote all headings by one level (## -> ###, ### -> ####)
           CONTENT=$(tail -n +2 futureplans.md | sed 's/^### /#### /; s/^## /### /')
 
-          # Build the replacement block with marker comments
+          # Build the replacement block with marker comments.
+          # Wrap the section in <details> so it renders collapsed on GitHub —
+          # the future-plans body is large and speculative, so keeping it
+          # collapsed by default prevents drowning out the rest of the README.
           REPLACEMENT="<!-- FUTURE_PLANS_START -->"
-          REPLACEMENT+=$'\n'"## Future Plans"$'\n\n'
+          REPLACEMENT+=$'\n'"<details>"
+          REPLACEMENT+=$'\n'"<summary><h2>Future Plans</h2></summary>"$'\n\n'
           REPLACEMENT+="$CONTENT"
+          REPLACEMENT+=$'\n\n'"</details>"
           REPLACEMENT+=$'\n'"<!-- FUTURE_PLANS_END -->"
 
           # Replace everything between the markers in README.md
