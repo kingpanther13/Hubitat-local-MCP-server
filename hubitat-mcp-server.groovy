@@ -7651,14 +7651,14 @@ def toolListRmRules(args) {
         def rules4 = hubitat.helper.RMUtils.getRuleList() ?: []
         rules4.each { r -> registerRmRule(combined, r, "4.x") }
     } catch (Throwable e) {
-        v4Error = e.message ?: e.toString()
+        v4Error = e.toString()
     }
 
     try {
         def rules5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
         rules5.each { r -> registerRmRule(combined, r, "5.x") }
     } catch (Throwable e) {
-        v5Error = e.message ?: e.toString()
+        v5Error = e.toString()
     }
 
     def rules = combined.values().sort { it.label ?: "" }
