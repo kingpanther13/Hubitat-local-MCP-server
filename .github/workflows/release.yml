@@ -1,7 +1,6 @@
 name: Release on merge
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
 
 concurrency:
@@ -14,23 +13,81 @@ permissions:
 
 jobs:
   release:
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
+      # Short-circuit on the bot's own release-commit pushes so we don't
+      # recurse. The push event fires again when `git push origin main`
+      # lands the version-bump commit from a prior release run.
+      - name: Guard against release-commit recursion
+        id: precheck
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_AUTHOR_NAME: ${{ github.event.head_commit.author.name }}
+        run: |
+          if [ "$COMMIT_AUTHOR_NAME" = "github-actions[bot]" ]; then
+            echo "::notice::Push authored by github-actions[bot] — skipping to avoid release loop"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -n1)
+          case "$FIRST_LINE" in
+            "chore(release):"*)
+              echo "::notice::Head commit is a release commit — skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # Trigger moved from `pull_request: closed` to `push: main` so the
+      # release bot doesn't inherit GITHUB_TOKEN's forced read-only scope
+      # when a fork contributor's PR is merged. Push events on the base
+      # repo get the workflow's declared `contents: write` permission
+      # regardless of where the merged code came from. We recover the PR
+      # the merge commit came from via the commits-to-PRs API.
+      - name: Resolve PR from merge commit
+        if: steps.precheck.outputs.skip != 'true'
+        id: pr
+        env:
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_JSON=$(gh api "/repos/${{ github.repository }}/commits/${SHA}/pulls" --jq '.[0] // empty')
+          if [ -z "$PR_JSON" ]; then
+            echo "::notice::No PR associated with ${SHA} — direct push or unrelated event, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+          PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login')
+          PR_AUTHOR_ID=$(echo "$PR_JSON" | jq -r '.user.id')
+          LABELS_JSON=$(echo "$PR_JSON" | jq -c '.labels')
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "author=$PR_AUTHOR" >> "$GITHUB_OUTPUT"
+          echo "author_id=$PR_AUTHOR_ID" >> "$GITHUB_OUTPUT"
+          {
+            echo "labels_json<<__EOF__"
+            echo "$LABELS_JSON"
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Determine release label
+        if: steps.pr.outputs.skip != 'true'
         id: label
         env:
-          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
+          LABELS_JSON: ${{ steps.pr.outputs.labels_json }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           RELEASE_LABELS=$(echo "$LABELS_JSON" | jq -r '[.[] | select(.name | startswith("release:")) | .name]')
           COUNT=$(echo "$RELEASE_LABELS" | jq 'length')
           if [ "$COUNT" = "0" ]; then
-            echo "::notice::No release:* label — skipping version bump (PR accumulates for the next labeled release)"
+            echo "::notice::PR #${PR_NUMBER} has no release:* label — skipping version bump (PR accumulates for the next labeled release)"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "$COUNT" -gt 1 ]; then
-            echo "::error::Multiple release:* labels found; expected exactly one: $RELEASE_LABELS"
+            echo "::error::Multiple release:* labels found on PR #${PR_NUMBER}; expected exactly one: $RELEASE_LABELS"
             exit 1
           fi
           LABEL=$(echo "$RELEASE_LABELS" | jq -r '.[0]')
@@ -55,7 +112,7 @@ jobs:
         id: bump
         env:
           LABEL: ${{ steps.label.outputs.label }}
-          TRIGGER_PR_NUMBER: ${{ github.event.pull_request.number }}
+          TRIGGER_PR_NUMBER: ${{ steps.pr.outputs.number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python .github/scripts/release_bump.py
 
@@ -63,8 +120,8 @@ jobs:
         if: steps.label.outputs.skip != 'true'
         env:
           NEW_VERSION: ${{ steps.bump.outputs.new_version }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
+          PR_AUTHOR_ID: ${{ steps.pr.outputs.author_id }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -72,9 +129,8 @@ jobs:
           git commit \
             -m "chore(release): ${NEW_VERSION}" \
             -m "Co-authored-by: ${PR_AUTHOR} <${PR_AUTHOR_ID}+${PR_AUTHOR}@users.noreply.github.com>"
-          # Use annotated tag + explicit tag push. --follow-tags silently skips
-          # lightweight tags, so the previous 'git tag ... && git push --follow-tags'
-          # form left the tag unpushed on v0.9.3's first run.
+          # Annotated tag + explicit tag push (--follow-tags silently skips
+          # lightweight tags; this was the v0.9.3 regression).
           git tag -a "v${NEW_VERSION}" -m "Release ${NEW_VERSION}"
           git push origin main
           git push origin "v${NEW_VERSION}"
