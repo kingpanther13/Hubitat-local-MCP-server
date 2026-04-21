@@ -232,9 +232,18 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.warning.contains('v4=')
     }
 
-    def "registerRmRule skips entries with non-Integer-coercible keys (Groovy-sandbox-safe warn log)"() {
+    def "registerRmRule skips entries with non-Integer-coercible keys and emits a sandbox-safe warn log"() {
         given:
         settingsMap.enableBuiltinAppRead = true
+
+        and: 'collect mcpLog calls via per-test metaClass override'
+        // mcpLog is a script-local method (not inherited from AppExecutor /
+        // HubitatAppScript), so per-instance metaClass override works here —
+        // see docs/testing.md "Which interception point to use".
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
 
         and: 'v5 list contains one bad String key and one valid numeric key'
         rmUtils.stubRuleList5 = [
@@ -248,10 +257,21 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then: 'only the valid rule is returned'
         result.rules*.id == [123]
         result.count == 1
-        // Implicit coverage: the test running under HubitatAppSandbox.run()
-        // exercises the sandbox security manager, so any getClass()/Eval.me
-        // reintroduced in registerRmRule would blow up the test loudly.
         result.success != false
+
+        and: 'warn log fires with the instanceof-ladder type classification'
+        // Pins the sandbox-safe replacement for the old
+        // `${rawKey?.getClass()?.simpleName}` GString. If registerRmRule ever
+        // reverts to getClass(), sandbox_lint.py's SANDBOX-001 (GString-aware
+        // after #103) catches it at CI lint; this assertion catches the
+        // behavioral side (warn message still mentions the key type) so the
+        // guard holds even if the linter is edited.
+        mcpLogCalls.any {
+            it.level == 'warn' &&
+            it.component == 'rm-interop' &&
+            it.msg.contains("'not-a-number'") &&
+            it.msg.contains('type=String')
+        }
     }
 
     def "gateway dispatch via handleGateway routes to list_rm_rules"() {
