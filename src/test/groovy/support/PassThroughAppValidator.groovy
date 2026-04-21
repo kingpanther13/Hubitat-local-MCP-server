@@ -37,7 +37,8 @@ import org.codehaus.groovy.control.customizers.CompilationCustomizer
  */
 class PassThroughAppValidator extends AppValidator {
     PassThroughAppValidator(List<Flags> validationFlags = []) {
-        super(EnumSet.noneOf(Flags) + (validationFlags as Collection<Flags>))
+        super(validationFlags ? EnumSet.copyOf(validationFlags) : EnumSet.noneOf(Flags))
+        System.err.println("=== PASS-THROUGH: ctor done, this.class=${this.class.name}, flags=${validationFlags}")
     }
 
     /**
@@ -50,6 +51,7 @@ class PassThroughAppValidator extends AppValidator {
      */
     @Override
     HubitatAppScript parseScript(File scriptFile) {
+        System.err.println("=== PASS-THROUGH: parseScript(File) called for ${scriptFile?.name}")
         def scriptFileText = scriptFile.getText('UTF-8')
         def name = scriptFile.name
         def dot = name.lastIndexOf('.')
@@ -59,6 +61,7 @@ class PassThroughAppValidator extends AppValidator {
 
     @Override
     HubitatAppScript parseScript(String scriptText, String scriptName = "Script1") {
+        System.err.println("=== PASS-THROUGH: parseScript(String) called name=${scriptName}")
         scriptText = patchScriptText(scriptText)
         return constructParser(HubitatAppScript).parse(scriptText, scriptName) as HubitatAppScript
     }
