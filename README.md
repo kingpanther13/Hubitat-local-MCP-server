@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 69 MCP tools (30 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 81 MCP tools (33 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 69 tools total — 21 core tools are always visible, while 48 additional tools are organized behind 9 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 81 tools total — 22 core tools are always visible, while 59 additional tools are organized behind 11 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (74 total — 31 on tools/list)
+### MCP Tools (81 total — 33 on tools/list)
 
-The server has 74 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **52 additional tools** are organized behind **9 domain-named gateways**. The AI sees 31 items on `tools/list` (22 + 9 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 81 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **59 additional tools** are organized behind **11 domain-named gateways**. The AI sees 33 items on `tools/list` (22 + 11 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (22) — Always visible on tools/list
 
@@ -305,7 +305,7 @@ The server has 74 tools total. To keep the MCP `tools/list` manageable, **22 cor
 
 </details>
 
-#### Gateway Tools (9) — Each gateway proxies multiple tools
+#### Gateway Tools (11) — Each gateway proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -438,6 +438,33 @@ Monitoring tools require Hub Admin Read to be enabled.
 | `delete_file` | Delete a file (auto-backs up first) |
 
 Write/delete require Hub Admin Write + confirm.
+
+</details>
+
+<details>
+<summary><b>manage_installed_apps</b> (2) — Built-in app visibility</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by builtin/user/disabled/parents/children. |
+| `get_device_in_use_by` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
+
+Requires opt-in **Enable Built-in App Tools** setting.
+
+</details>
+
+<details>
+<summary><b>manage_rule_machine</b> (5) — Rule Machine interop via RMUtils</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_rm_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
+| `run_rm_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
+| `pause_rm_rule` | Pause an RM rule (reversible) |
+| `resume_rm_rule` | Resume a paused RM rule |
+| `set_rm_rule_boolean` | Set an RM rule's private boolean variable |
+
+**Cannot create, modify, or delete** RM rules — Hubitat's platform blocks third-party apps from managing built-in app children. Use the native RM UI for configuration. Requires opt-in **Enable Built-in App Tools** setting.
 
 </details>
 

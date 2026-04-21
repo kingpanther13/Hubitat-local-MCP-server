@@ -76,6 +76,14 @@ def mainPage() {
             }
         }
 
+        section("Built-in App Integration") {
+            paragraph "<b>Built-in App Tools</b> expose read-only visibility into Hubitat's built-in apps (Rule Machine, Room Lighting, Scenes, Mode Manager, etc.) and allow controlling Rule Machine rules via the official <code>hubitat.helper.RMUtils</code> API."
+            paragraph "<i>Hubitat's platform blocks creating, modifying, or deleting built-in app instances from third-party apps. Use the native UI for configuration. These tools are read + trigger only.</i>"
+            input "enableBuiltinAppRead", "bool", title: "Enable Built-in App Tools",
+                  description: "Allows MCP to list all installed apps (built-in + user), find apps using a device, list Rule Machine rules, and trigger/pause/resume RM rules",
+                  defaultValue: false, submitOnChange: true
+        }
+
         section("Hub Security") {
             paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
                       "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
@@ -605,6 +613,36 @@ def getGatewayConfig() {
                 read_file: "view open contents download stored data",
                 write_file: "upload save store create csv json text data",
                 delete_file: "remove clean up stored data"
+            ]
+        ],
+        manage_installed_apps: [
+            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device. Requires Built-in App Tools enabled in MCP app settings.",
+            tools: ["list_installed_apps", "get_device_in_use_by"],
+            summaries: [
+                list_installed_apps: "List all installed apps with parent/child tree. Args: filter (all/builtin/user/disabled/parents/children), includeHidden",
+                get_device_in_use_by: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId"
+            ],
+            searchHints: [
+                list_installed_apps: "rule machine room lighting scenes mode manager hsm dashboards groups button controllers native builtin",
+                get_device_in_use_by: "which apps use device reference inUseBy appsUsing dependencies affected by"
+            ]
+        ],
+        manage_rule_machine: [
+            description: "Rule Machine interoperability: list, trigger, pause/resume, and set boolean variables on existing RM rules via the official RMUtils API. Cannot create, modify, or delete RM rules (platform blocks this — use the RM native UI). Requires Built-in App Tools enabled.",
+            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean"],
+            summaries: [
+                list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
+                run_rm_rule: "Trigger a Rule Machine rule. Args: ruleId, action (rule/actions/stop, default rule)",
+                pause_rm_rule: "Pause a Rule Machine rule. Args: ruleId",
+                resume_rm_rule: "Resume a paused Rule Machine rule. Args: ruleId",
+                set_rm_rule_boolean: "Set an RM rule's private boolean to true or false. Args: ruleId, value (bool)"
+            ],
+            searchHints: [
+                list_rm_rules: "rule machine rules native builtin automation",
+                run_rm_rule: "trigger fire execute native rule machine rule",
+                pause_rm_rule: "disable stop temporarily rule machine rule",
+                resume_rm_rule: "enable unpause restart rule machine rule",
+                set_rm_rule_boolean: "private boolean flag rule machine rule condition"
             ]
         ]
     ]
@@ -1571,6 +1609,92 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
                 required: ["fileName", "confirm"]
             ]
         ],
+        // Installed Apps Integration (built-in + user app visibility)
+        [
+            name: "list_installed_apps",
+            description: """List all installed apps on the hub (built-in + user) with parent/child tree. Requires Built-in App Tools enabled.
+
+Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount.
+
+Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "Filter apps by category. Default: all"],
+                    includeHidden: [type: "boolean", description: "Include hidden apps (typically Hubitat internal). Default: false", default: false]
+                ]
+            ]
+        ],
+        [
+            name: "get_device_in_use_by",
+            description: """List all apps that reference a specific device (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.). Requires Built-in App Tools enabled.
+
+Answers \"which apps would break or change behavior if I disable/delete this device?\" — critical before device cleanup, troubleshooting, or reassignment.
+
+Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, label=user-visible name, trueLabel=label without HTML decoration, disabled), count, parentApp.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "Device ID from list_devices"]
+                ],
+                required: ["deviceId"]
+            ]
+        ],
+        // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
+        [
+            name: "list_rm_rules",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires Built-in App Tools enabled. See get_tool_guide section=builtin_app_tools for details and platform limitations on RM rule internals.",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
+            name: "run_rm_rule",
+            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires Built-in App Tools enabled. See get_tool_guide section=builtin_app_tools for action semantics.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"],
+                    action: [type: "string", enum: ["rule", "actions", "stop"], description: "Which RM action to invoke. Default: rule"]
+                ],
+                required: ["ruleId"]
+            ]
+        ],
+        [
+            name: "pause_rm_rule",
+            description: "Pause a Rule Machine rule (paused rules don't fire on triggers). Reversible via resume_rm_rule. Requires Built-in App Tools enabled.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"]
+                ],
+                required: ["ruleId"]
+            ]
+        ],
+        [
+            name: "resume_rm_rule",
+            description: "Resume a paused Rule Machine rule. Requires Built-in App Tools enabled.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"]
+                ],
+                required: ["ruleId"]
+            ]
+        ],
+        [
+            name: "set_rm_rule_boolean",
+            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires Built-in App Tools enabled. See get_tool_guide section=builtin_app_tools for pattern and coercion policy.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"],
+                    value: [type: "boolean", description: "true sets the boolean to TRUE, false sets it to FALSE"]
+                ],
+                required: ["ruleId", "value"]
+            ]
+        ],
         // Tool Guide
         [
             name: "get_tool_guide",
@@ -1578,7 +1702,7 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, update_device, rules, backup, file_manager, performance. Full guide only if absolutely necessary."]
+                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, update_device, rules, backup, file_manager, performance, builtin_app_tools. Full guide only if absolutely necessary."]
                 ]
             ]
         ],
@@ -1707,6 +1831,17 @@ def executeTool(toolName, args) {
         case "write_file": return toolWriteFile(args)
         case "delete_file": return toolDeleteFile(args)
 
+        // Installed Apps Integration
+        case "list_installed_apps": return toolListInstalledApps(args)
+        case "get_device_in_use_by": return toolGetDeviceInUseBy(args)
+
+        // Rule Machine Integration (via RMUtils)
+        case "list_rm_rules": return toolListRmRules(args)
+        case "run_rm_rule": return toolRunRmRule(args)
+        case "pause_rm_rule": return toolPauseRmRule(args)
+        case "resume_rm_rule": return toolResumeRmRule(args)
+        case "set_rm_rule_boolean": return toolSetRmRuleBoolean(args)
+
         // Tool Guide
         case "get_tool_guide": return toolGetToolGuide(args.section)
 
@@ -1723,6 +1858,8 @@ def executeTool(toolName, args) {
         case "manage_logs":
         case "manage_diagnostics":
         case "manage_files":
+        case "manage_installed_apps":
+        case "manage_rule_machine":
             return handleGateway(toolName, args.tool, args.args)
 
         default:
@@ -2776,6 +2913,7 @@ def toolGetHubInfo() {
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
+    info.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
 
     // PII/location data requires Hub Admin Read
     if (settings.enableHubAdminRead) {
@@ -3818,6 +3956,16 @@ def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetr
 def requireHubAdminRead() {
     if (!settings.enableHubAdminRead) {
         throw new IllegalArgumentException("Hub Admin Read access is disabled. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to use this tool.")
+    }
+}
+
+/**
+ * Check if Built-in App Read access is enabled. Throws if not.
+ * Gates installed-app enumeration, device-in-use-by lookup, and Rule Machine interop tools.
+ */
+def requireBuiltinAppRead() {
+    if (!settings.enableBuiltinAppRead) {
+        throw new IllegalArgumentException("Built-in App Tools are disabled. Enable 'Enable Built-in App Tools' in MCP Rule Server app settings to use this tool.")
     }
 }
 
@@ -4922,6 +5070,7 @@ def toolGetHubDetails(args) {
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
+    details.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
 
     mcpLog("info", "hub-admin", "Retrieved extended hub details")
     return details
@@ -7325,6 +7474,453 @@ def toolRenameRoom(args) {
     ]
 }
 
+// ==================== INSTALLED APPS & RULE MACHINE INTEGRATION ====================
+
+/**
+ * List all installed apps on the hub (built-in + user), flattened with parent/child relationships.
+ * Backed by /hub2/appsList -- returns the same flattened app list the Hubitat web UI renders on
+ * the Apps page. Includes built-in and user apps, parent/child hierarchy, disabled state, and
+ * installed-package metadata.
+ */
+def toolListInstalledApps(args) {
+    requireBuiltinAppRead()
+    def filter = args?.filter ?: "all"
+    def includeHidden = args?.includeHidden == true
+
+    def validFilters = ["all", "builtin", "user", "disabled", "parents", "children"]
+    if (!validFilters.contains(filter)) {
+        throw new IllegalArgumentException("Invalid filter '${filter}'. Must be one of: ${validFilters.join(', ')}")
+    }
+
+    try {
+        def responseText = hubInternalGet("/hub2/appsList")
+        if (!responseText) {
+            return [success: false, error: "Empty response from /hub2/appsList", note: "Hub internal API may be transiently unavailable."]
+        }
+        def parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        } catch (Exception parseErr) {
+            return [success: false, error: "Failed to parse /hub2/appsList response: ${parseErr.message}", note: "Hubitat firmware may have changed the endpoint format."]
+        }
+        def apps = parsed?.apps ?: []
+
+        // Flatten tree to list with parentId.
+        // If a parent is hidden and excluded from the output, its children are promoted to the
+        // nearest visible ancestor (or null at root) so their parentId always references an
+        // app actually present in the results — no orphan references.
+        // NOTE: closure parameter is 'node' (not 'app') to avoid shadowing the Hubitat SDK's
+        // `app` reference. Hubitat's `app` is used elsewhere for app.label, app.id, etc.
+        def flat = []
+        def recurse
+        recurse = { Map node, parentId ->
+            def d = node?.data ?: [:]
+            def isHidden = d.hidden == true
+            def included = includeHidden || !isHidden
+            if (included) {
+                flat << [
+                    id: d.id,
+                    name: d.name,
+                    type: d.type,
+                    disabled: d.disabled == true,
+                    user: d.user == true,
+                    hidden: isHidden,
+                    parentId: parentId,
+                    hasChildren: (node?.children?.size() ?: 0) > 0,
+                    childCount: node?.children?.size() ?: 0
+                ]
+            }
+            def childParentId = included ? d.id : parentId
+            node?.children?.each { c -> recurse(c, childParentId) }
+        }
+        apps.each { a -> recurse(a, null) }
+
+        def filtered = flat.findAll { entry ->
+            switch (filter) {
+                case "all": return true
+                case "builtin": return !entry.user
+                case "user": return entry.user
+                case "disabled": return entry.disabled
+                case "parents": return entry.hasChildren
+                case "children": return entry.parentId != null
+                default:
+                    // Whitelist-validated above; reaching here means validFilters and this
+                    // switch have drifted. Throw rather than return an over-broad result,
+                    // so the mismatch is visible instead of silently shipping stale data.
+                    throw new IllegalStateException("filter branch missing for '${filter}' -- validFilters and switch have drifted")
+            }
+        }
+
+        return [
+            apps: filtered,
+            count: filtered.size(),
+            filter: filter,
+            totalOnHub: flat.size()
+        ]
+    } catch (Exception e) {
+        // The Built-in-App-Tools gate has already passed by the time we reach here, so
+        // do not blame it in the note. Failures at this point come from the hub transport
+        // (network blip, firmware change to /hub2/appsList) or the flatten/filter pipeline
+        // (unexpected shape in a child entry). The error message itself will usually
+        // distinguish the two.
+        mcpLog("error", "installed-apps", "list_installed_apps failed: ${e.message}")
+        return [success: false, error: "Failed to list installed apps: ${e.message}", note: "Hub transport error or unexpected /hub2/appsList response shape -- retry; if persistent, inspect the raw response for firmware-side drift."]
+    }
+}
+
+/**
+ * List all apps that reference a specific device.
+ * Backed by /device/fullJson/<id> which exposes appsUsing — the same data the Hubitat device page shows.
+ */
+def toolGetDeviceInUseBy(args) {
+    requireBuiltinAppRead()
+    if (!args?.deviceId) throw new IllegalArgumentException("deviceId is required")
+    def deviceId = args.deviceId.toString().trim()
+    // /device/fullJson/<id> returns a parseable non-empty body even for unknown ids
+    // (empty appsUsing, null fields), which would read as "device has no apps" rather
+    // than "device doesn't exist". Validate up front against the hub's device registry
+    // so callers get an explicit Device-not-found error. Mirrors toolGetHubLogs.
+    if (!findDevice(deviceId)) {
+        throw new IllegalArgumentException("Device not found: ${deviceId}")
+    }
+
+    try {
+        def responseText = hubInternalGet("/device/fullJson/${deviceId}")
+        if (!responseText) {
+            return [success: false, error: "Empty response from /device/fullJson/${deviceId}", note: "Device ID may not exist."]
+        }
+        def parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        } catch (Exception parseErr) {
+            return [success: false, error: "Failed to parse device JSON: ${parseErr.message}", note: "Device ID '${deviceId}' may not exist, or firmware changed the endpoint format."]
+        }
+
+        def appsUsing = parsed?.appsUsing ?: []
+        def count
+        try {
+            count = (parsed?.appsUsingCount != null) ? (parsed.appsUsingCount as Integer) : appsUsing.size()
+        } catch (NumberFormatException ne) {
+            // A non-numeric appsUsingCount is a firmware/paging signal worth recording
+            // (e.g. hub returns "42+" for truncated counts); fall back to the list size
+            // so the caller still gets a usable count.
+            mcpLog("warn", "installed-apps", "get_device_in_use_by: non-numeric appsUsingCount '${parsed?.appsUsingCount}' for device ${deviceId}; using appsUsing.size()=${appsUsing.size()}")
+            count = appsUsing.size()
+        }
+
+        return [
+            deviceId: deviceId,
+            // extraBreadcrumb is the canonical UI breadcrumb label; fall back to .name or
+            // .label if a future firmware drops that field so callers still get a usable
+            // device-name string instead of silent null.
+            deviceName: parsed?.extraBreadcrumb ?: parsed?.name ?: parsed?.label,
+            appsUsing: appsUsing.collect { a ->
+                [
+                    id: a?.id,
+                    name: a?.name,         // app type name (e.g. "Room Lights", "Rule-5.1")
+                    label: a?.label,       // user-visible label, may include HTML decoration
+                    trueLabel: a?.trueLabel,  // label stripped of HTML (null if same as label)
+                    disabled: a?.disabled == true
+                ]
+            },
+            count: count,
+            parentApp: parsed?.parentApp
+        ]
+    } catch (Exception e) {
+        mcpLog("error", "installed-apps", "get_device_in_use_by failed for device ${deviceId}: ${e.message}")
+        return [success: false, error: "Failed: ${e.message}", note: "Verify the device ID is valid and Built-in App Tools is enabled."]
+    }
+}
+
+/**
+ * List all Rule Machine rules via the official hubitat.helper.RMUtils API.
+ * Combines RM 4.x and RM 5.x rules (deduplicated by id).
+ *
+ * RMUtils is an optional platform class -- absent on hubs that have never
+ * installed Rule Machine. Absence manifests as NoClassDefFoundError or
+ * ClassNotFoundException (both Error subclasses, uncaught by catch Exception).
+ * Hence the catch Throwable + null-guarded .message across the two try blocks
+ * below; the classifier further down decides which Throwables to surface vs
+ * treat as a quiet "RM not installed".
+ */
+def toolListRmRules(args) {
+    requireBuiltinAppRead()
+    def combined = [:]
+    def v4Error = null
+    def v5Error = null
+
+    try {
+        def rules4 = hubitat.helper.RMUtils.getRuleList() ?: []
+        rules4.each { r -> registerRmRule(combined, r, "4.x") }
+    } catch (Throwable e) {
+        v4Error = e.toString()
+    }
+
+    try {
+        def rules5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
+        rules5.each { r -> registerRmRule(combined, r, "5.x") }
+    } catch (Throwable e) {
+        v5Error = e.toString()
+    }
+
+    def rules = combined.values().sort { it.label ?: "" }
+
+    def result = [
+        rules: rules,
+        count: rules.size()
+    ]
+    // Classify the failures. A "missing class" error (RM not installed) is quiet whether
+    // the other version succeeded OR both versions failed the same way (both-absent path).
+    // A non-missing-class error (e.g. timeout, internal platform issue) is always surfaced
+    // so operators can investigate rather than get silent empty results.
+    // Narrow to class-resolution failures only. Earlier versions treated any
+    // MissingMethodException / "No signature of method" / unqualified "Cannot get property"
+    // as quiet-missing, but those substrings appear in unrelated Groovy runtime errors
+    // (e.g. a shape change in RMUtils' return value would surface as MME against
+    // registerRmRule and get swept under the rug). Scope each substring tightly:
+    //   - NoClassDefFoundError / ClassNotFoundException / "unable to resolve class":
+    //     JVM-level class-resolution errors; unambiguous "RM not installed" signal.
+    //   - "Cannot get property 'helper'": the Hubitat sandbox returns null for
+    //     unresolved `hubitat.helper.X` namespace lookups; scoping to 'helper'
+    //     limits the match to the hubitat.helper.RMUtils path specifically.
+    //   - MissingMethodException together with getRuleList: covers the old-firmware
+    //     case where RMUtils exists but lacks the getRuleList("5.0") overload —
+    //     unrelated MMEs no longer get swallowed.
+    def classMissingHint = { String msg ->
+        if (!msg) return false
+        if (msg.contains("NoClassDefFoundError") ||
+            msg.contains("ClassNotFoundException") ||
+            msg.contains("unable to resolve class")) return true
+        if (msg.contains("Cannot get property") && msg.contains("'helper'")) return true
+        if ((msg.contains("MissingMethodException") || msg.contains("No signature of method"))
+            && msg.contains("getRuleList")) return true
+        return false
+    }
+    def hardErrors = []
+    if (v4Error && !classMissingHint(v4Error)) hardErrors << "v4=${v4Error}"
+    if (v5Error && !classMissingHint(v5Error)) hardErrors << "v5=${v5Error}"
+
+    def bothClassMissing = v4Error && v5Error &&
+                           classMissingHint(v4Error) && classMissingHint(v5Error)
+
+    if (rules.isEmpty() && bothClassMissing) {
+        // Both RMUtils lookups failed with class-resolution errors. That's the
+        // expected shape on a hub that has never installed Rule Machine; it's
+        // not an error the caller needs to react to. Return an empty list with
+        // an informational note and leave success unset so the result still
+        // reads as a normal empty response.
+        result.note = "Rule Machine not detected on this hub."
+    } else if (rules.isEmpty() && v4Error && v5Error) {
+        // Both calls failed but at least one with a non-missing-class shape --
+        // unusual enough that operators should see the raw error.
+        result.success = false
+        result.error = "RMUtils calls failed: v4=${v4Error} v5=${v5Error}"
+        result.note = "Rule Machine may not be installed on this hub."
+    } else if (hardErrors) {
+        // One version succeeded but the other had a non-missing-class error — surface it
+        // as a warning without blocking the successful results.
+        result.warning = "Partial RMUtils failure (results from the other version shown): ${hardErrors.join('; ')}"
+    }
+    return result
+}
+
+/**
+ * Normalize a single RMUtils rule entry into a consistent map and register under combined[id].
+ *
+ * RMUtils.getRuleList() returns list entries in shapes that vary by RM version:
+ *   - RM 5.x: single-entry Map `[<id>: "<label>"]` -- the key is the rule ID, the value is the label.
+ *     The key may arrive as String or Integer depending on how the hub built the Map.
+ *   - RM 4.x: Map with explicit fields `[id: <id>, label: "<label>", name: "...", type: "..."]`.
+ *   - Raw primitive (int or String ID): defensive fallback for shapes not covered above.
+ */
+private void registerRmRule(Map combined, def r, String version) {
+    def id
+    def label
+    def name
+    def type
+    if (r instanceof Map) {
+        if (r.containsKey("id")) {
+            // RM 4.x explicit-fields shape
+            id = r.id
+            label = r.label ?: r.name
+            name = r.name ?: r.label
+            type = r.type
+        } else if (r.size() == 1) {
+            // RM 5.x single-entry shape: [<id>: "<label>"]
+            def entry = r.entrySet().iterator().next()
+            // entry.key may come back as String or Integer depending on how Hubitat built
+            // the Map; coerce to Integer (via string) so downstream consumers get the
+            // Integer id advertised in list_rm_rules' response schema.
+            def rawKey = entry.key
+            try {
+                id = (rawKey instanceof Number) ? rawKey.toInteger() : rawKey.toString().toInteger()
+            } catch (NumberFormatException coerceErr) {
+                // Returning the raw key would silently violate the tool's
+                // ruleId: integer schema (callers would see a String id in the
+                // response and fail to dispatch run_rm_rule against it). Skip
+                // the entry and surface the anomaly via logs instead.
+                def keyType = rawKey instanceof Number ? 'Number' : rawKey instanceof String ? 'String' : 'other'
+                mcpLog("warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${keyType}) in RM ${version} list -- skipping entry")
+                return
+            }
+            label = entry.value?.toString()
+            name = label
+        }
+    } else if (r != null) {
+        // Raw ID fallback
+        id = r
+    }
+    if (id == null) return
+    def key = id.toString()
+    if (!combined.containsKey(key)) {
+        combined[key] = [
+            id: id,
+            label: label,
+            name: name,
+            type: type,
+            rmVersion: version
+        ]
+    }
+}
+
+/**
+ * Trigger a Rule Machine rule via RMUtils.sendAction().
+ * Not destructive — invokes existing user-configured automation.
+ */
+def toolRunRmRule(args) {
+    requireBuiltinAppRead()
+    if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
+    def ruleId = normalizeRuleId(args.ruleId)
+    def action = args?.action ?: "rule"
+
+    def rmAction
+    switch (action) {
+        case "rule": rmAction = "runRule"; break
+        case "actions": rmAction = "runRuleAct"; break
+        case "stop": rmAction = "stopRuleAct"; break
+        default: throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', or 'stop'.")
+    }
+
+    return sendRmAction(ruleId, rmAction, "run_rm_rule action=${action}")
+}
+
+/**
+ * Pause a Rule Machine rule via RMUtils.sendAction(pauseRule).
+ * Idempotent on the hub side: pausing an already-paused rule is a no-op.
+ */
+def toolPauseRmRule(args) {
+    requireBuiltinAppRead()
+    if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
+    return sendRmAction(normalizeRuleId(args.ruleId), "pauseRule", "pause_rm_rule")
+}
+
+/**
+ * Resume a previously paused Rule Machine rule via RMUtils.sendAction(resumeRule).
+ * Idempotent on the hub side: resuming an already-active rule is a no-op.
+ */
+def toolResumeRmRule(args) {
+    requireBuiltinAppRead()
+    if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
+    return sendRmAction(normalizeRuleId(args.ruleId), "resumeRule", "resume_rm_rule")
+}
+
+/**
+ * Set a Rule Machine rule's private boolean (used by its conditions) via
+ * RMUtils.sendAction(setRuleBooleanTrue|setRuleBooleanFalse).
+ *
+ * Strict-coercion policy: accepts ONLY Boolean true/false or the canonical
+ * lowercase strings "true"/"false". Other truthy-looking values — 1, 0,
+ * "True", "TRUE", "yes", "no", "on", "off" — are rejected with
+ * IllegalArgumentException. Reason: silently coercing "yes" to true (or 1
+ * to true) risks the AI sending the wrong boolean when a rule's behaviour
+ * depends on the boolean (e.g. arming a security path). The ambiguity is
+ * worse than the friction of requiring explicit true/false.
+ */
+def toolSetRmRuleBoolean(args) {
+    requireBuiltinAppRead()
+    if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
+    if (args?.value == null) throw new IllegalArgumentException("value (boolean) is required")
+    // Accept Boolean or the canonical lowercase strings 'true'/'false' only. Reject other
+    // truthy-looking values (1, 'yes', 'True') to avoid silently setting the wrong boolean.
+    Boolean resolved = null
+    if (args.value instanceof Boolean) {
+        resolved = args.value
+    } else if (args.value == "true") {
+        resolved = true
+    } else if (args.value == "false") {
+        resolved = false
+    } else {
+        throw new IllegalArgumentException("value must be boolean true/false (or the string 'true'/'false'), got: ${args.value}")
+    }
+    def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
+    return sendRmAction(normalizeRuleId(args.ruleId), rmAction, "set_rm_rule_boolean value=${resolved}")
+}
+
+/**
+ * Shared sendAction wrapper. Returns a consistent success/error result map.
+ *
+ * Invariant: the 4-arg form `sendAction([ids], action, appLabel, "5.0")` dispatches
+ * to the RM 5.x handler and is the canonical call for both RM 4.x and RM 5.x rules.
+ * The 3-arg form `sendAction([ids], action, appLabel)` reaches only RM 4.x and is
+ * used as a fallback for very old firmware that predates the version-discriminator
+ * overload (see sendRmActionFallback). Background on the RM API shape:
+ * https://community.hubitat.com/t/rule-machine-api/7104
+ */
+private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
+    def appLabel = app?.label ?: "MCP Rule Server"
+    try {
+        hubitat.helper.RMUtils.sendAction([ruleId], rmAction, appLabel, "5.0")
+        mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule ${ruleId}")
+        return [success: true, ruleId: ruleId, rmAction: rmAction]
+    } catch (MissingMethodException e) {
+        return sendRmActionFallback(ruleId, rmAction, appLabel, logContext, e)
+    } catch (NoSuchMethodError e) {
+        return sendRmActionFallback(ruleId, rmAction, appLabel, logContext, e)
+    } catch (Throwable e) {
+        // Everything else — NoClassDefFoundError (RM not installed), timeouts, NPEs
+        // inside RM internals, invalid ruleId — propagates through a single error
+        // response without a second attempt. Retrying a transient failure would
+        // double-fire the action if the first call partially succeeded.
+        def m = e.message ?: e.toString()
+        mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: ${m}")
+        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: "Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
+    }
+}
+
+/**
+ * 3-arg fallback invoked only when the 4-arg sendAction raised a signature-mismatch
+ * shape (MissingMethodException / NoSuchMethodError) — very old firmware that
+ * predates the version-discriminator overload. Any other Throwable from the 4-arg
+ * call propagates directly in sendRmAction above.
+ */
+private Map sendRmActionFallback(Integer ruleId, String rmAction, String appLabel, String logContext, Throwable original) {
+    try {
+        hubitat.helper.RMUtils.sendAction([ruleId], rmAction, appLabel)
+        mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule ${ruleId} (3-arg fallback)")
+        return [success: true, ruleId: ruleId, rmAction: rmAction, fallback: "3-arg"]
+    } catch (Throwable e2) {
+        def m1 = original.message ?: original.toString()
+        def m2 = e2.message ?: e2.toString()
+        mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${m1}, 3-arg=${m2}")
+        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
+    }
+}
+
+/**
+ * Coerce a ruleId argument to Integer. Accepts Number or numeric String.
+ * Narrow the catch to NumberFormatException only — it's the sole expected
+ * failure shape for `String as Integer`; anything else is a real bug and
+ * should propagate rather than be rewrapped as an IllegalArgumentException.
+ */
+private Integer normalizeRuleId(def ruleId) {
+    if (ruleId instanceof Number) return ruleId.toInteger()
+    try {
+        return ruleId.toString().trim() as Integer
+    } catch (NumberFormatException e) {
+        throw new IllegalArgumentException("ruleId must be an integer, got: ${ruleId}")
+    }
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
@@ -7807,6 +8403,44 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 **get_device_history:**
 - Up to 7 days of history
-- Use attribute filter to reduce data volume'''
+- Use attribute filter to reduce data volume''',
+
+        builtin_app_tools: '''## Built-in App Tools
+
+All tools in the manage_installed_apps and manage_rule_machine gateways require the "Enable Built-in App Tools" toggle in MCP Rule Server app settings. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+
+**manage_installed_apps (2 tools):**
+
+- **list_installed_apps** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
+  - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
+  - Each entry: id, name, type, disabled, user, hidden, parentId, hasChildren, childCount
+  - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
+  - User apps have user=true (Awair, Ecobee, HPM, etc.)
+  - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.
+
+- **get_device_in_use_by** — find apps that reference a specific device
+  - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
+  - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
+  - Answers "if I delete this device, which automations break?"
+
+**manage_rule_machine (5 tools) — read + trigger existing RM rules only, NO create/modify/delete:**
+
+- **list_rm_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
+
+- **run_rm_rule** — trigger an existing RM rule via RMUtils.sendAction
+  - action="rule" (default, full evaluation): runs triggers + conditions + actions as if rule fired
+  - action="actions": runs only the actions, bypassing conditions (useful for manual override)
+  - action="stop": stops running actions (cancels in-flight delays)
+
+- **pause_rm_rule** / **resume_rm_rule** — reversible toggle; paused rules don't fire on triggers
+
+- **set_rm_rule_boolean** — set an RM rule's private boolean (true or false only; strings must be lowercase "true"/"false"). RM rules can use Private Boolean in conditions — this lets MCP flip that flag from outside.
+
+**CRITICAL LIMITATION: Cannot create, modify, or delete RM rules or Room Lighting instances.** Hubitat's platform blocks third-party apps from instantiating hubitat:Rule-5.1 or hubitat:RoomLights as children (parent-type validation on addChildApp). If the user asks to "create a new RM rule" or "set up a new Room Lighting", respond:
+  1. Explain this is not possible via MCP (platform limitation, not a missing feature)
+  2. Offer the alternative: create an equivalent rule using MCP's own rule engine via create_rule
+  3. Or direct them to the native Rule Machine / Room Lighting UI for configuration
+
+Do NOT invent fake tools like "create_rm_rule" or pretend to call one — this is the most important safety rule for these tools.'''
     ]
 }
