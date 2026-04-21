@@ -141,11 +141,17 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         result.deviceName == 'Label Only'
     }
 
-    def "non-numeric appsUsingCount falls back to appsUsing.size()"() {
+    def "non-numeric appsUsingCount falls back to appsUsing.size() and warn log fires"() {
         given:
         settingsMap.enableBuiltinAppRead = true
         def mockDevice = [id: '77', label: 'My Dev', name: 'Dev']
         childDevicesList << mockDevice
+
+        and: 'collect mcpLog calls via per-test metaClass override'
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
 
         and: 'hub returns a truncated-count sentinel string for appsUsingCount'
         def responseJson = JsonOutput.toJson([
@@ -163,6 +169,9 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
         then: 'count falls back to list size (2) rather than the unparseable "42+"'
         result.count == 2
+
+        and: 'warn log fires mentioning appsUsingCount on the installed-apps component'
+        mcpLogCalls.any { it.level == 'warn' && it.component == 'installed-apps' && it.msg.contains('appsUsingCount') }
     }
 
     def "returns success=false with empty-response error when hub body is empty"() {

@@ -232,6 +232,28 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.warning.contains('v4=')
     }
 
+    def "registerRmRule skips entries with non-Integer-coercible keys (Groovy-sandbox-safe warn log)"() {
+        given:
+        settingsMap.enableBuiltinAppRead = true
+
+        and: 'v5 list contains one bad String key and one valid numeric key'
+        rmUtils.stubRuleList5 = [
+            ['not-a-number': 'Bad rule'],    // String key that fails toInteger()
+            [123: 'Good rule']               // numeric key, should pass
+        ]
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then: 'only the valid rule is returned'
+        result.rules*.id == [123]
+        result.count == 1
+        // Implicit coverage: the test running under HubitatAppSandbox.run()
+        // exercises the sandbox security manager, so any getClass()/Eval.me
+        // reintroduced in registerRmRule would blow up the test loudly.
+        result.success != false
+    }
+
     def "gateway dispatch via handleGateway routes to list_rm_rules"() {
         given:
         settingsMap.enableBuiltinAppRead = true

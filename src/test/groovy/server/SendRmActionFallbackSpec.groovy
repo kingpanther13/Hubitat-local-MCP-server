@@ -167,8 +167,12 @@ class SendRmActionFallbackSpec extends ToolSpecBase {
         when:
         def result = script.toolRunRmRule([ruleId: 6, action: 'rule'])
 
-        then:
+        then: 'error field carries the 3-arg (m2) failure message'
         result.success == false
-        result.error != null
+        result.error?.contains('sendAction') == true
+
+        and: 'note field carries the 4-arg (m1) failure via the "4-arg attempt also failed" prefix'
+        result.note?.contains('4-arg attempt also failed') == true
+        result.note?.contains('sendAction') == true
     }
 }

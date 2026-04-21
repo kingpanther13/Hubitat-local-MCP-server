@@ -198,4 +198,4 @@ Rule Machine interop via the official `hubitat.helper.RMUtils` helper class: lis
 | `run_rm_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Read |
 | `pause_rm_rule` | Pause an RM rule (reversible; paused rules don't fire on triggers). | Built-in App Read |
 | `resume_rm_rule` | Resume a paused RM rule. | Built-in App Read |
-| `set_rm_rule_boolean` | Set an RM rule's private boolean (true/false) — flips the flag that rules can reference in conditions. | Built-in App Read |
+| `set_rm_rule_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`) — flips the flag that rules can reference in conditions. | Built-in App Read |
