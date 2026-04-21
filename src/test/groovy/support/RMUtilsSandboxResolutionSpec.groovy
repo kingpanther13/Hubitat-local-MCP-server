@@ -59,6 +59,32 @@ class RMUtilsSandboxResolutionSpec extends Specification {
             cl = cl.parent
             depth++
         }
+
+        and: 'is the me.biocomp delegate class even findable from various CLs?'
+        ['me.biocomp.hubitat_ci.api.helper.RMUtils', 'hubitat.helper.RMUtils'].each { name ->
+            ['contextCL': Thread.currentThread().contextClassLoader,
+             'systemCL':  ClassLoader.systemClassLoader,
+             'scriptCL':  script.class.classLoader,
+             'sandboxParent': script.class.classLoader.parent.parent  // SandboxClassLoader per chain dump
+            ].each { label, loader ->
+                try {
+                    def c = Class.forName(name, false, loader)
+                    System.err.println("=== SPEC-DIAG: ${name} via ${label} (${loader.class.simpleName}): FOUND, defining loader=${c.classLoader}")
+                } catch (Throwable t) {
+                    System.err.println("=== SPEC-DIAG: ${name} via ${label} (${loader.class.simpleName}): NOT FOUND -- ${t.class.simpleName}: ${t.message}")
+                }
+            }
+        }
+
+        and: 'invoke sandbox-mapped lookup directly'
+        try {
+            def sandboxCL = script.class.classLoader.parent.parent  // SandboxClassLoader
+            def mapped = sandboxCL.getClass().getMethod('mapClassName', String, String).invoke(null, 'hubitat.helper.RMUtils', 'me.biocomp.hubitat_ci.api')
+            System.err.println("=== SPEC-DIAG: SandboxClassLoader.mapClassName('hubitat.helper.RMUtils') -> '${mapped}'")
+        } catch (Throwable t) {
+            System.err.println("=== SPEC-DIAG: mapClassName probe failed -- ${t.class.simpleName}: ${t.message}")
+        }
+
         System.err.println("=== SPEC-DIAG: about to call sandbox-loaded callRmUtilsGetRuleList ===")
 
         when: 'sandbox-loaded methods invoke the helpers'
