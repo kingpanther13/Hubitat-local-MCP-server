@@ -4,53 +4,48 @@ plugins {
 
 repositories {
     mavenCentral()
-    // joelwetzel/hubitat_ci is an actively-maintained fork of biocomp/hubitat_ci
-    // (original upstream's last Maven publish: 2019). Consumed via JitPack —
-    // no auth, reproducible by commit SHA.
+    // eighty20results/hubitat_ci — actively-maintained Groovy 3.0 fork of
+    // the original biocomp/hubitat_ci (dormant on Maven since 2019).
+    // Consumed via JitPack by release tag — no auth, reproducible, free-tier.
     //
-    // Fork selection rationale (also considered eighty20results):
-    // - joelwetzel retains biocomp's public API exactly — drop-in for our
-    //   existing HarnessSpec, ToolSpecBase, and the ToolCreateRule /
-    //   ToolUpdateRule / RuleEngineSmoke specs that rely on addChildApp
-    //   and parent.findDevice method-missing dispatch.
-    // - eighty20results is on Groovy 3.0 (nice) but has substantive breaking
-    //   changes in the child-app handling path (requires a childAppResolver
-    //   closure, replaces parent's methodMissing, re-architects getChildApps)
-    //   that break three of our existing specs. Migration cost outweighs
-    //   the cosmetic benefit of dropping the --add-opens block, for now.
-    // - biocomp (the original) has been dormant on the Maven side since
-    //   2019 — staying on it blocks us from any of the Hubitat-runtime
-    //   compatibility fixes either fork has added since.
+    // Why this fork:
+    // - Ships stubs for `hubitat.helper.RMUtils` / `ColorUtils` / `HexUtils` /
+    //   `ZigbeeUtils` in its own `me.biocomp.hubitat_ci.api.common_api.*`
+    //   namespace and maps them explicitly in SandboxClassLoader.mapClassName.
+    //   Sandbox-loaded production code (PR #79's `toolListRmRules` et al.)
+    //   resolves `hubitat.helper.RMUtils` natively — no passthrough harness
+    //   or main-source-set stubs needed on our side.
+    // - Groovy 3.0 is module-aware, so the JDK-module `--add-opens` block
+    //   from PR #83 (Groovy 2.5-era workaround) is no longer needed.
+    // - Active commits focused on matching Hubitat runtime behaviour:
+    //   case-insensitive enum matching, locale-safe toLowerCase,
+    //   negative-enum test restoration, integration harness regression fixes.
+    // - Cuts release tags (v0.28.6, v0.28.5, …) — pinnable by version.
     //
-    // joelwetzel also adds an integration-testing framework (time control,
-    // device fixtures, scheduler simulation) beyond biocomp's baseline,
-    // available if we want integration-style coverage later.
-    //
-    // Pinned by commit SHA since the fork doesn't cut release tags yet.
-    // Tracked by .github/workflows/hubitat-ci-version-check.yml.
+    // Migration cost paid in this PR: 3 specs reworked for eighty20results'
+    // child-app registry API and `childAppResolver` closure requirement.
     maven {
         url = 'https://jitpack.io'
         content {
-            includeGroup 'com.github.joelwetzel'
+            includeGroup 'com.github.eighty20results'
         }
     }
 }
 
 dependencies {
-    // groovy-all stays on 2.5 — matches joelwetzel's compiled-against
-    // Groovy, and is closest to Hubitat's runtime Groovy 2.4.
-    testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
-    testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
-    // joelwetzel/hubitat_ci pinned by commit SHA. JitPack's
-    // 'master-<sha>-<build>' form publishes the POM with version
-    // 'master-SNAPSHOT' (mismatch → Gradle rejects). The bare short-SHA
-    // form resolves cleanly once JitPack has built that commit — warmed
-    // via the api/builds endpoint before pushing. Bumped by tracking
+    // eighty20results is compiled against Groovy 3.0.21; using current
+    // 3.0 line (3.0.25) for consumer compatibility. Hubitat's runtime is
+    // Groovy 2.4 but 3.0 is largely backward-compatible for the imperative
+    // script patterns our MCP server uses; the fork actively tests against
+    // Hubitat behaviour and fixes divergence.
+    testImplementation 'org.codehaus.groovy:groovy-all:3.0.25'
+    testImplementation 'org.spockframework:spock-core:2.3-groovy-3.0'
+    // eighty20results/hubitat_ci pinned by release tag. Bumped by tracking
     // issues from .github/workflows/hubitat-ci-version-check.yml.
-    testImplementation 'com.github.joelwetzel:hubitat_ci:a62a351eed'
+    testImplementation 'com.github.eighty20results:hubitat_ci:v0.28.6'
     // Required by Spock to Mock/Spy non-interface types (TestDevice, TestChildApp).
     // Spock 2.x can use either byte-buddy or cglib-nodep as its class-gen
-    // backend; neither is a transitive dep of spock-core on the groovy-2.5 variant.
+    // backend; neither is a transitive dep of spock-core.
     testImplementation 'net.bytebuddy:byte-buddy:1.18.8'
 }
 
@@ -66,26 +61,6 @@ test {
     // metaclass methods on hubitat.helper.RMUtils / .NetworkUtils — concurrent
     // specs installing and uninstalling these at the same time would race.
     maxParallelForks = 1
-    // Silence Groovy 2.5.23's reflective access under JDK 11+.
-    // joelwetzel's fork stays on Groovy 2.5 to match Hubitat's runtime;
-    // each --add-opens grants access to a java.base package that Groovy's
-    // CachedClass / CachedConstructor reflects into on initialization.
-    // The set below covers the packages Groovy 2.5 is known to reach into.
-    // Drop the whole block if/when hubitat_ci moves to Groovy 3+.
-    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED',
-            '--add-opens=java.base/java.lang.invoke=ALL-UNNAMED',
-            '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
-            '--add-opens=java.base/java.io=ALL-UNNAMED',
-            '--add-opens=java.base/java.math=ALL-UNNAMED',
-            '--add-opens=java.base/java.net=ALL-UNNAMED',
-            '--add-opens=java.base/java.nio=ALL-UNNAMED',
-            '--add-opens=java.base/java.text=ALL-UNNAMED',
-            '--add-opens=java.base/java.time=ALL-UNNAMED',
-            '--add-opens=java.base/java.util=ALL-UNNAMED',
-            '--add-opens=java.base/java.util.concurrent=ALL-UNNAMED',
-            '--add-opens=java.base/java.util.regex=ALL-UNNAMED',
-            '--add-opens=java.base/sun.util.calendar=ALL-UNNAMED',
-            '--add-opens=java.xml/com.sun.org.apache.xerces.internal.dom=ALL-UNNAMED'
     testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat = 'full'

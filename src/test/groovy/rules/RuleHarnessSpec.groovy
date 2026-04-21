@@ -14,9 +14,16 @@ import support.TestChildApp
  *
  * Same load/wiring approach as support.HarnessSpec: compile() avoids the
  * multi-page preferences form issue, state/atomicState/settings/now/log
- * flow through the AppExecutor mock + userSettingValues + metaclass, and
- * a mockable `parent` is exposed (the server reference the rule engine
- * reads from for findDevice etc.).
+ * flow through the AppExecutor mock + userSettingValues + metaclass.
+ *
+ * `parent` is exposed as a writable property — specs assign it in their
+ * `given:` block (e.g. `parent = new SmokeParent(...)`), and the setter
+ * propagates the value to the script via `HubitatAppScript.setParent()`
+ * so that `parent.findDevice(id)` inside the rule engine resolves to the
+ * spec's stub. eighty20results' HubitatAppScript defines `parent` as a
+ * private field accessed via its @CompileStatic `getProperty("parent")`
+ * override, so mocking `AppExecutor.getParent()` no longer intercepts
+ * property access — setParent is the only reliable hook.
  */
 abstract class RuleHarnessSpec extends Specification {
     protected AppExecutor appExecutor
@@ -25,21 +32,27 @@ abstract class RuleHarnessSpec extends Specification {
     protected Map atomicStateMap = [:]
     // Must be non-empty — see HarnessSpec for why.
     protected Map settingsMap = [_harness: true]
-    protected def parent  // subclasses assign via given: block; wireOverrides() re-reads current value
+
+    private Object _parent
+
+    /** Assigning `parent = foo` in a given: block routes through here. */
+    void setParent(Object p) {
+        _parent = p
+        if (script) {
+            script.setParent(p)
+        }
+    }
+
+    Object getParent() { _parent }
 
     def setup() {
         def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-rule.groovy'))
         def stateRef = stateMap
         def atomicStateRef = atomicStateMap
-        def specInstance = this
         def logMock = Mock(Log)
         appExecutor = Mock(AppExecutor) {
             _ * getState() >> stateRef
             _ * getAtomicState() >> atomicStateRef
-            // getParent() goes through @Delegate → AppExecutor, not metaclass.
-            // The closure re-reads the current value each call so specs can
-            // assign `parent` in their given: block after setup() ran.
-            _ * getParent() >> { specInstance.parent }
             // app / location are in HubitatCI's AppExecutor interface (so they
             // resolve via @Delegate, not metaClass). Script code calls
             // `app.id` (ruleLog) and `location.mode` (substituteVariables)
@@ -59,17 +72,24 @@ abstract class RuleHarnessSpec extends Specification {
         script = sandbox.compile(
             api: appExecutor,
             userSettingValues: settingsMap,
+            childAppResolver: { String ns, String name -> null } as Closure,
             validationFlags: [
                 Flags.DontValidatePreferences,
                 Flags.DontValidateDefinition,
                 Flags.DontRestrictGroovy
             ]
         )
+        // If subclass assigned `parent` before Spock's field-initialization
+        // ordering placed us here, propagate immediately; otherwise the
+        // setter handles it when the spec's given: block runs.
+        if (_parent != null) {
+            script.setParent(_parent)
+        }
         wireOverrides()
     }
 
     protected void wireOverrides() {
-        // All runtime shims (state, atomicState, parent, log, now) route through
+        // All runtime shims (state, atomicState, log, now) route through
         // the AppExecutor mock. Subclasses override to add script-method overrides
         // that can't be stubbed via the mock.
     }
