@@ -5,7 +5,6 @@ import me.biocomp.hubitat_ci.app.AppValidator
 import me.biocomp.hubitat_ci.app.HubitatAppScript
 import me.biocomp.hubitat_ci.util.DoNotCallMeBinding
 import me.biocomp.hubitat_ci.validation.Flags
-import org.apache.commons.io.FilenameUtils
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.customizers.CompilationCustomizer
 
@@ -52,7 +51,9 @@ class PassThroughAppValidator extends AppValidator {
     @Override
     HubitatAppScript parseScript(File scriptFile) {
         def scriptFileText = scriptFile.getText('UTF-8')
-        def scriptName = FilenameUtils.getBaseName(scriptFile.name)
+        def name = scriptFile.name
+        def dot = name.lastIndexOf('.')
+        def scriptName = dot > 0 ? name.substring(0, dot) : name
         return parseScript(scriptFileText, scriptName)
     }
 
