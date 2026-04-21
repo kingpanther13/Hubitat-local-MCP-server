@@ -3,11 +3,13 @@
  *
  * Deliberately tiny — exists only to let the harness load a Hubitat
  * app via HubitatAppSandbox and invoke methods that reference
- * `hubitat.helper.RMUtils` from inside the sandbox. That reference
- * gets rewritten by eighty20results' SandboxClassLoader to
- * `me.biocomp.hubitat_ci.api.common_api.RMUtils`; the regression spec
- * installs RMUtilsMock (which metaClasses both the raw and mapped
- * class) and asserts the mock records the call.
+ * `hubitat.helper.RMUtils` from inside the sandbox. Resolution goes
+ * through `support.PassThroughSandboxClassLoader`, which bypasses
+ * eighty20results' standard name remap for that class so the
+ * literal-named main-source-set stub at
+ * `src/main/groovy/hubitat/helper/RMUtils.groovy` resolves cleanly.
+ * The regression spec installs `RMUtilsMock` on that stub's static
+ * metaClass, so every probe call lands on the mock.
  *
  * NOT deployed to Hubitat — never referenced by production code paths.
  */
