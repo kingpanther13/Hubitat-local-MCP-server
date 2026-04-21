@@ -19,14 +19,15 @@ updates:
   # changes don't need aggressive freshness, and the set is small.
   #
   # Pinned intentionally (see ignores below):
-  #   - groovy-all stays on 2.5.x — matches joelwetzel's compiled-against
-  #     version and is closest to Hubitat's runtime Groovy 2.4.
-  #   - spock-core uses the "-groovy-2.5" variant suffix, which Dependabot
+  #   - groovy-all stays on the 3.0.x line — matches eighty20results/hubitat_ci's
+  #     compiled-against version (3.0.21) for consumer compatibility.
+  #   - spock-core uses the "-groovy-3.0" variant suffix, which Dependabot
   #     doesn't model as a version coordinator; manual bump only.
-  #   - com.github.joelwetzel:hubitat_ci is served by JitPack and pinned to a
-  #     specific commit SHA (no upstream release tags). Dependabot can't see
-  #     JitPack SHAs as versions; the hubitat-ci-version-check.yml workflow
-  #     polls joelwetzel's master branch and opens tracking issues instead.
+  #   - com.github.eighty20results:hubitat_ci is served by JitPack and pinned
+  #     by release tag (e.g. v0.28.6). eighty20results cuts git tags, but
+  #     JitPack/Dependabot interop on tag-based version discovery is flaky,
+  #     so we keep the manual bump tracked by the hubitat-ci-version-check
+  #     workflow rather than relying on Dependabot here.
   - package-ecosystem: "gradle"
     directory: "/"
     schedule:
@@ -37,7 +38,7 @@ updates:
           - "version-update:semver-major"
           - "version-update:semver-minor"
       - dependency-name: "org.spockframework:spock-core"
-      - dependency-name: "com.github.joelwetzel:hubitat_ci"
+      - dependency-name: "com.github.eighty20results:hubitat_ci"
     groups:
       gradle-dependencies:
         patterns: ["*"]
