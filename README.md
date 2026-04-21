@@ -221,11 +221,11 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (69 total — 30 on tools/list)
+### MCP Tools (74 total — 31 on tools/list)
 
-The server has 69 tools total. To keep the MCP `tools/list` manageable, **21 core tools** are always visible and **48 additional tools** are organized behind **9 domain-named gateways**. The AI sees 30 items on `tools/list` (21 + 9 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 74 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **52 additional tools** are organized behind **9 domain-named gateways**. The AI sees 31 items on `tools/list` (22 + 9 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (21) — Always visible on tools/list
+#### Core Tools (22) — Always visible on tools/list
 
 <details>
 <summary><b>Devices</b> (5) — Control and query devices</summary>
@@ -296,11 +296,12 @@ The server has 69 tools total. To keep the MCP `tools/list` manageable, **21 cor
 </details>
 
 <details>
-<summary><b>Reference</b> (1)</summary>
+<summary><b>Reference</b> (2)</summary>
 
 | Tool | Description |
 |------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself |
+| `search_tools` | Natural-language search across all tools (BM25 ranking); returns matches with their gateway location |
 
 </details>
 
@@ -390,12 +391,14 @@ Source code is automatically backed up before any modify/delete operation.
 </details>
 
 <details>
-<summary><b>manage_logs</b> (6) — Logs and log configuration</summary>
+<summary><b>manage_logs</b> (8) — Logs, performance stats, and log configuration</summary>
 
 | Tool | Description |
 |------|-------------|
 | `get_hub_logs` | Hub log entries (most recent first) with level/source filters and server-side deviceId/appId scoping |
 | `get_device_history` | Up to 7 days of device event history |
+| `get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
+| `get_hub_jobs` | Scheduled jobs, running jobs, and hub actions |
 | `get_debug_logs` | Retrieve MCP debug log entries |
 | `clear_debug_logs` | Clear all MCP debug logs |
 | `set_log_level` | Set MCP log level (debug/info/warn/error) |
@@ -406,11 +409,13 @@ Monitoring tools require Hub Admin Read to be enabled.
 </details>
 
 <details>
-<summary><b>manage_diagnostics</b> (9) — Diagnostics, performance, radio details, and state capture</summary>
+<summary><b>manage_diagnostics</b> (11) — Diagnostics, memory, radio details, and state capture</summary>
 
 | Tool | Description |
 |------|-------------|
 | `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history |
+| `get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
+| `force_garbage_collection` | Force JVM garbage collection; returns before/after free memory (Hub Admin Read) |
 | `device_health_check` | Find stale/offline devices |
 | `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
 | `get_zwave_details` | Z-Wave radio info (firmware, devices) |
@@ -739,7 +744,8 @@ For easier bug reporting:
 ---
 
 <!-- FUTURE_PLANS_START -->
-## Future Plans
+<details>
+<summary><h2>Future Plans</h2></summary>
 
 
 > **Blue-sky ideas** — everything below is speculative and needs further research to determine feasibility. None of these features are guaranteed or committed to.
@@ -1403,6 +1409,8 @@ For easier bug reporting:
 39. **Button Controller** — Use native app; MCP already has `button_event` triggers
 40. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
 41. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
+
+</details>
 <!-- FUTURE_PLANS_END -->
 
 
