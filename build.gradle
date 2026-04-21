@@ -110,7 +110,10 @@ test {
     // specs installing and uninstalling these at the same time would race.
     maxParallelForks = 1
     testLogging {
-        events 'passed', 'skipped', 'failed'
+        // Include 'started' so CI streams per-test output live — without
+        // it, a slow spec leaves the runner silent for minutes and the
+        // next regression in harness overhead is invisible in the job log.
+        events 'started', 'passed', 'skipped', 'failed'
         exceptionFormat = 'full'
     }
 }

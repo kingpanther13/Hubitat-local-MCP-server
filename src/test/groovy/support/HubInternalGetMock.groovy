@@ -22,4 +22,10 @@ class HubInternalGetMock {
         }
         return handler(params)
     }
+
+    /** Clears registered handlers and recorded calls so a shared instance is safe to reuse across tests. */
+    void reset() {
+        handlers.clear()
+        calls.clear()
+    }
 }
