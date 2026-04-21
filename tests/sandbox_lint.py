@@ -52,8 +52,10 @@ VERSION_SOURCES = {
 
 RULES = [
     {
+        # Match both `getClass()` invocations and bare property-access form
+        # (`obj.getClass` in a GString triggers the no-arg method at runtime).
         "id": "SANDBOX-001",
-        "pattern": r"\bgetClass\s*\(",
+        "pattern": r"\bgetClass\b",
         "message": "getClass() blocked in Hubitat sandbox",
         "severity": "error",
     },
@@ -124,13 +126,127 @@ RULES = [
 # ---------------------------------------------------------------------------
 
 
-def strip_comments_and_strings(source: str) -> list[str]:
-    """Return lines with comments and string contents replaced.
+_BARE_GSTRING_IDENT_START = re.compile(r"[A-Za-z_]")
+_BARE_GSTRING_IDENT_CHAR = re.compile(r"[A-Za-z0-9_]")
 
-    - Block comments (/* ... */) → replaced with blank lines (preserves line count)
+
+def _consume_bare_gstring_var(text: str, start: int) -> tuple[str, int]:
+    """Consume a bare `$identifier[.identifier]*` GString reference.
+
+    Assumes `text[start] == '$'` and `text[start + 1]` is an identifier
+    start character. Returns (preserved_text, index_past_end). The leading
+    `$` is blanked (we only care about what follows for rule matching) but
+    the identifier chain is preserved verbatim so rules like SANDBOX-001
+    can match `$foo.getClass` (a legal bare-form Groovy property access
+    that triggers the no-arg method at runtime).
+    """
+    n = len(text)
+    out = [" "]  # blank the $
+    k = start + 1
+    # First identifier
+    while k < n and _BARE_GSTRING_IDENT_CHAR.match(text[k]):
+        out.append(text[k])
+        k += 1
+    # Subsequent .identifier segments
+    while (
+        k + 1 < n
+        and text[k] == "."
+        and _BARE_GSTRING_IDENT_START.match(text[k + 1])
+    ):
+        out.append(".")
+        k += 1
+        while k < n and _BARE_GSTRING_IDENT_CHAR.match(text[k]):
+            out.append(text[k])
+            k += 1
+    return "".join(out), k
+
+
+def _consume_gstring_interpolation(text: str, start: int) -> tuple[str, int]:
+    """Walk from `start` (index of `$` in `${`) to the matching `}`, returning
+    (preserved_text, index_past_close).
+
+    The body is preserved verbatim so downstream regex rules scan the Groovy
+    expression, except that nested string literals inside the body have their
+    contents blanked (so a `}` inside `"literal }"` doesn't close the
+    interpolation early, and a stray `getClass()` inside a nested literal
+    doesn't trigger a false positive).
+
+    Assumes `text[start] == '$'` and `text[start+1] == '{'`.
+    """
+    out = ["  "]  # ${
+    depth = 1
+    k = start + 2
+    n = len(text)
+    while k < n and depth > 0:
+        ch = text[k]
+        if ch == "{":
+            depth += 1
+            out.append(ch)
+            k += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                out.append(" ")  # closing }
+                k += 1
+                break
+            out.append(ch)
+            k += 1
+        elif ch == '"' or ch == "'":
+            # Nested string literal inside the interpolation body. Skip past
+            # its contents (respecting escapes) so embedded `}` characters
+            # don't decrement our depth counter and stray sandbox-forbidden
+            # names inside literal text don't trigger false positives.
+            out.append(" ")
+            k += 1
+            while k < n:
+                if text[k] == "\\" and k + 1 < n:
+                    out.append("  ")
+                    k += 2
+                elif text[k] == ch:
+                    out.append(" ")
+                    k += 1
+                    break
+                else:
+                    out.append(" ")
+                    k += 1
+        elif ch == "\\" and k + 1 < n:
+            out.append(str(text[k]) + str(text[k + 1]))
+            k += 2
+        else:
+            out.append(ch)
+            k += 1
+    return "".join(out), k
+
+
+def strip_comments_and_strings(source: str) -> list[str]:
+    """Return lines with comments and literal string contents replaced.
+
+    Behavior:
+    - Block comments (/* ... */) → replaced with spaces (preserves line count)
     - Line comments (// ...) → stripped from end of line
-    - String literal contents → replaced with __STR__ placeholder
-    - Handles triple-quoted strings, double-quoted, and single-quoted strings
+    - Single-quoted strings ('...') → fully blanked (not GStrings in Groovy)
+    - Triple-single-quoted strings ('''...''') → fully blanked
+    - Double-quoted strings ("...") → literal text blanked; ${...}
+      interpolation bodies AND bare $identifier[.prop...] references are
+      preserved so rules scan the Groovy expression (e.g. ${foo.getClass()}
+      and $foo.getClass both trigger SANDBOX-001)
+    - Triple-double-quoted strings (\"\"\"...\"\"\") → same GString treatment
+      when closing on the same line; multi-line bodies fall back to blanked
+
+    Invariants:
+    - Output preserves the column and line count of the input so finding
+      line numbers match the original source.
+    - Spaces (not sentinel tokens like __STR__) are used so downstream regex
+      rules can't accidentally match the sentinel itself.
+
+    Known limitations (deliberate, not bugs):
+    - Slashy strings (/.../) and dollar-slashy ($/.../$/) are not recognized
+      as strings — their content is scanned as raw source. Rare in real
+      Hubitat code; the only existing use is a bare Pattern literal with no
+      interpolation. False positives would require literal sandbox-forbidden
+      names inside a regex body, which is implausible.
+    - Multi-line triple-quoted bodies (opening and closing on different
+      lines) are blanked wholesale.
     """
     lines = source.split("\n")
     result: list[str] = []
@@ -163,43 +279,67 @@ def strip_comments_and_strings(source: str) -> list[str]:
             # Line comment
             elif line[i : i + 2] == "//":
                 break
-            # Triple-quoted string (Groovy)
-            elif line[i : i + 3] in ('"""', "'''"):
-                quote = line[i : i + 3]
-                cleaned.append(quote[0] + "__STR__" + quote[0])
-                j = i + 3
-                # Find closing triple quote — may span lines but we handle
-                # single-line case; multi-line triple quotes rarely contain
-                # sandbox-violating patterns
-                end = line.find(quote, j)
+            # Triple-double-quoted GString (may contain ${...})
+            elif line[i : i + 3] == '"""':
+                end = line.find('"""', i + 3)
                 if end != -1:
+                    cleaned.append("   ")
+                    cleaned.append(_scrub_gstring_body(line[i + 3 : end]))
+                    cleaned.append("   ")
                     i = end + 3
                 else:
+                    # Multi-line triple-quoted body — rare; fall back to blanks
+                    cleaned.append(" " * (len(line) - i))
                     i = len(line)
-            # Double-quoted string
+            # Triple-single-quoted (plain string, no interpolation)
+            elif line[i : i + 3] == "'''":
+                end = line.find("'''", i + 3)
+                if end != -1:
+                    cleaned.append(" " * (end + 3 - i))
+                    i = end + 3
+                else:
+                    cleaned.append(" " * (len(line) - i))
+                    i = len(line)
+            # Double-quoted GString — preserve ${...} bodies, blank literal text
             elif line[i] == '"':
-                cleaned.append('"__STR__"')
+                cleaned.append(" ")  # opening quote
                 j = i + 1
                 while j < len(line):
                     if line[j] == "\\" and j + 1 < len(line):
+                        cleaned.append("  ")
                         j += 2
                     elif line[j] == '"':
+                        cleaned.append(" ")
                         j += 1
                         break
+                    elif line[j] == "$" and j + 1 < len(line) and line[j + 1] == "{":
+                        body, j = _consume_gstring_interpolation(line, j)
+                        cleaned.append(body)
+                    elif (
+                        line[j] == "$"
+                        and j + 1 < len(line)
+                        and _BARE_GSTRING_IDENT_START.match(line[j + 1])
+                    ):
+                        body, j = _consume_bare_gstring_var(line, j)
+                        cleaned.append(body)
                     else:
+                        cleaned.append(" ")
                         j += 1
                 i = j
-            # Single-quoted string
+            # Single-quoted string — plain string in Groovy, no interpolation
             elif line[i] == "'":
-                cleaned.append("'__STR__'")
+                cleaned.append(" ")
                 j = i + 1
                 while j < len(line):
                     if line[j] == "\\" and j + 1 < len(line):
+                        cleaned.append("  ")
                         j += 2
                     elif line[j] == "'":
+                        cleaned.append(" ")
                         j += 1
                         break
                     else:
+                        cleaned.append(" ")
                         j += 1
                 i = j
             else:
@@ -211,33 +351,71 @@ def strip_comments_and_strings(source: str) -> list[str]:
     return result
 
 
+def _scrub_gstring_body(body: str) -> str:
+    """Blank literal text in a triple-double-quoted GString body while
+    preserving ${...} interpolations and bare `$identifier[.prop...]`
+    references. Shares nested-string-aware brace handling with the
+    single-line GString walker via _consume_gstring_interpolation."""
+    out = []
+    i = 0
+    n = len(body)
+    while i < n:
+        if body[i] == "\\" and i + 1 < n:
+            out.append("  ")
+            i += 2
+        elif body[i] == "$" and i + 1 < n and body[i + 1] == "{":
+            preserved, i = _consume_gstring_interpolation(body, i)
+            out.append(preserved)
+        elif (
+            body[i] == "$"
+            and i + 1 < n
+            and _BARE_GSTRING_IDENT_START.match(body[i + 1])
+        ):
+            preserved, i = _consume_bare_gstring_var(body, i)
+            out.append(preserved)
+        else:
+            out.append(" ")
+            i += 1
+    return "".join(out)
+
+
 # ---------------------------------------------------------------------------
 # Scanning
 # ---------------------------------------------------------------------------
 
 
-def scan_file(filepath: Path) -> list[dict]:
-    """Scan a single groovy file for sandbox anti-patterns."""
+def scan_source(source: str, display_path: str) -> list[dict]:
+    """Scan Groovy source text for sandbox anti-patterns.
+
+    Separated from scan_file so the self-test can exercise the same code
+    path without touching disk.
+    """
     findings = []
-    source = filepath.read_text(encoding="utf-8", errors="replace")
     stripped_lines = strip_comments_and_strings(source)
-    rel_path = filepath.relative_to(REPO_ROOT)
+    source_lines = source.split("\n")
 
     for line_num, line in enumerate(stripped_lines, start=1):
         for rule in RULES:
             if re.search(rule["pattern"], line):
                 findings.append(
                     {
-                        "file": str(rel_path),
+                        "file": display_path,
                         "line": line_num,
                         "rule": rule["id"],
                         "message": rule["message"],
                         "severity": rule["severity"],
-                        "source": source.split("\n")[line_num - 1].strip(),
+                        "source": source_lines[line_num - 1].strip(),
                     }
                 )
 
     return findings
+
+
+def scan_file(filepath: Path) -> list[dict]:
+    """Scan a single groovy file for sandbox anti-patterns."""
+    source = filepath.read_text(encoding="utf-8", errors="replace")
+    rel_path = str(filepath.relative_to(REPO_ROOT))
+    return scan_source(source, rel_path)
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +532,142 @@ def format_annotation(f: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+SELF_TEST_CASES = [
+    # (description, groovy source, list of (rule_id, should_match))
+    (
+        "getClass() inside a GString interpolation is flagged",
+        'log.warn "type=${obj?.getClass()?.simpleName}"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "getClass() as plain string literal content is NOT flagged",
+        'log.warn "text mentioning getClass() as example"',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "getClass() inside a single-quoted string is NOT flagged (not a GString)",
+        "log.warn 'type=${obj?.getClass()?.simpleName}'",
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "getClass() inside a triple-single-quoted string is NOT flagged",
+        "def s = '''text ${obj.getClass()} here'''",
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "getClass() inside a triple-double-quoted GString interpolation is flagged",
+        'def s = """prefix ${obj.getClass()} suffix"""',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Bare getClass() call is flagged",
+        "def t = obj.getClass().simpleName",
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Nested closure braces inside a GString interpolation don't break the scanner",
+        'def s = "count=${list.findAll { it.getClass() }.size()}"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Nested double-quoted string inside a GString interpolation is scanned correctly",
+        'log.info "${ "literal".getClass() }"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Brace inside a nested string inside a GString does not close the interpolation early",
+        'log.info "${foo.replace(\'}\', \'\').getClass()}"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "getClass() inside a nested string inside an interpolation is NOT flagged",
+        'def s = "ok=${foo.toString().replace("getClass()", "X")}"',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "Back-to-back interpolations are both scanned",
+        'log.warn "${a.getClass()}${Locale.default}"',
+        [("SANDBOX-001", True), ("SANDBOX-002", True)],
+    ),
+    (
+        "Locale inside a GString interpolation is flagged",
+        'log.info "loc=${Locale.default}"',
+        [("SANDBOX-002", True)],
+    ),
+    (
+        "Escaped dollar does not open an interpolation",
+        'def s = "literal \\${getClass()}"',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "Line comment containing GString-like text is NOT flagged",
+        '// this is a comment mentioning "${foo.getClass()}"',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "Block comment containing GString-like text is NOT flagged",
+        '/* "${foo.getClass()}" example */',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        # Groovy's bare-form GString supports `$identifier[.prop...]` for
+        # property access. `$foo.getClass` (no parens) is legal and triggers
+        # the no-arg method at runtime, so the sandbox restriction applies.
+        "Bare $obj.getClass GString form is flagged",
+        'log.warn "type=$obj.getClass"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Bare $var reference without a forbidden identifier is NOT flagged",
+        'log.warn "name=$user.email"',
+        [("SANDBOX-001", False), ("SANDBOX-002", False)],
+    ),
+    (
+        "Bare $var inside a single-quoted string is NOT expanded (still a miss)",
+        "log.warn 'type=$obj.getClass'",
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "Bare $Locale.default in an interpolation is flagged",
+        'log.info "loc=$Locale.default"',
+        [("SANDBOX-002", True)],
+    ),
+]
+
+
+def run_self_test() -> int:
+    """Scan inline fixtures through scan_source and confirm each rule
+    triggers where expected. Uses scan_source (not strip_comments_and_strings
+    + inline rule loop) so the self-test exercises the same code path
+    CI uses for real files."""
+    failures = 0
+    for i, (desc, source, expected) in enumerate(SELF_TEST_CASES, start=1):
+        findings = scan_source(source, f"<self-test case {i}>")
+        hits = {f["rule"] for f in findings}
+        for rule_id, should_match in expected:
+            matched = rule_id in hits
+            if matched != should_match:
+                failures += 1
+                stripped = strip_comments_and_strings(source)
+                print(
+                    f"SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  rule={rule_id} expected={'hit' if should_match else 'miss'} "
+                    f"actual={'hit' if matched else 'miss'}\n"
+                    f"  source: {source!r}\n"
+                    f"  stripped: {stripped!r}"
+                )
+
+    if failures:
+        print(f"--- {failures} self-test failure(s) ---")
+        return 1
+    print(f"Self-test: {len(SELF_TEST_CASES)} case(s) passed.")
+    return 0
+
+
 def main() -> int:
+    if "--self-test" in sys.argv[1:]:
+        return run_self_test()
+
     all_findings: list[dict] = []
 
     # Scan groovy files

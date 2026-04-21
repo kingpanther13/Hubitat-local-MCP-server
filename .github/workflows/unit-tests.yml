@@ -21,9 +21,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
       - name: Run unit tests
         run: ./gradlew test --info --warning-mode all
-      - name: Upload test report on failure
-        if: failure()
+      - name: Upload test report
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: test-report
-          path: build/reports/tests/test/
+          path: |
+            build/reports/tests/test/
+            build/test-results/test/
