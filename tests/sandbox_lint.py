@@ -124,19 +124,92 @@ RULES = [
 # ---------------------------------------------------------------------------
 
 
+def _consume_gstring_interpolation(text: str, start: int) -> tuple[str, int]:
+    """Walk from `start` (index of `$` in `${`) to the matching `}`, returning
+    (preserved_text, index_past_close).
+
+    The body is preserved verbatim so downstream regex rules scan the Groovy
+    expression, except that nested string literals inside the body have their
+    contents blanked (so a `}` inside `"literal }"` doesn't close the
+    interpolation early, and a stray `getClass()` inside a nested literal
+    doesn't trigger a false positive).
+
+    Assumes `text[start] == '$'` and `text[start+1] == '{'`.
+    """
+    out = ["  "]  # ${
+    depth = 1
+    k = start + 2
+    n = len(text)
+    while k < n and depth > 0:
+        ch = text[k]
+        if ch == "{":
+            depth += 1
+            out.append(ch)
+            k += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                out.append(" ")  # closing }
+                k += 1
+                break
+            out.append(ch)
+            k += 1
+        elif ch == '"' or ch == "'":
+            # Nested string literal inside the interpolation body. Skip past
+            # its contents (respecting escapes) so embedded `}` characters
+            # don't decrement our depth counter and stray sandbox-forbidden
+            # names inside literal text don't trigger false positives.
+            out.append(" ")
+            k += 1
+            while k < n:
+                if text[k] == "\\" and k + 1 < n:
+                    out.append("  ")
+                    k += 2
+                elif text[k] == ch:
+                    out.append(" ")
+                    k += 1
+                    break
+                else:
+                    out.append(" ")
+                    k += 1
+        elif ch == "\\" and k + 1 < n:
+            out.append(str(text[k]) + str(text[k + 1]))
+            k += 2
+        else:
+            out.append(ch)
+            k += 1
+    return "".join(out), k
+
+
 def strip_comments_and_strings(source: str) -> list[str]:
     """Return lines with comments and literal string contents replaced.
 
-    - Block comments (/* ... */) → replaced with blank lines (preserves line count)
+    Behavior:
+    - Block comments (/* ... */) → replaced with spaces (preserves line count)
     - Line comments (// ...) → stripped from end of line
-    - Single-quoted strings → contents replaced with spaces (not GStrings in Groovy)
-    - Double-quoted strings (GStrings) → literal text replaced with spaces,
-      but ${...} interpolation bodies are preserved verbatim so rules scan
-      the Groovy expression they contain (e.g. ${foo.getClass()} still
-      triggers SANDBOX-001).
-    - Triple-quoted single-quoted strings → fully blanked
-    - Triple-quoted double-quoted strings → same GString treatment as "..."
+    - Single-quoted strings ('...') → fully blanked (not GStrings in Groovy)
+    - Triple-single-quoted strings ('''...''') → fully blanked
+    - Double-quoted strings ("...") → literal text blanked, ${...}
+      interpolation bodies preserved so rules scan the Groovy expression
+      (e.g. ${foo.getClass()} still triggers SANDBOX-001)
+    - Triple-double-quoted strings (\"\"\"...\"\"\") → same GString treatment
       when closing on the same line; multi-line bodies fall back to blanked
+
+    Invariants:
+    - Output preserves the column and line count of the input so finding
+      line numbers match the original source.
+    - Spaces (not sentinel tokens like __STR__) are used so downstream regex
+      rules can't accidentally match the sentinel itself.
+
+    Known limitations (deliberate, not bugs):
+    - Bare `$identifier[.prop...]` GString form (no braces) is NOT preserved;
+      only `${...}` interpolations are. Groovy allows `"x=$foo.getClass"` as
+      a property-access GString, but the bare form is rare in practice and
+      ambiguous to scan. See the self-test fixture for pinned behavior.
+    - Slashy strings (/.../) and dollar-slashy ($/.../$/) are not recognized
+      and will be scanned as raw source. Rare in real Hubitat code.
+    - Multi-line triple-quoted bodies (opening and closing on different
+      lines) are blanked wholesale.
     """
     lines = source.split("\n")
     result: list[str] = []
@@ -203,26 +276,8 @@ def strip_comments_and_strings(source: str) -> list[str]:
                         j += 1
                         break
                     elif line[j] == "$" and j + 1 < len(line) and line[j + 1] == "{":
-                        # Preserve interpolation body verbatim so rules can
-                        # scan the Groovy expression inside.
-                        depth = 1
-                        k = j + 2
-                        cleaned.append("  ")  # ${
-                        while k < len(line) and depth > 0:
-                            if line[k] == "{":
-                                depth += 1
-                                cleaned.append(line[k])
-                            elif line[k] == "}":
-                                depth -= 1
-                                if depth == 0:
-                                    cleaned.append(" ")  # closing }
-                                    k += 1
-                                    break
-                                cleaned.append(line[k])
-                            else:
-                                cleaned.append(line[k])
-                            k += 1
-                        j = k
+                        body, j = _consume_gstring_interpolation(line, j)
+                        cleaned.append(body)
                     else:
                         cleaned.append(" ")
                         j += 1
@@ -253,33 +308,20 @@ def strip_comments_and_strings(source: str) -> list[str]:
 
 
 def _scrub_gstring_body(body: str) -> str:
-    """Within a triple-double-quoted GString body, blank literal text but
-    keep ${...} interpolations verbatim (same treatment as a "..." GString)."""
+    """Blank literal text in a triple-double-quoted GString body while
+    preserving ${...} interpolations verbatim. Shares nested-string-aware
+    brace handling with the single-line GString walker via
+    _consume_gstring_interpolation."""
     out = []
     i = 0
-    while i < len(body):
-        if body[i] == "\\" and i + 1 < len(body):
+    n = len(body)
+    while i < n:
+        if body[i] == "\\" and i + 1 < n:
             out.append("  ")
             i += 2
-        elif body[i] == "$" and i + 1 < len(body) and body[i + 1] == "{":
-            depth = 1
-            k = i + 2
-            out.append("  ")
-            while k < len(body) and depth > 0:
-                if body[k] == "{":
-                    depth += 1
-                    out.append(body[k])
-                elif body[k] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        out.append(" ")
-                        k += 1
-                        break
-                    out.append(body[k])
-                else:
-                    out.append(body[k])
-                k += 1
-            i = k
+        elif body[i] == "$" and i + 1 < n and body[i + 1] == "{":
+            preserved, i = _consume_gstring_interpolation(body, i)
+            out.append(preserved)
         else:
             out.append(" ")
             i += 1
@@ -447,6 +489,11 @@ SELF_TEST_CASES = [
         [("SANDBOX-001", False)],
     ),
     (
+        "getClass() inside a triple-single-quoted string is NOT flagged",
+        "def s = '''text ${obj.getClass()} here'''",
+        [("SANDBOX-001", False)],
+    ),
+    (
         "getClass() inside a triple-double-quoted GString interpolation is flagged",
         'def s = """prefix ${obj.getClass()} suffix"""',
         [("SANDBOX-001", True)],
@@ -457,9 +504,29 @@ SELF_TEST_CASES = [
         [("SANDBOX-001", True)],
     ),
     (
-        "Nested braces inside a GString interpolation don't break the scanner",
+        "Nested closure braces inside a GString interpolation don't break the scanner",
         'def s = "count=${list.findAll { it.getClass() }.size()}"',
         [("SANDBOX-001", True)],
+    ),
+    (
+        "Nested double-quoted string inside a GString interpolation is scanned correctly",
+        'log.info "${ "literal".getClass() }"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Brace inside a nested string inside a GString does not close the interpolation early",
+        'log.info "${foo.replace(\'}\', \'\').getClass()}"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "getClass() inside a nested string inside an interpolation is NOT flagged",
+        'def s = "ok=${foo.toString().replace("getClass()", "X")}"',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "Back-to-back interpolations are both scanned",
+        'log.warn "${a.getClass()}${Locale.default}"',
+        [("SANDBOX-001", True), ("SANDBOX-002", True)],
     ),
     (
         "Locale inside a GString interpolation is flagged",
@@ -471,45 +538,49 @@ SELF_TEST_CASES = [
         'def s = "literal \\${getClass()}"',
         [("SANDBOX-001", False)],
     ),
+    (
+        "Line comment containing GString-like text is NOT flagged",
+        '// this is a comment mentioning "${foo.getClass()}"',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "Block comment containing GString-like text is NOT flagged",
+        '/* "${foo.getClass()}" example */',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        # Known limitation: the bare `$var.prop` GString form without braces
+        # is not preserved. Pinned as a miss so any future change is
+        # intentional. Groovy allows this form only for property access.
+        "Bare $var.getClass GString form is a known false-negative (not flagged)",
+        'log.warn "type=$obj.getClass"',
+        [("SANDBOX-001", False)],
+    ),
 ]
 
 
 def run_self_test() -> int:
     """Scan inline fixtures and confirm each rule triggers where expected."""
-    from tempfile import NamedTemporaryFile
-
     failures = 0
     for i, (desc, source, expected) in enumerate(SELF_TEST_CASES, start=1):
-        with NamedTemporaryFile(
-            mode="w", suffix=".groovy", delete=False, encoding="utf-8"
-        ) as fh:
-            fh.write(source + "\n")
-            tmp = Path(fh.name)
-        try:
-            stripped = strip_comments_and_strings(source)
-            # Build a findings-like set from the stripped output
-            hits = {
-                rule["id"]
-                for line in stripped
-                for rule in RULES
-                if re.search(rule["pattern"], line)
-            }
-            for rule_id, should_match in expected:
-                matched = rule_id in hits
-                if matched != should_match:
-                    failures += 1
-                    print(
-                        f"SELF-TEST FAIL [{i}] {desc}\n"
-                        f"  rule={rule_id} expected={'hit' if should_match else 'miss'} "
-                        f"actual={'hit' if matched else 'miss'}\n"
-                        f"  source: {source!r}\n"
-                        f"  stripped: {stripped!r}"
-                    )
-        finally:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        stripped = strip_comments_and_strings(source)
+        hits = {
+            rule["id"]
+            for line in stripped
+            for rule in RULES
+            if re.search(rule["pattern"], line)
+        }
+        for rule_id, should_match in expected:
+            matched = rule_id in hits
+            if matched != should_match:
+                failures += 1
+                print(
+                    f"SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  rule={rule_id} expected={'hit' if should_match else 'miss'} "
+                    f"actual={'hit' if matched else 'miss'}\n"
+                    f"  source: {source!r}\n"
+                    f"  stripped: {stripped!r}"
+                )
 
     if failures:
         print(f"--- {failures} self-test failure(s) ---")
