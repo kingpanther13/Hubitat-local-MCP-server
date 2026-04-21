@@ -125,12 +125,18 @@ RULES = [
 
 
 def strip_comments_and_strings(source: str) -> list[str]:
-    """Return lines with comments and string contents replaced.
+    """Return lines with comments and literal string contents replaced.
 
     - Block comments (/* ... */) → replaced with blank lines (preserves line count)
     - Line comments (// ...) → stripped from end of line
-    - String literal contents → replaced with __STR__ placeholder
-    - Handles triple-quoted strings, double-quoted, and single-quoted strings
+    - Single-quoted strings → contents replaced with spaces (not GStrings in Groovy)
+    - Double-quoted strings (GStrings) → literal text replaced with spaces,
+      but ${...} interpolation bodies are preserved verbatim so rules scan
+      the Groovy expression they contain (e.g. ${foo.getClass()} still
+      triggers SANDBOX-001).
+    - Triple-quoted single-quoted strings → fully blanked
+    - Triple-quoted double-quoted strings → same GString treatment as "..."
+      when closing on the same line; multi-line bodies fall back to blanked
     """
     lines = source.split("\n")
     result: list[str] = []
@@ -163,43 +169,78 @@ def strip_comments_and_strings(source: str) -> list[str]:
             # Line comment
             elif line[i : i + 2] == "//":
                 break
-            # Triple-quoted string (Groovy)
-            elif line[i : i + 3] in ('"""', "'''"):
-                quote = line[i : i + 3]
-                cleaned.append(quote[0] + "__STR__" + quote[0])
-                j = i + 3
-                # Find closing triple quote — may span lines but we handle
-                # single-line case; multi-line triple quotes rarely contain
-                # sandbox-violating patterns
-                end = line.find(quote, j)
+            # Triple-double-quoted GString (may contain ${...})
+            elif line[i : i + 3] == '"""':
+                end = line.find('"""', i + 3)
                 if end != -1:
+                    cleaned.append("   ")
+                    cleaned.append(_scrub_gstring_body(line[i + 3 : end]))
+                    cleaned.append("   ")
                     i = end + 3
                 else:
+                    # Multi-line triple-quoted body — rare; fall back to blanks
+                    cleaned.append(" " * (len(line) - i))
                     i = len(line)
-            # Double-quoted string
+            # Triple-single-quoted (plain string, no interpolation)
+            elif line[i : i + 3] == "'''":
+                end = line.find("'''", i + 3)
+                if end != -1:
+                    cleaned.append(" " * (end + 3 - i))
+                    i = end + 3
+                else:
+                    cleaned.append(" " * (len(line) - i))
+                    i = len(line)
+            # Double-quoted GString — preserve ${...} bodies, blank literal text
             elif line[i] == '"':
-                cleaned.append('"__STR__"')
+                cleaned.append(" ")  # opening quote
                 j = i + 1
                 while j < len(line):
                     if line[j] == "\\" and j + 1 < len(line):
+                        cleaned.append("  ")
                         j += 2
                     elif line[j] == '"':
+                        cleaned.append(" ")
                         j += 1
                         break
+                    elif line[j] == "$" and j + 1 < len(line) and line[j + 1] == "{":
+                        # Preserve interpolation body verbatim so rules can
+                        # scan the Groovy expression inside.
+                        depth = 1
+                        k = j + 2
+                        cleaned.append("  ")  # ${
+                        while k < len(line) and depth > 0:
+                            if line[k] == "{":
+                                depth += 1
+                                cleaned.append(line[k])
+                            elif line[k] == "}":
+                                depth -= 1
+                                if depth == 0:
+                                    cleaned.append(" ")  # closing }
+                                    k += 1
+                                    break
+                                cleaned.append(line[k])
+                            else:
+                                cleaned.append(line[k])
+                            k += 1
+                        j = k
                     else:
+                        cleaned.append(" ")
                         j += 1
                 i = j
-            # Single-quoted string
+            # Single-quoted string — plain string in Groovy, no interpolation
             elif line[i] == "'":
-                cleaned.append("'__STR__'")
+                cleaned.append(" ")
                 j = i + 1
                 while j < len(line):
                     if line[j] == "\\" and j + 1 < len(line):
+                        cleaned.append("  ")
                         j += 2
                     elif line[j] == "'":
+                        cleaned.append(" ")
                         j += 1
                         break
                     else:
+                        cleaned.append(" ")
                         j += 1
                 i = j
             else:
@@ -209,6 +250,40 @@ def strip_comments_and_strings(source: str) -> list[str]:
         result.append("".join(cleaned))
 
     return result
+
+
+def _scrub_gstring_body(body: str) -> str:
+    """Within a triple-double-quoted GString body, blank literal text but
+    keep ${...} interpolations verbatim (same treatment as a "..." GString)."""
+    out = []
+    i = 0
+    while i < len(body):
+        if body[i] == "\\" and i + 1 < len(body):
+            out.append("  ")
+            i += 2
+        elif body[i] == "$" and i + 1 < len(body) and body[i + 1] == "{":
+            depth = 1
+            k = i + 2
+            out.append("  ")
+            while k < len(body) and depth > 0:
+                if body[k] == "{":
+                    depth += 1
+                    out.append(body[k])
+                elif body[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        out.append(" ")
+                        k += 1
+                        break
+                    out.append(body[k])
+                else:
+                    out.append(body[k])
+                k += 1
+            i = k
+        else:
+            out.append(" ")
+            i += 1
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +429,99 @@ def format_annotation(f: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+SELF_TEST_CASES = [
+    # (description, groovy source, list of (rule_id, should_match))
+    (
+        "getClass() inside a GString interpolation is flagged",
+        'log.warn "type=${obj?.getClass()?.simpleName}"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "getClass() as plain string literal content is NOT flagged",
+        'log.warn "text mentioning getClass() as example"',
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "getClass() inside a single-quoted string is NOT flagged (not a GString)",
+        "log.warn 'type=${obj?.getClass()?.simpleName}'",
+        [("SANDBOX-001", False)],
+    ),
+    (
+        "getClass() inside a triple-double-quoted GString interpolation is flagged",
+        'def s = """prefix ${obj.getClass()} suffix"""',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Bare getClass() call is flagged",
+        "def t = obj.getClass().simpleName",
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Nested braces inside a GString interpolation don't break the scanner",
+        'def s = "count=${list.findAll { it.getClass() }.size()}"',
+        [("SANDBOX-001", True)],
+    ),
+    (
+        "Locale inside a GString interpolation is flagged",
+        'log.info "loc=${Locale.default}"',
+        [("SANDBOX-002", True)],
+    ),
+    (
+        "Escaped dollar does not open an interpolation",
+        'def s = "literal \\${getClass()}"',
+        [("SANDBOX-001", False)],
+    ),
+]
+
+
+def run_self_test() -> int:
+    """Scan inline fixtures and confirm each rule triggers where expected."""
+    from tempfile import NamedTemporaryFile
+
+    failures = 0
+    for i, (desc, source, expected) in enumerate(SELF_TEST_CASES, start=1):
+        with NamedTemporaryFile(
+            mode="w", suffix=".groovy", delete=False, encoding="utf-8"
+        ) as fh:
+            fh.write(source + "\n")
+            tmp = Path(fh.name)
+        try:
+            stripped = strip_comments_and_strings(source)
+            # Build a findings-like set from the stripped output
+            hits = {
+                rule["id"]
+                for line in stripped
+                for rule in RULES
+                if re.search(rule["pattern"], line)
+            }
+            for rule_id, should_match in expected:
+                matched = rule_id in hits
+                if matched != should_match:
+                    failures += 1
+                    print(
+                        f"SELF-TEST FAIL [{i}] {desc}\n"
+                        f"  rule={rule_id} expected={'hit' if should_match else 'miss'} "
+                        f"actual={'hit' if matched else 'miss'}\n"
+                        f"  source: {source!r}\n"
+                        f"  stripped: {stripped!r}"
+                    )
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+    if failures:
+        print(f"--- {failures} self-test failure(s) ---")
+        return 1
+    print(f"Self-test: {len(SELF_TEST_CASES)} case(s) passed.")
+    return 0
+
+
 def main() -> int:
+    if "--self-test" in sys.argv[1:]:
+        return run_self_test()
+
     all_findings: list[dict] = []
 
     # Scan groovy files
