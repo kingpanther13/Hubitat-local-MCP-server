@@ -29,6 +29,16 @@ repositories {
         content {
             includeGroup 'com.github.eighty20results'
         }
+        // Force Gradle to resolve eighty20results dependencies via the POM
+        // only. JitPack republishes Gradle Module Metadata (.module files)
+        // with an empty apiElements dependency list, which strips the
+        // transitive compile-time classpath — most visibly the
+        // `groovyx.net.http.HttpResponseDecorator` reference eighty20results'
+        // HubitatAppScript carries via http-builder 0.7.1. Using mavenPom()
+        // makes Gradle read the full <dependencies> block from the POM.
+        metadataSources {
+            mavenPom()
+        }
     }
 }
 

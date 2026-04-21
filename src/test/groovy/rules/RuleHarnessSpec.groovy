@@ -79,12 +79,12 @@ abstract class RuleHarnessSpec extends Specification {
                 Flags.DontRestrictGroovy
             ]
         )
-        // If subclass assigned `parent` before Spock's field-initialization
-        // ordering placed us here, propagate immediately; otherwise the
-        // setter handles it when the spec's given: block runs.
-        if (_parent != null) {
-            script.setParent(_parent)
-        }
+        // Propagate unconditionally so the script's parent exactly matches
+        // the spec's `_parent` — including null. eighty20results' sandbox
+        // supplies a default `InstalledAppWrapperImpl` when options.parent
+        // is absent, so without this reset a spec that expects
+        // `parent == null` would see the default wrapper instead.
+        script.setParent(_parent)
         wireOverrides()
     }
 
