@@ -7478,7 +7478,9 @@ def toolRenameRoom(args) {
 
 /**
  * List all installed apps on the hub (built-in + user), flattened with parent/child relationships.
- * Backed by /hub2/appsList (undocumented but stable internal endpoint used by the Hubitat web UI).
+ * Backed by /hub2/appsList -- returns the same flattened app list the Hubitat web UI renders on
+ * the Apps page. Includes built-in and user apps, parent/child hierarchy, disabled state, and
+ * installed-package metadata.
  */
 def toolListInstalledApps(args) {
     requireBuiltinAppRead()
@@ -7667,10 +7669,9 @@ def toolListRmRules(args) {
         rules: rules,
         count: rules.size()
     ]
-    // Classify the failures. A "missing class" error (RM not installed) is normal if the
-    // OTHER version succeeded — only quiet when at least one call returned a list. If both
-    // calls failed with any error, or if one call returned data while the other had a
-    // non-missing-class error (e.g. timeout, internal platform issue), surface the details
+    // Classify the failures. A "missing class" error (RM not installed) is quiet whether
+    // the other version succeeded OR both versions failed the same way (both-absent path).
+    // A non-missing-class error (e.g. timeout, internal platform issue) is always surfaced
     // so operators can investigate rather than get silent empty results.
     // Narrow to class-resolution failures only. Earlier versions treated any
     // MissingMethodException / "No signature of method" / unqualified "Cannot get property"
@@ -7758,7 +7759,8 @@ private void registerRmRule(Map combined, def r, String version) {
                 // ruleId: integer schema (callers would see a String id in the
                 // response and fail to dispatch run_rm_rule against it). Skip
                 // the entry and surface the anomaly via logs instead.
-                mcpLog("warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${rawKey?.getClass()?.simpleName}) in RM ${version} list -- skipping entry")
+                def keyType = rawKey instanceof Number ? 'Number' : rawKey instanceof String ? 'String' : 'other'
+                mcpLog("warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${keyType}) in RM ${version} list -- skipping entry")
                 return
             }
             label = entry.value?.toString()
@@ -7861,8 +7863,8 @@ def toolSetRmRuleBoolean(args) {
  * to the RM 5.x handler and is the canonical call for both RM 4.x and RM 5.x rules.
  * The 3-arg form `sendAction([ids], action, appLabel)` reaches only RM 4.x and is
  * used as a fallback for very old firmware that predates the version-discriminator
- * overload (see sendRmActionFallback). Provenance for the 4-arg invariant is in
- * the PR description linking bravenel's RM API thread.
+ * overload (see sendRmActionFallback). Background on the RM API shape:
+ * https://community.hubitat.com/t/rule-machine-api/7104
  */
 private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
     def appLabel = app?.label ?: "MCP Rule Server"
@@ -7900,7 +7902,7 @@ private Map sendRmActionFallback(Integer ruleId, String rmAction, String appLabe
         def m1 = original.message ?: original.toString()
         def m2 = e2.message ?: e2.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${m1}, 3-arg=${m2}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
+        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
     }
 }
 
