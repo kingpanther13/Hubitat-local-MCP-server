@@ -40,12 +40,20 @@ class RMUtilsSandboxResolutionSpec extends Specification {
 
         and: 'sandbox-compiled probe with PassThroughAppValidator so the literal hubitat.helper.* stubs resolve without remap'
         def sandbox = new HubitatAppSandbox(new File('src/test/resources/sandbox-rmutils-probe.groovy'))
+        // Must use sandbox.run() (not compile()) when passing validator: — compile()
+        // calls addFlags(options, [DontRunScript]) which makes options.validationFlags
+        // non-empty, and readValidator silently discards options.validator in favor of
+        // a fresh default AppValidator when validationFlags is non-empty. (The combo
+        // compile() + validator: is effectively dead code in HubitatCI; upstream tests
+        // only use validator: with run().) Put DontRunScript in the validator's own
+        // flags so setupImpl's hasFlag(DontRunScript) check still skips script.run().
         def passThroughValidator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
-            Flags.DontRestrictGroovy
+            Flags.DontRestrictGroovy,
+            Flags.DontRunScript
         ])
-        def script = sandbox.compile(
+        def script = sandbox.run(
             api: appExecutor,
             userSettingValues: [_harness: true],
             validator: passThroughValidator

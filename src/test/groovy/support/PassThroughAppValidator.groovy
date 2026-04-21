@@ -51,7 +51,12 @@ class PassThroughAppValidator extends AppValidator {
      */
     @Override
     HubitatAppScript parseScript(File scriptFile) {
-        throw new RuntimeException("=== PASS-THROUGH parseScript(File) WAS REACHED for ${scriptFile?.name}")
+        System.err.println("=== PASS-THROUGH: parseScript(File) called for ${scriptFile?.name}")
+        def scriptFileText = scriptFile.getText('UTF-8')
+        def name = scriptFile.name
+        def dot = name.lastIndexOf('.')
+        def scriptName = dot > 0 ? name.substring(0, dot) : name
+        return parseScript(scriptFileText, scriptName)
     }
 
     @Override
