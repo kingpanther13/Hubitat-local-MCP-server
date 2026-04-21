@@ -31,11 +31,16 @@ repositories {
         }
         // Force Gradle to resolve eighty20results dependencies via the POM
         // only. JitPack republishes Gradle Module Metadata (.module files)
-        // with an empty apiElements dependency list, which strips the
-        // transitive compile-time classpath — most visibly the
-        // `groovyx.net.http.HttpResponseDecorator` reference eighty20results'
-        // HubitatAppScript carries via http-builder 0.7.1. Using mavenPom()
-        // makes Gradle read the full <dependencies> block from the POM.
+        // with an empty apiElements dependency list, which would otherwise
+        // strip the transitive classpath entirely. mavenPom() makes Gradle
+        // read the full <dependencies> block.
+        //
+        // Note: eighty20results' POM marks every dep as <scope>runtime</scope>,
+        // which keeps them off the compile classpath even under mavenPom.
+        // Compile-time references from HubitatCI's public types (e.g. the
+        // `groovyx.net.http.HttpResponseDecorator` return-type reference in
+        // HubitatAppScript) must be mirrored explicitly as testImplementation
+        // — see the deps block below.
         metadataSources {
             mavenPom()
         }
@@ -53,6 +58,14 @@ dependencies {
     // eighty20results/hubitat_ci pinned by release tag. Bumped by tracking
     // issues from .github/workflows/hubitat-ci-version-check.yml.
     testImplementation 'com.github.eighty20results:hubitat_ci:v0.28.6'
+    // eighty20results' POM declares all of its deps as <scope>runtime</scope>,
+    // which keeps them off our compile classpath. Mirror the ones we need
+    // for `compileTestGroovy` to resolve type references carried in
+    // HubitatCI's bytecode. The versions here match the POM exactly so we
+    // don't silently drift from what the fork compiled against.
+    testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
+    testImplementation 'org.quartz-scheduler:quartz:2.3.0'
+    testImplementation 'su.litvak.chromecast:api-v2:0.11.1'
     // Required by Spock to Mock/Spy non-interface types (TestDevice, TestChildApp).
     // Spock 2.x can use either byte-buddy or cglib-nodep as its class-gen
     // backend; neither is a transitive dep of spock-core.
