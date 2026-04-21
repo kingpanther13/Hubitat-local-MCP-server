@@ -2,12 +2,12 @@ package rules
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
 import me.biocomp.hubitat_ci.api.common_api.Location
-import me.biocomp.hubitat_ci.api.common_api.Log
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Shared
 import spock.lang.Specification
 import support.PassThroughAppValidator
+import support.PermissiveLog
 import support.TestChildApp
 
 /**
@@ -42,6 +42,12 @@ abstract class RuleHarnessSpec extends Specification {
     // Shared across the spec class — see HarnessSpec for why.
     @Shared protected AppExecutor appExecutor
     @Shared protected script
+    // Matches HarnessSpec's PermissiveLog usage — a concrete shim that
+    // accepts both the single-arg methods on HubitatCI's Log interface and
+    // the 2-arg (String, Throwable) overloads the real Hubitat runtime
+    // supports. A Spock Mock(Log) would throw MissingMethodException on
+    // script code like `log.error(msg, e)` under dynamic Groovy dispatch.
+    @Shared private PermissiveLog sharedLog = new PermissiveLog()
 
     // Stable references captured by setupSpec's stubs; reset in setup().
     @Shared protected final Map stateMap = [:]
@@ -66,7 +72,6 @@ abstract class RuleHarnessSpec extends Specification {
 
     def setupSpec() {
         def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-rule.groovy'))
-        def logMock = Mock(Log)
         appExecutor = Mock(AppExecutor) {
             _ * getState() >> stateMap
             _ * getAtomicState() >> atomicStateMap
@@ -84,7 +89,7 @@ abstract class RuleHarnessSpec extends Specification {
                 getId      : { -> 1L }
             ] as Location)
             _ * now() >> 1234567890000L
-            _ * getLog() >> logMock
+            _ * getLog() >> sharedLog
         }
         def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
@@ -117,6 +122,11 @@ abstract class RuleHarnessSpec extends Specification {
         // instead — or worse, the previous test's parent.
         _parent = null
         script.setParent(null)
+        // Drop any per-test metaClass writes from the previous feature
+        // before re-installing the standard hooks below — prevents
+        // per-feature stubs (e.g. `script.metaClass.getGlobalVar = { ... }`
+        // installed directly in given: blocks) from leaking forward.
+        GroovySystem.metaClassRegistry.removeMetaClass(script.getClass())
         // Re-run per-test wires (metaClass overrides etc.) after clearing
         // state. Called from setup() rather than setupSpec() so subclass
         // overrides can capture the current feature instance's fields.

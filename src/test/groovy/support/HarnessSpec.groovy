@@ -150,6 +150,14 @@ abstract class HarnessSpec extends Specification {
         childDevicesList.clear()
         childAppsList.clear()
         hubGet.reset()
+        // Drop any per-test metaClass writes installed on the shared
+        // script by previous features (e.g. individual specs' given:
+        // blocks that do `script.metaClass.getRooms = { ... }`).
+        // Without this the @Shared script would carry accumulated
+        // overrides into the next feature, making tests order-dependent.
+        // The standard hooks installed by wireScriptOverrides() below are
+        // re-applied immediately so they're always present.
+        GroovySystem.metaClassRegistry.removeMetaClass(script.getClass())
         // Re-run metaClass + reflective wires in setup (not setupSpec) so
         // closures capture the *current* Specification instance. This lets
         // subclasses override wireScriptOverrides() with closures that
