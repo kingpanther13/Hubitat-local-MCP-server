@@ -21,6 +21,10 @@ class TestDevice {
     List supportedAttributes = []
     List supportedCommands = []
     Map attributeValues = [:]
+    // Some tools iterate device.currentStates (e.g. toolGetRoom). Default
+    // null so the ?.each in the tool is a no-op; tests that care can set
+    // a list of maps like [[name: 'switch', value: 'on']].
+    List currentStates = null
 
     Object currentValue(String attr) {
         attributeValues[attr]

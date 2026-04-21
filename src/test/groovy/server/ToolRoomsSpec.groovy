@@ -3,39 +3,24 @@ package server
 import groovy.json.JsonSlurper
 import spock.lang.Shared
 
+import support.TestDevice
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_rooms gateway tools (hubitat-mcp-server.groovy
- * around line 7022):
+ * Spec for the manage_rooms gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolListRooms    -> list_rooms
- * - toolGetRoom      -> get_room
- * - toolCreateRoom   -> create_room   (destructive — Hub Admin Write + confirm)
- * - toolDeleteRoom   -> delete_room   (destructive — Hub Admin Write + confirm)
- * - toolRenameRoom   -> rename_room   (destructive — Hub Admin Write + confirm)
+ * - toolListRooms   -> list_rooms
+ * - toolGetRoom     -> get_room
+ * - toolCreateRoom  -> create_room   (destructive — Hub Admin Write + confirm)
+ * - toolDeleteRoom  -> delete_room   (destructive — Hub Admin Write + confirm)
+ * - toolRenameRoom  -> rename_room   (destructive — Hub Admin Write + confirm)
  *
- * Mocking strategy:
- *   - getRooms() / getHubSecurityCookie() are dynamic (no concrete impl in
- *     the eighty20results class hierarchy), so script.metaClass overrides
- *     intercept them cleanly — same pattern as hubInternalGet.
- *
- *   - httpPost(Map, Closure) is a concrete method on HubitatAppScript AND
- *     on every layer of eighty20results' delegate chain (AppMappingsReader
- *     -> AppDefinitionReader -> AppPreferencesReader -> AppSubscriptionReader
- *     -> AppChildExecutor -> AppExecutor mock). Each upper layer calls
- *     delegate.httpPost via Groovy callsite, but the final hop at
- *     AppChildExecutor uses invokeinterface directly on the mock. Per-
- *     instance metaClass on the script / HubitatAppScript class metaClass /
- *     appExecutor Spock stub additions in given: blocks are all bypassed
- *     by that dispatch chain. The only reliable interception point is a
- *     permanent `_ * appExecutor.httpPost(_, _) >> { ... }` stub installed
- *     in setupSpec() that dispatches to a @Shared Closure handler field
- *     (httpPostHandler below); tests assign a closure to that field in
- *     given: and cleanup() resets it between features. See setupSpec()
- *     and the httpPostHandler declaration below. docs/testing.md under
- *     "Which interception point to use" has the full rationale and
- *     anti-patterns list.
+ * Mocking strategy: see docs/testing.md "Which interception point to use".
+ * This spec is the canonical example of the setupSpec-dispatcher pattern
+ * for platform methods on BaseExecutor — httpPost is intercepted via a
+ * permanent `_ *` stub in setupSpec() that dispatches to a per-feature
+ * @Shared Closure handler (httpPostHandler). getRooms / getHubSecurityCookie
+ * are purely dynamic, stubbed per-test on script.metaClass.
  *
  * Destructive tools require:
  *   settingsMap.enableHubAdminWrite = true
@@ -74,6 +59,10 @@ class ToolRoomsSpec extends ToolSpecBase {
     @Shared Closure httpPostHandler = null
 
     def setupSpec() {
+        // No explicit super.setupSpec() call needed — Spock auto-invokes
+        // superclass fixtures in declaration order (HarnessSpec.setupSpec
+        // runs first, wiring appExecutor + the shared script, then this
+        // body layers the httpPost dispatcher onto the already-built mock).
         appExecutor.httpPost(_, _) >> { args ->
             if (httpPostHandler) {
                 httpPostHandler.call(args[0], args[1])
@@ -118,6 +107,21 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.rooms[1].deviceCount == 3
         result.rooms[2].deviceCount == 0
         result.rooms[0].deviceIds == ['200']
+    }
+
+    def "list_rooms handles rooms that omit deviceIds entirely"() {
+        given: 'a room with no deviceIds field — the defensive ?: [] branches must not NPE'
+        installGetRoomsStub([
+            [id: 9, name: 'Garage']  // no deviceIds key
+        ])
+
+        when:
+        def result = script.toolListRooms()
+
+        then:
+        result.count == 1
+        result.rooms[0].deviceCount == 0
+        result.rooms[0].deviceIds == []
     }
 
     // -------- toolGetRoom --------
@@ -178,12 +182,39 @@ class ToolRoomsSpec extends ToolSpecBase {
         ex.message.contains('Room name or ID is required')
     }
 
+    def "get_room expands deviceIds into device details and flags unresolvable ids as not-accessible"() {
+        given: 'a room referencing a resolvable child device and an unresolvable id'
+        installGetRoomsStub([
+            [id: 7, name: 'Den', deviceIds: [100, 999]]
+        ])
+        and: 'a child device findable at id 100 with a current state'
+        childDevicesList << new TestDevice(
+            id: 100, name: 'den_light', label: 'Den Light',
+            currentStates: [[name: 'switch', value: 'on']]
+        )
+
+        when:
+        def result = script.toolGetRoom('7')
+
+        then: 'both deviceIds produce an entry, resolvable one carries details, unresolvable one flagged'
+        result.deviceCount == 2
+        def known = result.devices.find { it.id == '100' }
+        known != null
+        known.label == 'Den Light'
+        known.name == 'den_light'
+        known.currentStates == [switch: 'on']
+
+        def unknown = result.devices.find { it.id == '999' }
+        unknown != null
+        unknown.label == '(device not accessible via MCP)'
+        unknown.accessible == false
+    }
+
     // -------- toolCreateRoom --------
 
     def "create_room throws when confirm is not provided"() {
         given:
-        settingsMap.enableHubAdminWrite = true
-        stateMap.lastBackupTimestamp = 1234567890000L
+        enableHubAdminWrite()
 
         when:
         script.toolCreateRoom([name: 'Garage'])
@@ -303,6 +334,35 @@ class ToolRoomsSpec extends ToolSpecBase {
         rooms == []
     }
 
+    def "delete_room falls back to GET /room/delete/<id> when POST fails"() {
+        given:
+        enableHubAdminWrite()
+        def rooms = [
+            [id: 12, name: 'Sunroom', deviceIds: [400]]
+        ]
+        installGetRoomsStub(rooms)
+        installCookieStub()
+
+        and: 'POST fails loudly — should force the tool to try the GET fallback'
+        httpPostHandler = { Map params, Closure cb ->
+            throw new RuntimeException('Simulated POST failure')
+        }
+
+        and: 'the GET fallback mutates the rooms list so the post-delete verification passes'
+        hubGet.register('/room/delete/12') { params ->
+            rooms.removeAll { it.id == 12 }
+            return ''
+        }
+
+        when:
+        def result = script.toolDeleteRoom([room: '12', confirm: true])
+
+        then: 'deletion succeeds via the GET path'
+        result.success == true
+        result.deletedRoom.id == '12'
+        rooms == []
+    }
+
     def "delete_room throws when the target room does not exist"() {
         given:
         enableHubAdminWrite()
@@ -348,6 +408,34 @@ class ToolRoomsSpec extends ToolSpecBase {
         capturedBody.roomId == 8
         capturedBody.name == 'Home Office'
         rooms[0].name == 'Home Office'
+        result.success == true
+    }
+
+    def "rename_room locates the target room by case-insensitive name"() {
+        given:
+        enableHubAdminWrite()
+        def rooms = [
+            [id: 15, name: 'Playroom', deviceIds: [700]]
+        ]
+        installGetRoomsStub(rooms)
+        installCookieStub()
+
+        and: 'httpPost handler captures the body and mutates the rooms list'
+        def capturedBody = null
+        httpPostHandler = { Map params, Closure cb ->
+            capturedBody = new JsonSlurper().parseText(params.body)
+            def room = rooms.find { it.id == capturedBody.roomId }
+            if (room) room.name = capturedBody.name
+            cb.call([status: 200, data: ''])
+        }
+
+        when: 'looked up by lowercased name (not by id)'
+        def result = script.toolRenameRoom([room: 'playroom', newName: 'Kids Room', confirm: true])
+
+        then: 'the existing room id is used in the save body and the rename takes effect'
+        capturedBody.roomId == 15
+        capturedBody.name == 'Kids Room'
+        rooms[0].name == 'Kids Room'
         result.success == true
     }
 

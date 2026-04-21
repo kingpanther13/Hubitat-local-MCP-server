@@ -3,19 +3,16 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_hub_variables gateway tools (hubitat-mcp-server.groovy
- * around line 2822):
+ * Spec for the manage_hub_variables gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolListVariables    -> list_variables
- * - toolGetVariable      -> get_variable
- * - toolSetVariable      -> set_variable
+ * - toolListVariables -> list_variables
+ * - toolGetVariable   -> get_variable
+ * - toolSetVariable   -> set_variable
  *
- * Mocking strategy: getAllGlobalConnectorVariables / getGlobalConnectorVariable /
- * setGlobalConnectorVariable are Hubitat hub-variable APIs not present on
- * AppExecutor, so they're stubbed per-test via script.metaClass in given:
- * blocks. HarnessSpec.setup() calls removeMetaClass(script.getClass()) before
- * re-running wireScriptOverrides(), so per-test stubs are cleared between
- * features automatically.
+ * Hub-variable APIs (getAllGlobalConnectorVariables / getGlobalConnectorVariable /
+ * setGlobalConnectorVariable) are purely dynamic — not on AppExecutor — so
+ * they're stubbed per-test via script.metaClass in given: blocks. See
+ * docs/testing.md "Which interception point to use" for the general pattern.
  */
 class ToolHubVariablesSpec extends ToolSpecBase {
 
@@ -164,5 +161,37 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.success == true
         result.source == 'rule_engine'
         result.value == 42
+    }
+
+    def "set_variable passes string values through to hub connector unchanged"() {
+        given:
+        def captured = [:]
+        script.metaClass.setGlobalConnectorVariable = { String name, Object value ->
+            captured[name] = value
+        }
+
+        when:
+        def result = script.toolSetVariable('weather_state', 'sunny')
+
+        then:
+        captured == [weather_state: 'sunny']
+        result.value == 'sunny'
+        result.source == 'hub'
+    }
+
+    def "set_variable accepts null values via rule-engine fallback"() {
+        given: 'hub connector rejects null (some connector types require non-null)'
+        script.metaClass.setGlobalConnectorVariable = { String name, Object value ->
+            throw new IllegalArgumentException('Connector variable must not be null')
+        }
+
+        when:
+        def result = script.toolSetVariable('last_motion', null)
+
+        then:
+        stateMap.ruleVariables == [last_motion: null]
+        result.success == true
+        result.value == null
+        result.source == 'rule_engine'
     }
 }

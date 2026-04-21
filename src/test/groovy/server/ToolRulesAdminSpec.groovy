@@ -1,31 +1,29 @@
 package server
 
 import support.TestChildApp
+import support.TestDevice
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_rules_admin gateway tools (hubitat-mcp-server.groovy
- * around line 2321):
+ * Spec for the manage_rules_admin gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolDeleteRule   -> delete_rule     (line 2321)
- * - toolTestRule     -> test_rule       (line 2404)
- * - toolExportRule   -> export_rule     (line 2433)
- * - toolImportRule   -> import_rule     (line 2464)
- * - toolCloneRule    -> clone_rule      (line 2530)
+ * - toolDeleteRule -> delete_rule
+ * - toolTestRule   -> test_rule
+ * - toolExportRule -> export_rule
+ * - toolImportRule -> import_rule
+ * - toolCloneRule  -> clone_rule
  *
  * Mocking strategy:
- *   - getChildApps() is routed to childAppsList via HarnessSpec's reflective
- *     childAppAccessor wire-up. The server defines its own getChildAppById()
- *     that calls getChildApps().find { ... }, so seeding a TestChildApp into
- *     childAppsList is enough to satisfy the lookup.
- *   - deleteChildApp(id) is also routed via childAppAccessor ('delete' op)
- *     — removes matching entries from childAppsList.
- *   - addChildApp(...) is routed to mockChildAppForCreate via the reflective
- *     childAppFactory wire-up (used for toolImportRule + toolCloneRule).
- *   - uploadHubFile(name, bytes) is a Hubitat platform API — stubbed per test
- *     on script.metaClass where needed.
+ *   - getChildApps() / getChildAppById() / addChildApp() / deleteChildApp()
+ *     route through HarnessSpec.wireScriptOverrides()'s reflective
+ *     childAppFactory + childAppAccessor wire-up. Specs seed TestChildApp
+ *     instances into childAppsList (for lookup + delete) and assign
+ *     mockChildAppForCreate (for addChildApp). See docs/testing.md "Which
+ *     interception point to use" row 3.
+ *   - uploadHubFile(name, bytes) is purely dynamic — stubbed per-test on
+ *     script.metaClass when tool code invokes it (e.g. delete_rule backup).
  *   - testRuleFromParent() is MCP-rule-specific (not on TestChildApp by
- *     default) — stubbed per test on the instance's metaClass.
+ *     default) — stubbed per-instance via child.metaClass when needed.
  */
 class ToolRulesAdminSpec extends ToolSpecBase {
 
@@ -161,6 +159,34 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         ex.message.contains('at least one trigger')
     }
 
+    def "import_rule throws when exportData is missing the 'rule' object"() {
+        when:
+        script.toolImportRule([exportData: [exportVersion: '1.0']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("missing 'rule' object")
+    }
+
+    def "import_rule throws when the rule payload has no actions"() {
+        given:
+        def exportPayload = [
+            exportVersion: '1.0',
+            rule: [
+                name: 'Actionless Rule',
+                triggers: [[type: 'time', time: '09:00']],
+                actions: []
+            ]
+        ]
+
+        when:
+        script.toolImportRule([exportData: exportPayload])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('at least one action')
+    }
+
     // -------- toolCloneRule --------
 
     def "clone_rule exports the source and imports it as a disabled copy with 'Copy of' prefix"() {
@@ -204,6 +230,32 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('ruleId is required')
+    }
+
+    def "clone_rule uses the provided name override instead of the 'Copy of' default"() {
+        given:
+        def source = new TestChildApp(id: 20L, label: 'Backup Check')
+        source.ruleData = [
+            name: 'Backup Check',
+            enabled: true,
+            triggers: [[type: 'time', time: '06:00']],
+            conditions: [],
+            actions: [[type: 'delay', seconds: 1]],
+            localVariables: [:]
+        ]
+        childAppsList << source
+
+        and:
+        mockChildAppForCreate = new TestChildApp(id: 21L, label: 'Morning Backup Check')
+
+        when:
+        def result = script.toolCloneRule([ruleId: '20', name: '  Morning Backup Check  '])
+
+        then: 'name is trimmed and reflected in the message, no "Copy of" prefix'
+        result.success == true
+        result.clonedFrom == '20'
+        result.message.contains('Morning Backup Check')
+        !result.message.contains('Copy of')
     }
 
     // -------- toolDeleteRule --------
@@ -284,5 +336,73 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found')
+    }
+
+    def "delete_rule skips auto-backup when the rule is marked testRule=true and tags the message accordingly"() {
+        given: 'a rule whose data carries testRule: true'
+        def childApp = new TestChildApp(id: 11L, label: 'Test Rule')
+        childApp.settingsStore.ruleName = 'Test Rule'
+        childApp.ruleData = [
+            triggers: [], conditions: [], actions: [], localVariables: [:],
+            testRule: true
+        ]
+        childAppsList << childApp
+
+        and: 'uploadHubFile would fail loudly if called'
+        script.metaClass.uploadHubFile = { String fileName, byte[] content ->
+            throw new IllegalStateException('uploadHubFile should not have been called for a testRule')
+        }
+
+        when: 'delete_rule is invoked without skipBackupCheck'
+        def result = script.toolDeleteRule([ruleId: '11', confirm: true])
+
+        then: 'the rule is deleted with the test-rule message suffix and no backup'
+        result.success == true
+        result.backupFile == null
+        result.message.contains('No backup - test rule')
+        childAppsList.findAll { it.id?.toString() == '11' } == []
+    }
+
+    def "import_rule applies deviceMapping across triggers, conditions, and actions"() {
+        given: 'an exported rule that references deviceId 100 in every section'
+        def exportPayload = [
+            exportVersion: '1.0',
+            rule: [
+                name: 'Mapped Rule',
+                enabled: true,
+                // time trigger avoids validateTrigger's device-lookup branch,
+                // but still carries a deviceId field so applyDeviceMapping has
+                // something to remap
+                triggers: [[type: 'time', time: '10:00', deviceId: '100']],
+                conditions: [[type: 'variable', variableName: 'mode', operator: 'equals', value: 'Home', deviceId: '100']],
+                actions: [[type: 'device_command', deviceId: '100', command: 'on']]
+            ]
+        ]
+
+        and: 'a findable device at the REMAPPED id so validateAction(device_command) passes'
+        childDevicesList << new TestDevice(
+            id: 500, name: 'bulb', label: 'Hallway Bulb',
+            supportedCommands: [[name: 'on'], [name: 'off']]
+        )
+
+        and: 'addChildApp returns the TestChildApp the import will populate'
+        def cloned = new TestChildApp(id: 300L, label: 'Mapped Rule')
+        mockChildAppForCreate = cloned
+
+        when:
+        def result = script.toolImportRule([
+            exportData: exportPayload,
+            deviceMapping: ['100': '500']
+        ])
+
+        then: 'result reports one device mapped'
+        result.success == true
+        result.imported == true
+        result.devicesMapped == 1
+
+        and: 'the deviceId on every section was remapped before being stored on the child app'
+        cloned.ruleData.triggers[0].deviceId == '500'
+        cloned.ruleData.conditions[0].deviceId == '500'
+        cloned.ruleData.actions[0].deviceId == '500'
     }
 }
