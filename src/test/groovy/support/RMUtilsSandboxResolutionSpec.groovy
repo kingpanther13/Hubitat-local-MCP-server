@@ -38,16 +38,17 @@ class RMUtilsSandboxResolutionSpec extends Specification {
             _ * getLog() >> new PermissiveLog()
         }
 
-        and: 'sandbox-compiled probe — must be a real File, HubitatAppSandbox does not accept strings'
+        and: 'sandbox-compiled probe with PassThroughAppValidator so the literal hubitat.helper.* stubs resolve without remap'
         def sandbox = new HubitatAppSandbox(new File('src/test/resources/sandbox-rmutils-probe.groovy'))
+        def passThroughValidator = new PassThroughAppValidator([
+            Flags.DontValidatePreferences,
+            Flags.DontValidateDefinition,
+            Flags.DontRestrictGroovy
+        ])
         def script = sandbox.compile(
             api: appExecutor,
             userSettingValues: [_harness: true],
-            validationFlags: [
-                Flags.DontValidatePreferences,
-                Flags.DontValidateDefinition,
-                Flags.DontRestrictGroovy
-            ]
+            validator: passThroughValidator
         )
 
         and: 'classloader chain diagnostics for the sandbox-compiled script'
