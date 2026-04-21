@@ -2,6 +2,7 @@ package support
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
+import me.biocomp.hubitat_ci.app.HubitatAppScript
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
 
@@ -23,17 +24,22 @@ import spock.lang.Specification
  * to the supplied AppExecutor. `hubInternalGet` isn't on AppExecutor's
  * interface so it's metaclass-injected on the script.
  *
- * `addChildApp` and `getChildApps` are overridden on the script's
- * metaClass, not on the AppExecutor mock. eighty20results' HubitatAppScript
- * defines both as concrete methods that route through private factory
- * closures (childAppFactory → childAppRegistry), bypassing the mock's
- * @Delegate path. A per-instance metaClass override intercepts the
- * script-body dynamic dispatch that production tools use.
+ * `addChildApp` and `getChildApps` can't be intercepted via the
+ * AppExecutor mock: eighty20results' AppChildExecutor excludes both from
+ * its @Delegate chain, and HubitatAppScript defines concrete methods for
+ * each that route through private closure fields (`childAppFactory`,
+ * `childAppAccessor`). Per-instance metaClass overrides on those
+ * concrete superclass methods are skipped by the script body's
+ * intra-class dispatch (verified empirically — metaClass.addChildApp was
+ * bypassed in PR #100's first CI run). Instead, we reflect into the
+ * private closure fields on HubitatAppScript and replace them with test
+ * closures so the script's own `addChildApp` / `getChildApps` /
+ * `getChildAppById` implementations route to the spec's fixture maps.
  *
- * `childAppResolver` is supplied so eighty20results' options validator
- * accepts the sandbox options; its closure body is never executed
- * because our addChildApp override short-circuits before any real
- * child-script resolution would occur.
+ * `childAppResolver` is still supplied so eighty20results' options
+ * validator accepts the sandbox options; its closure body is never
+ * executed because our replacement `childAppFactory` short-circuits
+ * before any real child-script resolution would occur.
  */
 abstract class HarnessSpec extends Specification {
     protected AppExecutor appExecutor
@@ -90,23 +96,38 @@ abstract class HarnessSpec extends Specification {
         def hubGetRef = hubGet
         def childAppsRef = childAppsList
         def self = this
+        // hubInternalGet has no declaration on HubitatAppScript — it's
+        // pure dynamic Groovy resolved through metaClass, so the
+        // per-instance metaClass write here intercepts cleanly.
         script.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
             hubGetRef.call(p, pp)
         }
-        // AppChildExecutor's addChildApp routes through eighty20results'
-        // childAppBuilder closure, which requires a real on-disk child-app
-        // source file and creates a wrapper with a sandbox-assigned id.
-        // Tests want deterministic ids and a direct hook — override on
-        // the script's metaClass so script-body calls to addChildApp hit
-        // `mockChildAppForCreate` before the factory machinery runs.
-        // Varargs intercepts both the 3-arg and 4-arg (with props Map)
-        // overloads the production code uses.
-        script.metaClass.addChildApp = { Object... args -> self.mockChildAppForCreate }
-        // eighty20results' HubitatAppScript.getChildApps routes through a
-        // private childAppAccessor closure backed by ChildAppRegistry —
-        // tests can't stuff pre-existing mocks into that registry without
-        // going through addChildApp (which assigns sandbox-controlled ids).
-        // Override metaClass to return the spec-mutable childAppsList.
-        script.metaClass.getChildApps = { -> childAppsRef }
+        // Replace HubitatAppScript's private factory closures so the
+        // script's own concrete addChildApp / getChildApps / getChildAppById
+        // route to spec-controlled fixtures. See class javadoc for why
+        // metaClass overrides don't work here.
+        def factoryField = HubitatAppScript.getDeclaredField('childAppFactory')
+        factoryField.accessible = true
+        factoryField.set(script, { String ns, String name, String label, Map props = [:] ->
+            self.mockChildAppForCreate
+        } as Closure)
+
+        def accessorField = HubitatAppScript.getDeclaredField('childAppAccessor')
+        accessorField.accessible = true
+        accessorField.set(script, { String op, Object arg = null ->
+            switch (op) {
+                case 'list':
+                    return childAppsRef
+                case 'get':
+                    return childAppsRef.find { it.id?.toString() == arg?.toString() }
+                case 'getByLabel':
+                    return childAppsRef.find { it.label == arg }
+                case 'delete':
+                    childAppsRef.removeAll { it.id?.toString() == arg?.toString() }
+                    return null
+                default:
+                    return null
+            }
+        } as Closure)
     }
 }
