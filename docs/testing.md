@@ -56,6 +56,79 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures 
 5. Assert on the return value AND any state mutations or mock interactions.
 6. Always include at least one error-path test alongside the golden path.
 
+## Which interception point to use (dispatch cheat sheet)
+
+The HubitatCI / eighty20results stack has three distinct classes of method, and the right way to stub them differs by class. Using the wrong one silently no-ops and eats hours — this table is authoritative.
+
+| Method class | Examples | How to stub | Why this one works |
+|---|---|---|---|
+| **Purely dynamic** (not declared anywhere in the eighty20results class hierarchy — resolved entirely through Groovy's dynamic dispatch; verified absent via `javap -p .../BaseExecutor.class` and `.../HubitatAppScript.class`) | `hubInternalGet`, `getRooms`, `getHubSecurityCookie`, `getAllGlobalConnectorVariables`, `getGlobalConnectorVariable`, `setGlobalConnectorVariable`, `uploadHubFile` | `script.metaClass.methodName = { ... }` in `given:` | No concrete inherited method exists, so Groovy's callsite dispatch has nothing to resolve except the metaClass. Per-instance EMC entries win. The harness uses this pattern for `hubInternalGet` (wired once in `wireScriptOverrides()` in `setup()`). |
+| **Platform methods declared on `AppExecutor` / `BaseExecutor`** (and therefore also on every layer of eighty20results' delegate chain: `AppMappingsReader` → `AppDefinitionReader` → `AppPreferencesReader` → `AppSubscriptionReader` → `AppChildExecutor` → your `Mock(AppExecutor)`) | `httpPost`, `httpGet`, `httpPostJson`, `sendEvent`, `subscribe`, `schedule`, `runIn`, `sendSms`, `setLocationMode` | **Permanent `>>` stub in `setupSpec()`** that dispatches to a per-feature `@Shared Closure` handler (recipe below). | Two independent reasons other approaches fail:<br>• **metaClass routes are bypassed by the delegate chain** — each layer forwards via Groovy callsite to the next `delegate`; the final hop at `AppChildExecutor` uses `invokeinterface` directly on the mock proxy, skipping any per-instance or class-level metaClass overrides on the script (same intra-class-dispatch trap PR #100 hit with `addChildApp`).<br>• **`>>` stubs added in `given:` on a `@Shared` Mock are a Spock scoping issue, not a dispatch issue** — they don't propagate into the mock's interaction set across features.<br>• **`setupSpec` permanent stubs work** because they're registered in the mock's baseline interaction set before any feature runs. |
+| **Concrete methods with private-closure routing in `HubitatAppScript`** | `addChildApp`, `getChildApps`, `getChildAppById`, `getChildAppByLabel`, `deleteChildApp` | Reflect into `HubitatAppScript`'s private `childAppFactory` / `childAppAccessor` closure fields and replace them — already wired by `HarnessSpec.wireScriptOverrides()`. Specs just assign `mockChildAppForCreate` and/or populate `childAppsList`. | eighty20results' `AppChildExecutor` excludes these from the `@Delegate` chain, and `HubitatAppScript` defines its own concrete implementations that route through private closure fields. Both per-instance metaClass and `AppExecutor` mock stubs added in `given:` are bypassed — reflective replacement of the closures is the only reliable path. See PR #100 discussion. |
+
+### Recipe: stubbing `httpPost` (or any platform method on `BaseExecutor`)
+
+```groovy
+class ToolRoomsSpec extends ToolSpecBase {
+    // Per-feature handler. Tests assign a closure in `given:`.
+    @Shared Closure httpPostHandler = null
+
+    def setupSpec() {
+        // Permanent stub installed once, dispatches to the per-feature hook.
+        // Must live on the @Shared Mock(AppExecutor) in setupSpec — per-feature
+        // `>>` stubs added in given: on a @Shared mock do not fire reliably.
+        appExecutor.httpPost(_, _) >> { args ->
+            if (httpPostHandler) {
+                httpPostHandler.call(args[0], args[1])
+            }
+        }
+    }
+
+    def cleanup() {
+        httpPostHandler = null  // reset between features
+    }
+
+    def "create_room posts to /room/save and reports success"() {
+        given:
+        httpPostHandler = { Map params, Closure responseCb ->
+            // emulate the hub's response shape (status + data) by calling
+            // responseCb — the production code's `httpPost(params) { resp -> ... }`
+            // body reads resp.data / resp.status inside that callback
+            responseCb.call([status: 200, data: ''])
+        }
+        // ... rest of setup
+
+        when:
+        script.toolCreateRoom([name: 'Garage', confirm: true])
+
+        then:
+        // ... assertions
+    }
+}
+```
+
+### Anti-patterns (don't waste cycles re-trying these for `BaseExecutor` methods)
+
+All of the below **look** plausible for `httpPost` / `httpGet` / other methods on `BaseExecutor`, but all **silently no-op**. If your stub isn't firing, first verify the method's declaration class before trying more variants. From a shell in the repo root:
+
+```bash
+cd ~/.gradle/caches/modules-2/files-2.1/com.github.eighty20results/hubitat_ci/v0.28.6/*
+jar xf hubitat_ci-v0.28.6.jar
+javap -p me/biocomp/hubitat_ci/api/common_api/BaseExecutor.class | grep <methodName>
+javap -p me/biocomp/hubitat_ci/app/HubitatAppScript.class | grep <methodName>
+```
+
+If the method appears in either output, it's in class 2 of the cheat sheet above (platform method on `BaseExecutor` / concrete on `HubitatAppScript`) and needs the `setupSpec`-dispatcher pattern.
+
+- `script.metaClass.httpPost = { ... }` — bypassed by intra-class dispatch.
+- `HubitatAppScript.metaClass.httpPost = { ... }` — same.
+- `script.getClass().metaClass.httpPost = { ... }` — same.
+- `appExecutor.httpPost(_, _) >> { ... }` in `given:` — not routed into the @Shared Mock's interaction set.
+- `1 * appExecutor.httpPost(_, _) >> { ... }` in `then:` — Spock `then:` interactions are consumed AFTER the `when:` block runs; they can't stub responses during the code-under-test's execution.
+- Reflecting into `AppChildExecutor.delegate` and swapping it for a custom JDK `Proxy` — **works** but is a hack that bypasses hubitat_ci's intended mock surface. Use the `setupSpec` dispatcher pattern instead.
+
+Reference spec that uses the `setupSpec` dispatcher pattern correctly: `src/test/groovy/server/ToolRoomsSpec.groovy` (covers `httpPost` for `create_room` / `delete_room` / `rename_room`).
+
 ## Recipe: testing PR #79's `manage_rule_machine` tools (RMUtils)
 
 The `RMUtilsMock` is wired into the harness explicitly so PR #79's `manage_rule_machine` gateway tools can be unit-tested without a real hub. Sandbox-loaded production code reaches the mock via the `PassThroughSandboxClassLoader` → main-source-set stub → metaClass-installed mock chain; test-side direct calls hit the same stub and mock. `RMUtilsSandboxInterceptionSpec` keeps the full chain honest across eighty20results bumps.
