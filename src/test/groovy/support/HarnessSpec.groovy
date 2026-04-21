@@ -11,10 +11,23 @@ import spock.lang.Specification
  * file into a HubitatCI sandbox on each test so specs exercise actual
  * handler code, not re-implementations.
  *
- * Uses sandbox.compile() (NOT run()) because the server uses multi-page
- * form `preferences { page(name: "mainPage") }` which HubitatCI's
- * AppPreferencesReader.page() mishandles. compile() sets DontRunScript
- * internally — definitions compile, preferences body doesn't execute.
+ * Uses `sandbox.run()` with an explicit `PassThroughAppValidator` (not
+ * `sandbox.compile()`) for two reasons:
+ *
+ * 1. `PassThroughAppValidator` swaps in `PassThroughSandboxClassLoader`
+ *    so sandbox-loaded script references to `hubitat.helper.RMUtils` /
+ *    `NetworkUtils` resolve to our literal-named main-source-set stubs
+ *    instead of failing the JVM's §5.3.5 name-equality check against
+ *    eighty20results' remapped `common_api.RMUtils`. Without this, any
+ *    sandbox-compiled spec that calls into `hubitat.helper.*` (e.g. PR
+ *    #79's `manage_rule_machine` gateway tools) throws NCDFE at runtime.
+ * 2. `sandbox.compile()` eagerly adds `DontRunScript` to
+ *    `validationFlags`, which flips `readValidator`'s precedence and
+ *    silently discards the `validator:` option — so even if we pass
+ *    `validator: new PassThroughAppValidator(...)`, `compile()` throws
+ *    it away. `sandbox.run()` preserves the validator; we include
+ *    `Flags.DontRunScript` in the validator's own flag set to keep
+ *    `setupImpl` from invoking `script.run()`.
  *
  * `settings` is wired via userSettingValues (AppPreferencesReader holds
  * onto the Map reference, so mutating it from a spec's `given:` block
@@ -37,9 +50,11 @@ import spock.lang.Specification
  * `getChildAppById` implementations route to the spec's fixture maps.
  *
  * `childAppResolver` is still supplied so eighty20results' options
- * validator accepts the sandbox options; its closure body is never
- * executed because our replacement `childAppFactory` short-circuits
- * before any real child-script resolution would occur.
+ * validator accepts the sandbox options; its closure body throws
+ * `IllegalStateException` instead of returning null, because the
+ * replacement `childAppFactory` should short-circuit before any real
+ * child-script resolution ever happens — if it fires, that's a loud
+ * signal the harness needs updating for an eighty20results API change.
  */
 abstract class HarnessSpec extends Specification {
     protected AppExecutor appExecutor
@@ -79,15 +94,22 @@ abstract class HarnessSpec extends Specification {
             _ * now() >> 1234567890000L
             _ * getLog() >> logMock
         }
-        script = sandbox.compile(
+        def validator = new PassThroughAppValidator([
+            Flags.DontValidatePreferences,
+            Flags.DontValidateDefinition,
+            Flags.DontRestrictGroovy,
+            Flags.DontRunScript
+        ])
+        script = sandbox.run(
             api: appExecutor,
             userSettingValues: settingsMap,
-            childAppResolver: { String ns, String name -> null } as Closure,
-            validationFlags: [
-                Flags.DontValidatePreferences,
-                Flags.DontValidateDefinition,
-                Flags.DontRestrictGroovy
-            ]
+            childAppResolver: { String ns, String name ->
+                throw new IllegalStateException(
+                    "childAppResolver fired for ${ns}:${name} — HarnessSpec's " +
+                    "reflective childAppFactory replacement should have short-circuited " +
+                    "first. Check that factoryField.set() succeeded.")
+            } as Closure,
+            validator: validator
         )
         wireScriptOverrides()
     }

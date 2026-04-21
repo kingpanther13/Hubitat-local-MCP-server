@@ -1,30 +1,24 @@
 package support
 
 /**
- * install() mutates the global metaclass on BOTH
- * `hubitat.helper.RMUtils` (the test-classpath stub at
- * `src/test/groovy/support/stubs/hubitat/helper/RMUtils.groovy`, which
- * direct test-code calls resolve against) AND
- * `me.biocomp.hubitat_ci.api.common_api.RMUtils` (the class eighty20results'
- * SandboxClassLoader remaps `hubitat.helper.RMUtils` to when the reference
- * appears inside sandbox-loaded production code, e.g. PR #79's
- * `manage_rule_machine` gateway tools).
+ * `install()` mutates the static metaClass on `hubitat.helper.RMUtils`
+ * — the main-source-set stub at
+ * `src/main/groovy/hubitat/helper/RMUtils.groovy`. Both test-side
+ * direct calls (e.g. `RMUtilsMockSpec`) and sandbox-loaded production
+ * calls (e.g. PR #79's `manage_rule_machine` gateway tools, resolved
+ * through `support.PassThroughSandboxClassLoader`) land on the mock.
  *
- * The fork's own `common_api.RMUtils` only ships `getRule(String)` as a
- * real method; Groovy's `metaClass.static.*` assignment registers the
- * remaining methods (`getRuleList`, `sendAction`, `pauseRule`, `resumeRule`,
- * `setRuleBoolean`) dynamically for the duration of install(), and
- * dispatches sandbox-emitted calls to this mock.
+ * Specs using this mock must run sequentially — `install()` mutates
+ * the shared class metaclass. `build.gradle` pins
+ * `maxParallelForks = 1` for this reason; do not enable parallel test
+ * execution without moving these statics off the shared class metaclass
+ * first.
  *
- * Specs using this mock must run sequentially — install() mutates shared
- * class metaclasses. `build.gradle` pins `maxParallelForks = 1` for this
- * reason; do not enable parallel test execution without moving these
- * statics off the shared class metaclasses first.
- *
- * `RMUtilsSandboxInterceptionSpec` is the end-to-end regression proving
- * sandbox-mapped calls reach this mock. If a future eighty20results bump
- * changes the sandbox mapping target, that spec will fail loudly rather
- * than PR #79's tests silently returning defaults.
+ * `RMUtilsSandboxInterceptionSpec` is the end-to-end regression
+ * proving sandbox-loaded code reaches the mock via the PassThrough
+ * classloader path. If that spec fails after an eighty20results bump,
+ * the PassThrough scaffold needs attention before PR #79-style specs
+ * can trust this mock.
  */
 class RMUtilsMock {
     final List<Map> calls = []
@@ -53,17 +47,14 @@ class RMUtilsMock {
 
     void install() {
         def self = this
-        [hubitat.helper.RMUtils, me.biocomp.hubitat_ci.api.common_api.RMUtils].each { Class cls ->
-            cls.metaClass.static.getRuleList = { String v = '5.0' -> self.getRuleList(v) }
-            cls.metaClass.static.sendAction = { Long id, String a -> self.sendAction(id, a) }
-            cls.metaClass.static.pauseRule = { Long id -> self.pauseRule(id) }
-            cls.metaClass.static.resumeRule = { Long id -> self.resumeRule(id) }
-            cls.metaClass.static.setRuleBoolean = { Long id, Boolean v -> self.setRuleBoolean(id, v) }
-        }
+        hubitat.helper.RMUtils.metaClass.static.getRuleList = { String v = '5.0' -> self.getRuleList(v) }
+        hubitat.helper.RMUtils.metaClass.static.sendAction = { Long id, String a -> self.sendAction(id, a) }
+        hubitat.helper.RMUtils.metaClass.static.pauseRule = { Long id -> self.pauseRule(id) }
+        hubitat.helper.RMUtils.metaClass.static.resumeRule = { Long id -> self.resumeRule(id) }
+        hubitat.helper.RMUtils.metaClass.static.setRuleBoolean = { Long id, Boolean v -> self.setRuleBoolean(id, v) }
     }
 
     void uninstall() {
         GroovySystem.metaClassRegistry.removeMetaClass(hubitat.helper.RMUtils)
-        GroovySystem.metaClassRegistry.removeMetaClass(me.biocomp.hubitat_ci.api.common_api.RMUtils)
     }
 }

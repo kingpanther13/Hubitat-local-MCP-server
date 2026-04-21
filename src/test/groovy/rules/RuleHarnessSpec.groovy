@@ -6,14 +6,16 @@ import me.biocomp.hubitat_ci.api.common_api.Log
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
+import support.PassThroughAppValidator
 import support.TestChildApp
 
 /**
  * Loads hubitat-mcp-rule.groovy (the rule-engine child app — separate
  * from the MCP server app) into a HubitatCI sandbox for unit testing.
  *
- * Same load/wiring approach as support.HarnessSpec: compile() avoids the
- * multi-page preferences form issue, state/atomicState/settings/now/log
+ * Same load/wiring approach as support.HarnessSpec: `sandbox.run()` with
+ * an explicit `PassThroughAppValidator` (see HarnessSpec Javadoc for the
+ * compile-vs-run precedence trap), state/atomicState/settings/now/log
  * flow through the AppExecutor mock + userSettingValues + metaclass.
  *
  * `parent` is exposed as a writable property — specs assign it in their
@@ -69,15 +71,21 @@ abstract class RuleHarnessSpec extends Specification {
             _ * now() >> 1234567890000L
             _ * getLog() >> logMock
         }
-        script = sandbox.compile(
+        def validator = new PassThroughAppValidator([
+            Flags.DontValidatePreferences,
+            Flags.DontValidateDefinition,
+            Flags.DontRestrictGroovy,
+            Flags.DontRunScript
+        ])
+        script = sandbox.run(
             api: appExecutor,
             userSettingValues: settingsMap,
-            childAppResolver: { String ns, String name -> null } as Closure,
-            validationFlags: [
-                Flags.DontValidatePreferences,
-                Flags.DontValidateDefinition,
-                Flags.DontRestrictGroovy
-            ]
+            childAppResolver: { String ns, String name ->
+                throw new IllegalStateException(
+                    "childAppResolver fired for ${ns}:${name} — RuleHarnessSpec " +
+                    "does not expect child-app creation from the rule engine.")
+            } as Closure,
+            validator: validator
         )
         // Propagate unconditionally so the script's parent exactly matches
         // the spec's `_parent` — including null. eighty20results' sandbox

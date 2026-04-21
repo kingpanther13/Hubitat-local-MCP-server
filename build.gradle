@@ -9,12 +9,6 @@ repositories {
     // Consumed via JitPack by release tag — no auth, reproducible, free-tier.
     //
     // Why this fork:
-    // - Ships stubs for `hubitat.helper.RMUtils` / `ColorUtils` / `HexUtils` /
-    //   `ZigbeeUtils` in its own `me.biocomp.hubitat_ci.api.common_api.*`
-    //   namespace and maps them explicitly in SandboxClassLoader.mapClassName.
-    //   Sandbox-loaded production code (PR #79's `toolListRmRules` et al.)
-    //   resolves `hubitat.helper.RMUtils` natively — no passthrough harness
-    //   or main-source-set stubs needed on our side.
     // - Groovy 3.0 is module-aware, so the JDK-module `--add-opens` block
     //   from PR #83 (Groovy 2.5-era workaround) is no longer needed.
     // - Active commits focused on matching Hubitat runtime behaviour:
@@ -22,8 +16,20 @@ repositories {
     //   negative-enum test restoration, integration harness regression fixes.
     // - Cuts release tags (v0.28.6, v0.28.5, …) — pinnable by version.
     //
+    // Note on helper-class resolution: eighty20results maps
+    // `hubitat.helper.{RMUtils, ColorUtils, HexUtils, ZigbeeUtils}` to its
+    // own `common_api.*` namespace in SandboxClassLoader, but that alone
+    // doesn't resolve sandbox-loaded production-code references — the JVM
+    // §5.3.5 name-equality check rejects the remapped class when
+    // bytecode has a constant-pool entry for the literal
+    // `hubitat.helper.RMUtils`. We carry `support.PassThroughSandboxClassLoader`
+    // + main-source-set stubs (`src/main/groovy/hubitat/helper/`) to
+    // bypass the remap for those specific names; see that class's
+    // Javadoc for the call chain.
+    //
     // Migration cost paid in this PR: 3 specs reworked for eighty20results'
-    // child-app registry API and `childAppResolver` closure requirement.
+    // child-app registry API and `childAppResolver` closure requirement;
+    // PassThrough scaffold ported from the earlier PR #99 work.
     maven {
         url = 'https://jitpack.io'
         content {
@@ -54,7 +60,15 @@ dependencies {
     // Groovy 2.4 but 3.0 is largely backward-compatible for the imperative
     // script patterns our MCP server uses; the fork actively tests against
     // Hubitat behaviour and fixes divergence.
-    testImplementation 'org.codehaus.groovy:groovy-all:3.0.25'
+    //
+    // Uses `implementation` (not `testImplementation`) because
+    // `src/main/groovy/hubitat/helper/{RMUtils,NetworkUtils}.groovy` — the
+    // literal-name stubs that `PassThroughSandboxClassLoader` resolves to
+    // — live in the main source-set and need Groovy at compile time. The
+    // stubs never deploy (packageManifest.json ships only the two
+    // top-level server/rule files), so the main-source-set Groovy dep
+    // stays local to the build.
+    implementation 'org.codehaus.groovy:groovy-all:3.0.25'
     testImplementation 'org.spockframework:spock-core:2.3-groovy-3.0'
     // eighty20results/hubitat_ci pinned by release tag. Bumped by tracking
     // issues from .github/workflows/hubitat-ci-version-check.yml.
