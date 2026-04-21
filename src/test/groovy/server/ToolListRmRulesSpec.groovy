@@ -260,12 +260,16 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.success != false
 
         and: 'warn log fires with the instanceof-ladder type classification'
-        // Pins the sandbox-safe replacement for the old
-        // `${rawKey?.getClass()?.simpleName}` GString. If registerRmRule ever
-        // reverts to getClass(), sandbox_lint.py's SANDBOX-001 (GString-aware
-        // after #103) catches it at CI lint; this assertion catches the
-        // behavioral side (warn message still mentions the key type) so the
-        // guard holds even if the linter is edited.
+        // Catches: deleting the mcpLog call, dropping the NumberFormatException
+        // catch, removing (type=${keyType}) from the template, or collapsing
+        // the instanceof ladder so a String key no longer yields 'String'.
+        //
+        // Does NOT catch a getClass() revert on its own: under HarnessSpec's
+        // Flags.DontRestrictGroovy, rawKey.getClass().simpleName returns
+        // "String" at runtime -- byte-identical to the instanceof-ladder
+        // output for this fixture, so the message text is unchanged. The
+        // getClass()-revert guard lives in sandbox_lint.py's SANDBOX-001
+        // (GString-aware after #103); this assertion is orthogonal to it.
         mcpLogCalls.any {
             it.level == 'warn' &&
             it.component == 'rm-interop' &&
