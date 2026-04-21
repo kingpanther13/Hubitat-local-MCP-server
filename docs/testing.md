@@ -2,8 +2,8 @@
 
 Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `./gradlew test` on every PR and push to `main` (`.github/workflows/unit-tests.yml`).
 
-- **Test framework:** Spock 2.3 on Groovy 2.5 (matches the Hubitat hub runtime)
-- **Hubitat sandbox:** [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) — an actively-maintained fork of the original [biocomp/hubitat_ci](https://github.com/biocomp/hubitat_ci) (Apache 2.0). Consumed as `com.github.joelwetzel:hubitat_ci:<sha>` via JitPack; the pinned SHA in `build.gradle` is bumped by tracking issues from `.github/workflows/hubitat-ci-version-check.yml`.
+- **Test framework:** Spock 2.3 on Groovy 3.0 (Hubitat's hub runtime is Groovy 2.4, and `eighty20results/hubitat_ci` actively tests its behaviour against that runtime — case-insensitive enum matching, locale-safe `toLowerCase`, etc. — so Groovy 3.0 stays the closest practical match).
+- **Hubitat sandbox:** [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) — an actively-maintained Groovy 3.0 fork of the original [biocomp/hubitat_ci](https://github.com/biocomp/hubitat_ci) (Apache 2.0). Consumed as `com.github.eighty20results:hubitat_ci:<tag>` via JitPack; the pinned release tag in `build.gradle` is bumped by tracking issues from `.github/workflows/hubitat-ci-version-check.yml`. The fork natively maps `hubitat.helper.{RMUtils, ColorUtils, HexUtils, ZigbeeUtils}` to its own `me.biocomp.hubitat_ci.api.common_api.*` namespace inside `SandboxClassLoader`, so sandbox-loaded production code (e.g. PR #79's `toolListRmRules`) resolves those Hubitat platform classes without any main-source-set stubs on our side. Groovy 3 is module-aware, so the JDK 11+ `--add-opens` workaround from the Groovy-2.5 era is no longer needed.
 - **JVM:** OpenJDK 17 in CI; locally, JDK 11+ via the Gradle toolchain
 - **Build:** Gradle 8.10 via wrapper (`./gradlew test`)
 
@@ -24,8 +24,10 @@ HTML report at `build/reports/tests/test/index.html`. CI uploads it as the `test
 `src/test/groovy/support/HarnessSpec.groovy`. On each spec's `setup()`:
 
 1. `HubitatAppSandbox.compile()` compiles `hubitat-mcp-server.groovy` without running its `preferences { }` / `definition { }` blocks. (Those blocks use the multi-page form `page(name: "mainPage")` which HubitatCI's `AppPreferencesReader` mishandles — `compile()` sidesteps the issue cleanly. All `def method() { }` handlers remain callable on the returned script.)
-2. `AppExecutor` is Spock-mocked to expose `state` and `atomicState`.
-3. Groovy metaclass overrides on the loaded script bind `Map`-backed `stateMap` / `atomicStateMap` and the `HubInternalGetMock` to `state` / `atomicState` / `hubInternalGet`.
+2. `AppExecutor` is Spock-mocked to expose `state`, `atomicState`, `getChildDevices()`, `now()`, and `log` — eighty20results' `AppChildExecutor` leaves these on the `@Delegate` path to the supplied `AppExecutor`.
+3. `hubInternalGet` isn't part of `AppExecutor`'s interface, so it's metaclass-injected on the loaded script along with the `Map`-backed `stateMap` / `atomicStateMap` / `HubInternalGetMock` wiring.
+4. `addChildApp` and `getChildApps` are overridden on `script.metaClass` rather than on the `AppExecutor` mock. eighty20results' `HubitatAppScript` defines both as concrete methods routing through a private `childAppRegistry` / factory closures, which bypasses the mock's `@Delegate` path — so only a per-instance metaClass override intercepts the script-body dynamic dispatch that production tools use.
+5. A no-op `childAppResolver` closure is passed into `sandbox.compile()` so eighty20results' options validator accepts the sandbox options; its body is never executed because the `addChildApp` metaClass override short-circuits before any real child-script resolution would occur.
 
 Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures for `settings`, `getChildDevices()`, `getChildApps()`, and a deterministic `now()`.
 
@@ -33,15 +35,17 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures 
 
 `src/test/groovy/rules/RuleHarnessSpec.groovy`. Same shape as `HarnessSpec` but loads `hubitat-mcp-rule.groovy` instead of the server file, and exposes a mockable `parent` (the server reference the rule engine reads from for `findDevice` etc.).
 
+`parent` is a writable property on the spec: specs assign it in their `given:` block (e.g. `parent = new SmokeParent(...)`), and the setter propagates the value to the loaded script via `HubitatAppScript.setParent()`. eighty20results' `HubitatAppScript` defines `parent` as a private field accessed via its `@CompileStatic` `getProperty("parent")` override, so mocking `AppExecutor.getParent()` no longer intercepts property access — `setParent()` is the only reliable hook.
+
 ### Mocks
 
 - **`HubInternalGetMock`** — `register(path) { params -> response }`. Unstubbed paths throw `IllegalStateException` so tests fail loudly rather than silently returning null.
 - **`NetworkUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.NetworkUtils.sendHubitatCommand(Map)`.
-- **`RMUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.RMUtils.{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`.
+- **`RMUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.RMUtils.{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`. Note: under eighty20results, `hubitat.helper.RMUtils` is sandbox-mapped to `me.biocomp.hubitat_ci.api.common_api.RMUtils`, so production code loaded through the sandbox resolves calls against the mapped class. `RMUtilsMock` still operates on the test-classpath `hubitat.helper.RMUtils` stub (see next section) — sufficient for test-side invocations, but intercepting sandbox-side calls will require the mock to metaClass the mapped class. We'll tackle that when PR #79's sandbox-side tests land; see the recipe block below.
 
 ### Test-only classpath stubs
 
-`src/test/groovy/support/stubs/hubitat/helper/NetworkUtils.groovy` and `.../RMUtils.groovy` exist so production code that references those Hubitat platform classes can load under the test JVM without `ClassNotFoundException`. They ship only on the test classpath.
+`src/test/groovy/support/stubs/hubitat/helper/NetworkUtils.groovy` and `.../RMUtils.groovy` exist so that test-side Groovy references to those Hubitat platform classes can load under the test JVM without `ClassNotFoundException`. They ship only on the test classpath. Production code running under the sandbox doesn't need them — eighty20results maps those names directly to its own `common_api` classes.
 
 ## Adding a new server tool spec
 
@@ -54,7 +58,11 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures 
 
 ## Recipe: testing PR #79's `manage_rule_machine` tools (RMUtils)
 
-The `RMUtilsMock` is wired into the harness explicitly so PR #79's `manage_rule_machine` gateway tools can be unit-tested without a real hub. Pattern:
+The `RMUtilsMock` is wired into the harness explicitly so PR #79's `manage_rule_machine` gateway tools can be unit-tested without a real hub.
+
+> **Note:** eighty20results maps `hubitat.helper.RMUtils` to `me.biocomp.hubitat_ci.api.common_api.RMUtils` inside the sandbox, so production-code-under-sandbox references land on the mapped class. The recipe below works for test-side `hubitat.helper.RMUtils` calls; intercepting sandbox-side calls requires adjusting `RMUtilsMock` to install its metaClass on the mapped class (`me.biocomp.hubitat_ci.api.common_api.RMUtils`) in addition to — or instead of — `hubitat.helper.RMUtils`.
+
+Pattern:
 
 ```groovy
 import support.RMUtilsMock

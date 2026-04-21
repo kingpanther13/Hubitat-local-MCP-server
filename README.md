@@ -1593,7 +1593,7 @@ MIT License - see [LICENSE](LICENSE)
 - Inspired by the [Home Assistant MCP](https://github.com/homeassistant-ai/ha-mcp/)
 - Thanks to the Hubitat community for documentation and examples
 - [biocomp/hubitat_ci](https://github.com/biocomp/hubitat_ci) ([@biocomp](https://github.com/biocomp)) — original Hubitat Groovy unit-testing framework our harness is built on (Apache 2.0)
-- [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) ([@joelwetzel](https://github.com/joelwetzel)) — actively-maintained fork of the above, consumed as our test dependency via JitPack
+- [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) ([@eighty20results](https://github.com/eighty20results)) — actively-maintained Groovy 3.0 fork of the above, consumed as our test dependency via JitPack (Apache 2.0); previously we used [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) ([@joelwetzel](https://github.com/joelwetzel)) and migrated to eighty20results for Groovy 3 support and native sandbox mapping of `hubitat.helper.*` helpers
 - [@ashwinma14](https://github.com/ashwinma14) - Fix for StackOverflowError on app install ([#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
 - [@level99](https://github.com/level99) - Enriched `list_devices` summary + server-side `filter` arg ([#63](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/63)) and `get_hub_logs` ordering fix + `deviceId`/`appId` server-side scope ([#64](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/64))
 
