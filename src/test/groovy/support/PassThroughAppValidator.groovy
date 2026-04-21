@@ -2,8 +2,10 @@ package support
 
 import groovy.lang.GroovyShell
 import me.biocomp.hubitat_ci.app.AppValidator
+import me.biocomp.hubitat_ci.app.HubitatAppScript
 import me.biocomp.hubitat_ci.util.DoNotCallMeBinding
 import me.biocomp.hubitat_ci.validation.Flags
+import org.apache.commons.io.FilenameUtils
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.customizers.CompilationCustomizer
 
@@ -36,7 +38,28 @@ import org.codehaus.groovy.control.customizers.CompilationCustomizer
  */
 class PassThroughAppValidator extends AppValidator {
     PassThroughAppValidator(List<Flags> validationFlags = []) {
-        super(validationFlags as List)
+        super(EnumSet.noneOf(Flags) + (validationFlags as Collection<Flags>))
+    }
+
+    /**
+     * AppValidator and ValidatorBase are @TypeChecked, so the inherited
+     * parseScript binds `constructParser(...)` statically to
+     * ValidatorBase.constructParser at compile time — overriding
+     * constructParser alone in this subclass doesn't take effect when
+     * parseScript dispatches. Re-implement parseScript here (untyped,
+     * so dispatch is dynamic) and have it call our constructParser.
+     */
+    @Override
+    HubitatAppScript parseScript(File scriptFile) {
+        def scriptFileText = scriptFile.getText('UTF-8')
+        def scriptName = FilenameUtils.getBaseName(scriptFile.name)
+        return parseScript(scriptFileText, scriptName)
+    }
+
+    @Override
+    HubitatAppScript parseScript(String scriptText, String scriptName = "Script1") {
+        scriptText = patchScriptText(scriptText)
+        return constructParser(HubitatAppScript).parse(scriptText, scriptName) as HubitatAppScript
     }
 
     @Override
