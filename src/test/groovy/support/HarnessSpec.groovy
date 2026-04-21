@@ -109,6 +109,12 @@ abstract class HarnessSpec extends Specification {
         def factoryField = HubitatAppScript.getDeclaredField('childAppFactory')
         factoryField.accessible = true
         factoryField.set(script, { String ns, String name, String label, Map props = [:] ->
+            if (self.mockChildAppForCreate == null) {
+                throw new IllegalStateException(
+                    "Spec invoked addChildApp(${ns}, ${name}, ${label}) but " +
+                    "mockChildAppForCreate was not assigned. Set " +
+                    "`mockChildAppForCreate = new TestChildApp(...)` in given:.")
+            }
             self.mockChildAppForCreate
         } as Closure)
 
@@ -126,7 +132,11 @@ abstract class HarnessSpec extends Specification {
                     childAppsRef.removeAll { it.id?.toString() == arg?.toString() }
                     return null
                 default:
-                    return null
+                    // Loud failure beats silent null-return if a future
+                    // eighty20results release adds a new `op` verb.
+                    throw new IllegalStateException(
+                        "Unknown childAppAccessor op: '${op}' — the harness " +
+                        "mock needs a new case; see src/test/groovy/support/HarnessSpec.groovy")
             }
         } as Closure)
     }

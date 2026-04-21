@@ -37,10 +37,11 @@ repositories {
         //
         // Note: eighty20results' POM marks every dep as <scope>runtime</scope>,
         // which keeps them off the compile classpath even under mavenPom.
-        // Compile-time references from HubitatCI's public types (e.g. the
-        // `groovyx.net.http.HttpResponseDecorator` return-type reference in
-        // HubitatAppScript) must be mirrored explicitly as testImplementation
-        // — see the deps block below.
+        // Compile-time references from HubitatCI's public bytecode (e.g. the
+        // `groovyx.net.http.HttpResponseDecorator` parameter in BaseExecutor,
+        // reached via the AppExecutor @Delegate chain that HubitatAppScript
+        // exposes) must be mirrored explicitly as testImplementation — see
+        // the deps block below.
         metadataSources {
             mavenPom()
         }

@@ -41,11 +41,11 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures 
 
 - **`HubInternalGetMock`** — `register(path) { params -> response }`. Unstubbed paths throw `IllegalStateException` so tests fail loudly rather than silently returning null.
 - **`NetworkUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.NetworkUtils.sendHubitatCommand(Map)`.
-- **`RMUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.RMUtils.{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`. Note: under eighty20results, `hubitat.helper.RMUtils` is sandbox-mapped to `me.biocomp.hubitat_ci.api.common_api.RMUtils`, so production code loaded through the sandbox resolves calls against the mapped class. `RMUtilsMock` still operates on the test-classpath `hubitat.helper.RMUtils` stub (see next section) — sufficient for test-side invocations, but intercepting sandbox-side calls will require the mock to metaClass the mapped class. We'll tackle that when PR #79's sandbox-side tests land; see the recipe block below.
+- **`RMUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.RMUtils.{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`. `install()` mutates the static metaClass on **both** the test-classpath `hubitat.helper.RMUtils` stub and `me.biocomp.hubitat_ci.api.common_api.RMUtils` (eighty20results' SandboxClassLoader rewrites `hubitat.helper.RMUtils` to the latter when the reference appears inside sandbox-loaded production code). Test-side direct calls and PR #79-style sandbox-resolved calls both land on the mock. `RMUtilsSandboxInterceptionSpec` is the end-to-end regression.
 
 ### Test-only classpath stubs
 
-`src/test/groovy/support/stubs/hubitat/helper/NetworkUtils.groovy` and `.../RMUtils.groovy` exist so that test-side Groovy references to those Hubitat platform classes can load under the test JVM without `ClassNotFoundException`. They ship only on the test classpath. Production code running under the sandbox doesn't need them — eighty20results maps those names directly to its own `common_api` classes.
+`src/test/groovy/support/stubs/hubitat/helper/NetworkUtils.groovy` and `.../RMUtils.groovy` exist so that test-side Groovy references to those Hubitat platform classes can load under the test JVM without `ClassNotFoundException`. They ship only on the test classpath. Production code running under the sandbox hits the class via eighty20results' `SandboxClassLoader` rewrite — `hubitat.helper.RMUtils` is mapped to `me.biocomp.hubitat_ci.api.common_api.RMUtils` explicitly (alongside `ColorUtils`, `HexUtils`, and `ZigbeeUtils`), while other `hubitat.*` references fall through the default rewrite. `RMUtilsMock` dual-installs on both target classes; a future mock for another helper should follow the same pattern if sandbox-side interception is needed.
 
 ## Adding a new server tool spec
 
@@ -58,9 +58,7 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures 
 
 ## Recipe: testing PR #79's `manage_rule_machine` tools (RMUtils)
 
-The `RMUtilsMock` is wired into the harness explicitly so PR #79's `manage_rule_machine` gateway tools can be unit-tested without a real hub.
-
-> **Note:** eighty20results maps `hubitat.helper.RMUtils` to `me.biocomp.hubitat_ci.api.common_api.RMUtils` inside the sandbox, so production-code-under-sandbox references land on the mapped class. The recipe below works for test-side `hubitat.helper.RMUtils` calls; intercepting sandbox-side calls requires adjusting `RMUtilsMock` to install its metaClass on the mapped class (`me.biocomp.hubitat_ci.api.common_api.RMUtils`) in addition to — or instead of — `hubitat.helper.RMUtils`.
+The `RMUtilsMock` is wired into the harness explicitly so PR #79's `manage_rule_machine` gateway tools can be unit-tested without a real hub. `install()` covers both the test-classpath `hubitat.helper.RMUtils` stub and the sandbox-mapped `me.biocomp.hubitat_ci.api.common_api.RMUtils` — sandbox-loaded production code and test-side direct calls both reach the mock. `RMUtilsSandboxInterceptionSpec` is the regression that keeps this dual-install working across eighty20results bumps.
 
 Pattern:
 
@@ -94,7 +92,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 }
 ```
 
-`RMUtilsMock.install()` uses Groovy metaclass static-method injection to intercept calls to `hubitat.helper.RMUtils.{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`. Always pair it with `uninstall()` in `cleanup()` — cleanup uses `GroovySystem.metaClassRegistry.removeMetaClass()` for reliable teardown between specs (simply setting `metaClass = null` is unreliable because of class-metaclass caching).
+`RMUtilsMock.install()` uses Groovy metaclass static-method injection on both `hubitat.helper.RMUtils` and `me.biocomp.hubitat_ci.api.common_api.RMUtils` to intercept `{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}` across test-side and sandbox-side call paths. Always pair it with `uninstall()` in `cleanup()` — cleanup uses `GroovySystem.metaClassRegistry.removeMetaClass()` on both classes for reliable teardown between specs (simply setting `metaClass = null` is unreliable because of class-metaclass caching).
 
 ## Native Rule Machine access
 
