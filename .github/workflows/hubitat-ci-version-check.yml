@@ -1,11 +1,12 @@
 name: hubitat_ci version check
 
-# joelwetzel/hubitat_ci is consumed from JitPack at a pinned master-branch
-# commit SHA (the fork doesn't cut releases/tags). This workflow polls
-# joelwetzel's master HEAD weekly and opens a tracking issue when commits
-# beyond our pinned SHA are available.
+# eighty20results/hubitat_ci is consumed from JitPack and pinned by release
+# tag (e.g. v0.28.6). eighty20results cuts tagged releases, but
+# JitPack/Dependabot interop on git-tag-based version discovery is flaky,
+# so this workflow polls the fork's releases weekly and opens a tracking
+# issue when a newer release tag is available past our pin.
 #
-# Upstream: https://github.com/joelwetzel/hubitat_ci
+# Upstream: https://github.com/eighty20results/hubitat_ci
 # Fork of:  https://github.com/biocomp/hubitat_ci
 
 on:
@@ -23,83 +24,98 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Compare pinned commit against joelwetzel master HEAD
+      - name: Compare pinned tag against eighty20results latest release
         id: compare
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          # Pinned SHA from build.gradle — coordinate shape is
-          # 'com.github.joelwetzel:hubitat_ci:<short-sha>'.
-          PINNED=$(grep -oE "com\.github\.joelwetzel:hubitat_ci:[^'\"]+" build.gradle | head -1 | cut -d: -f3)
+          # Pinned release tag from build.gradle — coordinate shape is
+          # 'com.github.eighty20results:hubitat_ci:<tag>' (e.g. v0.28.6).
+          PINNED=$(grep -oE "com\.github\.eighty20results:hubitat_ci:[^'\"]+" build.gradle | head -1 | cut -d: -f3)
           if [ -z "$PINNED" ]; then
-            echo "::error::Could not parse pinned com.github.joelwetzel:hubitat_ci SHA from build.gradle"
+            echo "::error::Could not parse pinned com.github.eighty20results:hubitat_ci tag from build.gradle"
             exit 1
           fi
 
-          # joelwetzel master HEAD. The default-branch commit SHA is the full
-          # 40-char form; we compare by startsWith to handle short-hash pins.
-          LATEST=$(gh api repos/joelwetzel/hubitat_ci/commits/master --jq .sha)
+          # eighty20results latest GitHub release tag.
+          LATEST=$(gh api repos/eighty20results/hubitat_ci/releases/latest --jq .tag_name)
           if [ -z "$LATEST" ]; then
-            echo "::error::Could not fetch joelwetzel/hubitat_ci master HEAD"
+            echo "::error::Could not fetch eighty20results/hubitat_ci latest release"
             exit 1
           fi
 
-          SHORT_LATEST=${LATEST:0:10}
-          echo "pinned=$PINNED"              >> "$GITHUB_OUTPUT"
-          echo "latest=$LATEST"              >> "$GITHUB_OUTPUT"
-          echo "short_latest=$SHORT_LATEST"  >> "$GITHUB_OUTPUT"
+          echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Pinned in build.gradle: $PINNED"
-          echo "joelwetzel master HEAD: $LATEST"
+          echo "eighty20results latest release: $LATEST"
 
-          if [[ "$LATEST" == "$PINNED"* ]]; then
+          if [ "$LATEST" = "$PINNED" ]; then
             echo "up_to_date=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::joelwetzel/hubitat_ci is up to date."
+            echo "::notice::eighty20results/hubitat_ci is up to date."
           else
             echo "up_to_date=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::joelwetzel/hubitat_ci update available: $PINNED -> $SHORT_LATEST"
+            echo "::notice::eighty20results/hubitat_ci update available: $PINNED -> $LATEST"
           fi
 
-      - name: Open tracking issue when new commits are available
+      - name: Open tracking issue when a newer release is available
         if: steps.compare.outputs.up_to_date != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PINNED: ${{ steps.compare.outputs.pinned }}
           LATEST: ${{ steps.compare.outputs.latest }}
-          SHORT_LATEST: ${{ steps.compare.outputs.short_latest }}
         run: |
           set -euo pipefail
-          TITLE="chore: joelwetzel/hubitat_ci update available (${SHORT_LATEST})"
+          TITLE="chore: eighty20results/hubitat_ci update available (${LATEST})"
 
           EXISTING=$(gh issue list --state all --search "\"${TITLE}\" in:title" --json number --jq '.[0].number // ""')
           if [ -n "$EXISTING" ]; then
-            echo "Issue #${EXISTING} already tracks ${SHORT_LATEST} — no-op."
+            echo "Issue #${EXISTING} already tracks ${LATEST} — no-op."
             exit 0
           fi
 
-          COMMITS_SUMMARY=$(gh api "repos/joelwetzel/hubitat_ci/compare/${PINNED}...${LATEST}" \
-            --jq '.commits | map("- " + (.sha[0:10]) + " " + (.commit.message | split("\n")[0])) | .[0:20] | join("\n")' \
-            2>/dev/null || echo "(commit list unavailable — compare the two SHAs manually)")
+          # Fetch the release body and truncate to ~2000 characters to keep
+          # the issue body bounded. Swallow errors to a placeholder if the
+          # API call fails (release may have been deleted/retagged).
+          #
+          # --jq '.body // ""' coalesces missing/null bodies to empty string
+          # so the "null" literal never sneaks into the issue. All length
+          # math and slicing goes through jq so multibyte UTF-8 sequences
+          # (emoji, non-ASCII) aren't split on a byte boundary the way
+          # `head -c 2000` + `${#VAR}` would.
+          RELEASE_BODY=$(gh api "repos/eighty20results/hubitat_ci/releases/tags/${LATEST}" --jq '.body // ""' 2>/dev/null || printf '')
+          if [ -n "$RELEASE_BODY" ]; then
+            FULL_CHARS=$(printf '%s' "$RELEASE_BODY" | jq -Rs 'length')
+            if [ "$FULL_CHARS" -gt 2000 ]; then
+              RELEASE_EXCERPT=$(printf '%s' "$RELEASE_BODY" | jq -Rs -r '.[:2000]')
+              RELEASE_EXCERPT="${RELEASE_EXCERPT}"$'\n\n'"(…truncated — see full notes at the release URL above.)"
+            else
+              RELEASE_EXCERPT="$RELEASE_BODY"
+            fi
+          else
+            RELEASE_EXCERPT="(release notes unavailable — see the release URL above.)"
+          fi
 
-          BODY="The weekly version check detected new commits on \`joelwetzel/hubitat_ci\`'s master branch past our pinned SHA.
+          BODY="The weekly version check detected a newer release tag on \`eighty20results/hubitat_ci\` past our pin.
 
           - **Currently pinned:** \`${PINNED}\` (in \`build.gradle\` via JitPack)
-          - **Latest master HEAD:** \`${LATEST}\`
-          - **Compare view:** https://github.com/joelwetzel/hubitat_ci/compare/${PINNED}...${LATEST}
-          - **Fork repo:** https://github.com/joelwetzel/hubitat_ci
+          - **Latest release:** \`${LATEST}\`
+          - **Release notes:** https://github.com/eighty20results/hubitat_ci/releases/tag/${LATEST}
+          - **Compare view:** https://github.com/eighty20results/hubitat_ci/compare/${PINNED}...${LATEST}
+          - **Fork repo:** https://github.com/eighty20results/hubitat_ci
 
-          ## Commits since pin (up to 20)
+          ## Release notes excerpt
 
-          ${COMMITS_SUMMARY}
+          ${RELEASE_EXCERPT}
 
           ## To update
 
-          1. Edit \`build.gradle\` — change \`com.github.joelwetzel:hubitat_ci:${PINNED}\` to \`com.github.joelwetzel:hubitat_ci:${SHORT_LATEST}\`.
+          1. Edit \`build.gradle\` — change \`com.github.eighty20results:hubitat_ci:${PINNED}\` to \`com.github.eighty20results:hubitat_ci:${LATEST}\`.
           2. Run \`./gradlew test\` locally or in CI. The harness may need adjustment if any API has moved (imports under \`me.biocomp.hubitat_ci.*\`).
-          3. Review the compare view above for any breaking changes.
+          3. Review the release notes and compare view above for any breaking changes.
 
-          This issue was opened automatically by \`.github/workflows/hubitat-ci-version-check.yml\`. Closing it suppresses notifications for this SHA; a newer HEAD triggers a fresh issue."
+          This issue was opened automatically by \`.github/workflows/hubitat-ci-version-check.yml\`. Closing it suppresses notifications for this tag; a newer release triggers a fresh issue."
 
           gh issue create \
             --title "${TITLE}" \

@@ -1,11 +1,24 @@
 package support
 
 /**
- * install() mutates the global metaclass of hubitat.helper.RMUtils, so any
- * test harness using this mock must run specs sequentially. The project's
- * build.gradle sets maxParallelForks = 1 for exactly this reason; do not
- * enable parallel test execution without first moving these statics off
- * the shared class metaclass.
+ * `install()` mutates the static metaClass on `hubitat.helper.RMUtils`
+ * — the main-source-set stub at
+ * `src/main/groovy/hubitat/helper/RMUtils.groovy`. Both test-side
+ * direct calls (e.g. `RMUtilsMockSpec`) and sandbox-loaded production
+ * calls (e.g. PR #79's `manage_rule_machine` gateway tools, resolved
+ * through `support.PassThroughSandboxClassLoader`) land on the mock.
+ *
+ * Specs using this mock must run sequentially — `install()` mutates
+ * the shared class metaclass. `build.gradle` pins
+ * `maxParallelForks = 1` for this reason; do not enable parallel test
+ * execution without moving these statics off the shared class metaclass
+ * first.
+ *
+ * `RMUtilsSandboxInterceptionSpec` is the end-to-end regression
+ * proving sandbox-loaded code reaches the mock via the PassThrough
+ * classloader path. If that spec fails after an eighty20results bump,
+ * the PassThrough scaffold needs attention before PR #79-style specs
+ * can trust this mock.
  */
 class RMUtilsMock {
     final List<Map> calls = []
