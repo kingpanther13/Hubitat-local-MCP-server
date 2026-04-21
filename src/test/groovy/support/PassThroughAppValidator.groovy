@@ -90,6 +90,15 @@ class PassThroughAppValidator extends AppValidator {
     protected GroovyShell constructParser(Class c, List<CompilationCustomizer> extraCompilationCustomizers = []) {
         def cc = new CompilerConfiguration()
         cc.scriptBaseClass = c.name
+        // Apply any caller-supplied customizers. The stock ValidatorBase
+        // threads these through `addExtraCustomizers` after its private
+        // restrictScript / makePrivatePublic / validateAfterEachMethod
+        // setup; here we omit those (see class doc) but still honour any
+        // customizer the caller passed so the method's contract matches
+        // the overridden signature.
+        if (extraCompilationCustomizers) {
+            cc.addCompilationCustomizers(*(extraCompilationCustomizers as CompilationCustomizer[]))
+        }
         return new GroovyShell(
             new PassThroughSandboxClassLoader(c.classLoader),
             new DoNotCallMeBinding(),
