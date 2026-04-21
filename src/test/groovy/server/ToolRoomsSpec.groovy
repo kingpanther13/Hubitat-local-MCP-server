@@ -28,11 +28,14 @@ import support.ToolSpecBase
  *     AppChildExecutor uses invokeinterface directly on the mock. Per-
  *     instance metaClass on the script / HubitatAppScript class metaClass /
  *     appExecutor Spock stub additions in given: blocks are all bypassed
- *     by that dispatch chain. The only reliable interception point is to
- *     REPLACE the AppExecutor reference in AppChildExecutor.delegate with
- *     a JDK InvocationHandler-based Proxy that handles httpPost and forwards
- *     everything else to the original mock. installHttpPostStub() below
- *     returns a restore closure that must be called in cleanup:.
+ *     by that dispatch chain. The only reliable interception point is a
+ *     permanent `_ * appExecutor.httpPost(_, _) >> { ... }` stub installed
+ *     in setupSpec() that dispatches to a @Shared Closure handler field
+ *     (httpPostHandler below); tests assign a closure to that field in
+ *     given: and cleanup() resets it between features. See setupSpec()
+ *     and the httpPostHandler declaration below. docs/testing.md under
+ *     "Which interception point to use" has the full rationale and
+ *     anti-patterns list.
  *
  * Destructive tools require:
  *   settingsMap.enableHubAdminWrite = true

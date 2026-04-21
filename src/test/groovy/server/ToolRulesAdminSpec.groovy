@@ -192,7 +192,8 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         result.message.contains('Original Rule')
         result.message.contains('Copy of Original Rule')
 
-        and: 'the clone was imported in the disabled state (force-disabled by toolCloneRule)'
+        and: 'the clone was force-disabled by toolCloneRule before import'
+        cloned.ruleData.enabled == false
         cloned.ruleData.triggers.size() == 1
     }
 

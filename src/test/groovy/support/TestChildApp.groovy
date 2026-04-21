@@ -27,6 +27,14 @@ class TestChildApp implements InstalledAppWrapper {
         if (data?.triggers != null) ruleData.triggers = data.triggers
         if (data?.conditions != null) ruleData.conditions = data.conditions
         if (data?.actions != null) ruleData.actions = data.actions
+        // Scalar fields the production server passes through updateRuleFromParent
+        // (see toolCreateRule in hubitat-mcp-server.groovy). Storing them on the
+        // mock lets specs assert on post-call state like `enabled == false`
+        // (e.g. clone_rule's force-disable step in toolCloneRule).
+        if (data?.containsKey('enabled')) ruleData.enabled = data.enabled
+        if (data?.conditionLogic != null) ruleData.conditionLogic = data.conditionLogic
+        if (data?.localVariables != null) ruleData.localVariables = data.localVariables
+        if (data?.containsKey('testRule')) ruleData.testRule = data.testRule
     }
 
     Map getRuleData() {
