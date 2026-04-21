@@ -50,6 +50,17 @@ class RMUtilsSandboxResolutionSpec extends Specification {
             ]
         )
 
+        and: 'classloader chain diagnostics for the sandbox-compiled script'
+        System.err.println("=== SPEC-DIAG: script.class=${script.class.name}")
+        def cl = script.class.classLoader
+        int depth = 0
+        while (cl != null) {
+            System.err.println("=== SPEC-DIAG: script CL chain[${depth}] = ${cl.class.name} id=${System.identityHashCode(cl)}")
+            cl = cl.parent
+            depth++
+        }
+        System.err.println("=== SPEC-DIAG: about to call sandbox-loaded callRmUtilsGetRuleList ===")
+
         when: 'sandbox-loaded methods invoke the helpers'
         def rules = script.callRmUtilsGetRuleList()
         def netResult = script.callNetworkUtils()
