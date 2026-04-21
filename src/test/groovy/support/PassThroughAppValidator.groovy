@@ -41,6 +41,7 @@ class PassThroughAppValidator extends AppValidator {
 
     @Override
     protected GroovyShell constructParser(Class c, List<CompilationCustomizer> extraCompilationCustomizers = []) {
+        System.err.println("=== PASS-THROUGH: constructParser called for c=${c?.name}")
         def cc = new CompilerConfiguration()
         cc.scriptBaseClass = c.name
         return new GroovyShell(
