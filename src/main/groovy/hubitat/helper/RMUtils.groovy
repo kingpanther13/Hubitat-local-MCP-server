@@ -20,8 +20,15 @@ package hubitat.helper
  * `support.RMUtilsMock`.
  */
 class RMUtils {
-    static List getRuleList(String version = '5.0') { return [] }
+    static List getRuleList() { return [] }
+    static List getRuleList(String version) { return [] }
+    // Legacy simple form (retained for pre-PR-79 specs that used it).
     static void sendAction(Long ruleId, String action) { }
+    // Preferred 4-arg form used by PR #79's sendRmAction wrapper:
+    // sendAction([ruleIds], action, appLabel, "5.0") targets the RM 5.x dispatcher.
+    static void sendAction(List ruleIds, String action, String appLabel, String version) { }
+    // 3-arg fallback form used when the 4-arg signature is absent on older firmware.
+    static void sendAction(List ruleIds, String action, String appLabel) { }
     static void pauseRule(Long ruleId) { }
     static void resumeRule(Long ruleId) { }
     static void setRuleBoolean(Long ruleId, Boolean value) { }
