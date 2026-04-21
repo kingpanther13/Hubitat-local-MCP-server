@@ -7,23 +7,27 @@ import spock.lang.Specification
 
 /**
  * Regression spec for the SandboxClassLoader gap on
- * hubitat.helper.{RMUtils,NetworkUtils}.
+ * `hubitat.helper.{RMUtils,NetworkUtils}` that level99's
+ * `RMUtilsSandboxGapDiagnosticSpec` (PR #79 thread) surfaced.
  *
- * Background: HubitatCI's SandboxClassLoader (extends
- * java.lang.ClassLoader, not URLClassLoader) doesn't see classes
- * compiled from src/test/groovy. Earlier versions of this repo kept
- * the stubs under src/test/groovy/support/stubs/, which worked for
- * direct test-JVM calls but raised NoClassDefFoundError when sandbox-
- * loaded production code (e.g., toolListRmRules in PR #79) called
- * RMUtils.
+ * Background: HubitatCI's `SandboxClassLoader.mapClassName` rewrites
+ * `hubitat.<x>.<Y>` → `me.biocomp.hubitat_ci.api.<x>.<Y>` for any
+ * sandbox-loaded reference. For platform helpers like
+ * `hubitat.helper.RMUtils` that we provide as literal stubs, the JVM
+ * (hotspot's `SystemDictionary::load_instance_class`) rejects the
+ * remap because the returned class's name doesn't match the requested
+ * name → `NoClassDefFoundError` for any tool that invokes
+ * `hubitat.helper.X.method(...)` from the sandbox.
  *
- * The fix moves the stubs to src/main/groovy/hubitat/helper/ so they
- * compile under the main source-set, which IS on the sandbox's parent
- * classloader chain. This spec loads a minimal probe script via
- * HubitatAppSandbox and calls into both stubs to confirm resolution.
+ * Fix: {@link PassThroughSandboxClassLoader} bypasses `mapClassName`
+ * for our specific helper-class names, and {@link PassThroughAppValidator}
+ * threads it into HubitatCI's compile path. This spec proves the wiring:
+ * load a probe script via the sandbox and verify both helper calls
+ * resolve.
  *
- * Diagnostic origin: level99's RMUtilsSandboxGapDiagnosticSpec on
- * the diag/rmutils-sandbox-gap branch (PR #79 thread).
+ * NOTE: must use `sandbox.run(...)` not `sandbox.compile(...)` — see
+ * `PassThroughAppValidator`'s class doc for the full readValidator
+ * precedence trap.
  */
 class RMUtilsSandboxResolutionSpec extends Specification {
 
@@ -38,16 +42,9 @@ class RMUtilsSandboxResolutionSpec extends Specification {
             _ * getLog() >> new PermissiveLog()
         }
 
-        and: 'sandbox-compiled probe with PassThroughAppValidator so the literal hubitat.helper.* stubs resolve without remap'
+        and: 'sandbox-loaded probe via PassThroughAppValidator — see its class doc for the run() vs compile() precedence trap'
         def sandbox = new HubitatAppSandbox(new File('src/test/resources/sandbox-rmutils-probe.groovy'))
-        // Must use sandbox.run() (not compile()) when passing validator: — compile()
-        // calls addFlags(options, [DontRunScript]) which makes options.validationFlags
-        // non-empty, and readValidator silently discards options.validator in favor of
-        // a fresh default AppValidator when validationFlags is non-empty. (The combo
-        // compile() + validator: is effectively dead code in HubitatCI; upstream tests
-        // only use validator: with run().) Put DontRunScript in the validator's own
-        // flags so setupImpl's hasFlag(DontRunScript) check still skips script.run().
-        def passThroughValidator = new PassThroughAppValidator([
+        def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
@@ -56,52 +53,15 @@ class RMUtilsSandboxResolutionSpec extends Specification {
         def script = sandbox.run(
             api: appExecutor,
             userSettingValues: [_harness: true],
-            validator: passThroughValidator
+            validator: validator
         )
-
-        and: 'classloader chain diagnostics for the sandbox-compiled script'
-        System.err.println("=== SPEC-DIAG: script.class=${script.class.name}")
-        def cl = script.class.classLoader
-        int depth = 0
-        while (cl != null) {
-            System.err.println("=== SPEC-DIAG: script CL chain[${depth}] = ${cl.class.name} id=${System.identityHashCode(cl)}")
-            cl = cl.parent
-            depth++
-        }
-
-        and: 'is the me.biocomp delegate class even findable from various CLs?'
-        ['me.biocomp.hubitat_ci.api.helper.RMUtils', 'hubitat.helper.RMUtils'].each { name ->
-            ['contextCL': Thread.currentThread().contextClassLoader,
-             'systemCL':  ClassLoader.systemClassLoader,
-             'scriptCL':  script.class.classLoader,
-             'sandboxParent': script.class.classLoader.parent.parent  // SandboxClassLoader per chain dump
-            ].each { label, loader ->
-                try {
-                    def c = Class.forName(name, false, loader)
-                    System.err.println("=== SPEC-DIAG: ${name} via ${label} (${loader.class.simpleName}): FOUND, defining loader=${c.classLoader}")
-                } catch (Throwable t) {
-                    System.err.println("=== SPEC-DIAG: ${name} via ${label} (${loader.class.simpleName}): NOT FOUND -- ${t.class.simpleName}: ${t.message}")
-                }
-            }
-        }
-
-        and: 'invoke sandbox-mapped lookup directly'
-        try {
-            def sandboxCL = script.class.classLoader.parent.parent  // SandboxClassLoader
-            def mapped = sandboxCL.getClass().getMethod('mapClassName', String, String).invoke(null, 'hubitat.helper.RMUtils', 'me.biocomp.hubitat_ci.api')
-            System.err.println("=== SPEC-DIAG: SandboxClassLoader.mapClassName('hubitat.helper.RMUtils') -> '${mapped}'")
-        } catch (Throwable t) {
-            System.err.println("=== SPEC-DIAG: mapClassName probe failed -- ${t.class.simpleName}: ${t.message}")
-        }
-
-        System.err.println("=== SPEC-DIAG: about to call sandbox-loaded callRmUtilsGetRuleList ===")
 
         when: 'sandbox-loaded methods invoke the helpers'
         def rules = script.callRmUtilsGetRuleList()
         def netResult = script.callNetworkUtils()
 
         then: 'no NoClassDefFoundError; stubs return their default no-op values'
-        notThrown(NoClassDefFoundError)
+        notThrown(Throwable)
         rules == []
         netResult == null
     }

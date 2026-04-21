@@ -14,44 +14,65 @@ import org.codehaus.groovy.control.customizers.CompilationCustomizer
  * stubs without HubitatCI's `mapClassName` remap rejecting the load
  * with a name mismatch.
  *
- * Use via the documented `validator:` option to
- * `HubitatAppSandbox.compile(...)`:
+ * ## CRITICAL: must be used via `sandbox.run(...)`, NOT `sandbox.compile(...)`
  *
- *   def validator = new PassThroughAppValidator([
- *       Flags.DontValidatePreferences,
- *       Flags.DontValidateDefinition,
- *       Flags.DontRestrictGroovy
- *   ])
- *   def script = sandbox.compile(api: appExecutor,
- *                                userSettingValues: settingsMap,
- *                                validator: validator)
+ * `HubitatAppSandbox.compile(Map)` calls
+ * `addFlags(options, [Flags.DontRunScript])` BEFORE delegating to
+ * `setupImpl`. That mutates `options.validationFlags` to a non-empty
+ * list. `setupImpl → readValidator` then takes its first branch:
  *
- * Trade-off: this overrides `constructParser` with a minimal version
- * that skips ValidatorBase's `restrictScript` /
+ *     if (options.validationFlags) {
+ *         return new AppValidator(options.validationFlags as List)
+ *     }
+ *     else if (options.validator) {
+ *         return options.validator as AppValidator
+ *     }
+ *
+ * — silently constructing a fresh default `AppValidator` and discarding
+ * the user-supplied `validator:` option. This is effectively a HubitatCI
+ * bug: the upstream test suite never combines `compile()` with
+ * `validator:`, so the precedence trap goes unnoticed.
+ *
+ * `sandbox.run()` does NOT call `addFlags`, so passing `validator:` to
+ * it works as expected. Include `Flags.DontRunScript` in this
+ * validator's own constructor flags so `setupImpl`'s
+ * `hasFlag(DontRunScript)` check still skips the auto-`script.run()`
+ * call:
+ *
+ *     def validator = new PassThroughAppValidator([
+ *         Flags.DontValidatePreferences,
+ *         Flags.DontValidateDefinition,
+ *         Flags.DontRestrictGroovy,
+ *         Flags.DontRunScript    // <-- replaces what compile() used to add
+ *     ])
+ *     def script = sandbox.run(api: appExecutor,
+ *                              userSettingValues: settingsMap,
+ *                              validator: validator)
+ *
+ * ## constructParser override caveats
+ *
+ * `AppValidator` and `ValidatorBase` are `@TypeChecked`, but
+ * `@TypeChecked` alone does NOT force static dispatch (only
+ * `@CompileStatic` does). Subclass overrides of `parseScript` and
+ * `constructParser` dispatch normally at runtime — the precedence bug
+ * above was the actual reason earlier iterations didn't see them fire.
+ *
+ * `constructParser` here is a minimal version that skips
+ * `ValidatorBase`'s private `restrictScript` /
  * `makePrivatePublic` / `validateAfterEachMethod` /
- * `addExtraCustomizers` — those are private and not accessible to a
- * subclass. For our use (helper-class resolution probes + the small
- * set of RM-tool specs PR #79 needs) the simpler parser is fine; for
- * specs that depend on those validation behaviors, use the default
- * AppValidator.
+ * `addExtraCustomizers` (those are private and not accessible to a
+ * subclass). For our use (helper-class resolution + the small set of
+ * RM-tool specs PR #79 needs) the simpler parser is fine; specs that
+ * depend on those validation behaviours should use the default
+ * `AppValidator` instead.
  */
 class PassThroughAppValidator extends AppValidator {
     PassThroughAppValidator(List<Flags> validationFlags = []) {
         super(validationFlags ? EnumSet.copyOf(validationFlags) : EnumSet.noneOf(Flags))
-        System.err.println("=== PASS-THROUGH: ctor done, this.class=${this.class.name}, flags=${validationFlags}")
     }
 
-    /**
-     * AppValidator and ValidatorBase are @TypeChecked, so the inherited
-     * parseScript binds `constructParser(...)` statically to
-     * ValidatorBase.constructParser at compile time — overriding
-     * constructParser alone in this subclass doesn't take effect when
-     * parseScript dispatches. Re-implement parseScript here (untyped,
-     * so dispatch is dynamic) and have it call our constructParser.
-     */
     @Override
     HubitatAppScript parseScript(File scriptFile) {
-        System.err.println("=== PASS-THROUGH: parseScript(File) called for ${scriptFile?.name}")
         def scriptFileText = scriptFile.getText('UTF-8')
         def name = scriptFile.name
         def dot = name.lastIndexOf('.')
@@ -61,14 +82,12 @@ class PassThroughAppValidator extends AppValidator {
 
     @Override
     HubitatAppScript parseScript(String scriptText, String scriptName = "Script1") {
-        System.err.println("=== PASS-THROUGH: parseScript(String) called name=${scriptName}")
         scriptText = patchScriptText(scriptText)
         return constructParser(HubitatAppScript).parse(scriptText, scriptName) as HubitatAppScript
     }
 
     @Override
     protected GroovyShell constructParser(Class c, List<CompilationCustomizer> extraCompilationCustomizers = []) {
-        System.err.println("=== PASS-THROUGH: constructParser called for c=${c?.name}")
         def cc = new CompilerConfiguration()
         cc.scriptBaseClass = c.name
         return new GroovyShell(

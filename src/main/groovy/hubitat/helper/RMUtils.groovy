@@ -1,30 +1,27 @@
 package hubitat.helper
 
 /**
- * DIAGNOSTIC iteration on PR #99. See previous version's doc — this
- * revision adds System.err at static-init + each method entry so CI
- * shows whether the test-target stub gets loaded and whether the
- * delegate from me.biocomp.hubitat_ci.api.helper.RMUtils reaches it.
+ * BUILD-TIME STUB of Hubitat's `hubitat.helper.RMUtils` helper. Lives on
+ * `src/main/groovy/` so HubitatCI's `SandboxClassLoader` parent chain
+ * (AppClassLoader, which sees Gradle's main source-set output) can
+ * resolve the class when `support.PassThroughSandboxClassLoader`
+ * routes a sandbox-loaded reference here without the standard
+ * `mapClassName` remap.
+ *
+ * **Not deployed to Hubitat.** `packageManifest.json` deploys only the
+ * top-level `hubitat-mcp-server.groovy` and `hubitat-mcp-rule.groovy`
+ * files via raw GitHub URLs; nothing under `src/main/groovy/` is shipped.
+ * On a real hub, `hubitat.helper.RMUtils` is the platform-provided class.
+ *
+ * Method signatures mirror the surface used by PR #79's
+ * `manage_rule_machine` gateway tools (list, run, pause, resume, boolean).
+ * Real behaviour is wired per-test via metaclass from
+ * `support.RMUtilsMock`.
  */
 class RMUtils {
-    static {
-        System.err.println("=== STUB-INIT: hubitat.helper.RMUtils loaded by classLoader=" + RMUtils.class.classLoader)
-    }
-
-    static List getRuleList(String version = '5.0') {
-        System.err.println("=== STUB-CALL: hubitat.helper.RMUtils.getRuleList version=" + version)
-        return []
-    }
-    static void sendAction(Long ruleId, String action) {
-        System.err.println("=== STUB-CALL: hubitat.helper.RMUtils.sendAction ruleId=${ruleId} action=${action}")
-    }
-    static void pauseRule(Long ruleId) {
-        System.err.println("=== STUB-CALL: hubitat.helper.RMUtils.pauseRule ruleId=${ruleId}")
-    }
-    static void resumeRule(Long ruleId) {
-        System.err.println("=== STUB-CALL: hubitat.helper.RMUtils.resumeRule ruleId=${ruleId}")
-    }
-    static void setRuleBoolean(Long ruleId, Boolean value) {
-        System.err.println("=== STUB-CALL: hubitat.helper.RMUtils.setRuleBoolean ruleId=${ruleId} value=${value}")
-    }
+    static List getRuleList(String version = '5.0') { return [] }
+    static void sendAction(Long ruleId, String action) { }
+    static void pauseRule(Long ruleId) { }
+    static void resumeRule(Long ruleId) { }
+    static void setRuleBoolean(Long ruleId, Boolean value) { }
 }

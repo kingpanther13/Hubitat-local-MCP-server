@@ -39,9 +39,17 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures 
 - **`NetworkUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.NetworkUtils.sendHubitatCommand(Map)`.
 - **`RMUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.RMUtils.{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`.
 
-### Test-only classpath stubs
+### Build-time stubs for Hubitat platform helper classes
 
-`src/test/groovy/support/stubs/hubitat/helper/NetworkUtils.groovy` and `.../RMUtils.groovy` exist so production code that references those Hubitat platform classes can load under the test JVM without `ClassNotFoundException`. They ship only on the test classpath.
+`src/main/groovy/hubitat/helper/{NetworkUtils,RMUtils}.groovy` are stub classes that exist so production code that references those Hubitat platform classes can compile and load under both the test JVM and HubitatCI's sandbox classloader. They live on the **main** source-set (not `src/test/groovy/support/stubs/`) because HubitatCI's `SandboxClassLoader` parent chain only sees main outputs via AppClassLoader. **Not deployed**: `packageManifest.json` ships only the two top-level `.groovy` files via raw GitHub URLs; nothing under `src/main/groovy/` reaches a real hub.
+
+Mirror stubs at `src/main/groovy/me/biocomp/hubitat_ci/api/helper/*` exist as fallbacks for code paths that go through `SandboxClassLoader.mapClassName`'s default catch-all (`hubitat.X` → `me.biocomp.hubitat_ci.api.X`). They delegate to the literal `hubitat.helper.*` versions so `RMUtilsMock`'s metaClass interception captures calls regardless of which path entered.
+
+### `PassThroughSandboxClassLoader` + `PassThroughAppValidator` (sandbox-loaded helper resolution)
+
+When sandbox-loaded production code statically references `hubitat.helper.RMUtils` (e.g., PR #79's `toolListRmRules`), the stock `SandboxClassLoader` remaps the lookup to `me.biocomp.hubitat_ci.api.helper.RMUtils` — and the JVM (hotspot's `SystemDictionary::load_instance_class`) rejects the result with `NoClassDefFoundError` because the returned class's name doesn't match the requested one. `support.PassThroughSandboxClassLoader` subclasses `SandboxClassLoader` and bypasses `mapClassName` for our specific helper-class names; `support.PassThroughAppValidator` threads it into HubitatCI's compile path via the `validator:` option.
+
+**Critical usage gotcha**: must use `sandbox.run(...)`, NOT `sandbox.compile(...)`. `compile()` calls `addFlags(options, [Flags.DontRunScript])` which makes `options.validationFlags` non-empty, and `HubitatAppSandbox.readValidator` then takes its first branch and silently constructs a fresh default `AppValidator` — discarding the user-supplied `validator:`. Effectively a HubitatCI bug; upstream tests never combine `compile()` with `validator:`. Include `Flags.DontRunScript` in the validator's own constructor flags so `setupImpl`'s `hasFlag(DontRunScript)` check still skips the auto-`script.run()`. See `RMUtilsSandboxResolutionSpec` for the worked example and `PassThroughAppValidator`'s class doc for the full analysis.
 
 ## Adding a new server tool spec
 
