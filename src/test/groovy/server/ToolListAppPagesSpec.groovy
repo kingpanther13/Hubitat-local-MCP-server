@@ -240,6 +240,90 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
+    // Curated dispatch -- parametric coverage for known appType variants
+    // -------------------------------------------------------------------------
+
+    def "Room Lighting curated match: '#appTypeName' returns mainPage with Room Lighting note"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppJson(appTypeName, 'mainPage', 'Room Settings')
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == true
+        result.pages.size() == 1
+        result.pages[0].name == 'mainPage'
+        result.note != null
+        result.note.toLowerCase().contains('room lighting') || result.note.toLowerCase().contains('room lights')
+
+        where:
+        appTypeName << ['Room Lights', 'Room Lighting']
+    }
+
+    def "Mode Manager curated match returns mainPage with Mode Manager note"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppJson('Mode Manager', 'mainPage', 'Manage Setting of Modes')
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == true
+        result.pages.size() == 1
+        result.pages[0].name == 'mainPage'
+        result.note != null
+        result.note.toLowerCase().contains('mode manager')
+    }
+
+    def "Rule Machine parent app curated match returns mainPage with single-page note"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // "Rule Machine" is the parent app container (not an individual rule).
+        // The production matcher uses contains("rule machine") -- should match.
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppJson('Rule Machine', 'mainPage', 'Rule Machine')
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == true
+        result.pages.size() == 1
+        result.pages[0].name == 'mainPage'
+        result.note != null
+
+    }
+
+    def "HPM curated dispatch is case-insensitive: '#appTypeName'"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppJson(appTypeName, 'prefOptions', 'Main Menu')
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == true
+        result.pages.size() == 5
+        result.pages*.name.contains('prefOptions')
+        result.pages*.name.contains('prefPkgUninstall')
+        result.note == null
+
+        where:
+        appTypeName << ['hubitat package manager', 'HUBITAT PACKAGE MANAGER', 'Hubitat Package Manager']
+    }
+
+    // -------------------------------------------------------------------------
     // appId type coercion (integer arg passes isInteger check)
     // -------------------------------------------------------------------------
 

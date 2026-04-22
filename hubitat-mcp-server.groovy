@@ -6375,14 +6375,15 @@ def toolGetAppConfig(args) {
             // rendered description. Excluding defaultValue==true prevents emitting a bare
             // true into the value field for every populated device-picker input.
             //
-            // Risk: a boolean input whose user-configured value is literally true would
-            // also be filtered here. In practice, boolean inputs (type="bool") carry
-            // their actual value in i.value, not i.defaultValue, so the filter fires on
-            // the i.defaultValue branch only and the i.value fallback below correctly
-            // picks up the bool. Re-verify this assumption if new SDK input types emerge
-            // that use defaultValue for genuine boolean config (observed: firmware 2.3.x-2.4.x).
-            if (i.defaultValue != null && i.defaultValue != true) input.value = i.defaultValue
-            else if (i.value != null && i.value != true) input.value = i.value
+            // Exception for type="bool": boolean (checkbox) inputs use true/false as their
+            // actual user-configured state values -- not as sentinel markers. The filter
+            // is bypassed when i.type == "bool" so that both true (enabled) and false
+            // (disabled) checkbox states are preserved in the output. Without this bypass,
+            // enabled checkboxes (value==true) would be silently dropped, making the AI
+            // believe the setting is unconfigured when it is actually set to enabled.
+            // (observed: firmware 2.3.x-2.4.x; sentinel confirmed on capability.* types)
+            if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
+            else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
             section.inputs << input
         }
         // Paragraph/body content (informational text in the config page). Keep any

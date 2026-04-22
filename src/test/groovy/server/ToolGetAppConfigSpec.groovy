@@ -429,4 +429,134 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.success == true
     }
+
+    // -------------------------------------------------------------------------
+    // bool input sentinel fix (value==true must not be filtered for type="bool")
+    // -------------------------------------------------------------------------
+
+    def "bool input with value=true is preserved (not filtered by sentinel)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // i.value==true is the legitimate "checkbox enabled" state for type="bool".
+        // Before the fix, this would be filtered out (sentinel path), making the
+        // AI believe the setting was unconfigured.
+        def json = JsonOutput.toJson([
+            app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
+                         name: 'Rule-5.1', disabled: false, installed: true,
+                         parentAppId: null, appType: null],
+            configPage: [
+                name    : 'mainPage',
+                title   : 'Settings',
+                install : true,
+                refreshInterval: null,
+                sections: [
+                    [
+                        title: 'Logging',
+                        input: [
+                            [name: 'logging', type: 'bool', title: 'Enable logging',
+                             description: null, multiple: false, required: false,
+                             defaultValue: null, options: null, value: true]
+                        ],
+                        body: []
+                    ]
+                ]
+            ],
+            settings  : [logging: true],
+            childApps : []
+        ])
+        hubGet.register('/installedapp/configure/json/35') { params -> json }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        def loggingInput = result.page.sections[0].inputs.find { it.name == 'logging' }
+        loggingInput != null
+        loggingInput.containsKey('value')
+        loggingInput.value == true
+    }
+
+    def "bool input with value=false is preserved"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def json = JsonOutput.toJson([
+            app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
+                         name: 'Rule-5.1', disabled: false, installed: true,
+                         parentAppId: null, appType: null],
+            configPage: [
+                name    : 'mainPage',
+                title   : 'Settings',
+                install : true,
+                refreshInterval: null,
+                sections: [
+                    [
+                        title: 'Logging',
+                        input: [
+                            [name: 'logging', type: 'bool', title: 'Enable logging',
+                             description: null, multiple: false, required: false,
+                             defaultValue: null, options: null, value: false]
+                        ],
+                        body: []
+                    ]
+                ]
+            ],
+            settings  : [logging: false],
+            childApps : []
+        ])
+        hubGet.register('/installedapp/configure/json/35') { params -> json }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        def loggingInput = result.page.sections[0].inputs.find { it.name == 'logging' }
+        loggingInput != null
+        loggingInput.containsKey('value')
+        loggingInput.value == false
+    }
+
+    def "non-bool input with defaultValue=true is still filtered (sentinel preserved)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // capability.* inputs use defaultValue=true as a "has configured value" sentinel --
+        // NOT as the actual selection. The output's value field should be absent for these.
+        def json = JsonOutput.toJson([
+            app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
+                         name: 'Rule-5.1', disabled: false, installed: true,
+                         parentAppId: null, appType: null],
+            configPage: [
+                name    : 'mainPage',
+                title   : 'Settings',
+                install : true,
+                refreshInterval: null,
+                sections: [
+                    [
+                        title: 'Devices',
+                        input: [
+                            [name: 'mySensor', type: 'capability.motionSensor',
+                             title: 'Motion sensor', description: 'Kitchen Motion',
+                             multiple: false, required: false,
+                             defaultValue: true, options: null, value: null]
+                        ],
+                        body: []
+                    ]
+                ]
+            ],
+            settings  : [:],
+            childApps : []
+        ])
+        hubGet.register('/installedapp/configure/json/35') { params -> json }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        def sensorInput = result.page.sections[0].inputs.find { it.name == 'mySensor' }
+        sensorInput != null
+        // Sentinel: value must NOT be emitted as bare 'true' for non-bool capability types
+        !sensorInput.containsKey('value')
+    }
 }
