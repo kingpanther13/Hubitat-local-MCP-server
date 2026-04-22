@@ -4,6 +4,7 @@ import groovy.json.JsonOutput
 import spock.lang.Shared
 import support.TestChildApp
 import support.TestDevice
+import support.TestHub
 import support.TestLocation
 import support.ToolSpecBase
 
@@ -28,9 +29,12 @@ import support.ToolSpecBase
  *   - downloadHubFile /
  *     uploadHubFile       -> stubbed per-test on script.metaClass
  *   - location.hub        -> appExecutor.getLocation() returns sharedLocation;
- *                            individual tests set `sharedLocation.hub = [...]`
- *                            to drive location.hub reads (e.g. zwaveVersion,
- *                            zigbeeChannel, uptime)
+ *                            individual tests set `sharedLocation.hub = new
+ *                            TestHub(zwaveVersion: ..., uptime: ...)` to drive
+ *                            location.hub reads. TestLocation's `hub` field
+ *                            must be typed Hub (not Object) because
+ *                            Location.getHub()'s declared return type is Hub —
+ *                            Groovy's override check rejects `def hub`.
  *   - app (for completeness; this gateway doesn't call app.updateSetting)
  *
  * NOTE on clear_captured_states / delete_captured_state: the current server
@@ -71,7 +75,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_set_hub_metrics snapshots memory/temp/db and records a CSV row"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [uptime: 172800L]  // 2 days
+        sharedLocation.hub = new TestHub(uptime: 172800G)  // 2 days
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '123456' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '45.5' }
         hubGet.register('/hub/advanced/databaseSize') { params -> '200000' }
@@ -92,7 +96,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.current.freeMemoryKB == '123456'
         result.current.internalTempC == '45.5'
         result.current.databaseSizeKB == '200000'
-        result.current.uptimeSeconds == 172800L
+        result.current.uptimeSeconds == 172800G
         result.current.uptimeFormatted == '2d 0h 0m'
         result.historyFile == 'mcp-performance-history.csv'
         result.trendPointsAvailable == 1
@@ -105,7 +109,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_set_hub_metrics warns on low memory"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [uptime: 3600L]
+        sharedLocation.hub = new TestHub(uptime: 3600G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '40000' }  // <50000 triggers warning
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '40' }
         hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
@@ -123,7 +127,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_set_hub_metrics respects recordSnapshot=false (no CSV write)"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [uptime: 0L]
+        sharedLocation.hub = new TestHub(uptime: 0G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
         hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
@@ -388,7 +392,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_zwave_details combines hub-SDK zwaveVersion with parsed /hub/zwaveDetails/json"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [zwaveVersion: '7.17.1']
+        sharedLocation.hub = new TestHub(zwaveVersion: '7.17.1')
         hubGet.register('/hub/zwaveDetails/json') { params ->
             JsonOutput.toJson([firmware: '7.17.1', sdkVersion: '6.82', deviceCount: 12])
         }
@@ -407,7 +411,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_zwave_details falls back to sdk_only when all zwave endpoints fail"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [zwaveVersion: '7.0.0']
+        sharedLocation.hub = new TestHub(zwaveVersion: '7.0.0')
         // No registered endpoints for /hub/zwaveDetails/json or /hub2/zwaveInfo —
         // HubInternalGetMock throws, which the tool catches per endpoint.
 
@@ -423,7 +427,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_zwave_details captures raw response when endpoint returns non-JSON"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [zwaveVersion: '7.0.0']
+        sharedLocation.hub = new TestHub(zwaveVersion: '7.0.0')
         hubGet.register('/hub/zwaveDetails/json') { params -> '<html>not json</html>' }
 
         when:
@@ -449,7 +453,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_zigbee_details returns channel + zigbeeId + parsed details"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [zigbeeChannel: 25, zigbeeId: '0x1234']
+        sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
         hubGet.register('/hub/zigbeeDetails/json') { params ->
             JsonOutput.toJson([panId: '0xABCD', channel: 25, deviceCount: 7])
         }
@@ -468,7 +472,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "get_zigbee_details falls back to sdk_only when all endpoints fail"() {
         given:
         settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = [zigbeeChannel: 20, zigbeeId: '0xAAAA']
+        sharedLocation.hub = new TestHub(zigbeeChannel: 20, zigbeeId: '0xAAAA')
 
         when:
         def result = script.toolGetZigbeeDetails([:])
