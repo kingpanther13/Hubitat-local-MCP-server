@@ -4279,8 +4279,6 @@ def toolRestoreItemBackup(args) {
         }
 
         if (success) {
-            // Remove the original backup manifest entry (the pre-restore backup has its own entry)
-            if (state.itemBackupManifest) state.itemBackupManifest.remove(args.backupKey)
             mcpLog("info", "hub-admin", "Restore succeeded: ${entryCopy.type} ID ${entryCopy.id} restored to version ${entryCopy.version}")
             return [
                 success: true,
@@ -6308,7 +6306,6 @@ def toolUpdateItemCode(String type, String idParam, args) {
         }
 
         if (success) {
-            if (state.itemBackupManifest) state.itemBackupManifest.remove("${type}_${itemId}")
             mcpLog("info", "hub-admin", "${type} ID ${itemId} updated successfully (mode: ${sourceMode})")
             def successResult = [
                 success: true,
@@ -6385,7 +6382,8 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
 
         if (success) {
             mcpLog("info", "hub-admin", "${type.capitalize()} ID ${itemId} deleted successfully")
-            def backupEntry = state.itemBackupManifest?.get("${type}_${itemId}")
+            // .toString() because the stored key is a String but Map.get(GString) does not coerce (hashCode mismatch → silent null).
+            def backupEntry = state.itemBackupManifest?.get("${type}_${itemId}".toString())
             def installTool = (type == "app") ? "install_app" : "install_driver"
             def result = [
                 success: true,
