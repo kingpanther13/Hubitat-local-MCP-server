@@ -221,8 +221,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.appId == '50'
         result.previousVersion == 12
 
-        and: 'manifest entry is removed after a successful update (regression guard for the GString.get/remove coercion bug)'
-        !stateMap.itemBackupManifest?.containsKey('app_50')
+        and: 'the pre-edit backup manifest entry is preserved so the user can still restore_item_backup to roll back the update'
+        stateMap.itemBackupManifest?.containsKey('app_50')
     }
 
     def "update_app_code (sourceFile mode) reads source from File Manager"() {
@@ -552,9 +552,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.preRestoreBackup == 'prerestore_app_99'
         result.undoHint.contains('prerestore_app_99')
 
-        and: 'the original backup manifest entry was consumed but the pre-restore entry was added'
+        and: 'both the pre-restore entry and the original backup entry are preserved (original kept so the user can restore again if needed)'
         stateMap.itemBackupManifest.containsKey('prerestore_app_99')
-        !stateMap.itemBackupManifest.containsKey('app_99')
+        stateMap.itemBackupManifest.containsKey('app_99')
     }
 
     def "restore_item_backup reports failure and preserves the backup when the hub POST fails"() {
