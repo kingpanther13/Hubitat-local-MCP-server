@@ -374,7 +374,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.error?.toLowerCase()?.contains('parse') == true
     }
 
-    def "returns success=false with fingerprint when configPage.sections is not a list"() {
+    def "returns success=false with fingerprint and list_app_pages hint when configPage.sections is not a list"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -392,6 +392,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.success == false
         result.fingerprint == 'sections not a list'
+        // Note must guide the agent toward list_app_pages and away from dead-end retries
+        result.error.contains('list_app_pages')
     }
 
     // -------------------------------------------------------------------------

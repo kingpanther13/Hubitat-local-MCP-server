@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop architecture (22 core + 11 gateways = 33 on tools/list, 60 proxied, 82 total).
+Updated for the installed-apps + Rule Machine interop architecture (22 core + 11 gateways = 33 on tools/list, 61 proxied, 83 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2328,15 +2328,15 @@ These tools require `Enable Built-in App Tools` to be enabled in the MCP Rule Se
 
 **Expected**: Calls `manage_installed_apps(tool='get_app_config', args={appId: 35})`. Returns `app` (label, type), `page` (sections with inputs showing configured triggers, conditions, actions). AI summarizes the rule's behavior from the structured response. Tool is accessed via the `manage_installed_apps` gateway.
 
-### T213 — get_app_config multi-page (HPM package list)
+### T213 — get_app_config multi-page (HPM full package list)
 
 ```json
 {
-  "test_prompt": "Use get_app_config to list the packages installed via Hubitat Package Manager. Pass pageName='prefPkgModify' to navigate to the package list page."
+  "test_prompt": "Use get_app_config to list ALL packages installed via Hubitat Package Manager."
 }
 ```
 
-**Expected**: Calls `get_app_config(appId=<HPM_app_id>, pageName='prefPkgModify')`. Returns the packages input section showing installed packages. AI extracts and lists the package names.
+**Expected**: AI calls `list_installed_apps` (or knows HPM appId), then calls `get_app_config(appId=<HPM_app_id>, pageName='prefPkgUninstall')`. Returns the full installed-package enum. AI extracts and lists package names. Note: `pageName='prefPkgModify'` returns only the modifiable subset (those with optional components) -- the correct page for the FULL list is `prefPkgUninstall`.
 
 ### T214 — get_app_config with includeSettings=true (power user)
 
@@ -2369,13 +2369,35 @@ These tools require `Enable Built-in App Tools` to be enabled in the MCP Rule Se
 
 **Expected**: `get_app_config` throws `IllegalArgumentException: Hub Admin Read access is disabled...`. AI reports the gate requirement and directs user to enable it in MCP app settings.
 
+### T217 — list_app_pages for HPM (discover sub-page names)
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. Use list_installed_apps to find the Hubitat Package Manager app ID.",
+  "test_prompt": "I want to inspect HPM's configuration but I don't know the page names. What pages are available for HPM?"
+}
+```
+
+**Expected**: AI calls `manage_installed_apps(tool='list_app_pages', args={appId: <HPM_app_id>})`. Returns a `pages` list including at least `prefOptions`, `prefPkgUninstall`, `prefPkgModify`, `prefPkgInstall`, `prefPkgMatchUp`. AI lists the available page names and explains their roles (e.g. prefPkgUninstall = full installed-package list). Tool is accessed via the `manage_installed_apps` gateway.
+
+### T218 — list_app_pages for Rule Machine rule (single-page confirmation)
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. Use list_rm_rules to find an existing Rule Machine rule and note its app ID.",
+  "test_prompt": "What pages are available for Rule Machine rule app ID 35?"
+}
+```
+
+**Expected**: AI calls `manage_installed_apps(tool='list_app_pages', args={appId: 35})`. Returns a `pages` list with a single entry `{name: 'mainPage', role: 'primary'}` plus a `note` confirming rules are single-page. AI explains there is only one page (mainPage) and no sub-pages are available.
+
 ---
 
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 82 tools)** post installed-apps + RM interop (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 83 tools)** post installed-apps + RM interop + list_app_pages (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
