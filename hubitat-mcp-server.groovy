@@ -6308,7 +6308,8 @@ def toolUpdateItemCode(String type, String idParam, args) {
         }
 
         if (success) {
-            if (state.itemBackupManifest) state.itemBackupManifest.remove("${type}_${itemId}")
+            // .toString() because the stored key is String (Map.putAt coerced) but Map.remove(GString) does not coerce.
+            if (state.itemBackupManifest) state.itemBackupManifest.remove("${type}_${itemId}".toString())
             mcpLog("info", "hub-admin", "${type} ID ${itemId} updated successfully (mode: ${sourceMode})")
             def successResult = [
                 success: true,
@@ -6385,7 +6386,8 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
 
         if (success) {
             mcpLog("info", "hub-admin", "${type.capitalize()} ID ${itemId} deleted successfully")
-            def backupEntry = state.itemBackupManifest?.get("${type}_${itemId}")
+            // .toString() because the stored key is String (Map.putAt coerced) but Map.get(GString) does not coerce.
+            def backupEntry = state.itemBackupManifest?.get("${type}_${itemId}".toString())
             def installTool = (type == "app") ? "install_app" : "install_driver"
             def result = [
                 success: true,
