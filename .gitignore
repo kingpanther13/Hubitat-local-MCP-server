@@ -19,6 +19,9 @@ config.local.*
 # E2E test config (contains hub IP and access token)
 tests/e2e_config.json
 
+# Shape-drift audit config (personalized hub app IDs)
+scripts/audit_config.json
+
 # Gemini Code Assist config (may contain access tokens)
 .gemini/
 

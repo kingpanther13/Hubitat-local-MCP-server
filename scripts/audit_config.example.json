@@ -5,6 +5,7 @@
     {"description": "Rule Machine 5.1 rule", "appId": 832},
     {"description": "Room Lighting instance", "appId": 839},
     {"description": "HPM main page", "appId": 35},
-    {"description": "HPM sub-page (package list)", "appId": 35, "pageName": "prefPkgModify"}
+    {"description": "HPM sub-page (full installed-package list)", "appId": 35, "pageName": "prefPkgUninstall"},
+    {"description": "HPM sub-page (modifiable subset)", "appId": 35, "pageName": "prefPkgModify"}
   ]
 }

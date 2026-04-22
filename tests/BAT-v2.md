@@ -2139,18 +2139,18 @@ These operations are too destructive for automated testing. Test manually with e
 | Core tools on `tools/list` | 22 |
 | Gateways on `tools/list` | 11 |
 | Total visible on `tools/list` | 33 |
-| Tools proxied behind gateways | 60 |
-| Total tools in codebase | 82 |
+| Tools proxied behind gateways | 61 |
+| Total tools in codebase | 83 |
 
-**11 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (3), `manage_rule_machine` (5)
+**11 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 82 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 83 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 186 test scenarios** (107 explicit + 65 natural language + 14 built-in-app integration) plus 13 excluded destructive operations documented for manual testing
+**Total: 193 test scenarios** (107 explicit + 65 natural language + 21 built-in-app integration) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
