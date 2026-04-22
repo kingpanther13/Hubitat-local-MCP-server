@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 82 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, and Rule Machine interop. The tools are organized as **23 core tools** (always visible) plus **11 domain-named gateways** that proxy 59 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 82 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, and Rule Machine interop. The tools are organized as **22 core tools** (always visible) plus **11 domain-named gateways** that proxy 60 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 

@@ -4,13 +4,13 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 33 items (22 core + 11 gateways) covering 81 total tools. Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 33 items (22 core + 11 gateways) covering 82 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (2), `manage_rule_machine` (5)
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (3), `manage_rule_machine` (5)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -292,7 +292,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 All tools in `manage_installed_apps` and `manage_rule_machine` gateways require the **Enable Built-in App Tools** toggle in MCP Rule Server app settings. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
-### manage_installed_apps (2 tools)
+### manage_installed_apps (3 tools)
 
 - **`list_installed_apps`** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
   - `filter="all"` (default) | `"builtin"` | `"user"` | `"disabled"` | `"parents"` | `"children"`
@@ -305,6 +305,10 @@ All tools in `manage_installed_apps` and `manage_rule_machine` gateways require 
   - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
   - Returns `appsUsing` array with each app's `id`, `name` (type like "Room Lights" or "Rule-5.1"), `label` (user-visible), `trueLabel` (HTML-stripped), `disabled`
   - Answers "if I delete/disable this device, which automations break?"
+
+- **`get_app_config`** — read an installed app's configuration page (Hub Admin Read required)
+  - See usage tips above for full details on response shape, pageName navigation, and includeSettings flag
+  - Workflow: `list_installed_apps` or `list_rm_rules` to find an `appId`, then `get_app_config` to inspect it
 
 ### manage_rule_machine (5 tools)
 

@@ -616,15 +616,17 @@ def getGatewayConfig() {
             ]
         ],
         manage_installed_apps: [
-            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device. Requires Built-in App Tools enabled in MCP app settings.",
-            tools: ["list_installed_apps", "get_device_in_use_by"],
+            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device, inspect an app's configuration page. Requires Built-in App Tools enabled in MCP app settings (list/device-in-use-by); get_app_config requires Hub Admin Read.",
+            tools: ["list_installed_apps", "get_device_in_use_by", "get_app_config"],
             summaries: [
                 list_installed_apps: "List all installed apps with parent/child tree. Args: filter (all/builtin/user/disabled/parents/children), includeHidden",
-                get_device_in_use_by: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId"
+                get_device_in_use_by: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
+                get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName (optional), includeSettings (optional)"
             ],
             searchHints: [
                 list_installed_apps: "rule machine room lighting scenes mode manager hsm dashboards groups button controllers native builtin",
-                get_device_in_use_by: "which apps use device reference inUseBy appsUsing dependencies affected by"
+                get_device_in_use_by: "which apps use device reference inUseBy appsUsing dependencies affected by",
+                get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager"
             ]
         ],
         manage_rule_machine: [
@@ -1408,26 +1410,6 @@ Requires Hub Admin Write.""",
             ]
         ],
 
-        // Hub Admin App Configuration Read
-        [
-            name: "get_app_config",
-            description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
-
-Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
-
-Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
-
-Requires Hub Admin Read.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: ["integer", "string"], description: "Installed-app ID (decimal). From list_installed_apps, list_rm_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Known examples: HPM's 'prefPkgModify' lists installed packages; RM 5.1 has per-section sub-pages."],
-                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false — large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
-                ],
-                required: ["appId"]
-            ]
-        ],
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
@@ -1658,6 +1640,26 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
                     deviceId: [type: "string", description: "Device ID from list_devices"]
                 ],
                 required: ["deviceId"]
+            ]
+        ],
+        // Hub Admin App Configuration Read (grouped with installed-apps peers)
+        [
+            name: "get_app_config",
+            description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
+
+Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
+
+Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
+
+Requires Hub Admin Read.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "Installed-app ID (decimal). From list_installed_apps, list_rm_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
+                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Known examples: HPM's 'prefPkgModify' lists installed packages; RM 5.1 has per-section sub-pages."],
+                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
+                ],
+                required: ["appId"]
             ]
         ],
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
@@ -6338,7 +6340,22 @@ def toolGetAppConfig(args) {
             if (i.options) input.options = stripOptionsHtml(i.options)
             // Current values: 'defaultValue' is the rendered value for most input types
             // (despite the misleading name), 'value' is used on some. Include whichever
-            // is non-null and not the boolean 'true' sentinel the SDK uses for "has value".
+            // is non-null and not the boolean 'true' sentinel.
+            //
+            // The boolean 'true' sentinel: Hubitat's legacy SmartApp SDK populates
+            // defaultValue=true on capability.* and device-list input types (e.g.
+            // type="capability.*", type="device.switch") to indicate "this input has a
+            // configured value" rather than encoding the actual selection as defaultValue.
+            // For those types the actual selected device label appears separately in the
+            // rendered description. Excluding defaultValue==true prevents emitting a bare
+            // true into the value field for every populated device-picker input.
+            //
+            // Risk: a boolean input whose user-configured value is literally true would
+            // also be filtered here. In practice, boolean inputs (type="bool") carry
+            // their actual value in i.value, not i.defaultValue, so the filter fires on
+            // the i.defaultValue branch only and the i.value fallback below correctly
+            // picks up the bool. Re-verify this assumption if new SDK input types emerge
+            // that use defaultValue for genuine boolean config (observed: firmware 2.3.x-2.4.x).
             if (i.defaultValue != null && i.defaultValue != true) input.value = i.defaultValue
             else if (i.value != null && i.value != true) input.value = i.value
             section.inputs << input
@@ -6381,7 +6398,7 @@ def toolGetAppConfig(args) {
     if (includeSettings) {
         result.settings = parsed.settings ?: [:]
     } else if (settingsCount > 0) {
-        result.settingsNote = "Raw settings omitted — pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. 'dm~<deviceId>~<scene>' for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
+        result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
     }
 
     return result
@@ -8642,7 +8659,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 All tools in the manage_installed_apps and manage_rule_machine gateways require the "Enable Built-in App Tools" toggle in MCP Rule Server app settings. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
-**manage_installed_apps (2 tools):**
+**manage_installed_apps (3 tools):**
 
 - **list_installed_apps** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
@@ -8655,6 +8672,12 @@ All tools in the manage_installed_apps and manage_rule_machine gateways require 
   - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
   - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
   - Answers "if I delete this device, which automations break?"
+
+- **get_app_config** — read an installed app's configuration page (Hub Admin Read required)
+  - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
+  - Multi-page apps (RM 5.1, HPM) expose sub-pages via pageName -- e.g. pageName="prefPkgModify" for HPM packages
+  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys)
+  - Workflow: list_installed_apps or list_rm_rules to find appId, then get_app_config to inspect
 
 **manage_rule_machine (5 tools) — read + trigger existing RM rules only, NO create/modify/delete:**
 
