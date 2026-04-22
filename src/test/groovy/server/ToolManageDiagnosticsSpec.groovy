@@ -35,7 +35,6 @@ import support.ToolSpecBase
  *                            must be typed Hub (not Object) because
  *                            Location.getHub()'s declared return type is Hub —
  *                            Groovy's override check rejects `def hub`.
- *   - app (for completeness; this gateway doesn't call app.updateSetting)
  *
  * NOTE on clear_captured_states / delete_captured_state: the current server
  * source (hubitat-mcp-server.groovy) does not gate these on confirm=true —
@@ -106,6 +105,41 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         uploaded['mcp-performance-history.csv']?.contains('123456')
     }
 
+    def "get_set_hub_metrics warns on high temperature"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        sharedLocation.hub = new TestHub(uptime: 3600G)
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> '200000' }
+        hubGet.register('/hub/advanced/internalTempCelsius') { params -> '75' }  // >70 triggers warning
+        hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
+        script.metaClass.downloadHubFile = { String fileName -> null }
+        script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
+
+        when:
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
+
+        then:
+        result.current.temperatureWarning.contains('HIGH TEMPERATURE')
+        result.current.temperatureWarning.contains('75')
+    }
+
+    def "get_set_hub_metrics warns on large database"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        sharedLocation.hub = new TestHub(uptime: 3600G)
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> '200000' }
+        hubGet.register('/hub/advanced/internalTempCelsius') { params -> '40' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '600000' }  // >500000 triggers warning
+        script.metaClass.downloadHubFile = { String fileName -> null }
+        script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
+
+        when:
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
+
+        then:
+        result.current.databaseWarning.contains('LARGE DATABASE')
+    }
+
     def "get_set_hub_metrics warns on low memory"() {
         given:
         settingsMap.enableHubAdminRead = true
@@ -131,14 +165,16 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
         hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
-        script.metaClass.downloadHubFile = { String fileName -> null }
+        def downloadCalled = false
+        script.metaClass.downloadHubFile = { String fileName -> downloadCalled = true; null }
         def uploadCalled = false
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> uploadCalled = true }
 
         when:
         def result = script.toolGetHubPerformance([recordSnapshot: false])
 
-        then:
+        then: 'the CSV read still runs (trend points come from prior runs), but no write'
+        downloadCalled
         !uploadCalled
         result.trendPointsAvailable == 0
     }
@@ -240,7 +276,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     def "force_garbage_collection triggers GC and reports before/after"() {
-        given:
+        given: 'two freeOSMemory reads pre + post, one forceGC between. pauseExecution is a no-op on the AppExecutor mock.'
         settingsMap.enableHubAdminRead = true
         def beforeAfter = ['90000', '120000']
         def idx = 0
@@ -251,7 +287,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         when:
         def result = script.toolForceGarbageCollection([:])
 
-        then:
+        then: 'both memory reads fired (tool must probe before AND after), and GC was triggered between'
+        idx == 2
         gcCalled
         result.beforeFreeMemoryKB == 90000
         result.afterFreeMemoryKB == 120000
@@ -409,11 +446,11 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     def "get_zwave_details falls back to sdk_only when all zwave endpoints fail"() {
-        given:
+        given: 'both zwave endpoints throw realistic hub errors (404 on older firmware)'
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.0.0')
-        // No registered endpoints for /hub/zwaveDetails/json or /hub2/zwaveInfo —
-        // HubInternalGetMock throws, which the tool catches per endpoint.
+        hubGet.register('/hub/zwaveDetails/json') { params -> throw new RuntimeException('404 Not Found') }
+        hubGet.register('/hub2/zwaveInfo')        { params -> throw new RuntimeException('404 Not Found') }
 
         when:
         def result = script.toolGetZwaveDetails([:])
@@ -470,9 +507,11 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     def "get_zigbee_details falls back to sdk_only when all endpoints fail"() {
-        given:
+        given: 'both zigbee endpoints throw realistic hub errors'
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 20, zigbeeId: '0xAAAA')
+        hubGet.register('/hub/zigbeeDetails/json') { params -> throw new RuntimeException('404 Not Found') }
+        hubGet.register('/hub2/zigbeeInfo')        { params -> throw new RuntimeException('404 Not Found') }
 
         when:
         def result = script.toolGetZigbeeDetails([:])
@@ -480,6 +519,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.source == 'sdk_only'
         result.zigbeeChannel == 20
+    }
+
+    def "get_zigbee_details captures raw response when endpoint returns non-JSON"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
+        hubGet.register('/hub/zigbeeDetails/json') { params -> '<html>not json</html>' }
+
+        when:
+        def result = script.toolGetZigbeeDetails([:])
+
+        then:
+        result.source == 'hub_api_raw'
+        result.rawResponse.contains('not json')
+        result.note.contains('not JSON')
     }
 
     // -------- toolZwaveRepair (DESTRUCTIVE: confirm + Hub Admin Write gate) --------
@@ -554,12 +608,13 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('Z-Wave repair failed')
         result.error.contains('hub unreachable')
+        result.note.contains('Z-Wave Details')
     }
 
     // -------- toolListCapturedStates --------
 
     def "list_captured_states returns an empty list with count when state is empty"() {
-        when:
+        when: 'no confirm arg — pins the current no-gate behaviour; a future confirm gate would flip this'
         def result = script.toolListCapturedStates()
 
         then:
@@ -586,7 +641,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     def "list_captured_states surfaces an at-capacity warning"() {
-        given: 'maxCapturedStates default is 20; seed exactly 20 entries'
+        given: 'override the cap to 5 so filling capacity only takes 5 seed entries'
         settingsMap.maxCapturedStates = 5
         stateMap.capturedDeviceStates = (1..5).collectEntries { i ->
             ["s${i}".toString(), [devices: [], timestamp: (i * 1000L), deviceCount: 0]]
@@ -598,6 +653,22 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.count == 5
         result.warning.contains('maximum capacity')
+    }
+
+    def "list_captured_states surfaces the approaching-limit warning at max-4 slots"() {
+        given: 'max=10, 7 entries → count >= max-4 branch (source hubitat-mcp-server.groovy:3174)'
+        settingsMap.maxCapturedStates = 10
+        stateMap.capturedDeviceStates = (1..7).collectEntries { i ->
+            ["s${i}".toString(), [devices: [], timestamp: (i * 1000L), deviceCount: 0]]
+        }
+
+        when:
+        def result = script.toolListCapturedStates()
+
+        then:
+        result.count == 7
+        result.warning.contains('Approaching limit')
+        result.warning.contains('7/10')
     }
 
     // -------- toolDeleteCapturedState --------

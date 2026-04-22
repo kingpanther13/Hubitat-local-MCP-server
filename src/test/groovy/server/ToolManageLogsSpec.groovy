@@ -30,10 +30,8 @@ import support.ToolSpecBase
  *                           clears the settingsStore between tests.
  *   - debug-log state    -> state.debugLogs is a plain Map, seeded in given:
  *
- * Additional get_hub_logs coverage — ToolGetHubLogsSpec already covers
- * most-recent-first ordering and the PR #64 validation regressions; this
- * spec adds: level filter across all four levels, source substring matching,
- * explicit limit trimming, and empty-response handling.
+ * Additional get_hub_logs coverage — this spec complements ToolGetHubLogsSpec
+ * with level/source/limit/empty-response/deviceId/appId/truncation cases.
  */
 class ToolManageLogsSpec extends ToolSpecBase {
 
@@ -43,7 +41,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         // HarnessSpec.setupSpec runs first (Spock auto-invokes superclass
         // fixtures in declaration order). Layering getApp() onto the
         // already-built mock here gives toolSetLogLevel's app.updateSetting
-        // call a non-null target.
+        // call a non-null target. Same additive-stub pattern that
+        // ToolRoomsSpec uses for appExecutor.httpPost(_, _).
         appExecutor.getApp() >> sharedAppStub
     }
 
@@ -95,7 +94,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetHubLogs([source: 'kitchen'])
 
-        then: 'matches "Kitchen" in the name field, case-insensitively'
+        then: 'case-insensitive substring match against message or name'
         result.logs.size() == 2
         result.logs.every { it.name.toLowerCase().contains('kitchen') }
     }
@@ -117,6 +116,75 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs[0].message == 'Message 10'
         result.logs[1].message == 'Message 9'
         result.logs[2].message == 'Message 8'
+    }
+
+    def "get_hub_logs scopes to a selected device and passes type=dev&id=X in query"() {
+        given: 'a selected device so findDevice succeeds'
+        settingsMap.enableHubAdminRead = true
+        def device = new TestDevice(id: 42, name: 'K', label: 'K')
+        settingsMap.selectedDevices = [device]
+        def capturedParams = null
+        hubGet.register('/logs/past/json') { params ->
+            capturedParams = params
+            JsonOutput.toJson(['K\tinfo\thi\t2026-04-19 10:00:00.000\ttype'])
+        }
+
+        when:
+        def result = script.toolGetHubLogs([deviceId: '42'])
+
+        then:
+        capturedParams == [type: 'dev', id: '42']
+        result.logs.size() == 1
+    }
+
+    def "get_hub_logs rejects an unknown deviceId before hitting the hub"() {
+        given: 'no selected device with id 999'
+        settingsMap.enableHubAdminRead = true
+        // If the tool ever called hubInternalGet, HubInternalGetMock would throw
+        // (unstubbed), so the IllegalArgumentException below proves the pre-HTTP
+        // validation fired.
+
+        when:
+        script.toolGetHubLogs([deviceId: '999'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Device not found')
+    }
+
+    def "get_hub_logs scopes to an app and passes type=app&id=X in query"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def capturedParams = null
+        hubGet.register('/logs/past/json') { params ->
+            capturedParams = params
+            JsonOutput.toJson(['App 7\tinfo\thi\t2026-04-19 10:00:00.000\ttype'])
+        }
+
+        when:
+        def result = script.toolGetHubLogs([appId: '7'])
+
+        then:
+        capturedParams == [type: 'app', id: '7']
+        result.logs.size() == 1
+    }
+
+    def "get_hub_logs truncates messages when estimated JSON exceeds the 120KB cloud limit"() {
+        given: 'many entries with long messages so estimatedJsonSize trips the 120000-byte truncation guard'
+        settingsMap.enableHubAdminRead = true
+        def longMsg = 'x' * 2000
+        def lines = (1..200).collect { i ->
+            "App 1\tinfo\t${longMsg}\t2026-04-19 10:00:${String.format('%02d', (i % 60))}.000\ttype".toString()
+        }
+        hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(lines) }
+
+        when: 'limit=200 means ~200 entries × (2000 message + overhead) > 120000'
+        def result = script.toolGetHubLogs([limit: 200])
+
+        then:
+        result.truncated == true
+        result.note.contains('truncated')
+        result.logs.every { it.message.length() <= 200 }
     }
 
     def "get_hub_logs handles empty hub response gracefully"() {
@@ -157,7 +225,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         given: 'a selected device whose eventsSince returns 2 events'
         def fixedDate = new Date(1234567880000L)
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        def capturedSince = null
+        def capturedOpts = null
         device.metaClass.eventsSince = { Date since, Map opts ->
+            capturedSince = since
+            capturedOpts = opts
             [
                 [name: 'switch', value: 'on', unit: null, descriptionText: 'turned on', date: fixedDate, isStateChange: true],
                 [name: 'level', value: '75', unit: '%', descriptionText: 'dimmed', date: fixedDate, isStateChange: true]
@@ -166,9 +238,14 @@ class ToolManageLogsSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [device]
 
         when:
-        def result = script.toolGetDeviceHistory([deviceId: '42', hoursBack: 12])
+        def result = script.toolGetDeviceHistory([deviceId: '42', hoursBack: 12, limit: 50])
 
-        then:
+        then: 'eventsSince receives the hoursBack-derived sinceDate and the limit via opts.max'
+        capturedSince != null
+        capturedSince.time == 1234567890000L - (12 * 3600000L)
+        capturedOpts == [max: 50]
+
+        and:
         result.deviceId == '42'
         result.device == 'Kitchen Light'
         result.hoursBack == 12
@@ -211,8 +288,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetDeviceHistory([deviceId: '42'])
 
-        then:
-        result.error.contains('eventsSince not supported')
+        then: 'the thrown message is preserved in the "failed" half so a caller can debug'
+        result.error.contains('failed')
+        result.error.contains('event store unavailable')
         result.deviceId == '42'
     }
 
@@ -292,8 +370,56 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.appSummary.appCount == 1
     }
 
-    def "get_performance_stats returns an error map when Hub Admin Read is disabled"() {
-        when: 'enableHubAdminRead is not set, so fetchLogsJson throws inside the tool'
+    def "get_performance_stats surfaces the largeState flag on flagged entries"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/logs/json') { params ->
+            JsonOutput.toJson([
+                uptime: 'x',
+                deviceStats: [
+                    [id: 1, name: 'FatState', pct: 10.0, count: 50, total: 100, stateSize: 50000, formattedPct: '10.00', largeState: true],
+                    [id: 2, name: 'LeanState', pct: 1.0, count: 5, total: 10, stateSize: 100, formattedPct: '1.00']
+                ],
+                appStats: []
+            ])
+        }
+
+        when:
+        def result = script.toolGetPerformanceStats([:])
+
+        then:
+        result.deviceStats[0].name == 'FatState'
+        result.deviceStats[0].largeState == true
+        result.deviceStats[1].name == 'LeanState'
+        !result.deviceStats[1].containsKey('largeState')
+    }
+
+    def "get_performance_stats limit=0 returns all entries with the unlimited-response note"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/logs/json') { params ->
+            JsonOutput.toJson([
+                uptime: 'x',
+                deviceStats: [[id: 1, name: 'A', pct: 1.0, formattedPct: '1.00']],
+                appStats: [[id: 2, name: 'B', pct: 1.0, formattedPct: '1.00']]
+            ])
+        }
+
+        when:
+        def result = script.toolGetPerformanceStats([type: 'both', limit: 0])
+
+        then:
+        result.note?.contains('Returning all')
+        result.note?.contains('2 entries')
+    }
+
+    def "get_performance_stats returns an error map when fetchLogsJson throws (Hub Admin Read gate is indirect)"() {
+        // toolGetPerformanceStats has no direct requireHubAdminRead() call;
+        // the gate fires deeper inside fetchLogsJson (server ~line 5508)
+        // and the IllegalArgumentException is caught and wrapped into the
+        // returned error map at ~line 5524. Asserting "Hub Admin Read"
+        // in the error pins the current wrapping, not a public-surface gate.
+        when:
         def result = script.toolGetPerformanceStats([:])
 
         then:
@@ -381,6 +507,25 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries[0].message == 'e1'
     }
 
+    def "get_debug_logs filters by ruleId"() {
+        given:
+        stateMap.debugLogs = [
+            entries: [
+                [timestamp: 1L, level: 'info', component: 'rules', message: 'r42a', ruleId: '42'],
+                [timestamp: 2L, level: 'info', component: 'rules', message: 'r99',  ruleId: '99'],
+                [timestamp: 3L, level: 'info', component: 'rules', message: 'r42b', ruleId: '42']
+            ],
+            config: [logLevel: 'debug', maxEntries: 100]
+        ]
+
+        when:
+        def result = script.toolGetDebugLogs([ruleId: '42'])
+
+        then:
+        result.count == 2
+        result.entries*.message == ['r42a', 'r42b']
+    }
+
     def "get_debug_logs filters by component substring"() {
         given:
         stateMap.debugLogs = [
@@ -445,10 +590,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "clear_debug_logs succeeds when there are no entries"() {
+        given: 'explicit logLevel=error so the post-clear info log is below threshold — pinned against initDebugLogs default drift'
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'error', maxEntries: 100]]
+
         when:
         def result = script.toolClearDebugLogs([:])
 
-        then: 'initDebugLogs defaults logLevel=error so the post-clear info log is below threshold and entries stays []'
+        then:
         result.success == true
         result.clearedCount == 0
         stateMap.debugLogs.entries == []

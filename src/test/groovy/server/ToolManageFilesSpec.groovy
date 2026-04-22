@@ -85,6 +85,20 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.manualAccess.contains('Settings > File Manager')
     }
 
+    def "list_files returns 'API not available' when both endpoints throw (hub network failure)"() {
+        given:
+        hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('Connection refused') }
+        hubGet.register('/hub/fileManager')      { params -> throw new RuntimeException('Connection refused') }
+
+        when:
+        def result = script.toolListFiles()
+
+        then:
+        result.total == 0
+        result.files == []
+        result.message.contains('File Manager API not available')
+    }
+
     def "list_files extracts file names from an HTML fallback response"() {
         given:
         hubGet.register('/hub/fileManager/json') { params ->
@@ -252,11 +266,14 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('Invalid file name')
 
         where:
-        badName       | _
-        '../escape'   | _
-        '.hidden'     | _
-        'with space'  | _
-        'x/y'         | _
+        badName         | _
+        '../escape'     | _
+        '.hidden'       | _
+        'with space'    | _
+        'x/y'           | _
+        '_leading_us'   | _   // underscore isn't allowed as first char
+        'foo$bar'       | _   // $ isn't in the allowed [A-Za-z0-9._-] set
+        'café.txt'      | _   // non-ASCII rejected — ASCII-only allowlist
     }
 
     def "write_file creates a new file when none exists"() {
@@ -311,18 +328,48 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.message.contains('updated')
     }
 
-    def "write_file reports failure without throwing when uploadHubFile errors"() {
+    def "write_file treats a download-throws exception as 'no existing file' and skips the backup step"() {
+        // Pins the current server behaviour: the backup attempt is wrapped in
+        // a try/catch that swallows ANY download throw and proceeds as if
+        // there was no prior file (hubitat-mcp-server.groovy:4512-4515). Note
+        // this means a transient File-Manager read failure on a file that
+        // DOES exist would cause the overwrite to silently skip the backup —
+        // worth future design review, but pinning current behaviour here.
         given:
         enableHubAdminWrite()
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name ->
+            throw new RuntimeException('File Manager API transient error')
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content ->
+            uploads << [name: name, content: new String(content, 'UTF-8')]
+        }
+
+        when:
+        def result = script.toolWriteFile([fileName: 'x.txt', content: 'hi', confirm: true])
+
+        then: 'one upload (the write itself) — no backup attempted because the download threw'
+        uploads.size() == 1
+        uploads[0].name == 'x.txt'
+        result.success == true
+        result.backupFile == null
+    }
+
+    def "write_file reports failure without throwing when uploadHubFile errors"() {
+        given: 'no existing file — so the only upload attempt is the new-file write itself'
+        enableHubAdminWrite()
+        def uploadCalls = []
         script.metaClass.downloadHubFile = { String name -> null }
         script.metaClass.uploadHubFile = { String name, byte[] content ->
+            uploadCalls << name
             throw new RuntimeException('hub storage full')
         }
 
         when:
         def result = script.toolWriteFile([fileName: 'x.txt', content: 'hi', confirm: true])
 
-        then:
+        then: 'exactly one upload attempt (the write itself) — no spurious backup attempt for a nonexistent file'
+        uploadCalls == ['x.txt']
         result.success == false
         result.error.contains('hub storage full')
     }
@@ -395,8 +442,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.undoHint.contains('read_file')
     }
 
-    def "delete_file skips auto-backup on files that are already backups"() {
-        given:
+    def "delete_file skips auto-backup on files that are already backups (#fileName)"() {
+        given: 'isBackupFile trips on any of three markers (source ~line 4555): _backup_ substring, mcp-backup- prefix, mcp-prerestore- prefix'
         enableHubAdminWrite()
         def uploads = []
         def deleted = []
@@ -405,16 +452,20 @@ class ToolManageFilesSpec extends ToolSpecBase {
         script.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:
-        def result = script.toolDeleteFile([fileName: 'notes_backup_20260419-100000.txt', confirm: true])
+        def result = script.toolDeleteFile([fileName: fileName, confirm: true])
 
-        then: 'no backup-of-a-backup is written'
+        then: 'no backup-of-a-backup is written — each trigger wired independently'
         uploads == []
-        deleted == ['notes_backup_20260419-100000.txt']
-
-        and:
+        deleted == [fileName]
         result.success == true
         result.message.contains('Backup file')
         result.message.contains('deleted permanently')
+
+        where:
+        fileName                              | _
+        'notes_backup_20260419-100000.txt'    | _   // substring _backup_
+        'mcp-backup-app-42.groovy'            | _   // prefix mcp-backup-
+        'mcp-prerestore-driver-9.groovy'      | _   // prefix mcp-prerestore-
     }
 
     def "delete_file reports failure without throwing when deleteHubFile errors"() {
