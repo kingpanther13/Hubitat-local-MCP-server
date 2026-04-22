@@ -421,7 +421,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     // -------- toolClearDebugLogs --------
 
     def "clear_debug_logs empties state.debugLogs.entries and reports count"() {
-        given:
+        given: 'logLevel=debug so the post-clear confirmation mcpLog write is retained'
         stateMap.debugLogs = [
             entries: [
                 [timestamp: 1L, level: 'info', component: 'c', message: 'a'],
@@ -436,16 +436,22 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.clearedCount == 2
-        stateMap.debugLogs.entries == []
+
+        and: 'the tool logs a confirmation entry AFTER clearing — `entries` now holds only that line, not the 2 pre-clear entries'
+        stateMap.debugLogs.entries.size() == 1
+        stateMap.debugLogs.entries[0].level == 'info'
+        stateMap.debugLogs.entries[0].message.contains('cleared')
+        stateMap.debugLogs.entries[0].message.contains('(2 entries removed)')
     }
 
     def "clear_debug_logs succeeds when there are no entries"() {
         when:
         def result = script.toolClearDebugLogs([:])
 
-        then:
+        then: 'initDebugLogs defaults logLevel=error so the post-clear info log is below threshold and entries stays []'
         result.success == true
         result.clearedCount == 0
+        stateMap.debugLogs.entries == []
     }
 
     // -------- toolSetLogLevel --------
