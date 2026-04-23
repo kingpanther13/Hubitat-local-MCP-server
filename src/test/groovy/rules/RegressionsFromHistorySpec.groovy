@@ -18,12 +18,13 @@ import support.TestDevice
  * <ul>
  *   <li>v0.8.6 — {@code days_of_week} uses only 1-arg {@code Date.format}:
  *       {@link ConditionTypesSpec} covers day-name match/miss/absent.</li>
- *   <li>v0.7.7 — short-circuit condition evaluation:
- *       {@link EvaluateConditionsSpec} pins {@code all}/{@code any} short-
- *       circuit via the CountingParent fixture.</li>
+ *   <li>v0.7.7 — short-circuit condition evaluation + fail-closed on
+ *       evaluator throw: {@link EvaluateConditionsSpec} pins both — the
+ *       {@code all}/{@code any} short-circuit via CountingParent, and the
+ *       throw-caught-as-miss path via ThrowingParent.</li>
  *   <li>v0.7.7 — {@code variable_math} double atomicState read:
  *       {@link ActionTypesSpec} pins the read-once/write-once shape through
- *       the six {@code variable_math} tests.</li>
+ *       its {@code variable_math} tests.</li>
  *   <li>v0.1.5 — {@code capture_state}/{@code restore_state} across rules:
  *       {@link ActionTypesSpec} pins both the write path via
  *       {@code parent.saveCapturedState} and the read path via
@@ -95,57 +96,41 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
         0 * outer.on()
     }
 
-    // --- substituteVariables %now% resolution (v0.7.6 — now() shadowing) ----
+    // --- substituteVariables built-in-token precedence -----------------------
     //
-    // v0.7.6 fixed a subtle bug where a local variable named `now` shadowed
-    // the `now()` call inside rule conditions. The fix (and subsequent code
-    // layout) keeps {@code substituteVariables} resolving {@code %now%} via
-    // a fresh {@code new Date()} rather than a captured local. Regression:
-    // even when {@code atomicState.localVariables} has a key called
-    // {@code now}, the built-in {@code %now%} token still renders as a
-    // formatted timestamp (not the local-variable value).
+    // Not a named-release regression — an ordering invariant worth pinning
+    // because its correctness is easy to regress. {@code substituteVariables}
+    // at hubitat-mcp-rule.groovy:3229-3274 replaces built-in tokens
+    // ({@code %now%}, {@code %mode%}, etc.) BEFORE iterating
+    // {@code atomicState.localVariables}. If a future refactor swaps the
+    // order, a user whose rule defines a local variable called
+    // {@code now} would see its value take over the built-in {@code %now%}
+    // token — surprising and hard to debug. (The v0.7.6 "variable shadowing
+    // of now()" fix applied to a different code path; that's guarded by
+    // sandbox_lint.py and code review, not by this test.)
 
-    def "%now% resolves to a formatted timestamp even when a local variable named 'now' exists"() {
+    def "built-in %now% token is resolved before the localVariables loop runs"() {
         given: 'a local variable named "now" whose value would collide with the built-in'
         atomicStateMap.localVariables = [now: 'LOCAL_VAR_SHOULD_NOT_WIN']
 
         when:
         def result = script.substituteVariables('time is %now%')
 
-        then: 'the built-in timestamp wins — regression guard for the v0.7.6 shadow fix'
+        then: 'the built-in timestamp wins because its replace() runs first'
         result != 'time is LOCAL_VAR_SHOULD_NOT_WIN'
         // Hubitat's timestamp format is "yyyy-MM-dd HH:mm:ss" — pin the shape,
         // not the exact value (new Date() means the seconds drift between runs).
         result =~ /time is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/
     }
 
-    // --- evaluateConditions fail-closed on evaluator throw (v0.7.7) ---------
-    //
-    // Already pinned by {@link EvaluateConditionsSpec} via {@code ThrowingParent}.
-    // Repeated here as a sanity check + explicit release-note citation so a
-    // reader landing on this file via the backfill trail gets the full
-    // picture without a cross-file hop.
-
-    def "evaluateConditions treats a per-condition throw as a miss (fail closed)"() {
-        given: 'a single device_state condition whose parent.findDevice throws'
-        parent = new ThrowingFindParent()
-        atomicStateMap.conditions = [
-            [type: 'device_state', deviceId: 1L, attribute: 'switch', operator: 'equals', value: 'on']
-        ]
-        settingsMap.conditionLogic = 'all'
-
-        expect: 'the throw is caught inside evaluateCondition — aggregator returns false'
-        script.evaluateConditions() == false
-    }
+    // Note on v0.7.7 short-circuit + fail-closed aggregator:
+    // {@link EvaluateConditionsSpec} already pins the `all`/`any`
+    // short-circuit via CountingParent and the throw-caught-as-miss path
+    // via ThrowingParent. Not duplicated here — see the class-Javadoc
+    // cross-reference above.
 
     static class RepeatParent {
         Map<Long, TestDevice> devices = [:]
         Object findDevice(id) { devices[(id as Long)] }
-    }
-
-    static class ThrowingFindParent {
-        Object findDevice(id) {
-            throw new RuntimeException('simulated parent.findDevice failure')
-        }
     }
 }

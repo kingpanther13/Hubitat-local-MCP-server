@@ -24,7 +24,7 @@ import support.ToolSpecBase
  */
 class RegressionsFromHistorySpec extends ToolSpecBase {
 
-    // --- formatAge singular grammar (v0.7.7 — code review round 2) ----------
+    // --- formatAge singular grammar (v0.7.7) --------------------------------
     //
     // Before the fix, formatAge(now - 1h) returned "1 hours ago" because the
     // code unconditionally pluralised. The current helper at
@@ -62,33 +62,59 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // --- BigDecimal.round() crash in checkForUpdate (v0.6.1) ----------------
     //
     // Previously `Math.round(msSinceCheck / (1000.0 * 60 * 60))` produced a
-    // BigDecimal on the sandbox's fractional-division path and Math.round
-    // rejected it. The fix (hubitat-mcp-server.groovy:7965) does integer
-    // division with a cast — that path must not throw for any fractional
-    // elapsed time.
+    // BigDecimal and Math.round(BigDecimal) is a MissingMethodException in
+    // Groovy (the hub sandbox rejected it for a different reason, but the
+    // unit harness reproduces the MME directly — so no sandbox flag is
+    // required here). The fix at hubitat-mcp-server.groovy:7965 uses
+    // integer literals inside the division and casts to int — avoiding
+    // both the BigDecimal throw and the (also-buggy) 10x-off-by-unit
+    // shape the v0.6.1 notes flagged.
+    //
+    // checkForUpdate's outer try/catch swallows any throw and routes it
+    // through mcpLog("warn", "server", "Version update check failed: ...")
+    // — so asserting `noExceptionThrown()` alone is NOT enough: a future
+    // regression that reintroduces fractional division would still satisfy
+    // that assertion. We intercept mcpLog + asynchttpGet and assert the
+    // skip-branch side effects: no warn log, and no asynchttpGet call.
 
-    def "checkForUpdate skip-branch uses integer math and never throws"() {
+    def "checkForUpdate skip-branch uses integer math and exits cleanly without hitting the outer catch"() {
         given: 'a recent checkedAt timestamp so the skip branch fires'
         stateMap.updateCheck = [checkedAt: 1234567890000L - 2 * 3_600_000L - 1234L]
+
+        and: 'capture mcpLog + asynchttpGet so we can distinguish skip-success from catch-swallow'
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
+        def asyncHttpCalls = []
+        script.metaClass.asynchttpGet = { String handler, Map params ->
+            asyncHttpCalls << [handler: handler, params: params]
+        }
 
         when:
         script.checkForUpdate()
 
-        then: 'no exception escapes — the logDebug line used to raise BigDecimal.round'
-        noExceptionThrown()
+        then: 'the skip branch fired — no outer-catch warn, no fall-through to doUpdateCheck'
+        !mcpLogCalls.any { it.level == 'warn' && it.msg?.contains('Version update check failed') }
+        asyncHttpCalls.isEmpty()
     }
 
-    // --- device_health_check hoursAgo formula (v0.5.3 / v0.5.4 / v0.7.6) ---
+    // --- device_health_check hoursAgo formula (v0.7.6; context v0.5.3–v0.5.4)
     //
-    // v0.5.3 fixed BigDecimal.round() crashes in device_health_check. v0.5.4
-    // rewrote division to use pure integer math. v0.7.6 corrected a 10x
-    // off-by-order-of-magnitude in the hoursAgo value. The current formula
-    // (hubitat-mcp-server.groovy:5918) is
-    // `Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0` which
-    // both avoids BigDecimal issues AND produces a value in hours with one
-    // decimal place.
+    // Release history for this formula: v0.5.3 added .round() safety,
+    // v0.5.4 swapped to pure integer math, v0.7.6 re-introduced fractional
+    // division — with explicit `.0` literals + `*10 / 10.0` — to get one
+    // decimal place of precision without re-triggering the BigDecimal
+    // crash. The current shape at hubitat-mcp-server.groovy:5918 is the
+    // v0.7.6 form: `Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0`.
+    //
+    // This test only directly guards the v0.7.6 one-decimal-in-hours
+    // shape — pre-v0.5.3 BigDecimal.round throws aren't reproducible here
+    // for the usual DontRestrictGroovy reason (see class Javadoc). A
+    // revert to the v0.7.6-era 10x-off formula would produce 27.0 and
+    // trip the assertion.
 
-    def "device_health_check reports hoursAgo as fractional hours with one decimal place"() {
+    def "device_health_check reports hoursAgo as fractional hours with one decimal place (v0.7.6)"() {
         given: 'a selected device whose lastActivity is 2.7h before the harness now()'
         def twoPointSevenHoursAgo = new Date(1234567890000L - (long)(2.7 * 3_600_000L))
         def device = new TestDevice(id: 1, name: 'sensor', label: 'Sensor')
@@ -99,13 +125,12 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         when:
         def result = script.toolDeviceHealthCheck([staleHours: 24, includeHealthy: true])
 
-        then: 'hoursAgo reflects the elapsed time in hours (not minutes, not 10x)'
-        noExceptionThrown()
+        then:
         def entries = (result.healthyDevices ?: []) + (result.staleDevices ?: []) + (result.unknownDevices ?: [])
         entries.size() == 1
         entries[0].hoursAgo != null
-        // One-decimal precision in hours — regression guard: pre-v0.7.6 this
-        // was ~27.0 (10x off); pre-v0.5.3 it would have thrown on round().
+        // Regression guard: pre-v0.7.6 this was ~27.0 (10x off); today it
+        // should be within a tenth of 2.7.
         Math.abs(entries[0].hoursAgo - 2.7d) < 0.1d
     }
 
@@ -126,12 +151,18 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
             ])
         }
 
-        when:
-        def result = script.toolGetHubLogs([source: 'Thermostat'])
+        when: 'source filter matches a word that only appears in the message field'
+        def positive = script.toolGetHubLogs([source: 'Thermostat'])
 
         then: 'only the Thermostat-mentioning entry survives the message-field filter'
-        result.logs.size() == 1
-        result.logs[0].message.contains('Thermostat')
+        positive.logs.size() == 1
+        positive.logs[0].message.contains('Thermostat')
+
+        when: 'source filter matches the timestamp prefix — a pre-fix hit, a post-fix miss'
+        def negative = script.toolGetHubLogs([source: '2026-04-19'])
+
+        then: 'zero matches — the fix checks message/name, not the time column'
+        negative.logs.size() == 0
     }
 
     // --- get_hub_logs JSON array parsing + line-split fallback (v0.5.1) ---
@@ -191,7 +222,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         result[0].level == 75
     }
 
-    def "normalizeCommandParams passes through a non-JSON numeric string as Integer (convertParamElements)"() {
+    def "convertParamElements coerces numeric-string elements to Integer or Double based on the dot"() {
         expect:
         script.normalizeCommandParams(['75']) == [75]
         script.normalizeCommandParams(['3.14']) == [3.14d]
