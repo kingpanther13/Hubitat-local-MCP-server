@@ -105,9 +105,66 @@ class EvaluateConditionsSpec extends RuleHarnessSpec {
         script.evaluateConditions() == false
     }
 
+    def "all-logic short-circuits: a false condition stops subsequent evaluations"() {
+        given: 'two device_state conditions — the first will miss'
+        def counting = new CountingParent()
+        parent = counting
+        atomicStateMap.conditions = [
+            [type: 'device_state', deviceId: 1L, attribute: 'switch',
+             operator: 'equals', value: 'on'],   // miss — device 1 has no entry
+            [type: 'device_state', deviceId: 2L, attribute: 'switch',
+             operator: 'equals', value: 'on']    // would hit, but should be skipped
+        ]
+        settingsMap.conditionLogic = 'all'
+
+        when:
+        def result = script.evaluateConditions()
+
+        then:
+        result == false
+        counting.lookups == [1L]  // no lookup for device 2 — proves short-circuit
+    }
+
+    def "any-logic short-circuits: a matching condition stops subsequent evaluations"() {
+        given:
+        def counting = new CountingParent(devices: [
+            1L: new support.TestDevice(id: 1, label: 'Match', attributeValues: [switch: 'on'])
+        ])
+        parent = counting
+        atomicStateMap.conditions = [
+            [type: 'device_state', deviceId: 1L, attribute: 'switch',
+             operator: 'equals', value: 'on'],   // hit
+            [type: 'device_state', deviceId: 2L, attribute: 'switch',
+             operator: 'equals', value: 'on']    // should be skipped
+        ]
+        settingsMap.conditionLogic = 'any'
+
+        when:
+        def result = script.evaluateConditions()
+
+        then:
+        result == true
+        counting.lookups == [1L]
+    }
+
     static class ThrowingParent {
         Object findDevice(id) {
             throw new RuntimeException("simulated findDevice failure")
+        }
+    }
+
+    /**
+     * Parent stub that records every findDevice(id) call in order — lets
+     * short-circuit tests assert the second condition's lookup never fires.
+     */
+    static class CountingParent {
+        Map<Long, support.TestDevice> devices = [:]
+        List<Long> lookups = []
+
+        Object findDevice(id) {
+            def key = (id as Long)
+            lookups << key
+            devices[key]
         }
     }
 }
