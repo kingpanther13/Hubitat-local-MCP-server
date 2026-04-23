@@ -19,8 +19,13 @@ A minimum set that covers all three legacy-app rendering paths (RM, Room Lightin
 non-default page) is recommended. At least one user-created rule and one system app.
 
 Usage:
-    uv run --python 3.12 scripts/app_config_audit.py --hub-url http://<hub> [--strict]
+    uv run --python 3.12 scripts/app_config_audit.py --hub-url http://<hub>
     uv run --python 3.12 scripts/app_config_audit.py --config scripts/audit_config.json
+
+Note: Requires Hub Security to be disabled (or the hub to accept unauthenticated requests
+on /installedapp/configure/json). On hubs with Hub Security enabled the request is redirected
+to the login page; urllib.request has no cookie/session support so this script will parse the
+login-redirect HTML as JSON and report contract failures as "top-level not an object".
 
 Exit codes:
     0 — all targets passed invariants
@@ -126,7 +131,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--hub-url", required=True, help="Hub URL (e.g. http://hubitat.local)")
     parser.add_argument("--config", help="JSON file with target app IDs to audit (see scripts/audit_config.example.json)")
-    parser.add_argument("--strict", action="store_true", help="Exit non-zero on any failure (default: exit 0 with warnings)")
     args = parser.parse_args()
 
     targets = DEFAULT_TARGETS[:]
@@ -147,22 +151,22 @@ def main() -> int:
         try:
             payload = fetch(args.hub_url, app_id, page_name)
         except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, OSError) as e:
-            print(f"[FAIL] {label}: fetch error: {e}")
+            print(f"[FAIL] {label}: fetch error: {e}", file=sys.stderr)
             total_failures += 1
             continue
 
         failures = check_invariants(payload)
         if failures:
-            print(f"[FAIL] {label}:")
+            print(f"[FAIL] {label}:", file=sys.stderr)
             for f in failures:
-                print(f"    - {f}")
+                print(f"    - {f}", file=sys.stderr)
             total_failures += 1
         else:
             print(f"[OK]   {label}")
 
     print()
     print(f"Audited {len(targets)} target(s). {total_failures} failure(s).")
-    return (1 if total_failures and args.strict else 0)
+    return (1 if total_failures else 0)
 
 
 if __name__ == "__main__":

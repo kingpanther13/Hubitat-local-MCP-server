@@ -290,7 +290,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Built-in App Tools
 
-All tools in `manage_installed_apps` and `manage_rule_machine` gateways require the **Enable Built-in App Tools** toggle in MCP Rule Server app settings. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in `manage_installed_apps` and `manage_rule_machine` gateways have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the **Enable Built-in App Tools** toggle (`requireBuiltinAppRead`). `get_app_config` and `list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `manage_rule_machine` tools require the **Enable Built-in App Tools** toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
 ### manage_installed_apps (4 tools)
 

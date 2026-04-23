@@ -6283,8 +6283,8 @@ def toolGetAppConfig(args) {
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "get_app_config failed: ${e.message}")
-        return [success: false, error: "Failed to fetch app config: ${e.message}", appId: appIdStr as Integer]
+        mcpLogError("hub-admin", "get_app_config fetch failed", e)
+        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
     }
 
     if (!responseText) {
@@ -6295,6 +6295,7 @@ def toolGetAppConfig(args) {
     try {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
+        mcpLogError("hub-admin", "get_app_config JSON parse failed", e)
         return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
     }
 
@@ -6442,7 +6443,7 @@ def toolGetAppConfig(args) {
  * Gate: requireHubAdminRead() -- read-only, reads app metadata.
  * Args: appId (required, numeric string or integer)
  */
-private Map toolListAppPages(Map args) {
+def toolListAppPages(args) {
     requireHubAdminRead()
 
     if (args?.appId == null || args.appId.toString().trim() == "") {
@@ -6460,8 +6461,8 @@ private Map toolListAppPages(Map args) {
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "list_app_pages failed: ${e.message}")
-        return [success: false, error: "Failed to fetch app config: ${e.message}", appId: appIdStr as Integer]
+        mcpLogError("hub-admin", "list_app_pages fetch failed", e)
+        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
     }
 
     if (!responseText) {
@@ -6472,20 +6473,27 @@ private Map toolListAppPages(Map args) {
     try {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
-        return [success: false, error: "Failed to parse app config JSON: ${e.message}", appId: appIdStr as Integer]
+        mcpLogError("hub-admin", "list_app_pages JSON parse failed", e)
+        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
     }
 
-    if (!(parsed instanceof Map) || !(parsed.app instanceof Map)) {
-        return [success: false, error: "Unexpected response shape from hub -- app may not exist.", appId: appIdStr as Integer]
+    if (!(parsed instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+    }
+    if (!(parsed.app instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
+    }
+    if (!(parsed.configPage instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
 
     def appTypeRaw = parsed.app.appType
     def appTypeName = (appTypeRaw instanceof Map) ? (appTypeRaw.name ?: "") : ""
     def appLabel = stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label) ?: ""
 
-    // Primary page: introspected from the hub response
-    def primaryPageName = (parsed.configPage instanceof Map) ? (parsed.configPage.name ?: "mainPage") : "mainPage"
-    def primaryPageTitle = (parsed.configPage instanceof Map) ? stripAppConfigHtml(parsed.configPage.title) : null
+    // Primary page: introspected from the hub response (configPage guaranteed Map by fingerprint check above)
+    def primaryPageName = parsed.configPage.name ?: "mainPage"
+    def primaryPageTitle = stripAppConfigHtml(parsed.configPage.title)
     def primaryPage = [name: primaryPageName, title: primaryPageTitle, role: "primary"]
 
     def appObj = [
@@ -8790,9 +8798,9 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         builtin_app_tools: '''## Built-in App Tools
 
-All tools in the manage_installed_apps and manage_rule_machine gateways require the "Enable Built-in App Tools" toggle in MCP Rule Server app settings. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the manage_installed_apps and manage_rule_machine gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools" toggle (requireBuiltinAppRead). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). manage_rule_machine tools require the "Enable Built-in App Tools" toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
-**manage_installed_apps (3 tools):**
+**manage_installed_apps (4 tools):**
 
 - **list_installed_apps** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"

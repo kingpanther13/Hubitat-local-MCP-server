@@ -219,7 +219,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         result.error.toLowerCase().contains('empty')
     }
 
-    def "returns success=false when hub returns app=null (unknown appId)"() {
+    def "returns success=false with fingerprint when hub returns app=null (unknown appId)"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/9999') { params ->
@@ -237,6 +237,55 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error != null
+        result.fingerprint == 'missing app'
+    }
+
+    def "returns success=false with fingerprint when response is not a JSON object"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> '"just a string"' }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == false
+        result.fingerprint == 'top-level not a Map'
+    }
+
+    def "returns success=false with fingerprint when configPage is missing"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            JsonOutput.toJson([
+                app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false,
+                            appType: [name: 'Rule-5.1']],
+                childApps: []
+                // configPage intentionally absent
+            ])
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == false
+        result.fingerprint == 'missing configPage'
+        result.error?.toLowerCase()?.contains('configpage') == true
+    }
+
+    def "returns success=false when hub response is unparseable JSON"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> '{not valid json' }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == false
+        result.error?.toLowerCase()?.contains('parse') == true
+        result.error?.toLowerCase()?.contains('firmware') == true
     }
 
     // -------------------------------------------------------------------------

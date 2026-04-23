@@ -374,6 +374,28 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.error?.toLowerCase()?.contains('parse') == true
     }
 
+    def "returns success=false with fingerprint when configPage is missing (app exists but no configPage)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Hub returns a well-formed app object but no configPage key -- can happen
+        // for apps that have been partially uninstalled or on edge-case firmware builds.
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            JsonOutput.toJson([
+                app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false],
+                childApps: []
+                // configPage intentionally absent
+            ])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == false
+        result.fingerprint == 'missing configPage'
+        result.error?.toLowerCase()?.contains('configpage') == true
+    }
+
     def "returns success=false with fingerprint and list_app_pages hint when configPage.sections is not a list"() {
         given:
         settingsMap.enableHubAdminRead = true
@@ -394,6 +416,106 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.fingerprint == 'sections not a list'
         // Note must guide the agent toward list_app_pages and away from dead-end retries
         result.error.contains('list_app_pages')
+    }
+
+    // -------------------------------------------------------------------------
+    // stripOptionsHtml -- List and Map option shapes
+    // -------------------------------------------------------------------------
+
+    def "enum input with List-shape options has HTML stripped from option labels"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Room Lighting scenes and RM rule references use List<Map> options --
+        // each entry is a single-key map {value: label} where label may have HTML badges.
+        def json = JsonOutput.toJson([
+            app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
+                         name: 'Rule-5.1', disabled: false, installed: true,
+                         parentAppId: null, appType: null],
+            configPage: [
+                name    : 'mainPage',
+                title   : 'Settings',
+                install : true,
+                refreshInterval: null,
+                sections: [
+                    [
+                        title: 'Mode',
+                        input: [
+                            [name: 'modeSelect', type: 'enum', title: 'Select mode',
+                             description: null, multiple: false, required: false,
+                             defaultValue: null, options: [
+                                ['day': '<span style="color:blue">Day</span>'],
+                                ['night': 'Night']
+                             ], value: 'day']
+                        ],
+                        body: []
+                    ]
+                ]
+            ],
+            settings  : [modeSelect: 'day'],
+            childApps : []
+        ])
+        hubGet.register('/installedapp/configure/json/35') { params -> json }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        def modeInput = result.page.sections[0].inputs.find { it.name == 'modeSelect' }
+        modeInput != null
+        modeInput.options instanceof List
+        // HTML stripped from 'Day' label
+        def dayEntry = modeInput.options.find { it.containsKey('day') }
+        dayEntry != null
+        dayEntry['day'] == 'Day'
+        !dayEntry['day'].contains('<span')
+    }
+
+    def "enum input with Map-shape options has HTML stripped from option values"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Some capability inputs encode options as a plain Map {value: label}.
+        def json = JsonOutput.toJson([
+            app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
+                         name: 'Rule-5.1', disabled: false, installed: true,
+                         parentAppId: null, appType: null],
+            configPage: [
+                name    : 'mainPage',
+                title   : 'Settings',
+                install : true,
+                refreshInterval: null,
+                sections: [
+                    [
+                        title: 'Scene',
+                        input: [
+                            [name: 'sceneSelect', type: 'enum', title: 'Select scene',
+                             description: null, multiple: false, required: false,
+                             defaultValue: null,
+                             options: [
+                                on : '<span style="color:green">On</span>',
+                                off: 'Off'
+                             ], value: 'on']
+                        ],
+                        body: []
+                    ]
+                ]
+            ],
+            settings  : [sceneSelect: 'on'],
+            childApps : []
+        ])
+        hubGet.register('/installedapp/configure/json/35') { params -> json }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        def sceneInput = result.page.sections[0].inputs.find { it.name == 'sceneSelect' }
+        sceneInput != null
+        sceneInput.options instanceof Map
+        // HTML stripped from 'On' label
+        sceneInput.options['on'] == 'On'
+        !sceneInput.options['on'].contains('<span')
     }
 
     // -------------------------------------------------------------------------
