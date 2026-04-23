@@ -63,6 +63,25 @@ abstract class RuleHarnessSpec extends Specification {
      */
     @Shared protected final TestLocation testLocation = new TestLocation()
 
+    // Call recorders for AppExecutor methods the rule engine dispatches
+    // through @Delegate. Spock's interaction verification (`1 * appExecutor.foo(...)`)
+    // on a @Shared mock declared in given:/then: doesn't work reliably —
+    // stubs only apply when installed in setupSpec. Tests assert on these
+    // lists instead of using Spock interactions. All are cleared in setup().
+    @Shared protected final List<List<Object>> runInCalls = []
+    @Shared protected final List<List<Object>> runOnceCalls = []
+    @Shared protected final List<String> unscheduleCalls = []
+    @Shared protected int unsubscribeCount = 0
+    @Shared protected final List<Map> sendLocationEventCalls = []
+    @Shared protected final List<List<Object>> httpGetCalls = []
+    @Shared protected final List<List<Object>> httpPostCalls = []
+
+    // Mutable @Shared fields reading from tests' given: blocks. The stub
+    // closures in setupSpec read these at invocation time.
+    @Shared protected Boolean stubTimeOfDayResult = false
+    @Shared protected Map<String, Date> stubSunriseSunset = null
+    @Shared protected Throwable stubHttpGetException = null
+
     // Per-feature backing field — each test gets its own instance, so
     // resetting _parent to null in setup() guarantees isolation without
     // having to @Shared the state.
@@ -97,6 +116,27 @@ abstract class RuleHarnessSpec extends Specification {
             _ * now() >> 1234567890000L
             _ * getLog() >> sharedLog
         }
+        // Permanent recording stubs for AppExecutor methods the rule engine
+        // dispatches via @Delegate. Tests assert on the recorded *Calls lists
+        // (Spock's `1 * appExecutor.foo(...)` verification on a @Shared mock
+        // from given:/then: doesn't work reliably — stubs must live here to
+        // take effect). Mutable @Shared fields (stubTimeOfDayResult etc.) are
+        // read at invocation time so tests can drive behaviour per-feature.
+        appExecutor.runIn(*_) >> { args -> runInCalls << (args as List) }
+        appExecutor.runOnce(*_) >> { args -> runOnceCalls << (args as List) }
+        appExecutor.unsubscribe() >> { unsubscribeCount++ }
+        appExecutor.unschedule() >> { unscheduleCalls << null }
+        appExecutor.unschedule(_ as String) >> { args -> unscheduleCalls << (args[0] as String) }
+        appExecutor.sendLocationEvent(_) >> { args -> sendLocationEventCalls << (args[0] as Map) }
+        appExecutor.httpGet(_, _) >> { args ->
+            httpGetCalls << (args as List)
+            if (stubHttpGetException) throw stubHttpGetException
+        }
+        appExecutor.httpPost(_, _) >> { args -> httpPostCalls << (args as List) }
+        appExecutor.timeOfDayIsBetween(_, _, _) >> { args -> stubTimeOfDayResult }
+        appExecutor.timeOfDayIsBetween(_, _, _, _) >> { args -> stubTimeOfDayResult }
+        appExecutor.getSunriseAndSunset(_) >> { args -> stubSunriseSunset }
+        appExecutor.getSunriseAndSunset() >> { stubSunriseSunset }
         def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
@@ -133,6 +173,18 @@ abstract class RuleHarnessSpec extends Specification {
         // the same instance is returned every call — mutations persist
         // across tests without an explicit reset.
         appExecutor.getApp().settingsStore.clear()
+        // Reset AppExecutor call recorders + stub-driver fields so they
+        // don't leak between feature methods.
+        runInCalls.clear()
+        runOnceCalls.clear()
+        unscheduleCalls.clear()
+        unsubscribeCount = 0
+        sendLocationEventCalls.clear()
+        httpGetCalls.clear()
+        httpPostCalls.clear()
+        stubTimeOfDayResult = false
+        stubSunriseSunset = null
+        stubHttpGetException = null
         // Propagate unconditionally so the script's parent exactly matches
         // a freshly-reset `_parent` (null) on entry to each test.
         // eighty20results' sandbox installs a default InstalledAppWrapperImpl

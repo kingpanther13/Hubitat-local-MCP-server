@@ -63,8 +63,8 @@ class LoopGuardSpec extends RuleHarnessSpec {
         appExecutor.getApp().settingsStore.ruleEnabled == false
 
         and: 'unsubscribe() and unschedule() both fire'
-        1 * appExecutor.unsubscribe()
-        1 * appExecutor.unschedule()
+        unsubscribeCount == 1
+        unscheduleCalls == [null]
 
         and: 'recentExecutions is cleared'
         atomicStateMap.recentExecutions == []

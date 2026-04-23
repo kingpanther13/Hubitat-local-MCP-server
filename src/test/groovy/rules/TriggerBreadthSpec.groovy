@@ -83,7 +83,7 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
     def "handleSunriseEvent fires the rule and reschedules the next sunrise"() {
         given: 'a future sunrise supplied via the mocked getSunriseAndSunset'
         def tomorrow = new Date(System.currentTimeMillis() + 86_400_000L)
-        _ * appExecutor.getSunriseAndSunset(_) >> [sunrise: tomorrow, sunset: tomorrow]
+        stubSunriseSunset = [sunrise: tomorrow, sunset: tomorrow]
 
         and:
         settingsMap.ruleEnabled = true
@@ -175,7 +175,9 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         ])
 
         then:
-        1 * appExecutor.runIn(30L, 'checkDurationTrigger', _)
+        runInCalls.size() == 1
+        runInCalls[0][0] == 30L
+        runInCalls[0][1] == 'checkDurationTrigger'
         0 * target.on()
         atomicStateMap.durationTimers?.size() == 1
     }
@@ -268,7 +270,7 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         ])
 
         then: 'no new timer scheduled, no rule fire'
-        0 * appExecutor.runIn(_, 'checkDurationTrigger', _)
+        runInCalls.findAll { it[1] == 'checkDurationTrigger' } == []
         0 * target.on()
     }
 

@@ -251,7 +251,7 @@ class ActionTypesSpec extends RuleHarnessSpec {
         script.executeAction([type: 'set_hsm', status: 'armAway'])
 
         then:
-        1 * appExecutor.sendLocationEvent([name: 'hsmSetArm', value: 'armAway'])
+        sendLocationEventCalls == [[name: 'hsmSetArm', value: 'armAway']]
     }
 
     // -------- variables --------
@@ -351,8 +351,10 @@ class ActionTypesSpec extends RuleHarnessSpec {
         when:
         script.executeActions()
 
-        then: 'runIn fires once; we accept any param-map overload'
-        1 * appExecutor.runIn(5L, 'resumeDelayedActions', _)
+        then: 'exactly one runIn call with 5s + resumeDelayedActions'
+        runInCalls.size() == 1
+        runInCalls[0][0] == 5L
+        runInCalls[0][1] == 'resumeDelayedActions'
     }
 
     def "delay clamps to 1 second minimum"() {
@@ -363,7 +365,9 @@ class ActionTypesSpec extends RuleHarnessSpec {
         script.executeActions()
 
         then:
-        1 * appExecutor.runIn(1L, 'resumeDelayedActions', _)
+        runInCalls.size() == 1
+        runInCalls[0][0] == 1L
+        runInCalls[0][1] == 'resumeDelayedActions'
     }
 
     def "cancel_delayed 'all' calls unschedule on resumeDelayedActions"() {
@@ -374,7 +378,7 @@ class ActionTypesSpec extends RuleHarnessSpec {
         script.executeAction([type: 'cancel_delayed', delayId: 'all'])
 
         then:
-        1 * appExecutor.unschedule('resumeDelayedActions')
+        unscheduleCalls == ['resumeDelayedActions']
         atomicStateMap.cancelledDelayIds == [:]
     }
 
@@ -383,7 +387,7 @@ class ActionTypesSpec extends RuleHarnessSpec {
         script.executeAction([type: 'cancel_delayed', delayId: 'delay_abc'])
 
         then: 'unschedule is NOT called — only the cancelled set is updated'
-        0 * appExecutor.unschedule(_)
+        unscheduleCalls == []
         atomicStateMap.cancelledDelayIds == [delay_abc: true]
     }
 
@@ -502,7 +506,8 @@ class ActionTypesSpec extends RuleHarnessSpec {
         script.executeAction([type: 'http_request', url: 'http://example.test/api'])
 
         then:
-        1 * appExecutor.httpGet([uri: 'http://example.test/api'], _)
+        httpGetCalls.size() == 1
+        httpGetCalls[0][0] == [uri: 'http://example.test/api']
     }
 
     def "http_request POST passes body + contentType through to httpPost"() {
@@ -514,16 +519,17 @@ class ActionTypesSpec extends RuleHarnessSpec {
         ])
 
         then:
-        1 * appExecutor.httpPost([
+        httpPostCalls.size() == 1
+        httpPostCalls[0][0] == [
             uri: 'http://example.test/api',
             contentType: 'application/json',
             body: '{"k":"v"}'
-        ], _)
+        ]
     }
 
     def "http_request swallows network exceptions and does not break the action chain"() {
         given: 'httpGet throws on the first action; the second action still needs to run'
-        appExecutor.httpGet(_, _) >> { args -> throw new RuntimeException("network down") }
+        stubHttpGetException = new RuntimeException('network down')
         def target = Spy(TestDevice) { getId() >> 50 }
         parent = new ActionParent(devices: [50L: target])
         atomicStateMap.actions = [

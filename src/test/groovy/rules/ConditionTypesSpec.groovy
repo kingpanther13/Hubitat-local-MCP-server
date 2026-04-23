@@ -79,7 +79,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
 
     def "time_range returns true when timeOfDayIsBetween returns true"() {
         given: 'timeOfDayIsBetween reports current time inside the window'
-        _ * appExecutor.timeOfDayIsBetween(_, _, _) >> true
+        stubTimeOfDayResult = true
 
         expect:
         script.evaluateCondition([
@@ -89,7 +89,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
 
     def "time_range returns false when timeOfDayIsBetween returns false"() {
         given:
-        _ * appExecutor.timeOfDayIsBetween(_, _, _) >> false
+        stubTimeOfDayResult = false
 
         expect:
         script.evaluateCondition([
