@@ -127,6 +127,12 @@ abstract class RuleHarnessSpec extends Specification {
         testLocation.sunrise = null
         testLocation.sunset = null
         testLocation.hsmStatus = null
+        // Clear TestChildApp.settingsStore so auto-disable writes from a
+        // prior feature's loop-guard trip don't leak forward. The Mock's
+        // `>> new TestChildApp(...)` is evaluated once at construction, so
+        // the same instance is returned every call — mutations persist
+        // across tests without an explicit reset.
+        appExecutor.getApp().settingsStore.clear()
         // Propagate unconditionally so the script's parent exactly matches
         // a freshly-reset `_parent` (null) on entry to each test.
         // eighty20results' sandbox installs a default InstalledAppWrapperImpl
