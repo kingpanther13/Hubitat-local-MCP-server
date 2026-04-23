@@ -120,7 +120,7 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
         result != 'time is LOCAL_VAR_SHOULD_NOT_WIN'
         // Hubitat's timestamp format is "yyyy-MM-dd HH:mm:ss" — pin the shape,
         // not the exact value (new Date() means the seconds drift between runs).
-        result =~ /time is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/
+        result ==~ /time is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/
     }
 
     // Note on v0.7.7 short-circuit + fail-closed aggregator:
