@@ -1,7 +1,6 @@
 package rules
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
-import me.biocomp.hubitat_ci.api.common_api.Location
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Shared
@@ -9,6 +8,7 @@ import spock.lang.Specification
 import support.PassThroughAppValidator
 import support.PermissiveLog
 import support.TestChildApp
+import support.TestLocation
 
 /**
  * Loads hubitat-mcp-rule.groovy (the rule-engine child app — separate
@@ -54,6 +54,14 @@ abstract class RuleHarnessSpec extends Specification {
     @Shared protected final Map atomicStateMap = [:]
     // Must be non-empty at sandbox.run() time — see HarnessSpec.
     @Shared protected final Map settingsMap = [_harness: true]
+    /**
+     * Shared Location stub returned by the AppExecutor mock. Mutable fields
+     * (`mode`, `sunrise`, `sunset`, `hsmStatus`) are reset in {@code setup()}
+     * so per-test state does not leak across feature methods. Specs that
+     * need to drive these in {@code given:} set them directly on this
+     * instance (e.g. {@code testLocation.mode = 'Night'}).
+     */
+    @Shared protected final TestLocation testLocation = new TestLocation()
 
     // Per-feature backing field — each test gets its own instance, so
     // resetting _parent to null in setup() guarantees isolation without
@@ -81,13 +89,11 @@ abstract class RuleHarnessSpec extends Specification {
             // unconditionally; provide non-null stubs typed to the interface
             // Spock expects (raw Map returns trip a GroovyCastException).
             _ * getApp() >> new TestChildApp(id: 1L, label: 'TestRuleApp')
-            _ * getLocation() >> ([
-                getMode    : { -> 'Home' },
-                getCurrentMode: { -> null },
-                getModes   : { -> [] },
-                getName    : { -> 'TestLocation' },
-                getId      : { -> 1L }
-            ] as Location)
+            // Shared TestLocation — mutable fields (mode, sunrise, sunset,
+            // hsmStatus) reset in setup(), so specs can drive them per-test
+            // without the closure-based Map-as-Location trick from the original
+            // harness (which returned a fresh frozen view on every call).
+            _ * getLocation() >> testLocation
             _ * now() >> 1234567890000L
             _ * getLog() >> sharedLog
         }
@@ -114,6 +120,13 @@ abstract class RuleHarnessSpec extends Specification {
         atomicStateMap.clear()
         settingsMap.clear()
         settingsMap._harness = true
+        // Reset the shared TestLocation's mutable fields so a spec that mutates
+        // mode / sunrise / hsmStatus doesn't leak state into the next feature.
+        testLocation.setMode('Home')
+        testLocation.modeSetCalls.clear()
+        testLocation.sunrise = null
+        testLocation.sunset = null
+        testLocation.hsmStatus = null
         // Propagate unconditionally so the script's parent exactly matches
         // a freshly-reset `_parent` (null) on entry to each test.
         // eighty20results' sandbox installs a default InstalledAppWrapperImpl
