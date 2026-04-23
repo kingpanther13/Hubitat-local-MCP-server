@@ -26,9 +26,10 @@ class LoopGuardSpec extends RuleHarnessSpec {
     private static final long FIXED_NOW = 1234567890000L
 
     def "under threshold: rule executes and the exec timestamp is appended"() {
-        given:
+        given: 'seed ruleEnabled=true on the shared TestChildApp so we can assert it stays true'
         settingsMap.ruleEnabled = true
         settingsMap.ruleName = 'Rule Under Limit'
+        appExecutor.getApp().settingsStore.ruleEnabled = true
         parent = new LoopGuardParent(settings: [loopGuardMax: 30, loopGuardWindowSec: 60])
         atomicStateMap.conditions = []
         atomicStateMap.actions = []
@@ -37,12 +38,12 @@ class LoopGuardSpec extends RuleHarnessSpec {
         when:
         script.executeRule('test')
 
-        then: 'exec recorded, rule not disabled'
+        then: 'exec recorded, ruleEnabled untouched (auto-disable would flip it to false)'
         atomicStateMap.recentExecutions == [FIXED_NOW]
-        appExecutor.getApp().settingsStore.ruleEnabled != false
+        appExecutor.getApp().settingsStore.ruleEnabled == true
     }
 
-    def "at threshold: rule auto-disables and unsubscribes / unschedules"() {
+    def "at threshold: rule auto-disables, unsubscribes, unschedules, and emits mcpLoopGuard"() {
         given:
         settingsMap.ruleEnabled = true
         settingsMap.ruleName = 'Rule Over Limit'
@@ -62,18 +63,24 @@ class LoopGuardSpec extends RuleHarnessSpec {
         then: 'auto-disable writes ruleEnabled=false on the app settings'
         appExecutor.getApp().settingsStore.ruleEnabled == false
 
-        and: 'unsubscribe() and unschedule() both fire'
+        and: 'unsubscribe() and the blanket unschedule() both fire'
         unsubscribeCount == 1
-        unscheduleCalls == [null]
+        unscheduleAllCount == 1
 
         and: 'recentExecutions is cleared'
         atomicStateMap.recentExecutions == []
+
+        and: 'a public mcpLoopGuard location event is fired so other rules can subscribe'
+        sendLocationEventCalls.any {
+            it.name == 'mcpLoopGuard' && it.value == 'Rule Over Limit'
+        }
     }
 
     def "window pruning: out-of-window entries do not count toward the threshold"() {
         given:
         settingsMap.ruleEnabled = true
         settingsMap.ruleName = 'Rule Pruning'
+        appExecutor.getApp().settingsStore.ruleEnabled = true
         parent = new LoopGuardParent(settings: [loopGuardMax: 3, loopGuardWindowSec: 60])
         atomicStateMap.conditions = []
         atomicStateMap.actions = []
@@ -87,8 +94,8 @@ class LoopGuardSpec extends RuleHarnessSpec {
         when:
         script.executeRule('test')
 
-        then: 'rule still fires — old entries were pruned'
-        appExecutor.getApp().settingsStore.ruleEnabled != false
+        then: 'rule still fires — old entries were pruned, ruleEnabled stays true'
+        appExecutor.getApp().settingsStore.ruleEnabled == true
         // Pruned + one new entry → just [FIXED_NOW]
         atomicStateMap.recentExecutions == [FIXED_NOW]
     }

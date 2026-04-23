@@ -52,8 +52,10 @@ class ErrorPathsSpec extends RuleHarnessSpec {
         1 * healthy.on()
     }
 
-    def "set_thermostat catches per-setter failures without skipping remaining setters"() {
-        given: 'setHeatingSetpoint throws, but setThermostatMode is still called first'
+    def "set_thermostat swallows a per-setter exception; later setters in the same call are skipped"() {
+        given: '''the engine wraps all four thermostat setters in a single try/catch,
+                  so when setHeatingSetpoint throws, setCoolingSetpoint / setThermostatFanMode
+                  are NOT reached — only the setters that ran before the throw fire.'''
         def tstat = Spy(TestDevice) {
             getId() >> 5
             setHeatingSetpoint(_) >> { throw new RuntimeException("probe fail") }
@@ -63,11 +65,18 @@ class ErrorPathsSpec extends RuleHarnessSpec {
         when:
         script.executeAction([
             type: 'set_thermostat', deviceId: 5L,
-            thermostatMode: 'cool', heatingSetpoint: 65, coolingSetpoint: 72
+            thermostatMode: 'cool', heatingSetpoint: 65,
+            coolingSetpoint: 72, fanMode: 'auto'
         ])
 
-        then: 'mode was set before the throw; the outer catch swallows the exception'
+        then: 'mode was set before the throw'
         1 * tstat.setThermostatMode('cool')
+
+        and: 'setpoints/fan after the throwing setter are NOT reached'
+        0 * tstat.setCoolingSetpoint(_)
+        0 * tstat.setThermostatFanMode(_)
+
+        and: 'the exception is swallowed by the case-local try/catch — no throw propagates'
         noExceptionThrown()
     }
 
@@ -82,10 +91,8 @@ class ErrorPathsSpec extends RuleHarnessSpec {
         noExceptionThrown()
     }
 
-    def "unknown condition type returns false (fail closed)"() {
-        expect:
-        script.evaluateCondition([type: 'absolutely_not_a_real_type']) == false
-    }
+    // Unknown condition type fail-closed coverage is already pinned by
+    // EvaluateConditionSpec. Dropping the duplicate here.
 
     def "unknown action type logs a warn and returns true (continue)"() {
         when:
@@ -98,7 +105,8 @@ class ErrorPathsSpec extends RuleHarnessSpec {
     def "set_mode missing the 'mode' field returns false (stops the chain)"() {
         given:
         atomicStateMap.actions = [
-            [type: 'set_mode'],  // missing mode field → returns false → break
+            // missing mode field → executeAction returns false → executeActionsFromIndex breaks its outer loop
+            [type: 'set_mode'],
             [type: 'device_command', deviceId: 1L, command: 'on']
         ]
         def target = Spy(TestDevice) { getId() >> 1 }

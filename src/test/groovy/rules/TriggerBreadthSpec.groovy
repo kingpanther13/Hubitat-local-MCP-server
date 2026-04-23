@@ -9,9 +9,10 @@ import support.TestDevice
  * <ul>
  *   <li>Time-based triggers — {@code handleTimeEvent},
  *       {@code handleSunriseEvent}, {@code handleSunsetEvent}.
- *       Sun handlers reschedule via {@code runInMillis}; tests stub
- *       {@code getSunriseAndSunset()} to a future time so the rescheduler
- *       takes the happy path and the rule actions still fire.</li>
+ *       Sun handlers reschedule via {@code runOnce(sunDate, handlerName, ...)};
+ *       tests stub {@code getSunriseAndSunset()} to a future time so the
+ *       rescheduler takes the happy path and the rule actions still fire.
+ *       Reschedule is asserted via {@code runOnceCalls}.</li>
  *   <li>Multi-device {@code matchMode="all"} — the rule only fires when
  *       every device in {@code deviceIds} currently matches the target
  *       value (checked via {@code checkAllDevicesMatch}).</li>
@@ -96,8 +97,32 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         when:
         script.handleSunriseEvent()
 
+        then: 'the rule fired and the next sunrise was rescheduled via runOnce'
+        1 * target.on()
+        runOnceCalls.size() == 1
+        runOnceCalls[0][1] == 'handleSunriseEvent'
+    }
+
+    def "handleSunsetEvent fires the rule and reschedules the next sunset"() {
+        given:
+        def tomorrow = new Date(System.currentTimeMillis() + 86_400_000L)
+        stubSunriseSunset = [sunrise: tomorrow, sunset: tomorrow]
+
+        and:
+        settingsMap.ruleEnabled = true
+        def target = Spy(TestDevice) { getId() >> 1 }
+        parent = new TriggerParent(devices: [1L: target])
+
+        atomicStateMap.triggers = [[type: 'time', sunset: true, offset: 0]]
+        atomicStateMap.actions = [[type: 'device_command', deviceId: 1L, command: 'on']]
+
+        when:
+        script.handleSunsetEvent()
+
         then:
         1 * target.on()
+        runOnceCalls.size() == 1
+        runOnceCalls[0][1] == 'handleSunsetEvent'
     }
 
     // -------- multi-device "all" matchMode --------
@@ -108,10 +133,7 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         def a = new TestDevice(id: 10, label: 'A', attributeValues: [switch: 'on'])
         def b = new TestDevice(id: 11, label: 'B', attributeValues: [switch: 'on'])
         def target = Spy(TestDevice) { getId() >> 99 }
-        // Parent resolves deviceIds both by Long (evaluateCondition path) and by
-        // String (checkAllDevicesMatch uses devId.toString()).
-        parent = new StringOrLongTriggerParent(
-            devices: [10L: a, 11L: b, 99L: target])
+        parent = new TriggerParent(devices: [10L: a, 11L: b, 99L: target])
 
         atomicStateMap.triggers = [[
             type: 'device_event', deviceIds: ['10', '11'],
@@ -135,8 +157,7 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         def a = new TestDevice(id: 10, label: 'A', attributeValues: [switch: 'on'])
         def b = new TestDevice(id: 11, label: 'B', attributeValues: [switch: 'off']) // lagging
         def target = Spy(TestDevice) { getId() >> 99 }
-        parent = new StringOrLongTriggerParent(
-            devices: [10L: a, 11L: b, 99L: target])
+        parent = new TriggerParent(devices: [10L: a, 11L: b, 99L: target])
 
         atomicStateMap.triggers = [[
             type: 'device_event', deviceIds: ['10', '11'],
@@ -226,6 +247,35 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
 
         then:
         0 * target.on()
+    }
+
+    def "checkDurationTrigger does not fire when the condition is no longer met; clears the timer"() {
+        given: 'timer exists, but the device now reads inactive instead of active'
+        settingsMap.ruleEnabled = true
+        def sensor = new TestDevice(id: 1, label: 'Motion',
+            attributeValues: [motion: 'inactive'])
+        def target = Spy(TestDevice) { getId() >> 99 }
+        parent = new TriggerParent(devices: [1L: sensor, 99L: target])
+
+        def trigger = [type: 'device_event', deviceId: 1L,
+                       attribute: 'motion', value: 'active', duration: 30]
+        atomicStateMap.triggers = [trigger]
+        atomicStateMap.durationTimers = [
+            'duration_1_motion': [startTime: 0L, trigger: trigger]
+        ]
+        atomicStateMap.actions = [[type: 'device_command', deviceId: 99L, command: 'on']]
+
+        when:
+        script.checkDurationTrigger([
+            triggerKey: 'duration_1_motion',
+            deviceLabel: 'Motion', attribute: 'motion'
+        ])
+
+        then: 'no rule fire, and the timer is removed'
+        0 * target.on()
+        atomicStateMap.durationTimers == [:]
+        // durationFired stays empty — this path does not set the fired flag
+        !atomicStateMap.durationFired
     }
 
     def "duration trigger: does not re-fire while durationFired flag is set"() {
@@ -450,6 +500,32 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         1 * target.on()
     }
 
+    def "per-trigger condition gate fails closed when the inline condition throws"() {
+        given:
+        settingsMap.ruleEnabled = true
+        def target = Spy(TestDevice) { getId() >> 99 }
+        // ThrowingTriggerParent.findDevice throws — the device_state condition
+        // will hit the try/catch inside evaluateTriggerCondition and return false.
+        parent = new ThrowingTriggerParent()
+
+        atomicStateMap.triggers = [[
+            type: 'device_event', deviceId: '1',
+            attribute: 'switch', value: 'on',
+            condition: [type: 'device_state', deviceId: 1L,
+                        attribute: 'switch', operator: 'equals', value: 'on']
+        ]]
+        atomicStateMap.actions = [[type: 'device_command', deviceId: 99L, command: 'off']]
+
+        when:
+        script.handleDeviceEvent([
+            device: [id: 1, label: 'Switch'],
+            name: 'switch', value: 'on'
+        ])
+
+        then: 'the caught exception yields false → rule does not fire'
+        0 * target.off()
+    }
+
     def "per-trigger condition gate allows execution when the inline condition passes"() {
         given:
         settingsMap.ruleEnabled = true
@@ -475,7 +551,12 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         1 * target.off()
     }
 
-    /** findDevice coerces id to Long — works for trigger-action deviceId values. */
+    /**
+     * findDevice coerces id to Long. Handles numeric Strings (e.g. '10' from
+     * checkAllDevicesMatch's {@code devId.toString()} call site) via Groovy's
+     * {@code "10" as Long} conversion. Non-numeric strings would throw
+     * NumberFormatException — tests in this spec only use numeric IDs.
+     */
     static class TriggerParent {
         Map<Long, TestDevice> devices = [:]
         Map settings = [:]
@@ -483,17 +564,14 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
     }
 
     /**
-     * checkAllDevicesMatch passes {@code devId.toString()} to findDevice,
-     * so a pure Long-keyed parent misses. This stub coerces any input
-     * (String or Integer or Long) to Long before looking up.
+     * findDevice stub that always throws — used to exercise
+     * {@code evaluateTriggerCondition}'s catch branch (fail-closed on
+     * inline-condition evaluator exceptions).
      */
-    static class StringOrLongTriggerParent {
-        Map<Long, TestDevice> devices = [:]
+    static class ThrowingTriggerParent {
         Map settings = [:]
         Object findDevice(id) {
-            if (id == null) return null
-            try { return devices[(id.toString() as Long)] }
-            catch (NumberFormatException ignored) { return null }
+            throw new RuntimeException('simulated findDevice failure')
         }
     }
 }

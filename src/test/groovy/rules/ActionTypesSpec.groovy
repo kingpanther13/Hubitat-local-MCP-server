@@ -32,6 +32,53 @@ import support.TestDevice
  */
 class ActionTypesSpec extends RuleHarnessSpec {
 
+    // -------- device_command parameter coercion --------
+
+    def "device_command coerces a numeric-string parameter to an Integer"() {
+        given:
+        def device = Spy(TestDevice) { getId() >> 1 }
+        parent = new ActionParent(devices: [1L: device])
+
+        when:
+        script.executeAction([
+            type: 'device_command', deviceId: 1L, command: 'setLevel',
+            parameters: ['50']
+        ])
+
+        then: 'the spread dispatch hits the one-arg Integer overload'
+        1 * device.setLevel(50)
+    }
+
+    def "device_command parses a JSON-object string parameter into a Map"() {
+        given:
+        def device = Spy(TestDevice) { getId() >> 1 }
+        parent = new ActionParent(devices: [1L: device])
+
+        when:
+        script.executeAction([
+            type: 'device_command', deviceId: 1L, command: 'setColor',
+            parameters: ['{"hue":30,"saturation":80,"level":50}']
+        ])
+
+        then: 'the JSON is parsed and dispatched as a Map argument'
+        1 * device.setColor([hue: 30, saturation: 80, level: 50])
+    }
+
+    def "device_command falls back to a single-item list when parameters is an unparseable String"() {
+        given:
+        def device = Spy(TestDevice) { getId() >> 1 }
+        parent = new ActionParent(devices: [1L: device])
+
+        when: 'parameters is a bare String that fails JsonSlurper.parseText'
+        script.executeAction([
+            type: 'device_command', deviceId: 1L, command: 'speak',
+            parameters: 'hello world'
+        ])
+
+        then: 'the engine wraps it as [parameters] and passes the raw string through'
+        1 * device.speak('hello world')
+    }
+
     // -------- direct device commands --------
 
     def "toggle_device turns a currently-on device off"() {
@@ -101,16 +148,29 @@ class ActionTypesSpec extends RuleHarnessSpec {
         1 * unlockDev.unlock()
     }
 
-    def "set_color passes a clamped color map to setColor()"() {
+    def "set_color clamps out-of-range hue/saturation/level values through clampPercent"() {
         given:
         def device = Spy(TestDevice) { getId() >> 5 }
         parent = new ActionParent(devices: [5L: device])
 
-        when:
-        script.executeAction([type: 'set_color', deviceId: 5L, hue: 50, saturation: 80, level: 75])
+        when: 'hue above 100, saturation negative, level above 100'
+        script.executeAction([type: 'set_color', deviceId: 5L,
+                              hue: 250, saturation: -10, level: 150])
+
+        then: 'clampPercent caps at 0..100 per component'
+        1 * device.setColor([hue: 100, saturation: 0, level: 100])
+    }
+
+    def "set_color omits fields not present in the action"() {
+        given:
+        def device = Spy(TestDevice) { getId() >> 5 }
+        parent = new ActionParent(devices: [5L: device])
+
+        when: 'only hue is supplied — saturation and level should not appear in the map'
+        script.executeAction([type: 'set_color', deviceId: 5L, hue: 50])
 
         then:
-        1 * device.setColor([hue: 50, saturation: 80, level: 75])
+        1 * device.setColor([hue: 50])
     }
 
     def "set_color_temperature with a level value uses the two-arg overload"() {
@@ -181,6 +241,18 @@ class ActionTypesSpec extends RuleHarnessSpec {
         1 * valve.open()
     }
 
+    def "set_valve close command calls valveDevice.close()"() {
+        given:
+        def valve = Spy(TestDevice) { getId() >> 9 }
+        parent = new ActionParent(devices: [9L: valve])
+
+        when:
+        script.executeAction([type: 'set_valve', deviceId: 9L, command: 'close'])
+
+        then:
+        1 * valve.close()
+    }
+
     def "set_fan_speed dispatches speed to fanDevice.setSpeed()"() {
         given:
         def fan = Spy(TestDevice) { getId() >> 10 }
@@ -203,6 +275,30 @@ class ActionTypesSpec extends RuleHarnessSpec {
 
         then:
         1 * shade.setPosition(75)
+    }
+
+    def "set_shade open command calls shadeDevice.open() when no position is given"() {
+        given:
+        def shade = Spy(TestDevice) { getId() >> 11 }
+        parent = new ActionParent(devices: [11L: shade])
+
+        when:
+        script.executeAction([type: 'set_shade', deviceId: 11L, command: 'open'])
+
+        then:
+        1 * shade.open()
+    }
+
+    def "set_shade close command calls shadeDevice.close() when no position is given"() {
+        given:
+        def shade = Spy(TestDevice) { getId() >> 11 }
+        parent = new ActionParent(devices: [11L: shade])
+
+        when:
+        script.executeAction([type: 'set_shade', deviceId: 11L, command: 'close'])
+
+        then:
+        1 * shade.close()
     }
 
     // -------- thermostat --------
@@ -298,6 +394,48 @@ class ActionTypesSpec extends RuleHarnessSpec {
         atomicStateMap.localVariables.counter == 8
     }
 
+    def "variable_math subtract updates the local variable"() {
+        given:
+        atomicStateMap.localVariables = [counter: 10]
+
+        when:
+        script.executeAction([
+            type: 'variable_math', variableName: 'counter',
+            scope: 'local', operation: 'subtract', operand: 4
+        ])
+
+        then:
+        atomicStateMap.localVariables.counter == 6
+    }
+
+    def "variable_math modulo updates the local variable"() {
+        given:
+        atomicStateMap.localVariables = [counter: 10]
+
+        when:
+        script.executeAction([
+            type: 'variable_math', variableName: 'counter',
+            scope: 'local', operation: 'modulo', operand: 3
+        ])
+
+        then:
+        atomicStateMap.localVariables.counter == 1
+    }
+
+    def "variable_math modulo-by-zero preserves the current value"() {
+        given:
+        atomicStateMap.localVariables = [counter: 10]
+
+        when:
+        script.executeAction([
+            type: 'variable_math', variableName: 'counter',
+            scope: 'local', operation: 'modulo', operand: 0
+        ])
+
+        then:
+        atomicStateMap.localVariables.counter == 10
+    }
+
     def "variable_math divide-by-zero preserves the current value"() {
         given:
         atomicStateMap.localVariables = [counter: 5]
@@ -388,7 +526,50 @@ class ActionTypesSpec extends RuleHarnessSpec {
 
         then: 'unschedule is NOT called — only the cancelled set is updated'
         unscheduleCalls == []
+        unscheduleAllCount == 0
         atomicStateMap.cancelledDelayIds == [delay_abc: true]
+    }
+
+    def "resumeDelayedActions executes actions from nextIndex with a reconstructed pseudo-event"() {
+        given: 'three actions; the delay at index 1 has already fired — resume from index 2'
+        def pre = Spy(TestDevice) { getId() >> 100 }
+        def notifier = Spy(TestDevice) { getId() >> 101 }
+        parent = new ActionParent(devices: [100L: pre, 101L: notifier])
+        atomicStateMap.actions = [
+            [type: 'device_command', deviceId: 100L, command: 'on'],
+            [type: 'delay', seconds: 5],
+            [type: 'send_notification', deviceId: 101L, message: 'Event was %device%=%value%']
+        ]
+
+        when: 'resume is invoked as if runIn had fired — carries serialized evt fields'
+        script.resumeDelayedActions([
+            nextIndex: 2, delayId: 'd1',
+            evtDisplayName: 'Motion', evtValue: 'active', evtName: 'motion'
+        ])
+
+        then: 'pre-delay action is NOT re-run; post-delay action fires with %device%/%value% substituted'
+        0 * pre.on()
+        1 * notifier.deviceNotification('Event was Motion=active')
+    }
+
+    def "resumeDelayedActions no-ops and clears the cancelled flag when the delayId was cancelled"() {
+        given:
+        def target = Spy(TestDevice) { getId() >> 102 }
+        parent = new ActionParent(devices: [102L: target])
+        atomicStateMap.actions = [
+            [type: 'delay', seconds: 5],
+            [type: 'device_command', deviceId: 102L, command: 'on']
+        ]
+        atomicStateMap.cancelledDelayIds = [d2: true, other: true]
+
+        when:
+        script.resumeDelayedActions([nextIndex: 1, delayId: 'd2'])
+
+        then: 'the post-delay action does NOT run'
+        0 * target.on()
+
+        and: 'the cancelled flag for this delayId is removed; the other entry survives'
+        atomicStateMap.cancelledDelayIds == [other: true]
     }
 
     def "if_then_else runs thenActions when the inner condition passes"() {
@@ -482,6 +663,25 @@ class ActionTypesSpec extends RuleHarnessSpec {
         captureParent.savedStates == [beforeParty: ['40': [switch: 'on', level: 75]]]
     }
 
+    def "capture_state records color + colorTemperature attributes when the capability is present"() {
+        given:
+        def rgb = new TestDevice(id: 42, label: 'RGB',
+            capabilities: ['Switch', 'ColorControl', 'ColorTemperature'],
+            attributeValues: [switch: 'on', hue: 120, saturation: 50, colorTemperature: 3000])
+        def captureParent = new CapturingStateParent(devices: [42L: rgb])
+        parent = captureParent
+
+        when:
+        script.executeAction([
+            type: 'capture_state', deviceIds: [42L], stateId: 'scene1'
+        ])
+
+        then:
+        captureParent.savedStates == [
+            scene1: ['42': [switch: 'on', hue: 120, saturation: 50, colorTemperature: 3000]]
+        ]
+    }
+
     def "restore_state turns the device off when the snapshot says off"() {
         given:
         def bulb = Spy(TestDevice) { getId() >> 41 }
@@ -497,6 +697,58 @@ class ActionTypesSpec extends RuleHarnessSpec {
         then: 'restore short-circuits to just off() — no setLevel/setColor first'
         1 * bulb.off()
         0 * bulb.on()
+    }
+
+    def "restore_state restores hue + saturation + level via setColor before turning on"() {
+        given: 'snapshot has hue/saturation (→ setColor path)'
+        def bulb = Spy(TestDevice) { getId() >> 43 }
+        def restoreParent = new CapturingStateParent(
+            devices: [43L: bulb],
+            savedStates: [scene1: ['43': [switch: 'on', hue: 120, saturation: 80, level: 75]]]
+        )
+        parent = restoreParent
+
+        when:
+        script.executeAction([type: 'restore_state', stateId: 'scene1'])
+
+        then: 'setColor fires first, then on() — setLevel NOT called separately'
+        1 * bulb.setColor([hue: 120, saturation: 80, level: 75])
+        1 * bulb.on()
+        0 * bulb.setLevel(_)
+    }
+
+    def "restore_state restores colorTemperature when hue/saturation are absent"() {
+        given:
+        def bulb = Spy(TestDevice) { getId() >> 44 }
+        def restoreParent = new CapturingStateParent(
+            devices: [44L: bulb],
+            savedStates: [scene1: ['44': [switch: 'on', colorTemperature: 2700]]]
+        )
+        parent = restoreParent
+
+        when:
+        script.executeAction([type: 'restore_state', stateId: 'scene1'])
+
+        then:
+        1 * bulb.setColorTemperature(2700)
+        1 * bulb.on()
+    }
+
+    def "restore_state restores level only when hue is absent"() {
+        given: 'snapshot has level but no hue/saturation and no colorTemperature'
+        def bulb = Spy(TestDevice) { getId() >> 45 }
+        def restoreParent = new CapturingStateParent(
+            devices: [45L: bulb],
+            savedStates: [scene1: ['45': [switch: 'on', level: 60]]]
+        )
+        parent = restoreParent
+
+        when:
+        script.executeAction([type: 'restore_state', stateId: 'scene1'])
+
+        then:
+        1 * bulb.setLevel(60)
+        1 * bulb.on()
     }
 
     // -------- http_request --------
@@ -540,7 +792,10 @@ class ActionTypesSpec extends RuleHarnessSpec {
         when:
         script.executeActions()
 
-        then: 'the outer catch swallows the throw; the next action runs'
+        then: 'httpGet actually fired (so the exception path actually ran)'
+        httpGetCalls.size() == 1
+
+        and: 'the inner try/catch in the http_request case swallows the throw; the next action runs'
         1 * target.on()
     }
 
@@ -567,15 +822,7 @@ class ActionTypesSpec extends RuleHarnessSpec {
         noExceptionThrown()
     }
 
-    // -------- unknown action --------
-
-    def "unknown action type is a warn + no-op (executeAction still returns true)"() {
-        when:
-        def result = script.executeAction([type: 'totally_made_up_action'])
-
-        then:
-        result == true
-    }
+    // Unknown-action-type coverage lives in ErrorPathsSpec (fail-closed theme).
 
     /** Generic findDevice(id) parent. */
     static class ActionParent {

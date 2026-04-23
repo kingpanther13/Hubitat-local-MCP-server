@@ -70,6 +70,11 @@ abstract class RuleHarnessSpec extends Specification {
     // lists instead of using Spock interactions. All are cleared in setup().
     @Shared protected final List<List<Object>> runInCalls = []
     @Shared protected final List<List<Object>> runOnceCalls = []
+    // Split to disambiguate no-arg `unschedule()` (blanket cancel, everything)
+    // from targeted `unschedule('handlerName')` — the engine uses both and
+    // lumping them together would let a regression swap one for the other
+    // without any assertion failing.
+    @Shared protected int unscheduleAllCount = 0
     @Shared protected final List<String> unscheduleCalls = []
     @Shared protected int unsubscribeCount = 0
     @Shared protected final List<Map> sendLocationEventCalls = []
@@ -125,7 +130,7 @@ abstract class RuleHarnessSpec extends Specification {
         appExecutor.runIn(*_) >> { args -> runInCalls << (args as List) }
         appExecutor.runOnce(*_) >> { args -> runOnceCalls << (args as List) }
         appExecutor.unsubscribe() >> { unsubscribeCount++ }
-        appExecutor.unschedule() >> { unscheduleCalls << null }
+        appExecutor.unschedule() >> { unscheduleAllCount++ }
         appExecutor.unschedule(_ as String) >> { args -> unscheduleCalls << (args[0] as String) }
         appExecutor.sendLocationEvent(_) >> { args -> sendLocationEventCalls << (args[0] as Map) }
         appExecutor.httpGet(_, _) >> { args ->
@@ -177,6 +182,7 @@ abstract class RuleHarnessSpec extends Specification {
         // don't leak between feature methods.
         runInCalls.clear()
         runOnceCalls.clear()
+        unscheduleAllCount = 0
         unscheduleCalls.clear()
         unsubscribeCount = 0
         sendLocationEventCalls.clear()
