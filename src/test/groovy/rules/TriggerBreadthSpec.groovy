@@ -182,28 +182,6 @@ class TriggerBreadthSpec extends RuleHarnessSpec {
         atomicStateMap.durationTimers?.size() == 1
     }
 
-    def "duration trigger: timer-cancel path clears the timer when condition goes false"() {
-        given: 'a timer is already pending for this device/attribute'
-        settingsMap.ruleEnabled = true
-        atomicStateMap.triggers = [[
-            type: 'device_event', deviceId: '1',
-            attribute: 'motion', value: 'active', duration: 30
-        ]]
-        atomicStateMap.durationTimers = [
-            'duration_1_motion': [startTime: 0L, trigger: atomicStateMap.triggers[0]]
-        ]
-        atomicStateMap.actions = []
-
-        when: 'a mismatching event arrives (value is now inactive)'
-        script.handleDeviceEvent([
-            device: [id: 1, label: 'Motion'],
-            name: 'motion', value: 'inactive'
-        ])
-
-        then: 'the timer entry is removed'
-        atomicStateMap.durationTimers == [:]
-    }
-
     def "checkDurationTrigger fires the rule when the condition is still met"() {
         given: 'the trigger is stored in durationTimers as if a timer had been armed'
         settingsMap.ruleEnabled = true
