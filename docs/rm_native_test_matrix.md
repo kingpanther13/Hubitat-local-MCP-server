@@ -401,7 +401,7 @@ Each row: create a rule with this action, round-trip via read, update its parame
 | `runRule` | RMUtils (not 4.x+) | N/A | | ❌ | Legacy; evaluate rule |
 | `runRuleAct` | RMUtils or `runAction` button | `lc_run_act.json` | | ❌ | |
 | `stopRuleAct` | RMUtils or `stopRule` button | `lc_stop.json` | | ❌ | Cancels delays, periodic triggers, repeats |
-| `pauseRule` | RMUtils or `pauseRule` button | `lc_pause.json` | | ❌ | |
+| `pauseRule` | RMUtils or `pausRule` button | `lc_pause.json` | | ❌ | RM's internal button name is literally `pausRule` (no 'e' — observed on the hub as `name='pausRule.type' value='button'`). The RMUtils verb is `pauseRule` (with 'e'). This is NOT a typo in the second column. |
 | `resumeRule` | RMUtils or equivalent button | `lc_resume.json` | | ❌ | |
 | `setRuleBooleanTrue` | RMUtils | N/A | | ❌ | Duplicates Private Boolean action |
 | `setRuleBooleanFalse` | RMUtils | N/A | | ❌ | |
