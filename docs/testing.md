@@ -29,7 +29,7 @@ HTML report at `build/reports/tests/test/index.html`. CI uploads it as the `test
 4. `addChildApp`, `getChildApps`, `getChildAppById`, `getChildAppByLabel`, and `deleteChildApp` are intercepted by reflecting into `HubitatAppScript`'s private `childAppFactory` and `childAppAccessor` closure fields and replacing them with harness closures that route to spec-controlled fixtures (`mockChildAppForCreate`, `childAppsList`). eighty20results' `HubitatAppScript` defines these as concrete methods that call those private closures internally, and per-instance `metaClass` overrides are bypassed by the script body's intra-class dispatch — verified empirically in PR #100's first CI run before the reflective approach replaced the metaClass attempt.
 5. A `childAppResolver` closure is passed into `sandbox.run()` so eighty20results' options validator accepts the sandbox options; the closure throws `IllegalStateException` on call, because the reflective `childAppFactory` replacement should short-circuit first. If the resolver ever fires, it means an eighty20results API change broke the harness and the error points the spec author at the right place to look.
 
-Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures for `settings`, `getChildDevices()`, `getChildApps()`, and a deterministic `now()`.
+Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`). `ToolSpecBase` is currently an empty marker class — the `settings` / `getChildDevices()` / `getChildApps()` / `now()` fixtures all live on `HarnessSpec` itself. The marker exists to keep the "this is a server tool spec" distinction explicit and to give us a place to add tool-test-specific helpers later.
 
 ### `RuleHarnessSpec` — base for rule-engine tests
 
@@ -42,6 +42,9 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`) and add fixtures 
 - **`HubInternalGetMock`** — `register(path) { params -> response }`. Unstubbed paths throw `IllegalStateException` so tests fail loudly rather than silently returning null.
 - **`NetworkUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.NetworkUtils.sendHubitatCommand(Map)`.
 - **`RMUtilsMock`** — install/uninstall pattern. Records calls to `hubitat.helper.RMUtils.{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`. `install()` mutates the static metaClass on `hubitat.helper.RMUtils` (the main-source-set stub at `src/main/groovy/hubitat/helper/RMUtils.groovy`); both test-side direct calls and sandbox-loaded production calls (the latter routed through `PassThroughSandboxClassLoader` bypass of eighty20results' remap) land on the mock. `RMUtilsSandboxInterceptionSpec` is the end-to-end regression proving the sandbox path works — bump that spec if an eighty20results upgrade breaks the PassThrough scaffold.
+- **`McpRequestDriver`** — integration dispatch drive-through for `handleMcpRequest()`. Stages a JSON-RPC body, fires the request, captures the `render(Map)` envelope. Also supports `pushBodyThrowing(t)` to exercise the `request.JSON`-throws try/catch branch. Wired by `HarnessSpec` (see the integration dispatch section below).
+- **`SubscriptionRecorder`** — records `subscribe(source, attribute, handler)` calls from the rule engine and replays them via `fireEvent(script, source, attribute, value)`. Defensive shallow-copies the event Map per handler so mutation doesn't leak across dispatches. Wired by `RuleHarnessSpec`.
+- **`TestParent`** — common parent stub for rule-engine specs. Devices map + settings map + `findDevice(id as Long)`. Specs with additional lookup needs (variables, etc.) extend it.
 
 ### Main-source-set helper stubs
 
@@ -166,6 +169,96 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 ```
 
 `RMUtilsMock.install()` uses Groovy metaclass static-method injection on `hubitat.helper.RMUtils` to intercept `{getRuleList, sendAction, pauseRule, resumeRule, setRuleBoolean}`. Always pair it with `uninstall()` in `cleanup()` — cleanup uses `GroovySystem.metaClassRegistry.removeMetaClass()` for reliable teardown between specs (simply setting `metaClass = null` is unreliable because of class-metaclass caching).
+
+## Integration dispatch drive-through (issue #77, tier-2)
+
+The test suite is layered:
+
+- **Tier 1 — unit specs.** Call tool / rule-primitive methods directly (`script.toolFoo(args)`, `script.handleToolsCall(msg)`, `script.handleDeviceEvent(evt)`). Fast, focused, and pinpoints regressions at tool granularity. This is the right default.
+- **Tier 2 — integration dispatch specs (this section).** Drive the full in-process request-dispatch path (`request.JSON → handleMcpRequest → dispatch → render`) or the full rule install loop (`initialize → subscribeToTriggers → subscribe → fireEvent → handler → action`). Still one JVM, Spock Mocks for the hub runtime, no real HTTP.
+- **Tier 3 — true E2E with a fake hub.** Out-of-process HTTP, real JSON-RPC over real HTTP, real sandbox classloader. **Not implemented.** Tracked under issue #77 as a research item.
+
+Some seams only come alive at tier 2. Two are wired into the harness:
+
+### 1. `handleMcpRequest()` — dispatch pipeline
+
+`McpRequestDriver` lets a spec push a JSON-RPC body, invoke `handleMcpRequest()`, and read back the captured `render(...)` envelope. Covers the two hub-runtime seams that the JSON-RPC-layer specs skip:
+
+- `request.JSON` — the sandbox dynamic property the hub populates with the parsed POST body. `handleMcpRequest()` wraps the read in try/catch to surface malformed bodies as JSON-RPC -32700 parse errors. The driver can stage either a staged body (`pushBody(...)`) OR a throwing access (`pushBodyThrowing(t)`) so both the `null`-body branch and the try/catch branch are reachable.
+- `render(Map)` — the hub-side response writer. Production assembles status / contentType / data; driving `handleToolsCall()` directly bypasses this.
+
+Wiring (in `HarnessSpec`):
+
+- `render(Map)` is on `AppExecutor` (class-2 on the dispatch cheat sheet), stubbed via a `>>` dispatcher in `setupSpec()` that hands the Map to `McpRequestDriver.captureRender()`. A no-arg `render()` stub is also installed that throws — nothing in production calls it today, but if a future handler picked it up, silently dropping the call would let `parseResponseJson` read the previous test's state.
+- `request` is resolved by `HubitatAppScript`'s own `@CompileStatic getProperty(String)` override, which checks `injectedMappingHandlerData['request']` before falling through to MOP (only when the *map itself* is null — not when the map lacks the `request` key). That short-circuit means a metaClass hook on the script is *never consulted* for this property. The driver's stable `ScriptRequestProxy` is installed directly into that private field via reflection in `wireScriptOverrides()`, which runs per-test in `setup()` (after the metaClass wipe). The proxy dispatches `getJSON()` dynamically at access time — tests can call `pushBody` / `pushBodyThrowing` from their `given:` block and have the change take effect without re-running the wire step. (Same dispatch trap as `parent` — see `RuleHarnessSpec`'s Javadoc for the parallel case.)
+
+Spec pattern:
+
+```groovy
+class HandleMcpRequestDispatchSpec extends ToolSpecBase {
+    def "initialize returns protocolVersion and serverInfo via render(Map)"() {
+        given:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.contentType == 'application/json'
+        def response = mcpDriver.parseResponseJson()
+        response.result.protocolVersion == '2024-11-05'
+        response.result.serverInfo.name == 'hubitat-mcp-rule-server'
+    }
+}
+```
+
+`pushBody(null)` simulates a missing body (→ -32700 empty-body branch). `pushBodyThrowing(throwable)` simulates a hub-side JSON parse failure (→ -32700 try/catch branch). `pushBody([...])` (a List) exercises the batch-request branch.
+
+### 2. `subscribe(...)` + event replay — rule-engine install loop
+
+`SubscriptionRecorder` captures every `subscribe(source, attribute, handler)` call the rule engine makes during `subscribeToTriggers()` and exposes `fireEvent(script, source, attribute, value)` to dispatch a synthetic event back at the recorded handler. Covers gaps the direct-handler specs (`HandleDeviceEventSpec` etc.) can't reach:
+
+- Did `subscribeToTriggers()` register the right subscription for a given trigger config? (A regression that silently dropped a subscribe call would pass every handler-body spec.)
+- Does the handler route the event through to the rule's action on the right device?
+- Does `initialize()`'s `settings.ruleEnabled` kill-switch actually skip subscribe-time?
+
+The time / periodic trigger branches register via `schedule(cronExpr, handler)` and `runOnce(...)` rather than subscribe, so `RuleHarnessSpec` also records `scheduleCalls` (and `runOnceCalls`) for those assertions.
+
+Wiring (in `RuleHarnessSpec`):
+
+- `subscribe(_, _ as String, _ as String)` is stubbed via the `setupSpec` dispatcher pattern, forwarding into `SubscriptionRecorder.record()`. A wildcard `subscribe(*_)` stub is installed after it that throws on any other overload so unstubbed shapes fail loudly.
+- `RuleHarnessSpec` adds `Flags.DontValidateSubscriptions` to the `PassThroughAppValidator` — without it the `AppSubscriptionReader` delegate layer rejects anything that isn't a full `DeviceWrapper` before the Mock's stub can fire. Note: this flag also bypasses handler-name validation, so pure wire-up asserts that check `subscriptions[0].handler == 'handleDeviceEvent'` compare a literal string to a literal string — add a `fireEvent()` call if you want the handler-name typo path covered.
+
+Spec pattern:
+
+```groovy
+class SubscribeTriggerIntegrationSpec extends RuleHarnessSpec {
+    def "firing a matching event routes through the handler to the action device"() {
+        given:
+        def sourceDevice = new TestDevice(id: 1, label: 'Front Door')
+        def targetDevice = Spy(TestDevice) { getId() >> 99 }
+        parent = new TestParent(devices: [1L: sourceDevice, 99L: targetDevice])
+        settingsMap.ruleEnabled = true
+        // deviceId MUST be a String — triggerMatchesDevice() does a strict == against
+        // the stringified event.device.id (rule engine's triggerMatchesDevice function,
+        // around the checkAllDevicesMatch block). Int deviceIds in the trigger never match.
+        atomicStateMap.triggers = [[type: 'device_event', deviceId: '1', attribute: 'contact', value: 'open']]
+        atomicStateMap.actions  = [[type: 'device_command', deviceId: 99, command: 'on']]
+        script.subscribeToTriggers()
+
+        when:
+        subscriptions.fireEvent(script, sourceDevice, 'contact', 'open')
+
+        then:
+        1 * targetDevice.on()
+    }
+}
+```
+
+### When to reach for the integration dispatch layer
+
+- **Use it when**: a behaviour depends on wiring (subscribe → handler → action, or initialize → subscribe), or on the HTTP shell (body parsing, render envelope, batch/notification semantics).
+- **Don't use it when**: a tool-level spec would pinpoint the regression more tightly. Over-using this layer widens blast radius — a handler-body change breaks every integration spec that touches it, not just the one unit spec that owns that logic.
 
 ## Native Rule Machine access
 

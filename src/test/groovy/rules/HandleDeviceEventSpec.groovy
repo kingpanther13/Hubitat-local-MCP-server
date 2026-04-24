@@ -1,6 +1,7 @@
 package rules
 
 import support.TestDevice
+import support.TestParent
 
 /**
  * Spec for hubitat-mcp-rule.groovy::handleDeviceEvent — the subscribed
@@ -22,7 +23,7 @@ class HandleDeviceEventSpec extends RuleHarnessSpec {
 
         and: 'a target device that an action would drive if the rule fired'
         def target = Spy(TestDevice) { getId() >> 99 }
-        parent = new EventParent(devices: [99L: target])
+        parent = new TestParent(devices: [99L: target])
 
         and: 'a trigger that would match the incoming event, and an action that would run'
         atomicStateMap.triggers = [[
@@ -46,7 +47,7 @@ class HandleDeviceEventSpec extends RuleHarnessSpec {
 
         and:
         def target = Spy(TestDevice) { getId() >> 99 }
-        parent = new EventParent(devices: [99L: target])
+        parent = new TestParent(devices: [99L: target])
 
         and: 'trigger matches on deviceId=1, attribute=switch, value=on'
         atomicStateMap.triggers = [[
@@ -69,7 +70,7 @@ class HandleDeviceEventSpec extends RuleHarnessSpec {
 
         and:
         def target = Spy(TestDevice) { getId() >> 99 }
-        parent = new EventParent(devices: [99L: target])
+        parent = new TestParent(devices: [99L: target])
 
         and: 'trigger wants switch events but the incoming event is for level'
         atomicStateMap.triggers = [[
@@ -92,7 +93,7 @@ class HandleDeviceEventSpec extends RuleHarnessSpec {
 
         and:
         def target = Spy(TestDevice) { getId() >> 99 }
-        parent = new EventParent(devices: [99L: target])
+        parent = new TestParent(devices: [99L: target])
 
         and: 'trigger wants switch=on but incoming value is off'
         atomicStateMap.triggers = [[
@@ -118,18 +119,4 @@ class HandleDeviceEventSpec extends RuleHarnessSpec {
         ]
     }
 
-    /**
-     * Minimal parent — findDevice(id) by Long coercion. Also has a `settings`
-     * map because executeRule() reads `parent?.settings?.loopGuardMax` and
-     * Groovy's ?. short-circuits null but throws MissingPropertyException when
-     * the receiver is non-null and the property is absent.
-     */
-    static class EventParent {
-        Map<Long, TestDevice> devices = [:]
-        Map settings = [:]
-
-        Object findDevice(id) {
-            devices[(id as Long)]
-        }
-    }
 }

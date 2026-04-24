@@ -7,6 +7,7 @@ import spock.lang.Shared
 import spock.lang.Specification
 import support.PassThroughAppValidator
 import support.PermissiveLog
+import support.SubscriptionRecorder
 import support.TestChildApp
 import support.TestLocation
 
@@ -70,6 +71,12 @@ abstract class RuleHarnessSpec extends Specification {
     // lists instead of using Spock interactions. All are cleared in setup().
     @Shared protected final List<List<Object>> runInCalls = []
     @Shared protected final List<List<Object>> runOnceCalls = []
+    // Time + periodic trigger branches in subscribeToTriggers() register via
+    // schedule(cronExpr, handler) rather than subscribe(...), so the
+    // SubscriptionRecorder never sees them. Recording schedule calls here
+    // gives SubscribeTriggerIntegrationSpec a uniform way to assert on the
+    // wire-up step for those branches.
+    @Shared protected final List<List<Object>> scheduleCalls = []
     // Split to disambiguate no-arg `unschedule()` (blanket cancel, everything)
     // from targeted `unschedule('handlerName')` — the engine uses both and
     // lumping them together would let a regression swap one for the other
@@ -80,6 +87,16 @@ abstract class RuleHarnessSpec extends Specification {
     @Shared protected final List<Map> sendLocationEventCalls = []
     @Shared protected final List<List<Object>> httpGetCalls = []
     @Shared protected final List<List<Object>> httpPostCalls = []
+    /**
+     * Records subscribe(source, attribute, handlerName) calls from
+     * {@code subscribeToTriggers()} and replays them via
+     * {@code fireEvent(script, source, attribute, value)}. Previously
+     * subscribe() fell through the AppExecutor Mock's @Delegate chain as
+     * a silent no-op — specs could only unit-test handler bodies directly
+     * and never verified the wire-up step. See SubscriptionRecorder for
+     * the rationale.
+     */
+    @Shared protected final SubscriptionRecorder subscriptions = new SubscriptionRecorder()
 
     // Mutable @Shared fields reading from tests' given: blocks. The stub
     // closures in setupSpec read these at invocation time.
@@ -129,6 +146,7 @@ abstract class RuleHarnessSpec extends Specification {
         // read at invocation time so tests can drive behaviour per-feature.
         appExecutor.runIn(*_) >> { args -> runInCalls << (args as List) }
         appExecutor.runOnce(*_) >> { args -> runOnceCalls << (args as List) }
+        appExecutor.schedule(*_) >> { args -> scheduleCalls << (args as List) }
         appExecutor.unsubscribe() >> { unsubscribeCount++ }
         appExecutor.unschedule() >> { unscheduleAllCount++ }
         appExecutor.unschedule(_ as String) >> { args -> unscheduleCalls << (args[0] as String) }
@@ -138,6 +156,34 @@ abstract class RuleHarnessSpec extends Specification {
             if (stubHttpGetException) throw stubHttpGetException
         }
         appExecutor.httpPost(_, _) >> { args -> httpPostCalls << (args as List) }
+        // subscribe(source, attribute, handlerName) is class-2 (declared on
+        // AppExecutor). Route every call into SubscriptionRecorder so specs
+        // can both assert on the wire-up ("device_event rule subscribed
+        // device 1 for 'switch' to handleDeviceEvent") and fire synthetic
+        // events back at the recorded handler. Without this stub the call
+        // silently no-ops through the Mock's @Delegate chain.
+        appExecutor.subscribe(_, _ as String, _ as String) >> { args ->
+            subscriptions.record(args[0], args[1] as String, args[2] as String)
+        }
+        // Catch-all for subscribe() overloads other than the 3-arg form the
+        // rule engine uses today (2-arg, 4-arg-with-options, and the
+        // MetaMethod variant on the Subscription interface). Production code
+        // only ever calls the 3-arg form. A future refactor that passes
+        // subscribe options (e.g. filterEvents) would fall into the Mock's
+        // @Delegate default (null return, silent no-op) and the recorder
+        // would silently miss the call. Fail loudly instead.
+        appExecutor.subscribe(*_) >> { args ->
+            if (args.size() == 3 && args[1] instanceof String && args[2] instanceof String) {
+                // Already handled by the more-specific stub above — this
+                // catch-all should not fire for the 3-arg String/String form.
+                return
+            }
+            throw new IllegalStateException(
+                "Unstubbed subscribe() overload — ${args.size()} args: ${args}. " +
+                "Extend SubscriptionRecorder + the RuleHarnessSpec subscribe stubs " +
+                "if a new overload is in production use. See " +
+                "src/test/groovy/support/SubscriptionRecorder.groovy.")
+        }
         appExecutor.timeOfDayIsBetween(_, _, _) >> { args -> stubTimeOfDayResult }
         appExecutor.timeOfDayIsBetween(_, _, _, _) >> { args -> stubTimeOfDayResult }
         appExecutor.getSunriseAndSunset(_) >> { args -> stubSunriseSunset }
@@ -146,7 +192,32 @@ abstract class RuleHarnessSpec extends Specification {
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
-            Flags.DontRunScript
+            Flags.DontRunScript,
+            // subscribeToTriggers() passes plain TestDevice POJOs into
+            // subscribe(). The AppSubscriptionReader delegate-layer
+            // validator (runs before our Mock's subscribe stub) rejects
+            // anything that isn't a DeviceWrapper, which would force every
+            // rule-engine integration test to wrap its fixtures in the
+            // full DeviceWrapper trait machinery.
+            //
+            // This flag ALSO disables AppSubscriptionReader.validateHandler,
+            // which normally asserts each handler name resolves to a method
+            // on the script with a single Object parameter. With validation
+            // off, a regression that renames handleDeviceEvent →
+            // handleDeviceEventV2 but misses the string literal in
+            // subscribeToTriggers() will pass every pure-wire-up spec
+            // (they compare a bad literal to a bad literal) — the typo
+            // only surfaces when SubscriptionRecorder.fireEvent() dispatches
+            // through the name, where MissingMethodException is loud.
+            // Specs that want handler-name safety for pure wire-up asserts
+            // should follow each subscribe assertion with a fireEvent() call.
+            //
+            // The finer-grained AllowAnyDeviceAttribute* flags don't help —
+            // they relax the capability check but still require a
+            // DeviceWrapper instance (AppSubscriptionReader.validateSubscribeMethod
+            // line 110 in eighty20results' source). DontValidateSubscriptions
+            // is the only flag that unblocks TestDevice POJOs here.
+            Flags.DontValidateSubscriptions
         ])
         script = sandbox.run(
             api: appExecutor,
@@ -182,12 +253,14 @@ abstract class RuleHarnessSpec extends Specification {
         // don't leak between feature methods.
         runInCalls.clear()
         runOnceCalls.clear()
+        scheduleCalls.clear()
         unscheduleAllCount = 0
         unscheduleCalls.clear()
         unsubscribeCount = 0
         sendLocationEventCalls.clear()
         httpGetCalls.clear()
         httpPostCalls.clear()
+        subscriptions.reset()
         stubTimeOfDayResult = false
         stubSunriseSunset = null
         stubHttpGetException = null
