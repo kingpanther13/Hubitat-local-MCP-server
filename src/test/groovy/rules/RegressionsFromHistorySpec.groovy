@@ -129,6 +129,66 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
     // via ThrowingParent. Not duplicated here — see the class-Javadoc
     // cross-reference above.
 
+    // --- silent device-not-found failures across 14 action types (commit
+    //     83aee5b — "Comprehensive debug logging overhaul - eliminate
+    //     silent failures", follow-up to v0.2.12 sunrise/sunset incident).
+    //
+    // Before the fix, an action targeting a non-existent device would
+    // either NPE on the device method call (caught by the outer
+    // executeAction try/catch and silently swallowed with no user-visible
+    // log) or fall through silently if the code happened to null-guard.
+    // The fix added an explicit `if (device) { ... } else { ruleLog("warn",
+    // "Action 'X' skipped: device not found (ID: N)") }` branch to 14
+    // action types.
+    //
+    // {@link ErrorPathsSpec} already pins this shape for {@code device_command}
+    // (missing-device action warns + execution continues). This feature
+    // method broadens the coverage to the other action types the commit
+    // named — each one must emit a warn-level {@code ruleLog} and must
+    // NOT throw, so the next action in the chain still runs.
+
+    def "missing-device action '#actionType' emits a warn ruleLog and lets the next action run"() {
+        given: 'a registered sibling device the next action will drive'
+        def sibling = Spy(TestDevice) { getId() >> 42 }
+        parent = new RepeatParent(devices: [42L: sibling])
+
+        and: 'capture every ruleLog emission from the rule engine'
+        def logCalls = []
+        script.metaClass.ruleLog = { String level, String message, Map extra = null ->
+            logCalls << [level: level, message: message]
+        }
+
+        and: 'action targeting missing-id 999 followed by a sibling-targeted action'
+        atomicStateMap.actions = [
+            missingAction,
+            [type: 'device_command', deviceId: 42L, command: 'on']
+        ]
+
+        when:
+        script.executeActions()
+
+        then: 'a warn-level log cites the action type AND the missing id'
+        logCalls.any {
+            it.level == 'warn' &&
+            it.message?.contains(actionType) &&
+            it.message?.contains('999')
+        }
+
+        and: 'the follow-up action still fires — no silent throw stopped the chain'
+        1 * sibling.on()
+
+        where:
+        actionType          | missingAction
+        'set_level'         | [type: 'set_level', deviceId: 999L, level: 50]
+        'set_color'         | [type: 'set_color', deviceId: 999L, hue: 100, saturation: 50, level: 75]
+        'toggle_device'     | [type: 'toggle_device', deviceId: 999L]
+        'lock'              | [type: 'lock', deviceId: 999L]
+        'unlock'            | [type: 'unlock', deviceId: 999L]
+        'speak'             | [type: 'speak', deviceId: 999L, message: 'hi']
+        'send_notification' | [type: 'send_notification', deviceId: 999L, message: 'hi']
+        'set_thermostat'    | [type: 'set_thermostat', deviceId: 999L, thermostatMode: 'cool']
+    }
+
     static class RepeatParent {
         Map<Long, TestDevice> devices = [:]
         Object findDevice(id) { devices[(id as Long)] }
