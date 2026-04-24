@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop architecture (22 core + 11 gateways = 33 on tools/list, 59 proxied, 81 total).
+Updated for the installed-apps + Rule Machine interop architecture (22 core + 11 gateways = 33 on tools/list, 61 proxied, 83 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2139,24 +2139,24 @@ These operations are too destructive for automated testing. Test manually with e
 | Core tools on `tools/list` | 22 |
 | Gateways on `tools/list` | 11 |
 | Total visible on `tools/list` | 33 |
-| Tools proxied behind gateways | 59 |
-| Total tools in codebase | 81 |
+| Tools proxied behind gateways | 61 |
+| Total tools in codebase | 83 |
 
-**11 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (2), `manage_rule_machine` (5)
+**11 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 81 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 83 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 186 test scenarios** (107 explicit + 65 natural language + 14 built-in-app integration) plus 13 excluded destructive operations documented for manual testing
+**Total: 193 test scenarios** (107 explicit + 65 natural language + 21 built-in-app integration) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
 ## Section 11: Built-in App Integration Tests
 
-These tools require `Enable Built-in App Tools` to be enabled in the MCP Rule Server app settings. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+Tools in this section have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the `Enable Built-in App Tools` toggle (`requireBuiltinAppRead`). `get_app_config` and `list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `manage_rule_machine` tools require `Enable Built-in App Tools`. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
 
 ### Safety Rules for Section 11
 
@@ -2316,13 +2316,90 @@ These tools require `Enable Built-in App Tools` to be enabled in the MCP Rule Se
 
 **Expected**: `list_rm_rules` returns `IllegalArgumentException: Built-in App Tools are disabled...`. AI reports the feature flag requirement and points user to the MCP app settings page.
 
+### T212 — Read an installed app's config page (get_app_config — manage_installed_apps gateway)
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. Use list_installed_apps to find any Rule Machine rule and note its app ID.",
+  "test_prompt": "Show me the configuration of that Rule Machine rule — what conditions and actions does it have?",
+  "teardown_prompt": "No teardown needed — get_app_config is read-only."
+}
+```
+
+**Expected**: AI first calls `list_installed_apps` (or `list_rm_rules`) to discover a Rule Machine app ID, then calls `manage_installed_apps(tool='get_app_config', args={appId: <discovered_id>})`. Returns `app` (label, type), `page` (sections with inputs showing configured triggers, conditions, actions). AI summarizes the rule's behavior from the structured response. Tool is accessed via the `manage_installed_apps` gateway.
+
+### T213 — get_app_config multi-page (HPM full package list)
+
+```json
+{
+  "setup_prompt": "Use list_installed_apps to find the Hubitat Package Manager app ID.",
+  "test_prompt": "Use get_app_config to list ALL packages installed via Hubitat Package Manager."
+}
+```
+
+**Expected**: AI calls `list_installed_apps` to discover the HPM app ID, then calls `get_app_config(appId=<discovered_id>, pageName='prefPkgUninstall')`. Returns the full installed-package enum. AI extracts and lists package names. Note: `pageName='prefPkgModify'` returns only the modifiable subset (those with optional components) -- the correct page for the FULL list is `prefPkgUninstall`.
+
+### T214 — get_app_config with includeSettings=true (power user)
+
+```json
+{
+  "setup_prompt": "Use list_rm_rules or list_installed_apps to find an existing Rule Machine rule and note its app ID.",
+  "test_prompt": "Get the raw settings map for that Rule Machine rule — include all internal keys."
+}
+```
+
+**Expected**: AI discovers a Rule Machine app ID, then calls `get_app_config(appId=<discovered_id>, includeSettings=true)`. Response includes `settings` map with raw key-value pairs. AI notes the size and encoding (e.g., RM 5.1 dm~ prefixes).
+
+### T215 — get_app_config invalid (non-numeric appId)
+
+```json
+{
+  "test_prompt": "Try to get the app config for app ID 'abc123' and tell me what error you get."
+}
+```
+
+**Expected**: `get_app_config` throws `IllegalArgumentException` with a message about numeric appId. AI reports the validation error and asks for a valid numeric ID.
+
+### T216 — get_app_config Hub Admin Read disabled
+
+```json
+{
+  "setup_prompt": "For this test, assume Hub Admin Read is disabled in MCP settings.",
+  "test_prompt": "Get the configuration for any Rule Machine rule (any app ID will do)."
+}
+```
+
+**Expected**: `get_app_config` throws `IllegalArgumentException: Hub Admin Read access is disabled...`. AI reports the gate requirement and directs user to enable it in MCP app settings.
+
+### T217 — list_app_pages for HPM (discover sub-page names)
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. Use list_installed_apps to find the Hubitat Package Manager app and note its app ID.",
+  "test_prompt": "I want to inspect HPM's configuration but I don't know the page names. Use list_app_pages to discover what pages are available for the HPM app you just found."
+}
+```
+
+**Expected**: AI uses the HPM app ID discovered in setup, then calls `manage_installed_apps(tool='list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list including at least `prefOptions`, `prefPkgUninstall`, `prefPkgModify`, `prefPkgInstall`, `prefPkgMatchUp`. AI lists the available page names and explains their roles (e.g. prefPkgUninstall = full installed-package list). Tool is accessed via the `manage_installed_apps` gateway.
+
+### T218 — list_app_pages for Rule Machine rule (single-page confirmation)
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. Use list_rm_rules to find an existing Rule Machine rule and note its app ID.",
+  "test_prompt": "What pages are available for the Rule Machine rule you just found?"
+}
+```
+
+**Expected**: AI uses the Rule Machine app ID discovered in setup, then calls `manage_installed_apps(tool='list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list with a single entry `{name: 'mainPage', role: 'primary'}` plus a `note` confirming rules are single-page. AI explains there is only one page (mainPage) and no sub-pages are available.
+
 ---
 
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 81 tools)** post installed-apps + RM interop (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 83 tools)** post installed-apps + RM interop + list_app_pages (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted

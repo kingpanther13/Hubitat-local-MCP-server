@@ -616,15 +616,19 @@ def getGatewayConfig() {
             ]
         ],
         manage_installed_apps: [
-            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device. Requires Built-in App Tools enabled in MCP app settings.",
-            tools: ["list_installed_apps", "get_device_in_use_by"],
+            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device, inspect an app's configuration page, list page names for multi-page apps. Requires Built-in App Tools enabled in MCP app settings (list/device-in-use-by); get_app_config and list_app_pages require Hub Admin Read.",
+            tools: ["list_installed_apps", "get_device_in_use_by", "get_app_config", "list_app_pages"],
             summaries: [
                 list_installed_apps: "List all installed apps with parent/child tree. Args: filter (all/builtin/user/disabled/parents/children), includeHidden",
-                get_device_in_use_by: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId"
+                get_device_in_use_by: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
+                get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName (optional), includeSettings (optional)",
+                list_app_pages: "List known page names for a multi-page app (HPM, Room Lighting, etc.). Curated directory + live primary page. Args: appId"
             ],
             searchHints: [
                 list_installed_apps: "rule machine room lighting scenes mode manager hsm dashboards groups button controllers native builtin",
-                get_device_in_use_by: "which apps use device reference inUseBy appsUsing dependencies affected by"
+                get_device_in_use_by: "which apps use device reference inUseBy appsUsing dependencies affected by",
+                get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
+                list_app_pages: "page names sub-pages pageName multi-page hpm prefPkgUninstall prefPkgModify prefOptions navigation discover"
             ]
         ],
         manage_rule_machine: [
@@ -1640,6 +1644,48 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
                 required: ["deviceId"]
             ]
         ],
+        // Hub Admin App Configuration Read (grouped with installed-apps peers)
+        [
+            name: "get_app_config",
+            description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
+
+Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
+
+Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
+
+Workflow: (1) Get the appId from list_installed_apps (all apps), list_rm_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not list_rules / get_rule, which only handle MCP-native rules), or list_installed_apps with filter=parents to explore app hierarchy. (2) Call get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
+
+Requires Hub Admin Read.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "Installed-app ID (decimal). From list_installed_apps, list_rm_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
+                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call list_app_pages to discover available pages. HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only."],
+                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
+                ],
+                required: ["appId"]
+            ]
+        ],
+        // Hub Admin App Pages Directory
+        [
+            name: "list_app_pages",
+            description: """List known page names for a multi-page installed app. Returns the primary page (introspected live from the hub) plus a curated directory of known sub-pages for well-known app types.
+
+Curated directories: HPM (prefOptions main menu, prefPkgUninstall full installed-package list, prefPkgModify modifiable subset, prefPkgInstall install flow, prefPkgMatchUp match-up flow); Rule Machine rules (mainPage only -- rules are single-page); Room Lighting (mainPage); Mode Manager (mainPage).
+
+Unknown app types return the primary page only, plus a note directing you to consult the app's source or Web UI navigation for additional page names.
+
+Use this before get_app_config on multi-page apps to avoid guessing page names.
+
+Requires Hub Admin Read.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "string", description: "Installed-app ID (decimal). From list_installed_apps, list_rm_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
+                ],
+                required: ["appId"]
+            ]
+        ],
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "list_rm_rules",
@@ -1809,6 +1855,10 @@ def executeTool(toolName, args) {
         case "create_room": return toolCreateRoom(args)
         case "delete_room": return toolDeleteRoom(args)
         case "rename_room": return toolRenameRoom(args)
+
+        // Hub Admin App Configuration Read
+        case "get_app_config": return toolGetAppConfig(args)
+        case "list_app_pages": return toolListAppPages(args)
 
         // Hub Admin App/Driver Management
         case "get_app_source": return toolGetAppSource(args)
@@ -6152,6 +6202,349 @@ def toolGetItemSource(String type, String idParam, args) {
     }
 }
 
+/**
+ * Strip HTML tags from a string (Hubitat frequently embeds color spans in app labels
+ * and page titles). Null-safe. Does not try to be a real HTML parser — SDK-generated
+ * tags are predictable (<span>, <b>, <i>) and this is adequate.
+ */
+private String stripAppConfigHtml(value) {
+    if (value == null) return null
+    def s = value.toString()
+    if (!s.contains("<")) return s
+    return s.replaceAll(/<[^>]+>/, "").trim()
+}
+
+/**
+ * Walk an input's options structure and strip HTML from any label values. Hubitat's
+ * SDK emits options in two shapes depending on input type:
+ *   - List of single-entry maps: [{"<value>": "<label>"}, ...]  (enum)
+ *   - Map of value-to-label: {"<value>": "<label>"}  (some capability inputs)
+ * Both can contain color-span HTML on labels (e.g. state badges). Leaves unknown
+ * shapes alone rather than guessing wrong and breaking them.
+ */
+private stripOptionsHtml(options) {
+    if (options instanceof List) {
+        def out = []
+        for (entry in options) {
+            if (entry instanceof Map) {
+                def cleaned = [:]
+                entry.each { k, v -> cleaned[k] = (v instanceof String) ? stripAppConfigHtml(v) : v }
+                out << cleaned
+            } else {
+                out << entry
+            }
+        }
+        return out
+    }
+    if (options instanceof Map) {
+        def cleaned = [:]
+        options.each { k, v -> cleaned[k] = (v instanceof String) ? stripAppConfigHtml(v) : v }
+        return cleaned
+    }
+    return options
+}
+
+/**
+ * Read an installed app's configuration via the hub's SDK-level rendering endpoint
+ * /installedapp/configure/json/<appId>[/<pageName>]. Returns a normalized structure
+ * covering app identity, page sections, inputs, and optionally the raw settings map.
+ *
+ * This endpoint is what the Hubitat Web UI itself consumes to render each app's
+ * config page. The top-level shape {configPage, app, settings, childApps} is SDK-level
+ * and consistent across every legacy SmartApp (Rule Machine, Room Lighting, Basic
+ * Rules, HPM, Mode Manager, etc.). The runtime fingerprint check below asserts the
+ * shape invariants; if Hubitat firmware drifts the contract, callers see a clear
+ * error rather than malformed data.
+ */
+def toolGetAppConfig(args) {
+    requireHubAdminRead()
+
+    if (args?.appId == null || args.appId.toString().trim() == "") {
+        throw new IllegalArgumentException("appId is required")
+    }
+    def appIdStr = args.appId.toString().trim()
+    if (!appIdStr.isInteger()) {
+        throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
+    }
+
+    def pageName = args?.pageName?.toString()?.trim()
+    if (pageName && !pageName.matches(/[A-Za-z0-9_]+/)) {
+        throw new IllegalArgumentException("pageName must be alphanumeric/underscore only: ${pageName}")
+    }
+
+    boolean includeSettings = args?.includeSettings == true
+
+    def path = "/installedapp/configure/json/${appIdStr}"
+    if (pageName) path += "/${pageName}"
+
+    mcpLog("info", "hub-admin", "get_app_config appId=${appIdStr} page=${pageName ?: 'main'} includeSettings=${includeSettings}")
+
+    def responseText
+    try {
+        responseText = hubInternalGet(path, null, 30)
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "get_app_config fetch failed", e)
+        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+    }
+
+    if (!responseText) {
+        return [success: false, error: "Empty response from ${path}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+    }
+
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "get_app_config JSON parse failed", e)
+        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+    }
+
+    // Runtime fingerprint: confirm the SDK-level shape this tool depends on.
+    // The /installedapp/configure/json/<id> endpoint returns {app, configPage, settings, childApps, ...}
+    // consistently across every legacy SmartApp. If any of these top-level invariants are
+    // missing, the firmware likely changed the contract — fail explicitly rather than
+    // returning malformed data.
+    if (!(parsed instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+    }
+    if (!(parsed.app instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
+    }
+    if (!(parsed.configPage instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
+    }
+    if (!(parsed.configPage.sections instanceof List)) {
+        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call list_app_pages for this app, or consult get_tool_guide section=builtin_app_tools for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+    }
+
+    // Hub returns app.appType as a ~30-key metadata object (author, classLocation,
+    // createTime, deprecated, etc.). Extract only the useful fields — the rest is
+    // either internal SDK state or duplicates what's already on app itself.
+    def appTypeRaw = parsed.app.appType
+    def appTypeSummary = null
+    if (appTypeRaw instanceof Map) {
+        appTypeSummary = [
+            name: appTypeRaw.name,
+            namespace: appTypeRaw.namespace,
+            author: appTypeRaw.author,
+            category: appTypeRaw.category,
+            classLocation: appTypeRaw.classLocation,
+            deprecated: appTypeRaw.deprecated == true,
+            system: appTypeRaw.system == true,
+            documentationLink: appTypeRaw.documentationLink
+        ]
+    }
+
+    def appObj = [
+        id: parsed.app.id,
+        label: stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label),
+        name: parsed.app.name,
+        appType: appTypeSummary,
+        disabled: parsed.app.disabled == true,
+        parentAppId: parsed.app.parentAppId,
+        installed: parsed.app.installed == true
+    ]
+
+    def sections = []
+    for (s in parsed.configPage.sections) {
+        if (!(s instanceof Map)) continue
+        def section = [
+            title: stripAppConfigHtml(s.title),
+            inputs: []
+        ]
+        for (i in (s.input ?: [])) {
+            if (!(i instanceof Map)) continue
+            def input = [
+                name: i.name,
+                type: i.type,
+                title: stripAppConfigHtml(i.title)
+            ]
+            if (i.multiple == true) input.multiple = true
+            if (i.required == true) input.required = true
+            def desc = stripAppConfigHtml(i.description)
+            if (desc && desc != "Click to set") input.description = desc
+            if (i.options) input.options = stripOptionsHtml(i.options)
+            // Current values: 'defaultValue' is the rendered value for most input types
+            // (despite the misleading name), 'value' is used on some. Include whichever
+            // is non-null and not the boolean 'true' sentinel.
+            //
+            // The boolean 'true' sentinel: Hubitat's legacy SmartApp SDK populates
+            // defaultValue=true on capability.* and device-list input types (e.g.
+            // type="capability.*", type="device.switch") to indicate "this input has a
+            // configured value" rather than encoding the actual selection as defaultValue.
+            // For those types the actual selected device label appears separately in the
+            // rendered description. Excluding defaultValue==true prevents emitting a bare
+            // true into the value field for every populated device-picker input.
+            //
+            // Exception for type="bool": boolean (checkbox) inputs use true/false as their
+            // actual user-configured state values -- not as sentinel markers. The filter
+            // is bypassed when i.type == "bool" so that both true (enabled) and false
+            // (disabled) checkbox states are preserved in the output. Without this bypass,
+            // enabled checkboxes (value==true) would be silently dropped, making the AI
+            // believe the setting is unconfigured when it is actually set to enabled.
+            // (observed: firmware 2.3.x-2.4.x; sentinel confirmed on capability.* types)
+            if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
+            else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
+            section.inputs << input
+        }
+        // Paragraph/body content (informational text in the config page). Keep any
+        // non-"Click to set" string — including short labels like "Enabled" / "Warning!"
+        // that the SDK emits as standalone body paragraphs.
+        def paragraphs = []
+        for (b in (s.body ?: [])) {
+            if (!(b instanceof Map)) continue
+            def text = stripAppConfigHtml(b.description ?: b.title)
+            if (text && text != "Click to set") paragraphs << text
+        }
+        if (paragraphs) section.paragraphs = paragraphs
+        sections << section
+    }
+
+    def children = []
+    for (c in (parsed.childApps ?: [])) {
+        if (!(c instanceof Map)) continue
+        children << [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
+    }
+
+    def result = [
+        success: true,
+        app: appObj,
+        page: [
+            name: parsed.configPage.name,
+            title: stripAppConfigHtml(parsed.configPage.title),
+            install: parsed.configPage.install == true,
+            refreshInterval: parsed.configPage.refreshInterval,
+            sections: sections
+        ],
+        childApps: children,
+        endpoint: path
+    ]
+
+    int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
+    result.settingsKeyCount = settingsCount
+    if (includeSettings) {
+        result.settings = parsed.settings ?: [:]
+    } else if (settingsCount > 0) {
+        result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
+    }
+
+    return result
+}
+
+/**
+ * List known page names for a multi-page installed app.
+ *
+ * Combines live introspection of the primary page (one hub API call) with a
+ * curated directory of known sub-page names for well-known app types (HPM,
+ * Rule Machine, Room Lighting, Mode Manager). For unknown app types the
+ * response contains only the primary page and a note about finding additional
+ * pages via the app source or Web UI navigation.
+ *
+ * Gate: requireHubAdminRead() -- read-only, reads app metadata.
+ * Args: appId (required, numeric string or integer)
+ */
+def toolListAppPages(args) {
+    requireHubAdminRead()
+
+    if (args?.appId == null || args.appId.toString().trim() == "") {
+        throw new IllegalArgumentException("appId is required")
+    }
+    def appIdStr = args.appId.toString().trim()
+    if (!appIdStr.isInteger()) {
+        throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
+    }
+
+    mcpLog("info", "hub-admin", "list_app_pages appId=${appIdStr}")
+
+    def path = "/installedapp/configure/json/${appIdStr}"
+    def responseText
+    try {
+        responseText = hubInternalGet(path, null, 30)
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "list_app_pages fetch failed", e)
+        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+    }
+
+    if (!responseText) {
+        return [success: false, error: "Empty response from ${path}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+    }
+
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "list_app_pages JSON parse failed", e)
+        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+    }
+
+    if (!(parsed instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+    }
+    if (!(parsed.app instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
+    }
+    if (!(parsed.configPage instanceof Map)) {
+        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
+    }
+
+    def appTypeRaw = parsed.app.appType
+    def appTypeName = (appTypeRaw instanceof Map) ? (appTypeRaw.name ?: "") : ""
+    def appLabel = stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label) ?: ""
+
+    // Primary page: introspected from the hub response (configPage guaranteed Map by fingerprint check above)
+    def primaryPageName = parsed.configPage.name ?: "mainPage"
+    def primaryPageTitle = stripAppConfigHtml(parsed.configPage.title)
+    def primaryPage = [name: primaryPageName, title: primaryPageTitle, role: "primary"]
+
+    def appObj = [
+        id: parsed.app.id,
+        label: appLabel,
+        name: parsed.app.name,
+        appTypeName: appTypeName
+    ]
+
+    // Curated directory dispatch -- case-insensitive substring matching for robustness.
+    def appTypeNameLower = appTypeName.toLowerCase()
+    def pages
+    def note = null
+
+    if (appTypeNameLower.contains("hubitat package manager")) {
+        pages = [
+            [name: "prefOptions",    title: "Main Menu",                role: "navigation"],
+            [name: "prefPkgUninstall", title: "Uninstall / Full Package List", role: "full_package_list"],
+            [name: "prefPkgModify",  title: "Modify Package (optional-components subset)", role: "modifiable_subset"],
+            [name: "prefPkgInstall", title: "Install New Package",       role: "install_flow"],
+            [name: "prefPkgMatchUp", title: "Match Up Packages",         role: "matching_flow"]
+        ]
+    } else if (appTypeNameLower.contains("rule-5") || appTypeNameLower.contains("rule machine")) {
+        pages = [
+            [name: "mainPage", title: appLabel ?: "Rule Settings", role: "primary"]
+        ]
+        note = "Rule Machine rules are single-page. No sub-pages available."
+    } else if (appTypeNameLower.contains("room lights") || appTypeNameLower.contains("room lighting")) {
+        pages = [
+            [name: "mainPage", title: appLabel ?: "Room Lighting Settings", role: "primary"]
+        ]
+        note = "Room Lighting instances use a single mainPage. No named sub-pages."
+    } else if (appTypeNameLower.contains("mode manager")) {
+        pages = [
+            [name: "mainPage", title: "Manage Setting of Modes", role: "primary"]
+        ]
+        note = "Mode Manager uses a single mainPage. No named sub-pages."
+    } else {
+        pages = [primaryPage]
+        note = "App-type-specific page directory not curated; only primary page known. For multi-page apps, consult the app's Groovy source or the Web UI navigation for sub-page names."
+    }
+
+    return [
+        success: true,
+        app: appObj,
+        primaryPage: primaryPage,
+        pages: pages,
+        note: note
+    ]
+}
+
 def toolGetAppSource(args) {
     return toolGetItemSource("app", "appId", args)
 }
@@ -8405,9 +8798,9 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         builtin_app_tools: '''## Built-in App Tools
 
-All tools in the manage_installed_apps and manage_rule_machine gateways require the "Enable Built-in App Tools" toggle in MCP Rule Server app settings. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the manage_installed_apps and manage_rule_machine gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools" toggle (requireBuiltinAppRead). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). manage_rule_machine tools require the "Enable Built-in App Tools" toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
-**manage_installed_apps (2 tools):**
+**manage_installed_apps (4 tools):**
 
 - **list_installed_apps** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
@@ -8420,6 +8813,17 @@ All tools in the manage_installed_apps and manage_rule_machine gateways require 
   - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
   - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
   - Answers "if I delete this device, which automations break?"
+
+- **get_app_config** — read an installed app's configuration page (Hub Admin Read required)
+  - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
+  - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call list_app_pages first to discover available page names for any multi-page app.
+  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
+  - Workflow: list_installed_apps (or list_rm_rules for RM rules specifically -- note that list_rules / get_rule handle only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then get_app_config to inspect. For multi-page apps, consider list_app_pages first.
+
+- **list_app_pages** — discover what pageNames a given app accepts (Hub Admin Read required)
+  - Input: appId
+  - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
+  - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
 **manage_rule_machine (5 tools) — read + trigger existing RM rules only, NO create/modify/delete:**
 

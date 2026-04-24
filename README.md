@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 81 MCP tools (33 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 83 MCP tools (33 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 81 tools total — 22 core tools are always visible, while 59 additional tools are organized behind 11 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 83 tools total — 22 core tools are always visible, while 61 additional tools are organized behind 11 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (81 total — 33 on tools/list)
+### MCP Tools (83 total — 33 on tools/list)
 
-The server has 81 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **59 additional tools** are organized behind **11 domain-named gateways**. The AI sees 33 items on `tools/list` (22 + 11 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 83 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **61 additional tools** are organized behind **11 domain-named gateways**. The AI sees 33 items on `tools/list` (22 + 11 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (22) — Always visible on tools/list
 
@@ -442,14 +442,16 @@ Write/delete require Hub Admin Write + confirm.
 </details>
 
 <details>
-<summary><b>manage_installed_apps</b> (2) — Built-in app visibility</summary>
+<summary><b>manage_installed_apps</b> (4) — Built-in app visibility and configuration</summary>
 
 | Tool | Description |
 |------|-------------|
 | `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by builtin/user/disabled/parents/children. |
 | `get_device_in_use_by` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
+| `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Hub Admin Read. |
+| `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
 
-Requires opt-in **Enable Built-in App Tools** setting.
+`list_installed_apps` and `get_device_in_use_by` require opt-in **Enable Built-in App Tools** setting. `get_app_config` and `list_app_pages` require Hub Admin Read.
 
 </details>
 

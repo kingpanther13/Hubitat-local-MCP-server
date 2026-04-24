@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 81 MCP tools. The server exposes **33 items on `tools/list`**: 22 core tools + 11 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 83 MCP tools. The server exposes **33 items on `tools/list`**: 22 core tools + 11 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -56,7 +56,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 81 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 83 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -179,14 +179,16 @@ Manage hub File Manager: list, read, write, and delete files stored on the hub.
 | `write_file` | Create/update a file (auto-backs up existing). | Hub Admin Write |
 | `delete_file` | Delete a file (auto-backs up first). | Hub Admin Write |
 
-### manage_installed_apps (2 tools)
+### manage_installed_apps (4 tools)
 
-Read-only visibility into all installed apps (built-in + user): enumerate with parent/child tree, find apps using a specific device. Requires Built-in App Tools enabled in MCP app settings.
+Read-only visibility into all installed apps (built-in + user): enumerate with parent/child tree, find apps using a specific device, inspect an app's configuration page, discover page names for multi-page apps.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. | Built-in App Read |
 | `get_device_in_use_by` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Built-in App Read |
+| `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: list_installed_apps or list_rm_rules -> get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
+| `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before get_app_config on multi-page apps. | Hub Admin Read |
 
 ### manage_rule_machine (5 tools)
 
