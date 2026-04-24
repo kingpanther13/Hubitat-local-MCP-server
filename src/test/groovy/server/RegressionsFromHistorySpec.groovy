@@ -227,4 +227,93 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         script.normalizeCommandParams(['75']) == [75]
         script.normalizeCommandParams(['3.14']) == [3.14d]
     }
+
+    // --- toolUpdateItemCode optimistic-locking version mismatch (v0.4.6) ----
+    //
+    // {@code backupItemSource} keeps a 1-hour cache of the most recent
+    // backup manifest — within that window, it returns the cached
+    // manifest (with its cached {@code version}) without re-hitting
+    // the hub. Pre-v0.4.6, {@code toolUpdateItemCode} fed that cached
+    // version straight into the update POST's optimistic-locking
+    // field. If the user had made any change in the Hubitat UI between
+    // the first backup and the subsequent update call, the cached
+    // version was stale and the hub rejected the update with
+    // "Version does not match." The failure mode was obscure: the user
+    // had no visibility into the 1-hour cache and no way to force a
+    // refresh short of waiting it out.
+    //
+    // The fix (hubitat-mcp-server.groovy:6263-6276) fetches the version
+    // fresh from {@code /app/ajax/code} for source/sourceFile modes
+    // (resave mode already gets it for free from its own fetch), then
+    // falls back to the cached backup version only if the fresh fetch
+    // fails. These two tests pin both branches.
+
+    def "update_app_code uses the fresh version from the hub, not the stale backup-manifest cache (v0.4.6)"() {
+        given: 'a recent cached backup whose manifest carries a stale version=5'
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        stateMap.itemBackupManifest = [app_50: [
+            type: 'app', id: '50',
+            fileName: 'mcp-backup-app-50.groovy',
+            version: 5,                                    // stale
+            timestamp: 1234567890000L - 60_000L,           // 1 minute ago — well inside the 1-hour window
+            sourceLength: 100
+        ]]
+
+        and: '/app/ajax/code returns version=12 — the current fresh value'
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 12, "source": "does-not-matter — this path only used for fresh version"}'
+        }
+
+        and: 'capture the version passed into the update POST'
+        def posted = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            posted.path = path
+            posted.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '50', source: 'new source', confirm: true])
+
+        then: 'update POST carries the fresh version=12, NOT the cached stale version=5'
+        posted.body.version == 12
+
+        and: 'the tool reports success using the fresh version'
+        result.success == true
+        result.previousVersion == 12
+    }
+
+    def "update_app_code falls back to the cached backup version when the fresh-fetch fails (v0.4.6)"() {
+        given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        stateMap.itemBackupManifest = [app_50: [
+            type: 'app', id: '50',
+            fileName: 'mcp-backup-app-50.groovy',
+            version: 5,
+            timestamp: 1234567890000L - 60_000L,
+            sourceLength: 100
+        ]]
+
+        and: '/app/ajax/code throws on the fresh-version attempt'
+        hubGet.register('/app/ajax/code') { params ->
+            throw new RuntimeException('simulated hub offline')
+        }
+
+        and: 'capture the version passed into the update POST'
+        def posted = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            posted.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '50', source: 'new source', confirm: true])
+
+        then: 'best-effort fallback — use the cached version=5 rather than failing outright'
+        posted.body.version == 5
+        result.success == true
+        result.previousVersion == 5
+    }
 }
