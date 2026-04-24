@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolResumeRmRule (hubitat-mcp-server.groovy approx line 7819).
- * Gateway: manage_rule_machine -> resume_rm_rule.
+ * Gateway: manage_native_rules_and_apps -> resume_rm_rule.
  *
  * Covers: gate-throw, missing ruleId, golden-path resumeRule dispatch,
  * and String ruleId coercion.
@@ -90,7 +90,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinAppRead = true
 
         when:
-        def result = script.handleGateway('manage_rule_machine', 'resume_rm_rule', [ruleId: 700])
+        def result = script.handleGateway('manage_native_rules_and_apps', 'resume_rm_rule', [ruleId: 700])
 
         then:
         result.success == true

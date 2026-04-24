@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolSetRmRuleBoolean (hubitat-mcp-server.groovy approx line 7837).
- * Gateway: manage_rule_machine -> set_rm_rule_boolean.
+ * Gateway: manage_native_rules_and_apps -> set_rm_rule_boolean.
  *
  * Load-bearing: strict coercion policy. Accepts ONLY Boolean true/false OR
  * the lowercase strings "true"/"false". All other truthy-looking values
@@ -161,7 +161,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         settingsMap.enableBuiltinAppRead = true
 
         when:
-        def result = script.handleGateway('manage_rule_machine', 'set_rm_rule_boolean', [ruleId: 900, value: true])
+        def result = script.handleGateway('manage_native_rules_and_apps', 'set_rm_rule_boolean', [ruleId: 900, value: true])
 
         then:
         result.success == true

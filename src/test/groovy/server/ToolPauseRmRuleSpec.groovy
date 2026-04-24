@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolPauseRmRule (hubitat-mcp-server.groovy approx line 7809).
- * Gateway: manage_rule_machine -> pause_rm_rule.
+ * Gateway: manage_native_rules_and_apps -> pause_rm_rule.
  *
  * Covers: gate-throw, missing ruleId, golden-path pauseRule dispatch,
  * and String ruleId coercion.
@@ -90,7 +90,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinAppRead = true
 
         when:
-        def result = script.handleGateway('manage_rule_machine', 'pause_rm_rule', [ruleId: 500])
+        def result = script.handleGateway('manage_native_rules_and_apps', 'pause_rm_rule', [ruleId: 500])
 
         then:
         result.success == true

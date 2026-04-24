@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolRunRmRule (hubitat-mcp-server.groovy approx line 7788).
- * Gateway: manage_rule_machine -> run_rm_rule.
+ * Gateway: manage_native_rules_and_apps -> run_rm_rule.
  *
  * Covers: gate-throw, missing ruleId, action-to-rmAction mapping (rule/actions/stop),
  * invalid action rejection, String ruleId coercion, non-numeric ruleId rejection.
@@ -138,7 +138,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinAppRead = true
 
         when:
-        def result = script.handleGateway('manage_rule_machine', 'run_rm_rule', [ruleId: 300, action: 'rule'])
+        def result = script.handleGateway('manage_native_rules_and_apps', 'run_rm_rule', [ruleId: 300, action: 'rule'])
 
         then:
         result.success == true

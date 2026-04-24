@@ -435,21 +435,21 @@ def getGatewayConfig() {
     return [
         manage_rules_admin: [
             description: "Rule administration: delete, test, export, import, and clone rules.",
-            tools: ["delete_rule", "test_rule", "export_rule", "import_rule", "clone_rule"],
+            tools: ["custom_delete_rule", "custom_test_rule", "custom_export_rule", "custom_import_rule", "custom_clone_rule"],
             summaries: [
-                delete_rule: "Permanently delete a rule (auto-backs up first). Args: ruleId",
-                test_rule: "Dry-run a rule without executing actions. Args: ruleId",
-                export_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
-                import_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
-                clone_rule: "Clone an existing rule (starts disabled). Args: ruleId"
+                custom_delete_rule: "Permanently delete a rule (auto-backs up first). Args: ruleId",
+                custom_test_rule: "Dry-run a rule without executing actions. Args: ruleId",
+                custom_export_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
+                custom_import_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
+                custom_clone_rule: "Clone an existing rule (starts disabled). Args: ruleId"
             ],
             // BM25 search hints — extra keywords that don't appear in summaries but help discovery
             searchHints: [
-                delete_rule: "remove automation",
-                test_rule: "simulate preview validate check automation",
-                export_rule: "save download share automation",
-                import_rule: "load upload restore automation",
-                clone_rule: "copy duplicate automation"
+                custom_delete_rule: "remove automation",
+                custom_test_rule: "simulate preview validate check automation",
+                custom_export_rule: "save download share automation",
+                custom_import_rule: "load upload restore automation",
+                custom_clone_rule: "copy duplicate automation"
             ]
         ],
         manage_hub_variables: [
@@ -571,13 +571,13 @@ def getGatewayConfig() {
         ],
         manage_diagnostics: [
             description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
-            tools: ["get_set_hub_metrics", "get_memory_history", "force_garbage_collection", "device_health_check", "get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            tools: ["get_set_hub_metrics", "get_memory_history", "force_garbage_collection", "device_health_check", "custom_get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
             summaries: [
                 get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
                 get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
                 force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
                 device_health_check: "Check all devices for stale/offline status",
-                get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
+                custom_get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
                 get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
                 get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count). Requires Hub Admin Read",
                 zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
@@ -590,7 +590,7 @@ def getGatewayConfig() {
                 get_memory_history: "ram free used leak trending over time java heap nio",
                 force_garbage_collection: "free reclaim ram cleanup java heap",
                 device_health_check: "stale offline dead unresponsive battery not reporting",
-                get_rule_diagnostics: "automation troubleshoot broken not working debug why",
+                custom_get_rule_diagnostics: "automation troubleshoot broken not working debug why",
                 get_zwave_details: "zwave mesh network frequency firmware 908mhz 700 800 series",
                 get_zigbee_details: "zigbee mesh network channel pan coordinator 2400mhz",
                 zwave_repair: "fix heal network mesh routing neighbor rebuild",
@@ -631,22 +631,28 @@ def getGatewayConfig() {
                 list_app_pages: "page names sub-pages pageName multi-page hpm prefPkgUninstall prefPkgModify prefOptions navigation discover"
             ]
         ],
-        manage_rule_machine: [
-            description: "Rule Machine interoperability: list, trigger, pause/resume, and set boolean variables on existing RM rules via the official RMUtils API. Cannot create, modify, or delete RM rules (platform blocks this — use the RM native UI). Requires Built-in App Tools enabled.",
-            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean"],
+        manage_native_rules_and_apps: [
+            description: "Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules — any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean — RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write.",
+            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app"],
             summaries: [
-                list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
-                run_rm_rule: "Trigger a Rule Machine rule. Args: ruleId, action (rule/actions/stop, default rule)",
-                pause_rm_rule: "Pause a Rule Machine rule. Args: ruleId",
-                resume_rm_rule: "Resume a paused Rule Machine rule. Args: ruleId",
-                set_rm_rule_boolean: "Set an RM rule's private boolean to true or false. Args: ruleId, value (bool)"
+                list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
+                run_rm_rule: "Trigger an RM rule (RMUtils). Args: ruleId, action (rule/actions/stop, default rule)",
+                pause_rm_rule: "Pause an RM rule (RMUtils). Args: ruleId",
+                resume_rm_rule: "Resume a paused RM rule (RMUtils). Args: ruleId",
+                set_rm_rule_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
+                create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use update_native_app next to populate.",
+                update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic) or click a page-transition button. Auto-backs-up first. Args: appId, settings|button, pageName (opt), stateAttribute (opt), confirm",
+                delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm"
             ],
             searchHints: [
-                list_rm_rules: "rule machine rules native builtin automation",
+                list_rm_rules: "rule machine rules native builtin automation list enumerate",
                 run_rm_rule: "trigger fire execute native rule machine rule",
                 pause_rm_rule: "disable stop temporarily rule machine rule",
                 resume_rm_rule: "enable unpause restart rule machine rule",
-                set_rm_rule_boolean: "private boolean flag rule machine rule condition"
+                set_rm_rule_boolean: "private boolean flag rule machine rule condition",
+                create_native_app: "create new native rule machine room lighting button controller basic rule notifier scene group automation app",
+                update_native_app: "modify edit change native rule machine room lighting button controller basic rule notifier app trigger action condition setting",
+                delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app"
             ]
         ]
     ]
@@ -822,15 +828,15 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         // Rule Management
         [
-            name: "list_rules",
-            description: "List all MCP automation rules. Returns summary; use get_rule for details.",
+            name: "custom_list_rules",
+            description: "List all MCP automation rules. Returns summary; use custom_get_rule for details.",
             inputSchema: [
                 type: "object",
                 properties: [:]
             ]
         ],
         [
-            name: "get_rule",
+            name: "custom_get_rule",
             description: "Get detailed information about a specific rule",
             inputSchema: [
                 type: "object",
@@ -841,7 +847,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             ]
         ],
         [
-            name: "create_rule",
+            name: "custom_create_rule",
             description: """Create a new automation rule. Use get_tool_guide section=rules for structure, syntax, and examples.
 
 Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
@@ -865,7 +871,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "update_rule",
+            name: "custom_update_rule",
             description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after.",
             inputSchema: [
                 type: "object",
@@ -884,7 +890,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "delete_rule",
+            name: "custom_delete_rule",
             description: "DESTRUCTIVE: Permanently delete a rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Rules marked as testRule=true skip backup automatically.",
             inputSchema: [
                 type: "object",
@@ -896,9 +902,9 @@ Verify rule after creation.""",
                 required: ["ruleId", "confirm"]
             ]
         ],
-        // enable_rule and disable_rule merged into update_rule (use enabled=true/false)
+        // enable_rule and disable_rule merged into custom_update_rule (use enabled=true/false)
         [
-            name: "test_rule",
+            name: "custom_test_rule",
             description: "Test a rule without executing actions (dry run)",
             inputSchema: [
                 type: "object",
@@ -1017,7 +1023,7 @@ Verify rule after creation.""",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "get_rule_diagnostics",
+            name: "custom_get_rule_diagnostics",
             description: "Get comprehensive diagnostics for a rule: config, execution history, triggers/conditions/actions, logs, errors.",
             inputSchema: [
                 type: "object",
@@ -1060,7 +1066,7 @@ Verify rule after creation.""",
         ],
         // Rule Export/Import/Clone Tools
         [
-            name: "export_rule",
+            name: "custom_export_rule",
             description: "Export a rule to JSON for backup or sharing. Returns full rule data plus a device manifest listing all referenced devices.",
             inputSchema: [
                 type: "object",
@@ -1071,12 +1077,12 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "import_rule",
-            description: """Import a rule from exported JSON (from export_rule). Optional deviceMapping remaps old device IDs to new: {"oldId": "newId"}.""",
+            name: "custom_import_rule",
+            description: """Import a rule from exported JSON (from custom_export_rule). Optional deviceMapping remaps old device IDs to new: {"oldId": "newId"}.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    exportData: [type: "object", description: "The full export JSON object from export_rule"],
+                    exportData: [type: "object", description: "The full export JSON object from custom_export_rule"],
                     name: [type: "string", description: "Override the rule name (optional)"],
                     deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
                 ],
@@ -1084,7 +1090,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "clone_rule",
+            name: "custom_clone_rule",
             description: "Clone an existing rule. The cloned rule starts disabled to allow review before activation.",
             inputSchema: [
                 type: "object",
@@ -1653,7 +1659,7 @@ Returns the app's identity (label, type, parent, disabled state) and its current
 
 Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
 
-Workflow: (1) Get the appId from list_installed_apps (all apps), list_rm_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not list_rules / get_rule, which only handle MCP-native rules), or list_installed_apps with filter=parents to explore app hierarchy. (2) Call get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
+Workflow: (1) Get the appId from list_installed_apps (all apps), list_rm_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not custom_list_rules / custom_get_rule, which only handle MCP-native rules), or list_installed_apps with filter=parents to explore app hierarchy. (2) Call get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
 
 Requires Hub Admin Read.""",
             inputSchema: [
@@ -1741,6 +1747,83 @@ Requires Hub Admin Read.""",
                 required: ["ruleId", "value"]
             ]
         ],
+        // Native classic-app CRUD (hub admin-layer, bypasses SmartApp parent-type check).
+        // Generic across native automation app types — RM is the first registered type;
+        // Room Lighting / Button Controllers / Basic Rules / Notifier / Groups+Scenes work
+        // for update + delete today (any classic-app appId), and join create as their entries
+        // get added to _appTypeRegistry().
+        [
+            name: "create_native_app",
+            description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI.
+
+appType (default: rule_machine): which class of native app to create.
+  - "rule_machine" — Rule Machine 5.1 (the only registered type today; verified live)
+  - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via update_native_app / delete_native_app with their appId.
+
+This is COMPLETELY SEPARATE from the MCP custom rule engine (custom_list_rules / custom_create_rule). Use create_native_app for native automations that show up in the hub UI; use custom_create_rule for MCP-managed rules.
+
+Workflow: create_native_app(appType=\"rule_machine\", name=\"...\") → get_app_config(appId) to read the page schema → update_native_app(appId, settings={...}) to add triggers/conditions/actions. Each update_native_app call auto-backs-up first, enforces the multiple=true capability contract, and verifies post-write that the app still renders cleanly.
+
+Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appType: [type: "string", enum: ["rule_machine"], description: "Which native app class to create. Default: rule_machine. Add more types by populating _appTypeRegistry."],
+                    name: [type: "string", description: "Human-readable label for the new app (shown in the hub's app list). Required."],
+                    confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
+                ],
+                required: ["name", "confirm"]
+            ]
+        ],
+        [
+            name: "update_native_app",
+            description: """Modify any classic native automation app on the hub (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them, so this one tool covers writes to any classic SmartApp instance addressed by appId. Two modes (provide settings, button, or both):
+
+settings: Map of {inputName: value}. Values: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically — you don't need to think about it. Post-write verification checks that the multiple flag survived; one automatic retry on divergence.
+
+button: page-transition button name (e.g. \"editCond\", \"editAct\", \"pausRule\", \"updateRule\", \"refreshActions\" for RM; equivalent buttons exist for other app types — discover via get_app_config).
+
+pageName: optional — target a specific sub-page whose schema drives the settings marshaling. Defaults to the app's main page.
+
+stateAttribute: optional string passed with the button click (e.g., RM uses this for editCond/editAct to identify which trigger/action).
+
+BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with restore_item_backup (in manage_apps_drivers) if the write goes wrong. Settings writes are automatically followed by an updateRule button click so initialize() re-fires and subscriptions repopulate.
+
+Requires Hub Admin Write + confirm=true + recent hub backup.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "integer", description: "Installed-app ID (for RM rules, this is the rule ID; for any other classic app, it's the app's id from list_installed_apps)."],
+                    settings: [type: "object", description: "Map {inputName: value}. Use List for multi-device capability inputs — CSV marshaling is automatic."],
+                    button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types)."],
+                    pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
+                    stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
+                    confirm: [type: "boolean", description: "Must be true."]
+                ],
+                required: ["appId", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_native_app",
+            description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them. Two modes:
+
+force=false (default): soft delete via /installedapp/delete. Hub refuses if the app has child apps or devices; response includes hubMessage explaining why.
+
+force=true: hard delete via /installedapp/forcedelete/quiet — the same path the hub UI uses internally for its own \"Delete\" buttons. No child safety checks.
+
+BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call restore_item_backup (in manage_apps_drivers) with that key to recreate the app with all its settings re-applied.
+
+Requires Hub Admin Write + confirm=true + recent hub backup.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "integer", description: "Installed-app ID."],
+                    force: [type: "boolean", description: "true = bypass child/device safety checks and force-delete. Default false."],
+                    confirm: [type: "boolean", description: "Must be true."]
+                ],
+                required: ["appId", "confirm"]
+            ]
+        ],
         // Tool Guide
         [
             name: "get_tool_guide",
@@ -1778,13 +1861,13 @@ def executeTool(toolName, args) {
         case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
 
         // Rule Management - now using child apps
-        case "list_rules": return toolListRules()
-        case "get_rule": return toolGetRule(args.ruleId)
-        case "create_rule": return toolCreateRule(args)
-        case "update_rule": return toolUpdateRule(args.ruleId, args)
-        case "delete_rule": return toolDeleteRule(args)
-        // enable_rule/disable_rule merged into update_rule
-        case "test_rule": return toolTestRule(args.ruleId)
+        case "custom_list_rules": return toolListRules()
+        case "custom_get_rule": return toolGetRule(args.ruleId)
+        case "custom_create_rule": return toolCreateRule(args)
+        case "custom_update_rule": return toolUpdateRule(args.ruleId, args)
+        case "custom_delete_rule": return toolDeleteRule(args)
+        // enable_rule/disable_rule merged into custom_update_rule
+        case "custom_test_rule": return toolTestRule(args.ruleId)
 
         // System Tools
         case "get_hub_info": return toolGetHubInfo()
@@ -1804,15 +1887,15 @@ def executeTool(toolName, args) {
         // Debug Logging Tools
         case "get_debug_logs": return toolGetDebugLogs(args)
         case "clear_debug_logs": return toolClearDebugLogs(args)
-        case "get_rule_diagnostics": return toolGetRuleDiagnostics(args)
+        case "custom_get_rule_diagnostics": return toolGetRuleDiagnostics(args)
         case "set_log_level": return toolSetLogLevel(args)
         case "get_logging_status": return toolGetLoggingStatus(args)
         case "generate_bug_report": return toolGenerateBugReport(args)
 
         // Rule Export/Import/Clone
-        case "export_rule": return toolExportRule(args)
-        case "import_rule": return toolImportRule(args)
-        case "clone_rule": return toolCloneRule(args)
+        case "custom_export_rule": return toolExportRule(args)
+        case "custom_import_rule": return toolImportRule(args)
+        case "custom_clone_rule": return toolCloneRule(args)
 
         // Version Check
         case "check_for_update": return toolCheckForUpdate(args)
@@ -1892,6 +1975,12 @@ def executeTool(toolName, args) {
         case "resume_rm_rule": return toolResumeRmRule(args)
         case "set_rm_rule_boolean": return toolSetRmRuleBoolean(args)
 
+        // Native Rule Machine CRUD (hub admin-layer; backups flow through
+        // list_item_backups + restore_item_backup in manage_apps_drivers)
+        case "create_native_app": return toolCreateNativeApp(args)
+        case "update_native_app": return toolUpdateNativeApp(args)
+        case "delete_native_app": return toolDeleteNativeApp(args)
+
         // Tool Guide
         case "get_tool_guide": return toolGetToolGuide(args.section)
 
@@ -1909,7 +1998,7 @@ def executeTool(toolName, args) {
         case "manage_diagnostics":
         case "manage_files":
         case "manage_installed_apps":
-        case "manage_rule_machine":
+        case "manage_native_rules_and_apps":
             return handleGateway(toolName, args.tool, args.args)
 
         default:
@@ -2586,7 +2675,7 @@ def toolDeleteRule(args) {
     return result
 }
 
-// toolEnableRule/toolDisableRule/toolToggleRule removed in v0.8.1 (dead code since v0.8.0 merged into update_rule)
+// toolEnableRule/toolDisableRule/toolToggleRule removed in v0.8.1 (dead code since v0.8.0 merged into custom_update_rule)
 
 def toolTestRule(ruleId) {
     def childApp = getChildAppById(ruleId)
@@ -3917,6 +4006,73 @@ def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRe
 }
 
 /**
+ * Authenticated GET that captures status + Location header + body without
+ * following redirects. Needed for /installedapp/createchild/<ns>/<app>/parent/<pid>
+ * which responds with a 302 pointing at /installedapp/configure/<newId>; the
+ * new child id lives in that Location header and is lost if the client auto-
+ * follows. Shape matches hubInternalPostForm's return for consistency.
+ *
+ * Exception handling is duck-typed rather than referencing
+ * groovyx.net.http.HttpResponseException by name — that class isn't on the
+ * Spock test classpath, and naming it would NCDFE at parse time.
+ */
+def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        textParser: true,
+        ignoreSSLIssues: true,
+        timeout: timeout,
+        // HTTPBuilder follows redirects by default; disable so we can read
+        // the 302 Location header. Keep the cookie so auth still works.
+        followRedirects: false
+    ]
+    if (query) params.query = query
+    if (cookie) params.headers = ["Cookie": cookie]
+
+    def result = null
+    try {
+        httpGet(params) { resp ->
+            def body
+            try { body = resp.data.text } catch (Exception readErr) { body = resp.data?.toString() }
+            result = [
+                status: resp.status,
+                location: resp.headers?."Location"?.toString(),
+                data: body
+            ]
+        }
+    } catch (Exception e) {
+        // HTTPBuilder throws on non-2xx when followRedirects=false. The
+        // exception carries a `response` property (duck-typed — avoids a
+        // hard dependency on groovyx.net.http.HttpResponseException). If
+        // the failure is a 3xx redirect, that's exactly what we want —
+        // extract status + Location and return. Anything else escalates
+        // through the existing cookie-retry / rethrow paths.
+        def resp = null
+        try { resp = e.response } catch (Exception ignore) { resp = null }
+        def status = null
+        try { status = resp?.status as Integer } catch (Exception ignore) { status = null }
+        if (resp != null && status != null && status >= 300 && status < 400) {
+            def body
+            try { body = resp.data?.text } catch (Exception readErr) { body = resp.data?.toString() }
+            result = [
+                status: status,
+                location: resp.headers?."Location"?.toString(),
+                data: body
+            ]
+            return result
+        }
+        if (shouldRetryWithFreshCookie(e, isRetry)) {
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on GET-raw ${path}")
+            return hubInternalGetRaw(path, query, timeout, true)
+        }
+        throw e
+    }
+    return result
+}
+
+/**
  * Make an authenticated POST request to the hub's internal API.
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
@@ -4124,18 +4280,29 @@ def toolListItemBackups() {
     }
 
     def backupList = manifest.collect { key, entry ->
-        [
+        def base = [
             backupKey: key,
             type: entry.type,
             id: entry.id,
             fileName: entry.fileName,
-            version: entry.version,
             timestampEpoch: entry.timestamp ?: 0,
             timestamp: formatTimestamp(entry.timestamp),
             age: formatAge(entry.timestamp),
             sourceLength: entry.sourceLength ?: 0,
             directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
+        // App/driver entries carry version + sourceLength; rm-rule entries
+        // carry reason + appLabel. Surface the right metadata per type so
+        // the response stays informative without forcing callers to know
+        // what missing fields mean.
+        if (entry.type == "rm-rule") {
+            base.ruleId = entry.ruleId
+            base.appLabel = entry.appLabel
+            base.reason = entry.reason
+        } else {
+            base.version = entry.version
+        }
+        return base
     }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) } // Newest first
 
     return [
@@ -4223,7 +4390,7 @@ def toolGetItemBackup(args) {
 def toolRestoreItemBackup(args) {
     requireHubAdminWrite(args.confirm)
 
-    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
+    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'rm-rule_<id>_<ts>')")
 
     def manifest = state.itemBackupManifest ?: [:]
     def entry = manifest[args.backupKey]
@@ -4236,6 +4403,17 @@ def toolRestoreItemBackup(args) {
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
         ]
+    }
+
+    // RM rule snapshots use a different restore path (re-apply settings via
+    // the wizard wire format, not POST source code). Dispatch by type.
+    if (entry.type == "rm-rule") {
+        try {
+            return _rmRestoreFromBackup(entry)
+        } catch (Exception e) {
+            mcpLog("error", "hub-admin", "RM rule restore failed for key ${args.backupKey}: ${e.message}")
+            return [success: false, error: e.message, backupKey: args.backupKey, type: "rm-rule"]
+        }
     }
 
     // Read the backup source from File Manager
@@ -8312,6 +8490,779 @@ private Integer normalizeRuleId(def ruleId) {
     }
 }
 
+// ==================== NATIVE RULE MACHINE CRUD ====================
+//
+// Native RM CRUD works around Hubitat's SmartApp parent-type check
+// (addChildApp('hubitat', 'Rule-5.1', ...) is blocked) by hitting the
+// hub's admin-layer endpoints directly via session cookie:
+//
+//   Create:   GET  /installedapp/createchild/<ns>/<appName>/parent/<pid>  → 302
+//   Read:     GET  /installedapp/configure/json/<id>[/<subpage>]
+//   Status:   GET  /installedapp/statusJson/<id>
+//   Update:   POST /installedapp/update/json  (x-www-form-urlencoded)
+//   Button:   POST /installedapp/btn
+//   Delete:   GET  /installedapp/forcedelete/<id>/quiet
+//
+// The capability-multiple contract: multi-device capability inputs need
+// THREE paired fields in the same POST (settings[name]=csv, name.type=
+// capability.X, name.multiple=true). Omitting `.multiple=true` silently
+// rewrites the AppSetting DB flag to false and every subsequent page
+// render throws `Command 'size' is not supported by device` against RM's
+// list-of-devices code paths. _rmBuildSettingsBody emits the full group
+// from the input schema automatically, so callers never have to remember.
+//
+// Every write is preceded by _rmBackupRuleSnapshot which captures the
+// rule's full configure/json + statusJson into File Manager as JSON.
+// restore_rm_rule_backup replays the snapshot. This is the "safe to
+// experiment" floor the project demands; delete uses soft-delete by
+// default so the hub's own rule recovery still works too.
+
+/**
+ * Registry of native automation app types. Each entry tells the create
+ * path which namespace + appName + parent type to use for createchild.
+ *
+ * Adding a new entry here is the only change needed to support a new
+ * native app type — the update + delete + backup paths are app-type-
+ * agnostic because they operate on appIds against the generic
+ * /installedapp/* endpoint family.
+ *
+ * Verified live on firmware 2.4.4.135 / 2.5.0.123:
+ *   - rule_machine: namespace=hubitat appName=Rule-5.1 parentType="Rule Machine"
+ *
+ * Sources for additional entries (per #120 scope expansion notes —
+ * confirm namespace+appName via list_installed_apps before enabling):
+ *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
+ *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
+ *   - basic_rule, parentType="Basic Rules"
+ *   - room_lighting, parentType="Room Lighting"
+ *   - groups_scenes (Group-2.1 / Scene-2.1), parentType="Groups and Scenes"
+ *   - notifier (Notifier), parentType="Notifications"
+ *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
+ *
+ * Update + delete already work on these today — call update_native_app /
+ * delete_native_app with the appId of any existing classic-app instance
+ * (read appId via list_installed_apps + get_app_config).
+ */
+private Map _appTypeRegistry() {
+    return [
+        rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"]
+        // Add more entries as they're verified on the live hub.
+    ]
+}
+
+/**
+ * Discover and cache the parent app id for the given native-app type.
+ * Required by create_native_app: createchild is addressed
+ * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
+ * parent id is per-hub.
+ *
+ * Cache in state.parentAppIds[<appType>] — one network call per type per
+ * fresh install. Throws user-actionable error if the app type's parent
+ * is not installed (e.g., RM was never enabled on this hub).
+ */
+private Integer _discoverParentAppId(String appType) {
+    if (!state.parentAppIds) state.parentAppIds = [:]
+    // Backward-compat shim: pre-rename code wrote state.parentAppIds.rm.
+    // Migrate it to the new key name on first read so cached values keep
+    // working after this PR ships. If both keys exist, prefer the newer
+    // one and drop the legacy entry.
+    if (appType == "rule_machine" && state.parentAppIds.rm != null && state.parentAppIds.rule_machine == null) {
+        state.parentAppIds.rule_machine = state.parentAppIds.rm
+    }
+    if (state.parentAppIds.rm != null && state.parentAppIds.rule_machine != null) {
+        state.parentAppIds.remove("rm")
+    }
+    def cached = state.parentAppIds[appType]
+    if (cached != null) {
+        try { return cached.toString().toInteger() } catch (NumberFormatException e) {
+            mcpLog("warn", "rm-native", "Invalid cached parentAppId for '${appType}' ('${cached}') — rediscovering")
+            state.parentAppIds.remove(appType)
+        }
+    }
+
+    def reg = _appTypeRegistry()[appType]
+    if (!reg) {
+        throw new IllegalArgumentException("Unknown appType '${appType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
+    }
+    def parentTypeName = reg.parentTypeName
+
+    def responseText = hubInternalGet("/hub2/appsList")
+    if (!responseText) {
+        throw new IllegalArgumentException("Cannot discover '${parentTypeName}' parent: empty response from /hub2/appsList")
+    }
+    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    def parentNode = null
+    def recurse
+    recurse = { node ->
+        if (parentNode != null) return
+        def d = node?.data
+        if (d?.type == parentTypeName && d?.hidden != true) {
+            parentNode = d
+            return
+        }
+        node?.children?.each { c -> recurse(c) }
+    }
+    (parsed?.apps ?: []).each { a -> recurse(a) }
+
+    if (parentNode?.id == null) {
+        throw new IllegalArgumentException(
+            "'${parentTypeName}' parent not found on this hub. Install it via Apps → Add Built-In App before using create_native_app with appType=${appType}.")
+    }
+    def id = parentNode.id.toString().toInteger()
+    state.parentAppIds[appType] = id
+    mcpLog("info", "rm-native", "Discovered ${parentTypeName} parent app id: ${id} (appType=${appType})")
+    return id
+}
+
+/**
+ * Hit /installedapp/createchild/<ns>/<app>/parent/<pid> via a raw GET that
+ * preserves the 302 Location header. Returns the new child app id as Integer.
+ *
+ * The UI's "Create New Rule" is a plain anchor — no CSRF, no prior page
+ * fetch needed. Tested live on firmware 2.4.4.135 and 2.5.0.123.
+ */
+private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubitat", String appName = "Rule-5.1") {
+    def path = "/installedapp/createchild/${namespace}/${appName}/parent/${parentAppId}"
+    def resp = hubInternalGetRaw(path)
+    if (resp == null) {
+        throw new IllegalArgumentException("createchild returned null response for ${path}")
+    }
+    def loc = resp.location
+    if (!loc) {
+        throw new IllegalArgumentException(
+            "createchild response had no Location header (status=${resp.status}). Body: ${resp.data?.take(200)}")
+    }
+    // Expected shape: /installedapp/configure/<newId>  (may be absolute URL)
+    def m = loc =~ /\/installedapp\/configure\/(\d+)/
+    if (!m.find()) {
+        throw new IllegalArgumentException("Could not extract new app id from Location: ${loc}")
+    }
+    def newId = m.group(1).toInteger()
+    mcpLog("info", "rm-native", "Created ${namespace}:${appName} under parent ${parentAppId} → new app id ${newId}")
+    return newId
+}
+
+/**
+ * Click a button on an app's config page via /installedapp/btn. Used for
+ * RM's page-transition buttons: updateRule, pausRule, runAction, editCond,
+ * editAct, etc. Stable across RM 5.0 and 5.1 per Phase 1 field-name audit.
+ */
+private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null) {
+    def body = [
+        id: appId.toString(),
+        name: buttonName,
+        (buttonName): "clicked",
+        "${buttonName}.type": "button"
+    ]
+    if (stateAttribute) body.stateAttribute = stateAttribute
+    def resp = hubInternalPostForm("/installedapp/btn", body)
+    if (resp?.status != null && resp.status >= 400) {
+        throw new IllegalArgumentException("Button click '${buttonName}' on app ${appId} failed: status=${resp.status}")
+    }
+    return resp
+}
+
+/**
+ * Fetch /installedapp/configure/json/<appId>[/<pageName>] and parse.
+ * Returns the raw map (app, configPage, settings, childApps, ...).
+ * Callers (get_rm_rule, update_native_app) use this to discover the input
+ * schema (names + types + multiple flags) before issuing a write.
+ */
+private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
+    def path = "/installedapp/configure/json/${appId}"
+    if (pageName) path += "/${pageName}"
+    def responseText = hubInternalGet(path)
+    if (!responseText) {
+        throw new IllegalArgumentException("Empty response from ${path} — app ${appId} may not exist")
+    }
+    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    if (!(parsed instanceof Map) || !parsed.app) {
+        throw new IllegalArgumentException("Unexpected response shape from ${path}: missing app object")
+    }
+    return parsed
+}
+
+/**
+ * Fetch /installedapp/statusJson/<appId> — returns runtime state including
+ * appSettings[] with marshal flags, eventSubscriptions[], scheduledJobs[],
+ * appState[]. This is the ground-truth post-write verification surface.
+ */
+private Map _rmFetchStatusJson(Integer appId) {
+    def responseText = hubInternalGet("/installedapp/statusJson/${appId}")
+    if (!responseText) {
+        throw new IllegalArgumentException("Empty response from /installedapp/statusJson/${appId}")
+    }
+    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    if (!(parsed instanceof Map)) {
+        throw new IllegalArgumentException("Unexpected statusJson shape for app ${appId}")
+    }
+    return parsed
+}
+
+/**
+ * Collect input schema from a configPage's sections[].input[] into a
+ * name → metadata map. Used to decide which settings need the .type +
+ * .multiple sidecar fields.
+ */
+private Map _rmCollectInputSchema(Map configPage) {
+    def schema = [:]
+    for (s in (configPage?.sections ?: [])) {
+        for (i in (s?.input ?: [])) {
+            if (i instanceof Map && i.name) {
+                schema[i.name.toString()] = [
+                    name: i.name.toString(),
+                    type: i.type?.toString(),
+                    multiple: i.multiple == true,
+                    required: i.required == true
+                ]
+            }
+        }
+    }
+    return schema
+}
+
+/**
+ * Build the form body for /installedapp/update/json from a flat settings
+ * map. For each key, emit:
+ *   settings[<key>] = <value>  (CSV if list for multi-device capability)
+ *   <key>.type      = <capability.X or input type>  (if schema says so)
+ *   <key>.multiple  = true                          (if capability & multiple)
+ *
+ * Omitting the .multiple=true sidecar on a capability.* input silently
+ * flips the AppSetting DB flag to false and every subsequent render of
+ * the rule throws `Command 'size' is not supported by device`. This
+ * function emits the full 3-field group for every capability input in
+ * the schema, whether the caller remembered or not.
+ *
+ * settingsMap values: String/Number/Boolean for scalars, List for
+ * multi-device capability selections.
+ */
+private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
+    def body = [id: appId.toString()]
+    settingsMap.each { rawKey, rawVal ->
+        def key = rawKey.toString()
+        def meta = schema?."${key}"
+        def typeHint = meta?.type
+        def isCapability = typeHint?.startsWith("capability.")
+        def isMulti = meta?.multiple == true || (isCapability && rawVal instanceof List)
+
+        // Serialize value: List → CSV for multi-device, else toString
+        def serialized
+        if (rawVal instanceof List) {
+            serialized = rawVal.collect { it?.toString() }.findAll { it != null }.join(",")
+        } else if (rawVal == null) {
+            serialized = ""
+        } else {
+            serialized = rawVal.toString()
+        }
+        body["settings[${key}]".toString()] = serialized
+
+        // Sidecar fields. `.type` always needed for non-bool inputs so the
+        // hub knows how to marshal the update; `.multiple=true` MUST ride
+        // with every multi-capability write or the DB flag poisons.
+        if (typeHint) {
+            body["${key}.type".toString()] = typeHint
+        }
+        if (isMulti) {
+            body["${key}.multiple".toString()] = "true"
+        }
+    }
+    return body
+}
+
+/**
+ * Verify post-write that every touched capability.* setting with multiple=true
+ * in the schema still has multiple=true in the hub's live appSettings record.
+ * If any have been flipped to false, the DB has been poisoned and the rule
+ * will render with `Command 'size' is not supported` errors. Callers catch
+ * MarshalFlagDivergenceException and re-POST with the full 3-field group.
+ *
+ * Throws IllegalStateException (sandbox-friendly alias for the divergence
+ * condition) with a specific message listing the poisoned setting names.
+ */
+private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touchedNames) {
+    def status = _rmFetchStatusJson(appId)
+    def live = (status?.appSettings ?: []).collectEntries { s ->
+        [(s?.name?.toString()): s]
+    }
+    def poisoned = []
+    touchedNames.each { name ->
+        def declared = schema?."${name}"
+        if (declared?.multiple == true) {
+            def rec = live?."${name}"
+            if (rec != null && rec.multiple != true) {
+                poisoned << name
+            }
+        }
+    }
+    if (poisoned) {
+        throw new IllegalStateException(
+            "MarshalFlagDivergenceException: multiple=true flag flipped to false on setting(s) ${poisoned} " +
+            "for app ${appId}. This corrupts RM's device-list rendering. Caller should re-POST with the full " +
+            "3-field group (settings[name], name.type, name.multiple=true) to recover.")
+    }
+}
+
+/**
+ * Write a settings map to an RM rule with the 3-field capability contract
+ * enforced automatically. After the POST, verify the multiple flags survive
+ * and re-POST once if they were flipped (known sticky-bug behavior). Throw
+ * if still divergent after retry — the caller should surface this and
+ * suggest restore_rm_rule_backup.
+ */
+private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null) {
+    if (schema == null) {
+        schema = _rmCollectInputSchema(_rmFetchConfigJson(appId)?.configPage)
+    }
+    def body = _rmBuildSettingsBody(appId, settingsMap, schema)
+    def resp = hubInternalPostForm("/installedapp/update/json", body)
+
+    def touched = settingsMap.keySet().collect { it.toString() }
+    try {
+        _rmVerifyMultipleFlags(appId, schema, touched)
+    } catch (IllegalStateException divergence) {
+        // Sticky-flag recovery: one forced re-POST with the full group.
+        // Verified live to un-poison on the second attempt. The schema
+        // already carries the .multiple=true sidecar intent from the
+        // initial build, so the same body is correct to resend.
+        mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} — retrying: ${divergence.message}")
+        hubInternalPostForm("/installedapp/update/json", body)
+        _rmVerifyMultipleFlags(appId, schema, touched)
+    }
+    return resp
+}
+
+/**
+ * Snapshot the current state of an RM rule into the hub's File Manager
+ * as a single JSON file (configure/json + statusJson combined), recorded
+ * in the unified state.itemBackupManifest alongside app/driver backups.
+ *
+ * Entries get type="rm-rule" so list_item_backups + restore_item_backup
+ * (the existing tools) handle them too — no separate RM-only backup
+ * tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss>.
+ */
+private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
+    def config
+    def status
+    try {
+        config = _rmFetchConfigJson(ruleId)
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed — ${e.message}")
+    }
+    try {
+        status = _rmFetchStatusJson(ruleId)
+    } catch (Exception e) {
+        // Status failure is tolerable for a pre-write snapshot — the
+        // config JSON alone is enough to restore. Record the failure in
+        // the snapshot so post-mortem sees why status was absent.
+        mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed — ${e.message}")
+        status = [error: e.message]
+    }
+
+    // Detect appType from the config's appType.name so the restore path
+    // can route to the right registry entry. RM 5.1 = "rule_machine";
+    // future appTypes get reverse-mapped from the registry.
+    def detectedAppType = "rule_machine"
+    def configAppName = config?.app?.appType?.name
+    if (configAppName) {
+        _appTypeRegistry().each { typeKey, reg ->
+            if (reg.appName == configAppName) detectedAppType = typeKey
+        }
+    }
+
+    def snapshot = [
+        schemaVersion: 1,
+        ruleId: ruleId,           // legacy field; new snapshots also carry appId
+        appId: ruleId,
+        appType: detectedAppType,
+        reason: reason ?: "pre-write",
+        timestamp: now(),
+        timestampIso: formatTimestamp(now()),
+        appLabel: config?.app?.trueLabel ?: config?.app?.label,
+        configJson: config,
+        statusJson: status
+    ]
+
+    def ts = new Date(now()).format("yyyyMMdd-HHmmss")
+    def fileName = "mcp-rm-backup-${ruleId}-${ts}.json"
+
+    def jsonBytes
+    try {
+        jsonBytes = groovy.json.JsonOutput.toJson(snapshot).getBytes("UTF-8")
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot serialize backup for rule ${ruleId}: ${e.message}")
+    }
+    try {
+        uploadHubFile(fileName, jsonBytes)
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot save backup file '${fileName}' for rule ${ruleId}: ${e.message}")
+    }
+
+    if (!state.itemBackupManifest) state.itemBackupManifest = [:]
+    def backupKey = "rm-rule_${ruleId}_${ts}"
+    def entry = [
+        type: "rm-rule",
+        id: ruleId,
+        ruleId: ruleId,
+        fileName: fileName,
+        reason: snapshot.reason,
+        appLabel: snapshot.appLabel,
+        timestamp: snapshot.timestamp,
+        sourceLength: jsonBytes.length  // reusing the existing field name for byte size
+    ]
+    state.itemBackupManifest[backupKey] = entry
+
+    // Reuse backupItemSource's prune budget (20 entries total across all
+    // backup types). Oldest pruned first — same policy as app/driver.
+    if (state.itemBackupManifest.size() > 20) {
+        def oldest = state.itemBackupManifest.min { it.value.timestamp }
+        if (oldest) {
+            try { deleteHubFile(oldest.value.fileName) } catch (Exception e) {
+                mcpLog("warn", "rm-native", "Could not prune backup ${oldest.value.fileName}: ${e.message}")
+            }
+            state.itemBackupManifest.remove(oldest.key)
+        }
+    }
+
+    mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
+    return [backupKey: backupKey] + entry
+}
+
+/**
+ * Force-delete an app via /installedapp/forcedelete/<id>/quiet. Same path
+ * RM uses internally for its own "Delete Rule" button — bypasses child/
+ * device reference checks. Caller MUST have called _rmBackupRuleSnapshot
+ * first; delete_native_app enforces this.
+ */
+private Map _rmForceDeleteApp(Integer appId) {
+    def resp = hubInternalGetRaw("/installedapp/forcedelete/${appId}/quiet")
+    // Success = 302 redirect to installedapps list. Accept anything 2xx/3xx.
+    if (resp?.status != null && resp.status >= 400) {
+        throw new IllegalArgumentException("forcedelete failed for app ${appId}: status=${resp.status}")
+    }
+    return resp
+}
+
+/**
+ * Soft delete via /installedapp/delete/<id>. Refuses if the app has
+ * child devices or child apps (hub-side safety). Returns the hub's JSON
+ * response verbatim so callers can surface the reason on refusal.
+ */
+private Map _rmSoftDeleteApp(Integer appId) {
+    def responseText = hubInternalGet("/installedapp/delete/${appId}")
+    if (!responseText) {
+        throw new IllegalArgumentException("Empty response from soft-delete on app ${appId}")
+    }
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        // Hub sometimes returns redirect HTML instead of JSON on soft-
+        // delete success. Treat non-parseable body as success with a
+        // note so callers don't see a misleading failure.
+        return [success: true, raw: responseText.take(200)]
+    }
+    return parsed
+}
+
+// -------------------- Native RM tools (MCP-exposed) --------------------
+
+/**
+ * create_native_app — create a new, empty Rule Machine 5.1 rule with a name.
+ *
+ * Body content (triggers/actions/required-expression) is added via
+ * update_native_app after creation. This tool deliberately does only the
+ * createchild + name-set so failure modes are small and recoverable.
+ *
+ * Auto-cleanup: if the name-set fails after createchild succeeds, the
+ * orphan child is force-deleted so the user doesn't accumulate broken
+ * shells under the RM parent.
+ */
+def toolCreateNativeApp(args) {
+    requireHubAdminWrite(args?.confirm as Boolean)
+    def appType = args?.appType?.toString()?.trim() ?: "rule_machine"
+    def reg = _appTypeRegistry()[appType]
+    if (!reg) {
+        throw new IllegalArgumentException("Unknown appType '${appType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
+    }
+    def name = args?.name?.toString()?.trim()
+    if (!name) throw new IllegalArgumentException("name is required")
+
+    def parentId = _discoverParentAppId(appType)
+    def newId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
+
+    try {
+        // First page of a fresh classic SmartApp is the label page. The
+        // input name is conventionally `origLabel` across all the app
+        // types in the registry (RM 5.1, Button Controller-5.1, Basic
+        // Rules, Room Lighting, etc. — all derive from the same
+        // SmartApp framework). Schema is introspected from configure/json
+        // so the 3-field capability contract applies uniformly.
+        def firstPage = _rmFetchConfigJson(newId)
+        def schema = _rmCollectInputSchema(firstPage?.configPage)
+        def body = _rmBuildSettingsBody(newId, [origLabel: name], schema)
+        hubInternalPostForm("/installedapp/update/json", body)
+
+        // updateRule is RM's "commit + reinitialize" button. Other app
+        // types use the same button name (it's the framework-default
+        // for installed apps), but if a future appType needs a different
+        // commit button, the registry can carry a commitButton field.
+        _rmClickAppButton(newId, "updateRule")
+
+        def status = _rmFetchStatusJson(newId)
+        return [
+            success: true,
+            appId: newId,
+            appType: appType,
+            name: name,
+            parentAppId: parentId,
+            statusSummary: [
+                eventSubscriptions: (status?.eventSubscriptions?.size() ?: 0),
+                scheduledJobs: (status?.scheduledJobs?.size() ?: 0)
+            ],
+            note: "Empty ${appType} app created (id=${newId}). Use update_native_app to populate, or get_app_config to inspect."
+        ]
+    } catch (Exception e) {
+        // Orphan cleanup: caller didn't get a usable app, so remove the
+        // half-created shell rather than leaving it under the parent.
+        // forcedelete/quiet is idempotent on already-gone ids.
+        mcpLog("error", "rm-native", "create_native_app setup failed after createchild for ${newId} (appType=${appType}): ${e.message} — cleaning up")
+        try { _rmForceDeleteApp(newId) } catch (Exception ce) {
+            mcpLog("warn", "rm-native", "Orphan cleanup failed for ${newId}: ${ce.message}")
+        }
+        return [success: false, error: "${appType} create failed: ${e.message}", orphanCleanup: "attempted", note: "No partial app left behind."]
+    }
+}
+
+/**
+ * update_native_app — two modes, caller picks one (settings OR button):
+ *
+ *   settings: apply a settings map with the multi-device 3-field contract
+ *             enforced automatically. Always backs up first, always
+ *             verifies the multiple flags post-write with one retry on
+ *             divergence, then runs the updateRule button so the change
+ *             takes effect on the running rule instance.
+ *
+ *   button:   POST to /installedapp/btn for wizard-navigation buttons
+ *             (editCond, editAct, pausRule, etc.). Useful for driving
+ *             the multi-page authoring flow when callers need to set
+ *             state.editCond / state.editAct before the next settings
+ *             write can reach the right dynamic page.
+ *
+ * pageName lets callers target a specific sub-page (e.g. ruleActions,
+ * triggerCondition, ifthenelseActions) — the schema is introspected from
+ * that page so settings named on that page get correct marshaling.
+ */
+def toolUpdateNativeApp(args) {
+    requireHubAdminWrite(args?.confirm as Boolean)
+    if (args?.appId == null) throw new IllegalArgumentException("appId is required")
+    def appId = normalizeRuleId(args.appId)
+    def settingsMap = args?.settings instanceof Map ? args.settings : null
+    def button = args?.button?.toString()?.trim() ?: null
+    if (!settingsMap && !button) {
+        throw new IllegalArgumentException("update_native_app requires either 'settings' (Map) or 'button' (String) — neither was provided.")
+    }
+
+    // Always snapshot before writing. No exceptions — this is the
+    // restore channel if anything downstream goes wrong.
+    def backup = _rmBackupRuleSnapshot(appId, button ? "pre-button-${button}" : "pre-update")
+
+    def pageName = args?.pageName?.toString()?.trim() ?: null
+    if (pageName && !pageName.matches(/[A-Za-z0-9_]+/)) {
+        throw new IllegalArgumentException("pageName must be alphanumeric/underscore: ${pageName}")
+    }
+
+    try {
+        def result = [success: true, appId: appId, backup: backup]
+
+        if (settingsMap) {
+            def config = _rmFetchConfigJson(appId, pageName)
+            def schema = _rmCollectInputSchema(config?.configPage)
+            _rmUpdateAppSettings(appId, settingsMap, schema)
+            // updateRule re-runs initialize() on the app so event
+            // subscriptions repopulate after the settings change. The
+            // button param, if also given, takes precedence over the
+            // implicit updateRule click.
+            if (!button) _rmClickAppButton(appId, "updateRule")
+            result.settingsApplied = settingsMap.keySet().toList()
+        }
+
+        if (button) {
+            _rmClickAppButton(appId, button, args?.stateAttribute?.toString())
+            result.buttonClicked = button
+        }
+
+        // Final verification: the config page's error field is null on
+        // healthy apps. If any non-null error appears here, the write
+        // poisoned something and the caller should restore from backup.
+        def finalConfig = _rmFetchConfigJson(appId)
+        def err = finalConfig?.configPage?.error
+        if (err) {
+            result.warning = "App has a rendering error after update: ${err}"
+            result.restoreHint = "Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+        }
+        result.configPageError = err
+        return result
+    } catch (Exception e) {
+        def msg = e.message ?: e.toString()
+        mcpLog("error", "rm-native", "update_native_app failed for ${appId}: ${msg}")
+        return [
+            success: false,
+            appId: appId,
+            error: msg,
+            backup: backup,
+            restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+        ]
+    }
+}
+
+/**
+ * delete_native_app — always snapshots the app first, then deletes. Default
+ * mode is soft delete (hub refuses if the app has child apps or devices).
+ * force=true routes to forcedelete/quiet — the same path RM itself uses.
+ *
+ * Works on any classic SmartApp instance: RM rules, Room Lighting,
+ * Button Controllers, Basic Rules, Notifier, etc.
+ */
+def toolDeleteNativeApp(args) {
+    requireHubAdminWrite(args?.confirm as Boolean)
+    if (args?.appId == null) throw new IllegalArgumentException("appId is required")
+    def appId = normalizeRuleId(args.appId)
+    def force = args?.force == true
+
+    def backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete")
+
+    try {
+        if (force) {
+            _rmForceDeleteApp(appId)
+            return [
+                success: true,
+                appId: appId,
+                mode: "forcedelete",
+                backup: backup,
+                note: "App force-deleted. To restore, call restore_item_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings)."
+            ]
+        } else {
+            def resp = _rmSoftDeleteApp(appId)
+            // Soft delete returns {success: bool, message: ...} when it
+            // parses. Surface the hub's own message so the user learns
+            // why (e.g. "cannot delete — app has child devices").
+            if (resp?.success == false) {
+                return [
+                    success: false,
+                    appId: appId,
+                    mode: "delete",
+                    hubMessage: resp?.message,
+                    backup: backup,
+                    note: "Soft delete refused by hub. Pass force=true to override (app's children will also be removed)."
+                ]
+            }
+            return [
+                success: true,
+                appId: appId,
+                mode: "delete",
+                backup: backup,
+                note: "App deleted."
+            ]
+        }
+    } catch (Exception e) {
+        return [
+            success: false,
+            appId: appId,
+            error: e.message,
+            backup: backup
+        ]
+    }
+}
+
+/**
+ * Internal: replay an RM rule snapshot. Called by the unified
+ * restore_item_backup tool when entry.type == "rm-rule". Two paths:
+ *   - Rule still exists: settings re-applied in place (no new rule created).
+ *   - Rule was deleted: a fresh empty rule is created and the saved
+ *     settings are replayed onto it. The new rule has a different id;
+ *     the original id stays gone.
+ */
+private Map _rmRestoreFromBackup(Map entry) {
+    def fileName = entry.fileName
+    def jsonBytes
+    try {
+        jsonBytes = downloadHubFile(fileName)
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot read RM backup file '${fileName}': ${e.message}")
+    }
+    def snapshot
+    try {
+        snapshot = new groovy.json.JsonSlurper().parseText(new String(jsonBytes, "UTF-8"))
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot parse RM backup file '${fileName}': ${e.message}")
+    }
+    if (snapshot?.schemaVersion != 1) {
+        throw new IllegalArgumentException("Unsupported RM backup schemaVersion: ${snapshot?.schemaVersion} (expected 1)")
+    }
+
+    def savedId = snapshot.ruleId as Integer
+    def savedSettings = (snapshot?.configJson?.settings ?: [:]) as Map
+    def savedLabel = snapshot?.appLabel
+
+    def exists = true
+    try { _rmFetchConfigJson(savedId) } catch (Exception e) { exists = false }
+
+    // Backup snapshots from before the appType-aware code path stored
+    // type="rm-rule" without an appType field. Treat those as RM (the
+    // only app type the original snapshots covered) for the recreate
+    // path. Future snapshots can carry an explicit savedAppType field.
+    def savedAppType = snapshot?.appType ?: "rule_machine"
+    def reg = _appTypeRegistry()[savedAppType]
+    if (!reg) {
+        throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
+    }
+
+    def ruleId
+    if (exists) {
+        ruleId = savedId
+    } else {
+        def parentId = _discoverParentAppId(savedAppType)
+        ruleId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
+        try {
+            def firstPage = _rmFetchConfigJson(ruleId)
+            def firstSchema = _rmCollectInputSchema(firstPage?.configPage)
+            def seedBody = _rmBuildSettingsBody(ruleId, [origLabel: savedLabel ?: "restored-app-${savedId}"], firstSchema)
+            hubInternalPostForm("/installedapp/update/json", seedBody)
+            _rmClickAppButton(ruleId, "updateRule")
+        } catch (Exception e) {
+            try { _rmForceDeleteApp(ruleId) } catch (Exception ce) { /* best effort */ }
+            throw new IllegalArgumentException("Restore failed during app recreate (appType=${savedAppType}): ${e.message}")
+        }
+    }
+
+    def savedSchema = _rmCollectInputSchema(snapshot?.configJson?.configPage) ?: [:]
+    try {
+        _rmUpdateAppSettings(ruleId, savedSettings, savedSchema)
+        _rmClickAppButton(ruleId, "updateRule")
+    } catch (Exception e) {
+        return [
+            success: false,
+            type: "rm-rule",
+            ruleId: ruleId,
+            originalRuleId: savedId,
+            error: "Restore applied partially; failed during settings replay: ${e.message}",
+            note: "Rule ${ruleId} exists but may have incomplete settings. Inspect with get_app_config."
+        ]
+    }
+
+    return [
+        success: true,
+        type: "rm-rule",
+        ruleId: ruleId,
+        originalRuleId: savedId,
+        recreated: !exists,
+        backupFile: fileName,
+        settingsApplied: savedSettings.keySet().toList(),
+        note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
+    ]
+}
+
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
@@ -8759,8 +9710,8 @@ MCP-managed virtual devices:
 - Rapid edits preserve original (1-hour protection)
 
 ### Rule Backups (Automatic)
-- delete_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
-- Restore via: read_file → import_rule
+- custom_delete_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
+- Restore via: read_file → custom_import_rule
 - Skip backup: set testRule=true when creating/updating''',
 
         file_manager: '''## File Manager
@@ -8798,7 +9749,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         builtin_app_tools: '''## Built-in App Tools
 
-Tools in the manage_installed_apps and manage_rule_machine gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools" toggle (requireBuiltinAppRead). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). manage_rule_machine tools require the "Enable Built-in App Tools" toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools" toggle (requireBuiltinAppRead). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
 **manage_installed_apps (4 tools):**
 
@@ -8818,31 +9769,44 @@ Tools in the manage_installed_apps and manage_rule_machine gateways have mixed g
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
   - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call list_app_pages first to discover available page names for any multi-page app.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
-  - Workflow: list_installed_apps (or list_rm_rules for RM rules specifically -- note that list_rules / get_rule handle only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then get_app_config to inspect. For multi-page apps, consider list_app_pages first.
+  - Workflow: list_installed_apps (or list_rm_rules for RM rules specifically -- note that custom_list_rules / custom_get_rule handle only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then get_app_config to inspect. For multi-page apps, consider list_app_pages first.
 
 - **list_app_pages** — discover what pageNames a given app accepts (Hub Admin Read required)
   - Input: appId
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-**manage_rule_machine (5 tools) — read + trigger existing RM rules only, NO create/modify/delete:**
+**manage_native_rules_and_apps (8 tools) — read, trigger, AND full CRUD on native RM rules:**
 
+RMUtils-based control surface (Built-in App Tools gate only):
 - **list_rm_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
+- **run_rm_rule** — trigger an existing RM rule
+  - action="rule" (default): full evaluation (triggers + conditions + actions)
+  - action="actions": run actions only, skip conditions
+  - action="stop": stop running actions
+- **pause_rm_rule** / **resume_rm_rule** — reversible toggle
+- **set_rm_rule_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
 
-- **run_rm_rule** — trigger an existing RM rule via RMUtils.sendAction
-  - action="rule" (default, full evaluation): runs triggers + conditions + actions as if rule fired
-  - action="actions": runs only the actions, bypassing conditions (useful for manual override)
-  - action="stop": stops running actions (cancels in-flight delays)
+Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
+- **create_native_app** — create a new empty RM 5.1 rule. Args: name, confirm. Returns ruleId. Call update_native_app afterward to add body.
+- **update_native_app** — write settings with the multiple=true capability contract enforced automatically, OR click a page-transition button. Args: ruleId, settings (Map) OR button (String), pageName, stateAttribute, confirm. Auto-backs-up before writing.
+- **delete_native_app** — soft delete (default) or force=true. Args: ruleId, force, confirm. Auto-backs-up before deleting.
 
-- **pause_rm_rule** / **resume_rm_rule** — reversible toggle; paused rules don't fire on triggers
+For READING an RM rule's current state, use **get_app_config** in the manage_installed_apps gateway — it works on any installed app including RM rules and returns the same configPage shape that update_native_app expects to see.
 
-- **set_rm_rule_boolean** — set an RM rule's private boolean (true or false only; strings must be lowercase "true"/"false"). RM rules can use Private Boolean in conditions — this lets MCP flip that flag from outside.
+For BACKUP enumeration and restore, use the unified **list_item_backups** + **restore_item_backup** in manage_apps_drivers — RM rule snapshots have type="rm-rule" in those tools' output and restore_item_backup auto-dispatches the rule-restore path.
 
-**CRITICAL LIMITATION: Cannot create, modify, or delete RM rules or Room Lighting instances.** Hubitat's platform blocks third-party apps from instantiating hubitat:Rule-5.1 or hubitat:RoomLights as children (parent-type validation on addChildApp). If the user asks to "create a new RM rule" or "set up a new Room Lighting", respond:
-  1. Explain this is not possible via MCP (platform limitation, not a missing feature)
-  2. Offer the alternative: create an equivalent rule using MCP's own rule engine via create_rule
-  3. Or direct them to the native Rule Machine / Room Lighting UI for configuration
+**Safety model for native CRUD:**
+1. Every write is preceded by a full snapshot (configure/json + statusJson) saved to File Manager; the response's backup.backupKey is the restore handle.
+2. Multi-device capability inputs (capability.X with multiple=true) require a 3-field POST payload group (settings[name]=csv, name.type=capability.X, name.multiple=true). Omitting name.multiple=true poisons the AppSetting DB flag and every render throws `Command 'size' is not supported by device`. update_native_app emits the full group automatically from the input schema — callers never have to think about this.
+3. After every write, the multiple flags in the live appSettings are verified. If any flipped, one automatic retry fires with the full group. Persistent divergence throws and the response surfaces restore_item_backup as the next step.
+4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
 
-Do NOT invent fake tools like "create_rm_rule" or pretend to call one — this is the most important safety rule for these tools.'''
+**CRUD workflow example:**
+  create_native_app(name="BAT-RM-demo", confirm=true) → {ruleId: 974}
+  get_app_config(appId=974, includeSettings=true) → input schema + current settings
+  update_native_app(ruleId=974, settings={tDev0: [8, 9], tCapab0: "switch"}, confirm=true)
+  get_app_config(appId=974) → verify configPage.error is null
+  delete_native_app(ruleId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}'''
     ]
 }

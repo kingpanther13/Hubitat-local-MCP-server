@@ -10,7 +10,7 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5)
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (8)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -233,10 +233,16 @@ Auto-backs up before modifying. Rapid edits within 1 hour preserve the original.
 - Max 20 kept, oldest pruned
 - Rapid edits preserve original (1-hour protection)
 
-### Rule Backups (Automatic)
-- `delete_rule` auto-backs up to File Manager as `mcp_rule_backup_<name>_<timestamp>.json`
-- Restore via: `read_file` → `import_rule`
+### Custom-engine Rule Backups (Automatic)
+- `custom_delete_rule` auto-backs up to File Manager as `mcp_rule_backup_<name>_<timestamp>.json`
+- Restore via: `read_file` → `custom_import_rule`
 - Skip backup for test rules: set `testRule: true` when creating/updating
+
+### Native RM Rule Backups (Automatic)
+- `update_rm_rule` and `delete_rm_rule` snapshot configure/json + statusJson to File Manager as `mcp-rm-backup-<ruleId>-<timestamp>.json`
+- Snapshots register in the unified `state.itemBackupManifest` with type=`rm-rule`
+- Use `list_item_backups` to enumerate, `restore_item_backup` (in `manage_apps_drivers`) with the backupKey to roll back
+- If the rule still exists, settings are replayed in place; if deleted, a fresh empty rule is recreated and the saved settings replayed onto it
 
 ---
 
@@ -290,7 +296,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Built-in App Tools
 
-Tools in `manage_installed_apps` and `manage_rule_machine` gateways have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the **Enable Built-in App Tools** toggle (`requireBuiltinAppRead`). `get_app_config` and `list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `manage_rule_machine` tools require the **Enable Built-in App Tools** toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in `manage_installed_apps` and `manage_native_rules_and_apps` gateways have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the **Enable Built-in App Tools** toggle (`requireBuiltinAppRead`). `get_app_config` and `list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `manage_native_rules_and_apps` tools require the **Enable Built-in App Tools** toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
 ### manage_installed_apps (4 tools)
 
@@ -317,7 +323,7 @@ Tools in `manage_installed_apps` and `manage_rule_machine` gateways have mixed g
   - Use this before `get_app_config` on multi-page apps to avoid guessing page names
   - Args: `appId` (required)
 
-### manage_rule_machine (5 tools)
+### manage_native_rules_and_apps (5 tools)
 
 **Read + trigger existing RM rules only. Cannot create, modify, or delete RM rules — Hubitat platform blocks third-party apps from mutating built-in app children.**
 
@@ -332,12 +338,14 @@ Tools in `manage_installed_apps` and `manage_rule_machine` gateways have mixed g
 
 - **`set_rm_rule_boolean`** — set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). RM rules can use "Private Boolean" in conditions — this lets MCP flip that flag from outside.
 
-### CRITICAL: Refuse invalid RM/RL operations
+### Native RM CRUD is supported
 
-If a user asks "create a new RM rule" or "set up a new Room Lighting":
+If a user asks "create a new RM rule":
 
-1. Explain this is not possible via MCP (platform limitation, not a missing feature)
-2. Offer the alternative: create an equivalent rule using MCP's own rule engine via `create_rule`
-3. Or direct them to the native Rule Machine / Room Lighting UI for configuration
+1. **`create_rm_rule`** — creates an empty native RM 5.1 rule (returns ruleId)
+2. **`update_rm_rule`** — populates triggers/conditions/actions via settings writes (multiple=true contract automatic) or wizard button clicks. Auto-snapshots before every write.
+3. **`get_app_config`** (in `manage_installed_apps`) — read the rule's current page schema and settings
+4. **`delete_rm_rule`** — soft delete (default) or `force=true` for the same path RM uses internally. Auto-snapshots first.
+5. **`list_item_backups`** + **`restore_item_backup`** — enumerate and restore native RM rule snapshots (type=`rm-rule` entries) from File Manager.
 
-**Do NOT invent fake tools like `create_rm_rule` or pretend to call one.** This is the most important safety rule for these tools.
+For Room Lighting / Button Controllers / Basic Rules — these are reachable via the same admin-layer endpoints but typed wrappers haven't been added yet. Use `get_app_config` to inspect them; create/modify is not yet exposed.
