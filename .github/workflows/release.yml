@@ -110,13 +110,20 @@ jobs:
           echo "label=$LABEL" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout main
+      - name: Checkout main via deploy key
         if: steps.label.outputs.skip == 'false'
         uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Deploy key is the only actor allowed to bypass the main-branch
+          # ruleset's required status checks (see repo rulesets; for
+          # user-owned repos only DeployKey / RepositoryRole / DeployKey
+          # bypass types are accepted — Integration bypass is org-only).
+          # GITHUB_TOKEN would push as github-actions[bot], which is not in
+          # the bypass list, and the ruleset would reject the release commit
+          # (it's brand new on the runner, no CI has observed it yet).
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
       - uses: actions/setup-python@v6
         if: steps.label.outputs.skip == 'false'
