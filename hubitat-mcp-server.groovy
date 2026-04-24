@@ -8878,7 +8878,7 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         reason: reason ?: "pre-write",
         timestamp: now(),
         timestampIso: formatTimestamp(now()),
-        appLabel: config?.app?.trueLabel ?: config?.app?.label,
+        appLabel: stripAppConfigHtml(config?.app?.trueLabel ?: config?.app?.label),
         configJson: config,
         statusJson: status
     ]
@@ -9236,7 +9236,26 @@ private Map _rmRestoreFromBackup(Map entry) {
         }
     }
 
+    // Schema sourcing: configPage covers only the main page, but classic
+    // apps (especially RM) keep most device pickers on sub-pages whose
+    // schema isn't in the main configPage. Without their type+multiple
+    // metadata, _rmBuildSettingsBody can't emit the .multiple=true
+    // sidecar — exactly the poisoning we're trying to avoid. Supplement
+    // from the snapshotted statusJson.appSettings, which carries the
+    // live marshal flags for every setting regardless of which page
+    // declared it. Page-derived entries take precedence (they include
+    // `required` and other UI-only metadata) so this is additive only.
     def savedSchema = _rmCollectInputSchema(snapshot?.configJson?.configPage) ?: [:]
+    snapshot?.statusJson?.appSettings?.each { s ->
+        def n = s?.name?.toString()
+        if (n && !savedSchema.containsKey(n)) {
+            savedSchema[n] = [
+                name: n,
+                type: s?.type?.toString(),
+                multiple: s?.multiple == true
+            ]
+        }
+    }
     try {
         _rmUpdateAppSettings(ruleId, savedSettings, savedSchema)
         _rmClickAppButton(ruleId, "updateRule")

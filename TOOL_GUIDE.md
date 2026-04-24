@@ -323,29 +323,28 @@ Tools in `manage_installed_apps` and `manage_native_rules_and_apps` gateways hav
   - Use this before `get_app_config` on multi-page apps to avoid guessing page names
   - Args: `appId` (required)
 
-### manage_native_rules_and_apps (5 tools)
+### manage_native_rules_and_apps (8 tools)
 
-**Read + trigger existing RM rules only. Cannot create, modify, or delete RM rules — Hubitat platform blocks third-party apps from mutating built-in app children.**
+Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-only because RMUtils is RM-only) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.).
+
+**RMUtils control (5 tools, RM-only):**
 
 - **`list_rm_rules`** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
-
 - **`run_rm_rule`** — trigger an existing RM rule via `RMUtils.sendAction`
   - `action="rule"` (default, full evaluation): runs triggers + conditions + actions as if the rule fired
   - `action="actions"`: runs only the actions, bypassing conditions (useful for manual override)
   - `action="stop"`: stops running actions (cancels in-flight delays)
-
 - **`pause_rm_rule`** / **`resume_rm_rule`** — reversible toggle; paused rules don't fire on triggers
-
 - **`set_rm_rule_boolean`** — set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). RM rules can use "Private Boolean" in conditions — this lets MCP flip that flag from outside.
 
-### Native RM CRUD is supported
+**Admin-layer CRUD (3 tools, generic across all classic SmartApps):**
 
-If a user asks "create a new RM rule":
+If a user asks "create a new RM rule" or "modify this Room Lighting instance":
 
-1. **`create_rm_rule`** — creates an empty native RM 5.1 rule (returns ruleId)
-2. **`update_rm_rule`** — populates triggers/conditions/actions via settings writes (multiple=true contract automatic) or wizard button clicks. Auto-snapshots before every write.
-3. **`get_app_config`** (in `manage_installed_apps`) — read the rule's current page schema and settings
-4. **`delete_rm_rule`** — soft delete (default) or `force=true` for the same path RM uses internally. Auto-snapshots first.
-5. **`list_item_backups`** + **`restore_item_backup`** — enumerate and restore native RM rule snapshots (type=`rm-rule` entries) from File Manager.
+1. **`create_native_app(appType, name, confirm)`** — creates an empty classic SmartApp. `appType` is enum-driven (initially `rule_machine`; expand `_appTypeRegistry` for other types). Returns `appId`.
+2. **`update_native_app(appId, settings|button, ...)`** — modifies any classic SmartApp instance by appId. Multi-device capability `multiple=true` contract emitted automatically. Auto-snapshots before every write.
+3. **`get_app_config`** (in `manage_installed_apps`) — read any installed app's current page schema, settings, and child apps. Use BEFORE every `update_native_app` to discover the right input names.
+4. **`delete_native_app(appId, force, confirm)`** — soft delete (default) or `force=true` for `forcedelete/quiet` (the path the hub UI uses). Auto-snapshots first.
+5. **`list_item_backups`** + **`restore_item_backup`** (in `manage_apps_drivers`) — enumerate and restore native-app snapshots (`type="rm-rule"` entries). Restore re-applies settings in place if the app exists, or recreates the app and replays settings if it was deleted.
 
-For Room Lighting / Button Controllers / Basic Rules — these are reachable via the same admin-layer endpoints but typed wrappers haven't been added yet. Use `get_app_config` to inspect them; create/modify is not yet exposed.
+For Room Lighting / Button Controllers / Basic Rules: `update_native_app` and `delete_native_app` already work today (they take any classic-app appId). `create_native_app` will work for them once their entries are added to `_appTypeRegistry()` — same endpoint family, just need namespace + appName + parentTypeName per type.

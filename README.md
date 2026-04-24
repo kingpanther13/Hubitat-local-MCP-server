@@ -249,9 +249,9 @@ The server has 83 tools total. To keep the MCP `tools/list` manageable, **22 cor
 | `custom_get_rule` | Full custom-engine rule details (triggers, conditions, actions) |
 | `custom_create_rule` | Create a new custom-engine automation rule (separate from native Rule Machine) |
 | `custom_update_rule` | Update custom-engine rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
-| `create_rm_rule` | Create a NATIVE Rule Machine 5.1 rule (appears under Apps / Automations like a normal RM rule) |
-| `update_rm_rule` | Modify a native RM rule (multiple=true contract automatic, snapshot-before-write) |
-| `delete_rm_rule` | Delete a native RM rule (auto-snapshot to File Manager) |
+| `create_native_app` | Create a NATIVE classic SmartApp (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / Basic Rules / etc.). Appears under Apps / Automations like a normally-created app. |
+| `update_native_app` | Modify any classic native app by appId (multiple=true contract automatic, snapshot-before-write) |
+| `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager) |
 
 </details>
 
