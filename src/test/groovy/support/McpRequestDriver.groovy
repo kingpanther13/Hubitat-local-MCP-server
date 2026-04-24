@@ -3,9 +3,12 @@ package support
 import groovy.json.JsonSlurper
 
 /**
- * Drives {@code handleMcpRequest()} end-to-end through the HTTP pipeline
- * the MCP app actually presents on a real hub — parse {@code request.JSON},
- * dispatch JSON-RPC, write back through {@code render(...)}.
+ * Drives {@code handleMcpRequest()} through its in-process request pipeline:
+ * the script reads {@code request.JSON}, dispatches JSON-RPC, and writes back
+ * through {@code render(Map)}. This is the tier-2 integration dispatch seam —
+ * one JVM, Spock Mocks, no real HTTP boundary — distinct from the tier-1
+ * unit specs that call {@code script.handleToolsCall(msg)} directly and from
+ * the tier-3 fake-hub work tracked in #77.
  *
  * The existing server specs call JSON-RPC-layer methods directly
  * ({@code script.handleToolsCall(msg)} etc.), which covers the JSON-RPC
@@ -13,7 +16,10 @@ import groovy.json.JsonSlurper
  *
  *   1. {@code request.JSON} — the sandbox dynamic property the hub populates
  *      with the parsed POST body. Production code must survive missing,
- *      unparsable, and weirdly-shaped bodies without crashing.
+ *      unparsable, and weirdly-shaped bodies without crashing. The getter
+ *      itself can throw on malformed bodies (see {@link #pushBodyThrowing});
+ *      the app wraps the read in try/catch to turn that into a
+ *      JSON-RPC -32700 response.
  *   2. {@code render(Map)} — the hub-side response writer. Production code
  *      assembles status / contentType / data and hands them to render; tests
  *      that bypass render never verify the envelope the hub actually sends.
@@ -21,20 +27,32 @@ import groovy.json.JsonSlurper
  * Both are in the {@code handleMcpRequest()} path (see
  * hubitat-mcp-server.groovy around line 284). This driver plugs into the
  * harness so specs can push a body, invoke {@code handleMcpRequest}, and
- * read the captured render args — no JSON-RPC-layer short-cutting.
+ * read the captured render args.
  *
  * Wiring (done by {@link HarnessSpec}):
- *   - {@code request} is purely dynamic (absent from every eighty20results
- *     interface and from HubitatAppScript) — installed via
- *     {@code script.metaClass.getRequest} returning {@link #request}.
  *   - {@code render(Map)} is declared on {@code AppExecutor} — stubbed in
  *     {@code setupSpec()} via the {@code >>} dispatcher pattern that
  *     captures the Map into {@link #lastRenderArgs}. This matches the
  *     dispatch cheat sheet in docs/testing.md.
+ *   - {@code request} is resolved via {@code HubitatAppScript}'s
+ *     {@code @CompileStatic getProperty(String)} override, which
+ *     short-circuits the name {@code "request"} to
+ *     {@code injectedMappingHandlerData['request']} before MOP dispatch.
+ *     metaClass hooks are never consulted for this name, so the driver's
+ *     {@link #scriptRequest} proxy is written directly into that private
+ *     field via reflection. The write happens per-test in
+ *     {@code HarnessSpec.setup()} (via {@code wireScriptOverrides()}) —
+ *     not once in {@code setupSpec()} — because {@code setup()} wipes the
+ *     script's metaClass and the re-wire guarantees the field survives.
+ *     Since {@link #scriptRequest} is a stable instance that dispatches
+ *     its {@code getJSON()} at access time based on {@link #throwingRequest}
+ *     / {@link #request}, state changes made in a test's {@code given:}
+ *     block ({@link #pushBody} / {@link #pushBodyThrowing}) take effect
+ *     without re-wiring.
  *
  * State lifecycle: {@link #reset()} is called from the harness's per-test
  * {@code setup()} so each feature starts with an empty pending body and no
- * captured render output. The instance itself is {@code @Shared}; its map
+ * captured render output. The instance itself is {@code @Shared}; its
  * references stay stable while their contents get cleared.
  */
 class McpRequestDriver {
@@ -42,20 +60,32 @@ class McpRequestDriver {
     private static final JsonSlurper SLURPER = new JsonSlurper()
 
     /**
-     * Fake request object the script sees when it calls
-     * {@code request.JSON}. A Map is sufficient — Groovy property dispatch
-     * on a Map resolves {@code map.JSON} to {@code map.get('JSON')}.
-     *
-     * This reference is wired into
-     * {@code HubitatAppScript.injectedMappingHandlerData['request']} once
-     * in {@code HarnessSpec.setupSpec()}. The harness's {@code setup()}
-     * re-populates the map every test but keeps the same reference, so
-     * mutations via {@code pushBody()} are always visible to the script's
-     * {@code getProperty("request")} path without re-installing the hook.
-     * Reassigning this field instead of mutating would dangle the old map
-     * in the script — always mutate-in-place via {@code pushBody()}.
+     * Backing store for the parsed body the script sees when it reads
+     * {@code request.JSON}. {@link #pushBody} mutates this in place so the
+     * reference stays stable across tests — the harness wires
+     * {@link #scriptRequest} (which reads this) into the script's
+     * {@code injectedMappingHandlerData['request']} slot.
      */
     final Map request = [JSON: null]
+
+    /**
+     * If non-null, {@link #scriptRequest#getJSON()} throws this instead of
+     * returning {@link #request}.JSON. Set by {@link #pushBodyThrowing} to
+     * exercise the {@code handleMcpRequest} try/catch -32700 branch at
+     * hubitat-mcp-server.groovy:286-292; cleared by {@link #reset}.
+     */
+    Throwable throwingRequest = null
+
+    /**
+     * Proxy the harness wires into {@code injectedMappingHandlerData['request']}.
+     * Its {@code getJSON()} dispatches dynamically at access time: if
+     * {@link #throwingRequest} is set it throws, otherwise it returns the
+     * current {@link #request}.JSON value. The indirection is what lets a
+     * test's {@code given:} block call {@link #pushBody} or
+     * {@link #pushBodyThrowing} and have it take effect without re-running
+     * the harness's {@code wireScriptOverrides()}.
+     */
+    final ScriptRequestProxy scriptRequest = new ScriptRequestProxy(this)
 
     /**
      * Last {@code render(Map)} call args captured from the script. Tests
@@ -74,8 +104,21 @@ class McpRequestDriver {
      * {@code injectedMappingHandlerData['request']} stays live across tests.
      */
     void pushBody(Object body) {
+        throwingRequest = null
         request.clear()
         request.JSON = body
+    }
+
+    /**
+     * Stage a {@code request.JSON} access that throws the given Throwable.
+     * Covers the {@code handleMcpRequest()} try/catch branch at
+     * hubitat-mcp-server.groovy:286-292, which turns hub-side JSON parse
+     * failures into JSON-RPC -32700 responses. {@link #pushBody}(null) only
+     * hits the subsequent {@code requestBody == null} branch — it does not
+     * exercise the catch.
+     */
+    void pushBodyThrowing(Throwable t) {
+        throwingRequest = t
     }
 
     /**
@@ -87,6 +130,7 @@ class McpRequestDriver {
         request.clear()
         request.JSON = null
         lastRenderArgs = null
+        throwingRequest = null
     }
 
     /**
@@ -109,7 +153,10 @@ class McpRequestDriver {
      * when the response has a body; for empty responses (204) {@code data}
      * is an empty string and this returns {@code null}. Throws if render
      * was never called (which means {@code handleMcpRequest} returned before
-     * reaching any render — a bug to surface loudly, not swallow).
+     * reaching any render — a bug to surface loudly, not swallow). Throws
+     * with the captured args echoed if the body was non-empty but unparseable
+     * JSON, so diagnosis points at the render layer rather than swallowing
+     * the parse error.
      */
     Object parseResponseJson() {
         if (lastRenderArgs == null) {
@@ -122,6 +169,42 @@ class McpRequestDriver {
         if (data == null || data.isEmpty()) {
             return null
         }
-        return SLURPER.parseText(data)
+        try {
+            return SLURPER.parseText(data)
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                "render() data did not parse as JSON. Captured render args: " +
+                "${lastRenderArgs}. Underlying parse error: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Stand-in for the hub's {@code request} that the script's
+     * {@code @CompileStatic getProperty("request")} returns (after the
+     * harness wires this into {@code injectedMappingHandlerData['request']}).
+     * Exposes a single {@code getJSON()} method that dispatches dynamically
+     * at access time — necessary because the harness wires once per test in
+     * {@code setup()} (before {@code given:}), and test blocks need to be
+     * able to stage a throwing or non-throwing body without re-running the
+     * wire step.
+     */
+    static class ScriptRequestProxy {
+        private final McpRequestDriver driver
+
+        ScriptRequestProxy(McpRequestDriver driver) {
+            this.driver = driver
+        }
+
+        /**
+         * Called at each {@code request.JSON} access. Throws
+         * {@link McpRequestDriver#throwingRequest} when set, otherwise
+         * returns the currently-staged {@link McpRequestDriver#request}.JSON.
+         */
+        Object getJSON() {
+            if (driver.throwingRequest != null) {
+                throw driver.throwingRequest
+            }
+            return driver.request.JSON
+        }
     }
 }

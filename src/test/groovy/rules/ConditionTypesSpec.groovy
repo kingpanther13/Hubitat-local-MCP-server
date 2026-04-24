@@ -1,6 +1,7 @@
 package rules
 
 import support.TestDevice
+import support.TestParent
 
 /**
  * Breadth coverage for every non-primitive condition type in
@@ -211,7 +212,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
             [name: 'motion', value: 'inactive'],
             [name: 'motion', value: 'inactive']
         ]
-        parent = new DeviceParent(devices: [1L: device])
+        parent = new TestParent(devices: [1L: device])
 
         expect:
         script.evaluateCondition([
@@ -229,7 +230,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
             [name: 'motion', value: 'inactive'],
             [name: 'motion', value: 'active']
         ]
-        parent = new DeviceParent(devices: [1L: device])
+        parent = new TestParent(devices: [1L: device])
 
         expect:
         script.evaluateCondition([
@@ -242,7 +243,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 1, label: 'Motion')
         device.attributeValues['motion'] = 'active'  // currently NOT inactive
-        parent = new DeviceParent(devices: [1L: device])
+        parent = new TestParent(devices: [1L: device])
 
         expect: 'current value mismatch short-circuits before event lookup'
         script.evaluateCondition([
@@ -255,7 +256,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 1, label: 'Motion')
         device.attributeValues['motion'] = 'inactive'
-        parent = new DeviceParent(devices: [1L: device])
+        parent = new TestParent(devices: [1L: device])
 
         expect:
         script.evaluateCondition([
@@ -269,7 +270,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 2, label: 'Phone')
         device.attributeValues['presence'] = 'present'
-        parent = new DeviceParent(devices: [2L: device])
+        parent = new TestParent(devices: [2L: device])
 
         expect:
         script.evaluateCondition([
@@ -279,7 +280,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
 
     def "presence condition returns false when device not found"() {
         given:
-        parent = new DeviceParent(devices: [:])
+        parent = new TestParent(devices: [:])
 
         expect:
         script.evaluateCondition([
@@ -293,7 +294,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 3, label: 'Front Door')
         device.attributeValues['lock'] = 'locked'
-        parent = new DeviceParent(devices: [3L: device])
+        parent = new TestParent(devices: [3L: device])
 
         expect:
         script.evaluateCondition([
@@ -307,7 +308,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 4, label: 'Tstat')
         device.attributeValues['thermostatMode'] = 'heat'
-        parent = new DeviceParent(devices: [4L: device])
+        parent = new TestParent(devices: [4L: device])
 
         expect:
         script.evaluateCondition([
@@ -319,7 +320,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 4, label: 'Tstat')
         device.attributeValues['thermostatOperatingState'] = 'heating'
-        parent = new DeviceParent(devices: [4L: device])
+        parent = new TestParent(devices: [4L: device])
 
         expect:
         script.evaluateCondition([
@@ -333,7 +334,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 5, label: 'Sensor')
         device.attributeValues['illuminance'] = 120
-        parent = new DeviceParent(devices: [5L: device])
+        parent = new TestParent(devices: [5L: device])
 
         expect:
         script.evaluateCondition([
@@ -345,7 +346,7 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         given:
         def device = new TestDevice(id: 6, label: 'Plug')
         device.attributeValues['power'] = 15.5
-        parent = new DeviceParent(devices: [6L: device])
+        parent = new TestParent(devices: [6L: device])
 
         expect:
         script.evaluateCondition([
@@ -353,12 +354,4 @@ class ConditionTypesSpec extends RuleHarnessSpec {
         ]) == true
     }
 
-    /** Minimal parent stub — findDevice(id) by Long coercion. */
-    static class DeviceParent {
-        Map<Long, TestDevice> devices = [:]
-
-        Object findDevice(id) {
-            devices[(id as Long)]
-        }
-    }
 }

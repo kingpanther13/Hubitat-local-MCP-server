@@ -37,7 +37,7 @@ package support
  *     methods that {@code RuleHarnessSpec} already records via
  *     {@code runInCalls} / {@code runOnceCalls} and {@code unschedule}
  *     counters. Extending this recorder to play scheduled events back is
- *     a follow-on if #77 grows into broader time-driven E2E coverage.</li>
+ *     a follow-on if #77 grows into broader time-driven integration coverage.</li>
  *   <li>The dynamic-dispatch {@code script."${handler}"(event)} path — we
  *     call the handler by name on the loaded script. If production code
  *     subscribes with a handler name that isn't a {@code def} on the
@@ -88,6 +88,12 @@ class SubscriptionRecorder {
      * comparison, which is the behavior we want: callers should use the
      * exact object they passed into subscribe.
      *
+     * Each handler is dispatched with its own shallow copy of the event
+     * map. Production handlers don't mutate their event argument today,
+     * but the defensive copy pre-empts cross-handler side effects if that
+     * changes — without paying the cost of cloning per-key values (the
+     * {@code device} reference etc. are still shared across copies).
+     *
      * Throws {@link IllegalStateException} if no matching subscription
      * is found — silent no-op would be a test-authoring footgun.
      */
@@ -107,7 +113,7 @@ class SubscriptionRecorder {
             value: value
         ]
         event.putAll(overrides)
-        matches.collect { Subscription sub -> script."${sub.handler}"(event) }
+        matches.collect { Subscription sub -> script."${sub.handler}"(new LinkedHashMap(event)) }
     }
 
     /** Clear all recorded subscriptions. Called from {@code RuleHarnessSpec.setup()}. */

@@ -133,6 +133,18 @@ abstract class HarnessSpec extends Specification {
         // the same Map). Without this, `handleMcpRequest()` short-circuits
         // with MissingMethodException inside the Mock's @Delegate chain.
         appExecutor.render(_) >> { args -> mcpDriver.captureRender(args[0] as Map) }
+        // No-arg render() isn't used by any production path today, but
+        // AppExecutor declares both overloads. Fail loudly if a future
+        // handler picks up the no-arg form — silent default (null return,
+        // no capture) would leave parseResponseJson reading the *previous*
+        // test's state, which is exactly the kind of cross-test leak this
+        // harness is built to prevent.
+        appExecutor.render() >> {
+            throw new IllegalStateException(
+                "No-arg render() is not wired into McpRequestDriver. If a new " +
+                "handler path needs it, extend the driver to capture the no-arg " +
+                "call and relax this stub. See src/test/groovy/support/HarnessSpec.groovy.")
+        }
         def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
@@ -189,15 +201,18 @@ abstract class HarnessSpec extends Specification {
         // @CompileStatic `getProperty(String)` override that short-circuits
         // the name "request" to `injectedMappingHandlerData['request']`
         // (verified via `javap -c` on HubitatAppScript.class — falls
-        // through to MOP lookup only when that map is null). metaClass
-        // hooks are never consulted for this name, so the per-feature
-        // McpRequestDriver.request map is installed directly into that
-        // private field. The map reference is stable across tests
-        // (pushBody / reset mutate in place), so this wire-up is
-        // idempotent — the reflective write just ensures we survive the
-        // setup()-time metaClass wipe and any test that cleared the map
-        // for its own reasons. See support/McpRequestDriver for why the
-        // map is kept live rather than reassigned.
+        // through to MOP lookup only when that map itself is null, not
+        // when the map is non-null and missing the 'request' key).
+        // metaClass hooks are never consulted for this name, so the
+        // McpRequestDriver's stable ScriptRequestProxy instance is
+        // installed directly into that private field. The proxy reads
+        // driver state at each getJSON() access, so tests can call
+        // pushBody / pushBodyThrowing from their given: block and have
+        // the change take effect without re-running this wire step.
+        // wireScriptOverrides() runs in setup() each test (not in
+        // setupSpec()) because setup() wipes the script's metaClass;
+        // the reflective write here survives that wipe and is idempotent
+        // against the stable proxy instance.
         def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
             .getDeclaredField('injectedMappingHandlerData')
         injectedField.accessible = true
@@ -206,7 +221,7 @@ abstract class HarnessSpec extends Specification {
             injectedMap = [:]
             injectedField.set(script, injectedMap)
         }
-        injectedMap['request'] = mcpDriver.request
+        injectedMap['request'] = mcpDriver.scriptRequest
         // hubInternalGet has no declaration on HubitatAppScript — it's
         // pure dynamic Groovy resolved through metaClass, so the
         // per-instance metaClass write here intercepts cleanly. The

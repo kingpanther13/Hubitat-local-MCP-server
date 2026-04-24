@@ -27,8 +27,8 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // --- formatAge singular grammar (v0.7.7) --------------------------------
     //
     // Before the fix, formatAge(now - 1h) returned "1 hours ago" because the
-    // code unconditionally pluralised. The current helper at
-    // hubitat-mcp-server.groovy:4615 branches on `count == 1` for each unit.
+    // code unconditionally pluralised. The current formatAge() helper in
+    // hubitat-mcp-server.groovy branches on `count == 1` for each unit.
 
     def "formatAge returns 'just now' for an elapsed time under one minute"() {
         expect: 'harness now() == 1234567890000L — pick a timestamp 30s earlier'
@@ -65,10 +65,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // BigDecimal and Math.round(BigDecimal) is a MissingMethodException in
     // Groovy (the hub sandbox rejected it for a different reason, but the
     // unit harness reproduces the MME directly — so no sandbox flag is
-    // required here). The fix at hubitat-mcp-server.groovy:7965 uses
-    // integer literals inside the division and casts to int — avoiding
-    // both the BigDecimal throw and the (also-buggy) 10x-off-by-unit
-    // shape the v0.6.1 notes flagged.
+    // required here). The fix in checkForUpdate() uses integer literals
+    // inside the division and casts to int — avoiding both the BigDecimal
+    // throw and the (also-buggy) 10x-off-by-unit shape the v0.6.1 notes
+    // flagged.
     //
     // checkForUpdate's outer try/catch swallows any throw and routes it
     // through mcpLog("warn", "server", "Version update check failed: ...")
@@ -112,7 +112,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // shape — pre-v0.5.3 BigDecimal.round throws aren't reproducible here
     // for the usual DontRestrictGroovy reason (see class Javadoc). A
     // revert to the v0.7.6-era 10x-off formula would produce 27.0 and
-    // trip the assertion.
+    // trip the assertion. Shape lives inside toolDeviceHealthCheck().
 
     def "device_health_check reports hoursAgo as fractional hours with one decimal place (v0.7.6)"() {
         given: 'a selected device whose lastActivity is 2.7h before the harness now()'
@@ -138,8 +138,8 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     //
     // The pre-fix code compared the source filter against `entry.time`
     // (timestamp), so a filter like source='Thermostat' never matched any
-    // log lines. The fix (hubitat-mcp-server.groovy:5437) checks both
-    // `entry.message` and `entry.name`.
+    // log lines. The fix in toolGetHubLogs() checks both `entry.message`
+    // and `entry.name`.
 
     def "get_hub_logs source filter matches against message field, not timestamp"() {
         given:
@@ -167,10 +167,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     // --- get_hub_logs JSON array parsing + line-split fallback (v0.5.1) ---
     //
-    // v0.5.1 fixed JSON array parsing of /logs/past/json. The current code
-    // (hubitat-mcp-server.groovy:5389) attempts JsonSlurper first and falls
-    // back to newline-splitting when the hub returns a non-JSON body
-    // (older firmware shape).
+    // v0.5.1 fixed JSON array parsing of /logs/past/json. The current
+    // toolGetHubLogs() attempts JsonSlurper first and falls back to
+    // newline-splitting when the hub returns a non-JSON body (older
+    // firmware shape).
 
     def "get_hub_logs handles a non-JSON newline-delimited response (older-firmware fallback)"() {
         given:
@@ -196,7 +196,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // setColor-style commands. v0.8.5 broadened handling: when Hubitat's
     // JSON parser chokes on a nested object and hands the raw String
     // through, normalizeCommandParams extracts the embedded JSON by
-    // brace-matching. Both paths live on hubitat-mcp-server.groovy:2166.
+    // brace-matching. Both paths live inside normalizeCommandParams().
 
     def "normalizeCommandParams parses a JSON-string element into a Map (v0.8.2 setColor regression)"() {
         when:
@@ -242,11 +242,11 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // had no visibility into the 1-hour cache and no way to force a
     // refresh short of waiting it out.
     //
-    // The fix (hubitat-mcp-server.groovy:6263-6276) fetches the version
-    // fresh from {@code /app/ajax/code} for source/sourceFile modes
-    // (resave mode already gets it for free from its own fetch), then
-    // falls back to the cached backup version only if the fresh fetch
-    // fails. These two tests pin both branches.
+    // The fix inside toolUpdateAppCode (the optimistic-locking refresh
+    // block) fetches the version fresh from {@code /app/ajax/code} for
+    // source/sourceFile modes (resave mode already gets it for free from
+    // its own fetch), then falls back to the cached backup version only
+    // if the fresh fetch fails. These two tests pin both branches.
 
     def "update_app_code uses the fresh version from the hub, not the stale backup-manifest cache (v0.4.6)"() {
         given: 'a recent cached backup whose manifest carries a stale version=5'
