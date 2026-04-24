@@ -7,6 +7,7 @@ import spock.lang.Shared
 import spock.lang.Specification
 import support.PassThroughAppValidator
 import support.PermissiveLog
+import support.SubscriptionRecorder
 import support.TestChildApp
 import support.TestLocation
 
@@ -80,6 +81,16 @@ abstract class RuleHarnessSpec extends Specification {
     @Shared protected final List<Map> sendLocationEventCalls = []
     @Shared protected final List<List<Object>> httpGetCalls = []
     @Shared protected final List<List<Object>> httpPostCalls = []
+    /**
+     * Records subscribe(source, attribute, handlerName) calls from
+     * {@code subscribeToTriggers()} and replays them via
+     * {@code fireEvent(script, source, attribute, value)}. Previously
+     * subscribe() fell through the AppExecutor Mock's @Delegate chain as
+     * a silent no-op — specs could only unit-test handler bodies directly
+     * and never verified the wire-up step. See SubscriptionRecorder for
+     * the rationale.
+     */
+    @Shared protected final SubscriptionRecorder subscriptions = new SubscriptionRecorder()
 
     // Mutable @Shared fields reading from tests' given: blocks. The stub
     // closures in setupSpec read these at invocation time.
@@ -138,6 +149,15 @@ abstract class RuleHarnessSpec extends Specification {
             if (stubHttpGetException) throw stubHttpGetException
         }
         appExecutor.httpPost(_, _) >> { args -> httpPostCalls << (args as List) }
+        // subscribe(source, attribute, handlerName) is class-2 (declared on
+        // AppExecutor). Route every call into SubscriptionRecorder so specs
+        // can both assert on the wire-up ("device_event rule subscribed
+        // device 1 for 'switch' to handleDeviceEvent") and fire synthetic
+        // events back at the recorded handler. Without this stub the call
+        // silently no-ops through the Mock's @Delegate chain.
+        appExecutor.subscribe(_, _ as String, _ as String) >> { args ->
+            subscriptions.record(args[0], args[1] as String, args[2] as String)
+        }
         appExecutor.timeOfDayIsBetween(_, _, _) >> { args -> stubTimeOfDayResult }
         appExecutor.timeOfDayIsBetween(_, _, _, _) >> { args -> stubTimeOfDayResult }
         appExecutor.getSunriseAndSunset(_) >> { args -> stubSunriseSunset }
@@ -146,7 +166,17 @@ abstract class RuleHarnessSpec extends Specification {
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
-            Flags.DontRunScript
+            Flags.DontRunScript,
+            // subscribeToTriggers() passes plain TestDevice POJOs into
+            // subscribe(). The AppSubscriptionReader delegate-layer
+            // validator (runs before our Mock's subscribe stub) rejects
+            // anything that isn't a DeviceWrapper, which would force every
+            // rule-engine E2E test to wrap its fixtures in the full
+            // DeviceWrapper trait machinery. Skipping subscribe validation
+            // is harmless here — the hub's own runtime has no such
+            // constraint on custom device proxies — and lets
+            // SubscriptionRecorder see the calls directly.
+            Flags.DontValidateSubscriptions
         ])
         script = sandbox.run(
             api: appExecutor,
@@ -188,6 +218,7 @@ abstract class RuleHarnessSpec extends Specification {
         sendLocationEventCalls.clear()
         httpGetCalls.clear()
         httpPostCalls.clear()
+        subscriptions.reset()
         stubTimeOfDayResult = false
         stubSunriseSunset = null
         stubHttpGetException = null
