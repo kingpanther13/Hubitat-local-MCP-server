@@ -7,17 +7,22 @@ import support.ToolSpecBase
  * silent-failure fix (commit 2a6da11, v0.2.12 follow-up → v0.3.x) that
  * addressed the "rule with a sunrise trigger never fires" bug.
  *
- * Root cause: rule-engine trigger handling only recognised the canonical
- * shape {@code {type:'time', sunrise:true}} / {@code {type:'time', sunset:true}},
- * but create_rule / update_rule accepted four additional shapes the LLM
- * naturally emitted (e.g. {@code {type:'sunrise'}}, {@code {type:'time', time:'sunrise'}}).
- * The rule saved, never threw, and then silently never fired — no log,
- * no error, no hint. normalizeTrigger is the bridge that converts every
- * accepted input shape into the canonical form before persistence.
+ * Root cause: the rule engine only recognised the canonical shape
+ * {@code {type:'time', sunrise:true}} / {@code {type:'time', sunset:true}},
+ * but {@code create_rule} / {@code update_rule} persisted whatever the
+ * LLM emitted — and the LLM naturally emitted four additional shapes
+ * (e.g. {@code {type:'sunrise'}}, {@code {type:'time', time:'sunrise'}}).
+ * Rules saved under those shapes, never threw during save, and then
+ * silently never fired — no log, no error, no hint. normalizeTrigger
+ * is the server-side bridge that now coerces every accepted input
+ * shape to canonical form before persistence, so the rule engine only
+ * ever sees one shape.
  *
- * Pure function — testable without any AppExecutor wiring. These tests
- * guard the five input shapes from the original bug report plus the
- * passthrough of the canonical form.
+ * These tests guard the five input shapes from the original bug report
+ * plus the passthrough of the canonical form. normalizeTrigger itself
+ * reads no state, but we still extend {@link ToolSpecBase} for
+ * consistency with the other server specs (and so future additions
+ * don't have to re-wire the sandbox).
  */
 class NormalizeTriggerSpec extends ToolSpecBase {
 

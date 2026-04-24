@@ -22,9 +22,14 @@ import support.TestDevice
  *       evaluator throw: {@link EvaluateConditionsSpec} pins both — the
  *       {@code all}/{@code any} short-circuit via CountingParent, and the
  *       throw-caught-as-miss path via ThrowingParent.</li>
- *   <li>v0.7.7 — {@code variable_math} double atomicState read:
- *       {@link ActionTypesSpec} pins the read-once/write-once shape through
- *       its {@code variable_math} tests.</li>
+ *   <li>v0.7.7 — {@code variable_math} arithmetic across operations:
+ *       {@link ActionTypesSpec} pins add/subtract/modulo/set/divide-by-zero/
+ *       scope=global through its {@code variable_math} tests. The specific
+ *       "read-once / write-once" cardinality that v0.7.7's fix targeted is
+ *       not directly asserted there (the existing tests would still pass
+ *       under a single-threaded double-read); adding a read-counting test
+ *       would be a reasonable follow-up but is out of scope for this
+ *       backfill.</li>
  *   <li>v0.1.5 — {@code capture_state}/{@code restore_state} across rules:
  *       {@link ActionTypesSpec} pins both the write path via
  *       {@code parent.saveCapturedState} and the read path via
@@ -106,8 +111,9 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
     // order, a user whose rule defines a local variable called
     // {@code now} would see its value take over the built-in {@code %now%}
     // token — surprising and hard to debug. (The v0.7.6 "variable shadowing
-    // of now()" fix applied to a different code path; that's guarded by
-    // sandbox_lint.py and code review, not by this test.)
+    // of now()" fix was in a different code path — currently guarded by
+    // code review only, since sandbox_lint.py's rules don't cover variable
+    // shadowing.)
 
     def "built-in %now% token is resolved before the localVariables loop runs"() {
         given: 'a local variable named "now" whose value would collide with the built-in'
@@ -129,7 +135,7 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
     // via ThrowingParent. Not duplicated here — see the class-Javadoc
     // cross-reference above.
 
-    // --- silent device-not-found failures across 14 action types (commit
+    // --- silent device-not-found failures across 13 action types (commit
     //     83aee5b — "Comprehensive debug logging overhaul - eliminate
     //     silent failures", follow-up to v0.2.12 sunrise/sunset incident).
     //
@@ -138,14 +144,19 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
     // executeAction try/catch and silently swallowed with no user-visible
     // log) or fall through silently if the code happened to null-guard.
     // The fix added an explicit `if (device) { ... } else { ruleLog("warn",
-    // "Action 'X' skipped: device not found (ID: N)") }` branch to 14
-    // action types.
+    // "Action 'X' skipped: device not found (ID: N)") }` branch to every
+    // device-targeting action type.
     //
-    // {@link ErrorPathsSpec} already pins this shape for {@code device_command}
-    // (missing-device action warns + execution continues). This feature
-    // method broadens the coverage to the other action types the commit
-    // named — each one must emit a warn-level {@code ruleLog} and must
-    // NOT throw, so the next action in the chain still runs.
+    // {@link ErrorPathsSpec} already pins this shape for {@code device_command}.
+    // This feature method covers the remaining 13 action types the commit
+    // named (14 total minus device_command) — each must emit a warn-level
+    // {@code ruleLog} citing the specific action name and missing id, and
+    // must NOT throw, so the next action in the chain still runs.
+    //
+    // The warn-match assertion brackets the action name in single quotes
+    // (e.g. {@code "Action 'lock'"}) so a test for {@code lock} cannot pass
+    // against a cross-wired {@code unlock} message — same for
+    // {@code set_color} vs {@code set_color_temperature}.
 
     def "missing-device action '#actionType' emits a warn ruleLog and lets the next action run"() {
         given: 'a registered sibling device the next action will drive'
@@ -167,10 +178,10 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
         when:
         script.executeActions()
 
-        then: 'a warn-level log cites the action type AND the missing id'
+        then: 'a warn-level log cites the exact action type AND the missing id'
         logCalls.any {
             it.level == 'warn' &&
-            it.message?.contains(actionType) &&
+            it.message?.contains("Action '${actionType}'") &&
             it.message?.contains('999')
         }
 
@@ -178,15 +189,22 @@ class RegressionsFromHistorySpec extends RuleHarnessSpec {
         1 * sibling.on()
 
         where:
-        actionType          | missingAction
-        'set_level'         | [type: 'set_level', deviceId: 999L, level: 50]
-        'set_color'         | [type: 'set_color', deviceId: 999L, hue: 100, saturation: 50, level: 75]
-        'toggle_device'     | [type: 'toggle_device', deviceId: 999L]
-        'lock'              | [type: 'lock', deviceId: 999L]
-        'unlock'            | [type: 'unlock', deviceId: 999L]
-        'speak'             | [type: 'speak', deviceId: 999L, message: 'hi']
-        'send_notification' | [type: 'send_notification', deviceId: 999L, message: 'hi']
-        'set_thermostat'    | [type: 'set_thermostat', deviceId: 999L, thermostatMode: 'cool']
+        actionType              | missingAction
+        'set_level'             | [type: 'set_level',             deviceId: 999L, level: 50]
+        'set_color'             | [type: 'set_color',             deviceId: 999L, hue: 100, saturation: 50, level: 75]
+        'set_color_temperature' | [type: 'set_color_temperature', deviceId: 999L, temperature: 3000, level: 50]
+        'toggle_device'         | [type: 'toggle_device',         deviceId: 999L]
+        'lock'                  | [type: 'lock',                  deviceId: 999L]
+        'unlock'                | [type: 'unlock',                deviceId: 999L]
+        'speak'                 | [type: 'speak',                 deviceId: 999L, message: 'hi']
+        'send_notification'     | [type: 'send_notification',     deviceId: 999L, message: 'hi']
+        'set_thermostat'        | [type: 'set_thermostat',        deviceId: 999L, thermostatMode: 'cool']
+        'set_valve'             | [type: 'set_valve',             deviceId: 999L, command: 'open']
+        'set_fan_speed'         | [type: 'set_fan_speed',         deviceId: 999L, speed: 'medium']
+        'set_shade'             | [type: 'set_shade',             deviceId: 999L, command: 'open']
+        // activate_scene uses sceneDeviceId, not deviceId — the warn log
+        // at hubitat-mcp-rule.groovy:3480 references the sceneDeviceId value.
+        'activate_scene'        | [type: 'activate_scene',        sceneDeviceId: 999L]
     }
 
     static class RepeatParent {
