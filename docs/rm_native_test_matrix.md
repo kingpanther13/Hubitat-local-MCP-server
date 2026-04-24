@@ -1,13 +1,32 @@
 # Native Rule Machine (Rule 5.1) — Test Matrix
 
-> **Status:** Skeleton. To be populated before native-RM CRUD tools merge.
+> **Status:** Catalog complete. Behavioral coverage via BAT suite — see `tests/BAT-rm-native-crud.md` (135 scenarios, T300–T449).
 >
 > **Implementation ticket:** #120 (the tools themselves)
-> **Matrix completion ticket:** TBD (this doc's tracking issue — links here once filed)
 >
-> This matrix catalogs every feature of Hubitat Rule Machine 5.1 that the new native-RM CRUD tools (`create_rm_rule` / `update_rm_rule` / `delete_rm_rule` / `get_rm_rule`) must be able to produce and round-trip faithfully. **No row ships unverified.** Unit-test coverage lives in `src/test/groovy/server/ToolRmNativeAuthoring*Spec.groovy`; live-hub smoke bundle lives in `scripts/smoke-rm-crud.sh` (TBD).
+> This matrix catalogs every feature of Hubitat Rule Machine 5.1 that the new native-RM CRUD tools (`create_rm_rule` / `update_rm_rule` / `delete_rm_rule` / `get_rm_rule`) must be able to produce and round-trip faithfully. **No row ships unverified.** Behavioral coverage lives in `tests/BAT-rm-native-crud.md` (LLM-driven tests run against a live hub). Unit-test coverage is added by the #120 Phase 2 PR itself, using the existing `ToolSpecBase` + `HubInternalGetMock` harness and inline `script.metaClass.hubInternalPostForm` stubs (pattern in `src/test/groovy/server/ToolAppDriverCodeSpec.groovy`).
 >
 > Source of truth for this catalog: [RM 5.1 docs](https://docs2.hubitat.com/en/apps/rule-machine/rule-5-1) and [RM main page](https://docs2.hubitat.com/en/apps/rule-machine).
+
+## BAT coverage map
+
+Every matrix section is covered by a T### range in `tests/BAT-rm-native-crud.md`:
+
+| Matrix section | BAT range |
+|---|---|
+| §1 Rule-level structure + §7 Rule lifecycle verbs | T300–T316 |
+| §3 Trigger/condition capabilities + trigger-option variants | T320–T349 |
+| §4 Actions (all 13 categories) | T350–T387 |
+| §2 Expressions + §4a Conditional + §4l Repeat + §4m Delay/Wait + §5 Variables + §6 Private Boolean | T400–T429 |
+| §8 HTTP endpoint surface + edge cases | T430–T449 |
+
+**Critical regression guards (callouts for the #120 Phase 1 findings):**
+
+- **T321 / T346 / T443** — `multiple=true` flag verification on multi-device capability triggers (the flag-poisoning bug from Phase 1)
+- **T442** — orphan-cleanup after a failed mid-wizard create
+- **T444** — `multiple=true` flag persists through `update_rm_rule` (update-path regression guard)
+- **T445** — flag-poisoning recovery/self-heal (aspirational)
+- **T446** — stuck `state.editCond` recovery (aspirational)
 
 ## Legend
 
