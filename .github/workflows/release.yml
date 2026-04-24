@@ -46,7 +46,12 @@ jobs:
       # regardless of where the merged code came from. We recover the PR
       # the merge commit came from via the commits-to-PRs API.
       - name: Resolve PR from merge commit
-        if: steps.precheck.outputs.skip != 'true'
+        # Positive-match cascade: `!= 'true'` evaluates TRUE for empty outputs,
+        # so a skipped upstream step would let this one run anyway. Using
+        # `== 'false'` only proceeds when the upstream explicitly signalled
+        # "don't skip" — empty (because upstream was skipped) correctly gates
+        # this step out.
+        if: steps.precheck.outputs.skip == 'false'
         id: pr
         env:
           SHA: ${{ github.sha }}
@@ -89,7 +94,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Determine release label
-        if: steps.pr.outputs.skip != 'true'
+        if: steps.pr.outputs.skip == 'false'
         id: label
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels_json }}
