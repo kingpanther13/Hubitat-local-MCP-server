@@ -393,7 +393,7 @@ Each row: create a rule with this action, round-trip via read, update its parame
 | `runRule` | RMUtils (not 4.x+) | N/A | | ❌ | Legacy; evaluate rule |
 | `runRuleAct` | RMUtils or `runAction` button | `lc_run_act.json` | | ❌ | |
 | `stopRuleAct` | RMUtils or `stopRule` button | `lc_stop.json` | | ❌ | Cancels delays, periodic triggers, repeats |
-| `pauseRule` | RMUtils or `pausRule` button | `lc_pause.json` | | ❌ | |
+| `pauseRule` | RMUtils or `pauseRule` button | `lc_pause.json` | | ❌ | |
 | `resumeRule` | RMUtils or equivalent button | `lc_resume.json` | | ❌ | |
 | `setRuleBooleanTrue` | RMUtils | N/A | | ❌ | Duplicates Private Boolean action |
 | `setRuleBooleanFalse` | RMUtils | N/A | | ❌ | |
