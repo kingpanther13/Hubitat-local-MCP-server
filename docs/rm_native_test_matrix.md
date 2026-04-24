@@ -1,6 +1,6 @@
 # Native Rule Machine (Rule 5.1) — Test Matrix
 
-> **Status:** Catalog complete. Behavioral coverage via BAT suite — see `tests/BAT-rm-native-crud.md` (135 scenarios, T300–T449).
+> **Status:** Catalog complete. Behavioral coverage via BAT suite — see `tests/BAT-rm-native-crud.md` (139 scenarios, T300–T452).
 >
 > **Implementation ticket:** #120 (the tools themselves)
 >
@@ -18,15 +18,23 @@ Every matrix section is covered by a T### range in `tests/BAT-rm-native-crud.md`
 | §3 Trigger/condition capabilities + trigger-option variants | T320–T349 |
 | §4 Actions (all 13 categories) | T350–T387 |
 | §2 Expressions + §4a Conditional + §4l Repeat + §4m Delay/Wait + §5 Variables + §6 Private Boolean | T400–T429 |
-| §8 HTTP endpoint surface + edge cases | T430–T449 |
+| §8 HTTP endpoint surface + edge cases | T430–T452 |
 
 **Critical regression guards (callouts for the #120 Phase 1 findings):**
 
-- **T321 / T346 / T443** — `multiple=true` flag verification on multi-device capability triggers (the flag-poisoning bug from Phase 1)
-- **T442** — orphan-cleanup after a failed mid-wizard create
+- **T321 / T346 / T443** — `multiple=true` flag verification on multi-device capability TRIGGER inputs (the flag-poisoning bug from Phase 1)
+- **T350 / T358 / T362 / T373 / T379 / T412 / T424** — same `multiple=true` flag verification on multi-device capability ACTION inputs (same Phase 1 bug class, action-side)
+- **T442** — orphan-cleanup after a failed mid-wizard create (MUST exercise the cleanup code path, not just pre-validate)
 - **T444** — `multiple=true` flag persists through `update_rm_rule` (update-path regression guard)
-- **T445** — flag-poisoning recovery/self-heal (aspirational)
-- **T446** — stuck `state.editCond` recovery (aspirational)
+- **T450 / T451** — negative paths for `update_rm_rule` / `delete_rm_rule` on non-existent IDs
+
+**Aspirational / environment-dependent tests** (may be skipped depending on hub state):
+
+- **T445** — flag-poisoning recovery/self-heal (requires ability to intentionally poison, which may not be safely exposable)
+- **T446** — stuck `state.editCond` recovery (requires reaching a stuck state)
+- **T449** — Rule Machine not installed (requires a hub without RM; usually can't be safely uninstalled on production hubs)
+- **T452** — MCP feature-flag gating (requires the legacy-gating setting to actually exist, which is a #120 Phase 3 concern)
+- **T359 / T361 / T372** — SKIP-on-precondition (require pre-existing BAT-prefixed Scene, HSM custom rule, or Room Lighting instance respectively — mark SKIPPED if absent rather than fabricating)
 
 ## Legend
 
@@ -39,7 +47,7 @@ Every matrix section is covered by a T### range in `tests/BAT-rm-native-crud.md`
 | **Live smoke** | ✅ / ⚠️ / ❌ — whether the live-hub smoke bundle exercises this feature |
 | **Notes** | Implementation gotchas, marshal-flag caveats, known quirks |
 
-**Marshal-flag rule:** for any capability input with `multiple: true`, the tool MUST emit `<name>.type=<capability.X>` + `<name>.multiple=true` + `settings[<name>]=<csv>` as a group. See `docs/testing.md` + `memory/feedback_rm_capability_multiple_flag.md` for the full context.
+**Marshal-flag rule:** for any capability input with `multiple: true`, the tool MUST emit `<name>.type=<capability.X>` + `<name>.multiple=true` + `settings[<name>]=<csv>` as a group in the same POST to `/installedapp/update/json`. If the `.multiple=true` field is omitted, Hubitat silently rewrites the AppSetting DB record's `multiple` flag from true to false, causing runtime marshaling of the setting as a singleton `Device` instead of `List<Device>`. RM then crashes with `IllegalArgumentException: Command 'size' is not supported by device '<firstDeviceLabel>'` on every page render (line 1958), `eventSubscriptions` stays at 0, and the rule is inert until the flag is re-written. The flag is sticky — value-only re-writes do not restore it; only re-POSTing the full three-field group does. See `docs/testing.md` for the full context and BAT regression guards T321 / T346 / T443 / T444 / T450 / T451 for the load-bearing tests.
 
 ---
 

@@ -1,8 +1,23 @@
 # Bot Acceptance Test (BAT) Suite — Rule Machine Native CRUD
 
-Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the **native Rule Machine CRUD tools** landing under issue #120 Phase 2 (`create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, `get_rm_rule`, plus the `manage_button_controllers` / `manage_basic_rules` / etc. gateways covered by the scope expansion).
+Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the new native Rule Machine CRUD tools introduced by issue #120 Phase 2.
 
-**Status:** Written against tools that do not exist yet. Every scenario here will FAIL until #120 Phase 2 lands. Use this file as the acceptance bar for Phase 2 merge: every T### must pass before the implementation PR merges.
+**New tools exercised** (do not exist yet — FAIL until #120 Phase 2 lands):
+
+- `manage_rule_machine.create_rm_rule`
+- `manage_rule_machine.update_rm_rule`
+- `manage_rule_machine.delete_rm_rule(ruleId, force?)`
+- `manage_rule_machine.get_rm_rule`
+
+**Existing tools also exercised** (already present in the repo, verified behavior — these SHOULD work today):
+
+- `manage_rule_machine.list_rm_rules`
+- `manage_rule_machine.run_rm_rule(ruleId, action=...)` — supports `rule` / `actions` / `stop`
+- `manage_rule_machine.pause_rm_rule` / `resume_rm_rule`
+- `manage_rule_machine.set_rm_rule_boolean`
+- `manage_installed_apps.get_app_config` (used as fallback verification)
+
+**Status:** Every T### that calls a *new* tool will FAIL until #120 Phase 2 merges. Use this file as the acceptance bar for Phase 2 merge: every T### must pass before the implementation PR merges. The scope-expansion gateways (`manage_button_controllers`, `manage_basic_rules`, etc.) are tracked separately and not covered by these tests.
 
 ## Test Format
 
@@ -24,32 +39,35 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 
 ### Post-test invariants to verify
 
-Every test that creates or modifies a rule must assert, before tearing down:
+Every test that creates or modifies a rule must assert, before tearing down. Individual tests refer to these invariants by number:
 
-1. `manage_installed_apps.get_app_config(appId=<ruleId>)` returns `configPage.error: null` (UI renders cleanly)
-2. `statusJson.eventSubscriptions.length > 0` when the rule has triggers (except HTTP-only rules)
-3. For every multi-device capability setting touched, `statusJson.appSettings[<name>].multiple == true` (the flag-poisoning regression guard from the Phase 1 findings on #120)
-4. No stale state flags (`state.editCond` absent or null)
+1. **[INV-1]** `manage_installed_apps.get_app_config(appId=<ruleId>)` returns `configPage.error == null` (UI renders cleanly; guards the line-1958 `.size()` render-crash class from Phase 1).
+2. **[INV-2]** `statusJson.eventSubscriptions.length > 0` when the rule has at least one non-HTTP trigger. Exceptions where INV-2 does NOT apply: triggerless rules, HTTP-only triggered rules (Local/Cloud End Point), time-only triggered rules where `eventSubscriptions` may be empty but `scheduledJobs` is populated instead.
+3. **[INV-3]** For every multi-device capability setting touched (trigger-side OR action-side), `statusJson.appSettings[<name>].multiple == true`. This is the flag-poisoning regression guard — applies to `tDev<N>` trigger inputs, multi-device action inputs (`Capture Devices`, `Restore Devices`, `Refresh devices`, etc.), multi-device Wait-for-Events slots, and any other `multiple=true` capability input.
+4. **[INV-4]** No stale `state.editCond` (absent or null in appState).
 
-Teardown prompts SHOULD explicitly `delete_rm_rule(<id>, force=true)` to clean up scratch rules.
+Tests refer to these via the `[INV-N]` shorthand to keep terminology consistent across all 135 scenarios.
+
+Teardown prompts SHOULD explicitly `delete_rm_rule(<id>, force=true)` to clean up scratch rules. The `force=true` path uses the framework's `/installedapp/forcedelete/<id>/quiet` endpoint and succeeds regardless of child-app state — this is the BAT-standard cleanup pattern.
 
 ## Safety Rules
 
 - **All tests use the `BAT-RM-` prefix** for artifacts (rules, local variables). Cleanup grep targets that prefix.
-- **All rules are marked `testRule: true`** to skip the mandatory-backup gate on deletion
-- **Device commands only target BAT-created virtual devices** — never touch physical devices
-- **No tests run against production RM rules** — agents must create their own scratch rule as the target
+- **Teardown uses `delete_rm_rule(ruleId, force=true)`** to skip any mandatory-backup gate or child-app checks. The `force=true` flag is the BAT-standard cleanup; it uses the `/installedapp/forcedelete/<id>/quiet` endpoint which always succeeds.
+- **Device commands only target BAT-created virtual devices** — never touch physical devices.
+- **No tests run against production RM rules** — agents must create their own scratch rule as the target.
 - Orphan-cleanup: every test SHOULD include a teardown that removes any rule it creates, even on assertion failure. Long-term orphans under RM parent are the #1 side-effect class for this surface.
+- **Destructive action classes** (HSM arming, siren, Z-Wave polling toggles, garage/lock actions, file ops) MUST be tested with a paused rule whose trigger is a year-2099 Certain Time — this lets the action payload serialize and round-trip without ever firing.
 
 ## ID ranges
 
 | Range | Section | Coverage |
 |---|---|---|
-| T300–T319 | §1 CRUD basics + rule structure | Create / read / update / delete lifecycle, rename, logging options, required expression toggle, Run Actions, pause/resume/stop/start |
-| T320–T349 | §2 Triggers + conditions | Device-state / time-date / hub-system / HTTP trigger capabilities; trigger options (conditional, and-stays, multiple-triggers, multi-device marshal flag) |
-| T350–T399 | §3 Actions across all categories | Every action category (switches, dimmers, shades/fans, HSM, thermostats, messages/HTTP, audio, variables, cross-rule, state-mgmt, repeat, delay/wait/exit) |
-| T400–T429 | §4 Expressions, variables, private boolean, control flow | Expression operators + nesting, IF-THEN-ELSE chains, REPEAT variants, local+hub variables, variable math, built-in `%var%` substitution, Private Boolean |
-| T430–T449 | §5 HTTP endpoints + edge cases | Local/Cloud Endpoint triggers + verbs, setHubVariable endpoints, orphan cleanup, flag-poisoning recovery, stale `editCond` recovery |
+| T300–T316 (17 tests) | §1 CRUD basics + rule structure | Create / read / update / delete lifecycle, rename, logging options, required expression toggle, Run Actions, pause/resume/stop/start |
+| T320–T349 (30 tests) | §2 Triggers + conditions | Device-state / time-date / hub-system / HTTP trigger capabilities; trigger options (conditional, and-stays, multiple-triggers, multi-device marshal flag) |
+| T350–T387 (38 tests; T388–T399 reserved) | §3 Actions across all categories | Every action category (switches, dimmers, shades/fans, HSM, thermostats, messages/HTTP, audio, variables, cross-rule, state-mgmt, repeat, delay/wait/exit) |
+| T400–T429 (30 tests) | §4 Expressions, variables, private boolean, control flow | Expression operators + nesting, IF-THEN-ELSE chains, REPEAT variants, local+hub variables, variable math, built-in `%var%` substitution, Private Boolean |
+| T430–T452 (23 tests) | §5 HTTP endpoints + edge cases | Local/Cloud Endpoint triggers + verbs, setHubVariable endpoints, orphan cleanup, flag-poisoning recovery, stale `editCond` recovery, negative paths (update/delete on bogus IDs), MCP feature-flag gating |
 
 Each section below lives in its own `## Section N` heading. Sections are appended in order; don't rely on global ordering within a section being monotonic after renumbers.
 
@@ -66,7 +84,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine.create_rm_rule(name='BAT-RM-Empty Create')`, captures the returned ruleId, then calls `get_rm_rule(ruleId)` (or `manage_installed_apps.get_app_config(appId=ruleId)` fallback) to verify. Post-test invariant: `configPage.error` is null. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
+**Expected**: AI calls `manage_rule_machine.create_rm_rule(name='BAT-RM-Empty Create')`, captures the returned ruleId, then calls `get_rm_rule(ruleId)` (or `manage_installed_apps.get_app_config(appId=ruleId)` fallback) to verify. Post-test invariant: [INV-1] `configPage.error == null`. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
 
 ### T301 — Rename an existing rule
 
@@ -78,7 +96,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `update_rm_rule(ruleId, patch={name: 'BAT-RM-Rename After'})`, then `get_rm_rule(ruleId)` returns the new label. Post-test invariants: `configPage.error` is null after the update (render guard), and the app's `label` field matches the new name.
+**Expected**: AI calls `update_rm_rule(ruleId, patch={name: 'BAT-RM-Rename After'})`, then `get_rm_rule(ruleId)` returns the new label. Post-test invariants: [INV-1] `configPage.error == null` after the update (render guard), and the app's `label` field matches the new name.
 
 ### T302 — Set rule notes (comments textarea)
 
@@ -90,7 +108,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `update_rm_rule(ruleId, patch={comments: '...'})`, then `get_rm_rule(ruleId)` shows the comments field unchanged. Post-test invariant: `configPage.error` is null; textarea whitespace is preserved exactly.
+**Expected**: AI calls `update_rm_rule(ruleId, patch={comments: '...'})`, then `get_rm_rule(ruleId)` shows the comments field unchanged. Post-test invariant: [INV-1] `configPage.error == null`; textarea whitespace is preserved exactly.
 
 ### T303 — Enable Required Expression flag
 
@@ -102,7 +120,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `update_rm_rule(ruleId, patch={useST: true})`. `get_rm_rule(ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: `configPage.error` is null — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
+**Expected**: AI calls `update_rm_rule(ruleId, patch={useST: true})`. `get_rm_rule(ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: [INV-1] `configPage.error == null` — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
 
 ### T304 — Convert rule to function mode
 
@@ -114,7 +132,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `update_rm_rule(ruleId, patch={isFunction: true})`, then `get_rm_rule(ruleId)` returns `isFunction=true`. Post-test invariant: `configPage.error` is null.
+**Expected**: AI calls `update_rm_rule(ruleId, patch={isFunction: true})`, then `get_rm_rule(ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
 
 ### T305 — Set all three logging options + dValues toggle
 
@@ -126,7 +144,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `update_rm_rule(ruleId, patch={logging: ['Events','Triggers','Actions'], dValues: true})`. `get_rm_rule(ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: `configPage.error` is null; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
+**Expected**: AI calls `update_rm_rule(ruleId, patch={logging: ['Events','Triggers','Actions'], dValues: true})`. `get_rm_rule(ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
 
 ### T306 — Full round-trip: create with many fields at once
 
@@ -137,7 +155,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine.create_rm_rule(name=..., comments=..., requiredExpression=true or useST=true, logging=[...], ...)` in one shot, then `get_rm_rule` confirms all six fields. Post-test invariants: `configPage.error` is null; logging remains an array of length 2; useST=true exposes required-expression editor section.
+**Expected**: AI calls `manage_rule_machine.create_rm_rule(name=..., comments=..., requiredExpression=true or useST=true, logging=[...], ...)` in one shot, then `get_rm_rule` confirms all six fields. Post-test invariants: [INV-1] `configPage.error == null`; logging remains an array of length 2; useST=true exposes required-expression editor section.
 
 ### T307 — Soft delete succeeds on childless rule
 
@@ -173,7 +191,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls existing `pause_rm_rule` (verified paused), then existing `resume_rm_rule` (verified active). Both return `{success: true}`. Post-test invariant: `configPage.error` is null in both paused and resumed states.
+**Expected**: AI calls existing `pause_rm_rule` (verified paused), then existing `resume_rm_rule` (verified active). Both return `{success: true}`. Post-test invariant: [INV-1] `configPage.error == null` in both paused and resumed states.
 
 ### T310 — Run Actions verb (runRuleAct)
 
@@ -209,7 +227,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `update_rm_rule(ruleId, patch={dValues: true})` which should internally POST the `updateRule` button or equivalent, re-running `initialize()`. Post-test invariants: `configPage.error` is null; `statusJson.eventSubscriptions.length > 0` (invariant #2); `appSettings['dValues']` shows the new value.
+**Expected**: AI calls `update_rm_rule(ruleId, patch={dValues: true})` which should internally POST the `updateRule` button or equivalent, re-running `initialize()`. Post-test invariants: [INV-1] `configPage.error == null`; `statusJson.eventSubscriptions.length > 0` (invariant #2); `appSettings['dValues']` shows the new value.
 
 ### T313 — Done button (re-init + return)
 
@@ -221,7 +239,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI uses the appropriate Done / commit path (likely a `run_rm_rule(action='done')` or equivalent button). Post-test invariants: `configPage.error` is null; `eventSubscriptions.length > 0` (invariant #2); `appSettings` for the trigger capability shows `multiple=true` if applicable (invariant #3).
+**Expected**: AI uses the appropriate Done / commit path — whichever primitive `update_rm_rule` invokes internally to simulate a Done-button click (may be a dedicated `run_rm_rule(action='done')`, or may be an implicit flush done by any successful `update_rm_rule` call). **Pass criterion**: any path that leaves the post-test invariants true qualifies — the specific tool call is not prescribed. **Skip condition**: if the implementation exposes neither a direct Done action nor an implicit commit-on-update, mark SKIPPED. Post-test invariants: [INV-1] `configPage.error == null`; [INV-2] `eventSubscriptions.length > 0`; [INV-3] `appSettings` for the trigger capability shows `multiple=true` if applicable.
 
 ### T314 — Multi-device trigger exercises multiple=true flag (regression guard)
 
@@ -233,7 +251,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI creates the rule with both devices assigned to one capability input. Post-test invariants (all three MUST pass): `configPage.error` is null (#1); `statusJson.eventSubscriptions.length >= 2` (#2); `statusJson.appSettings[<trigger-input>].multiple == true` (#3 — the canonical marshal-flag regression). A falsy or missing `multiple` flag is a test failure.
+**Expected**: AI creates the rule with both devices assigned to one capability input. Post-test invariants (all three MUST pass): [INV-1] `configPage.error == null` (#1); `statusJson.eventSubscriptions.length >= 2` (#2); `statusJson.appSettings[<trigger-input>].multiple == true` (#3 — the canonical marshal-flag regression). A falsy or missing `multiple` flag is a test failure.
 
 ### T315 — Full round-trip: create → read → update several fields → read → delete
 
@@ -245,7 +263,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI executes all five steps in order, using only `create_rm_rule` / `get_rm_rule` / `update_rm_rule` / `delete_rm_rule`. Post-test invariants at each read point: `configPage.error` is null; after step 3 the logging array has exactly 2 elements (not 3, not 1); useST=true exposes the required-expression editor section.
+**Expected**: AI executes all five steps in order, using only `create_rm_rule` / `get_rm_rule` / `update_rm_rule` / `delete_rm_rule`. Post-test invariants at each read point: [INV-1] `configPage.error == null`; after step 3 the logging array has exactly 2 elements (not 3, not 1); useST=true exposes the required-expression editor section.
 
 ### T316 — Remove button (single-rule removal)
 
@@ -271,7 +289,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine.create_rm_rule` with a motion-active trigger spec referencing BAT-Motion-1, then `manage_rule_machine.get_rm_rule` (or `manage_installed_apps.get_app_config`) to verify. Post-write invariants: `configPage.error` is null, `statusJson.eventSubscriptions.length >= 1` with `attribute='motion'`, `value='active'`. Teardown calls `delete_rm_rule` and `manage_virtual_device` delete for both devices.
+**Expected**: AI calls `manage_rule_machine.create_rm_rule` with a motion-active trigger spec referencing BAT-Motion-1, then `manage_rule_machine.get_rm_rule` (or `manage_installed_apps.get_app_config`) to verify. Post-write invariants: [INV-1] `configPage.error == null`, `statusJson.eventSubscriptions.length >= 1` with `attribute='motion'`, `value='active'`. Teardown calls `delete_rm_rule` and `manage_virtual_device` delete for both devices.
 
 ### T321 — Multi-device Switch trigger (MULTIPLE=TRUE REGRESSION GUARD)
 
@@ -343,7 +361,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` creates both triggers enabled. `update_rm_rule` patch sets `disableT<N>=true` on the second one. `get_rm_rule` shows trigger 2 has `disabled=true` but remains in the trigger list. `eventSubscriptions` should reflect only the enabled trigger (or both with one inactive — verify actual hub behavior).
+**Expected**: `create_rm_rule` creates both triggers enabled. `update_rm_rule` patch sets `disableT<N>=true` on the second one. `get_rm_rule` shows trigger 2 has `disabled=true` but remains in the trigger list. `eventSubscriptions` should reflect only the enabled trigger (or both with one inactive — verify actual hub behavior). Note: `disableT<N>` is a rule-scoped flag (disables the trigger entry INSIDE the rule), not a device-scoped disable — force-deleting the rule in teardown eliminates the flag entirely, so no device re-enable is needed.
 
 ### T327 — Button capability triggers (pushed/held/doubleTapped/released)
 
@@ -451,19 +469,31 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 2 triggers with `tCapab<N>=KeypadCodes` and `LockCodes`. Any code-name or code-position parameters preserved through round-trip. If the hub's enum values differ from naive guesses, AI reports the actual enum it got back.
+**Expected**: 2 triggers with `tCapab<N>=KeypadCodes` and `LockCodes`. Any code-name or code-position parameters preserved through round-trip. If the hub's enum values differ from naive guesses, AI reports the actual enum it got back. **Test classification: discovery** — this test is informational, not strictly pass/fail. Pass criterion: triggers are created AND round-trip preserves whatever the hub reported back. Skip if virtual keypad / lock-codes drivers are unavailable.
 
-### T336 — Certain Time trigger with sunrise+offset and Days of Week
+### T336a — Certain Time trigger with sunrise + offset (isolated)
 
 ```json
 {
-  "setup_prompt": "No devices needed for this test. Confirm the hub has a configured location (latitude/longitude) so sunrise/sunset is calculable.",
-  "test_prompt": "Create 'BAT-RM-Sunrise Weekdays' with a Certain Time trigger: 30 minutes after sunrise, but only on weekdays (Monday through Friday). This covers both Certain Time (trigger), sunrise offset, and Days of Week (restriction). Verify the sunrise-offset of +30 minutes round-trips and the five weekday flags are preserved.",
-  "teardown_prompt": "Delete the 'BAT-RM-Sunrise Weekdays' rule."
+  "setup_prompt": "No devices needed. Confirm the hub has a configured location (latitude/longitude) so sunrise/sunset is calculable.",
+  "test_prompt": "Create 'BAT-RM-T336a-SunriseOffset' with a single Certain Time trigger: 30 minutes after sunrise (no day-of-week restriction). Verify the sunrise-offset of +30 minutes round-trips via get_rm_rule.",
+  "teardown_prompt": "Force-delete 'BAT-RM-T336a-SunriseOffset'."
 }
 ```
 
-**Expected**: Rule has a Certain Time trigger with sunrise reference and offset=+30min. Days-of-Week restriction includes Mon/Tue/Wed/Thu/Fri, excludes Sat/Sun. Round-trip preserves both.
+**Expected**: Trigger references sunrise with offset=+30min. Round-trip preserves both the sunrise reference and the offset value. [INV-1] `configPage.error == null`. Failure here isolates the sunrise-offset code path from Days-of-Week concerns.
+
+### T336b — Days of Week restriction (isolated from Certain Time mechanics)
+
+```json
+{
+  "setup_prompt": "Create a BAT-RM-T336b-Motion virtual motion sensor.",
+  "test_prompt": "Create 'BAT-RM-T336b-Weekdays' triggered by BAT-RM-T336b-Motion becoming active, with a Days of Week restriction limiting firing to Monday through Friday (weekdays, excluding Sat/Sun). Verify the 5 weekday flags round-trip correctly via get_rm_rule.",
+  "teardown_prompt": "Force-delete 'BAT-RM-T336b-Weekdays' and the BAT-RM-T336b-Motion virtual device."
+}
+```
+
+**Expected**: Rule has a motion trigger plus Days-of-Week restriction with exactly [Mon, Tue, Wed, Thu, Fri] set, Sat and Sun unset. Round-trip preserves the exact set. [INV-1] `configPage.error == null`. [INV-2] `eventSubscriptions.length > 0`. Failure here isolates the day-mask storage/marshaling from time-related concerns. (Split from the original T336 — a single bundled test couldn't distinguish which mechanic broke.)
 
 ### T337 — Time of day, On a day, Periodic schedule
 
@@ -535,7 +565,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 1-2 triggers depending on keypad availability. HSM alert trigger has alert-type=intrusion (trigger-only capability, not a condition). Security keypad trigger (if present) has armed-state=armedHome.
+**Expected**: 1-2 triggers depending on keypad availability. HSM alert trigger has alert-type=intrusion (trigger-only capability, not a condition). Security keypad trigger (if present) has armed-state=armedHome. **Test classification: discovery + environment-dependent** — skip the keypad portion cleanly if no security-keypad driver exists; the HSM-alert portion must still pass independently.
 
 ### T343 — Location event trigger variants (sunrise, sunset, systemStart, severeLoad, mode)
 
@@ -547,7 +577,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 3+ Location Event triggers, each with distinct event name (sunrise, sunset, systemStart, optionally severeLoad/zigbeeOff/zigbeeOn/zwaveCrashed). Round-trip preserves the event names.
+**Expected**: 3+ Location Event triggers, each with distinct event name (sunrise, sunset, systemStart, optionally severeLoad/zigbeeOff/zigbeeOn/zwaveCrashed). Round-trip preserves the event names. **Test classification: discovery** — the test is primarily confirming that whichever location-event subtypes the tool accepts round-trip correctly. Pass criterion: at least 3 location events are created and round-trip preserves their names exactly.
 
 ### T344 — Rule paused trigger (cross-rule)
 
@@ -571,7 +601,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Rule has Local End Point + Cloud End Point triggers producing accessible URLs in the config page. Last Event Device trigger references the motion trigger. **Invariant exception**: for HTTP-triggered rules, `eventSubscriptions.length` may be 0 — verify `configPage.error` is null but DO NOT assert non-empty subscriptions. Device-based trigger in the same rule does produce subscriptions.
+**Expected**: Rule has Local End Point + Cloud End Point triggers producing accessible URLs in the config page. Last Event Device trigger references the motion trigger. **Invariant exception**: for HTTP-triggered rules, `eventSubscriptions.length` may be 0 — verify [INV-1] `configPage.error == null` but DO NOT assert non-empty subscriptions. Device-based trigger in the same rule does produce subscriptions.
 
 ### T346 — Multi-device Contact trigger (SECOND regression-guard case)
 
@@ -595,7 +625,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` (1 trigger) → `update_rm_rule` add (2 triggers) → `update_rm_rule` modify (2 triggers, first one now motion=inactive) → `update_rm_rule` remove (1 trigger). Each step: `configPage.error == null`, `eventSubscriptions` reflects current trigger set. No stale subscriptions linger after removal.
+**Expected**: `create_rm_rule` (1 trigger) → `update_rm_rule` add (2 triggers) → `update_rm_rule` modify (2 triggers, first one now motion=inactive) → `update_rm_rule` remove (1 trigger). Each step: [INV-1] `configPage.error == null`, [INV-2] `eventSubscriptions` reflects current trigger set. No stale subscriptions linger after removal.
 
 ### T348 — Delete rule with triggers (force vs soft delete)
 
@@ -619,7 +649,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: The capstone test — exercises conditional-trigger flag, multi-device multiple=true flag, and-stays duration, Mode, Variable, and Certain Time with Days of Week restriction all in one rule. **ALL invariants must hold**: `configPage.error == null`, `eventSubscriptions.length >= 5`, `appSettings[<multi-device tDev>].multiple == true`. Any divergence between sent and read-back values is a FAIL. This test is the comprehensive regression guard for Phase 2.
+**Expected**: The capstone test — exercises conditional-trigger flag, multi-device multiple=true flag, and-stays duration, Mode, Variable, and Certain Time with Days of Week restriction all in one rule. **ALL invariants must hold**: [INV-1] `configPage.error == null`, [INV-2] `eventSubscriptions.length >= 5`, [INV-3] `appSettings[<multi-device tDev>].multiple == true`, [INV-4] no stale `state.editCond`. Any divergence between sent and read-back values is a FAIL. This test is the comprehensive regression guard for Phase 2.
 
 ## Section 3: Actions across all categories (T350–T399)
 
@@ -633,7 +663,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine.create_rm_rule` with `name='BAT-RM-SwitchBundle'`, a `certainTime` trigger, and a 4-entry actions list covering on/off/toggle/flash. Calls `get_rm_rule(ruleId)` — response `actions` array has 4 entries referencing the 4 BAT-RM-Sw* device IDs in order, `configPage.error` is null, `statusJson.eventSubscriptions.length > 0`. Teardown successful.
+**Expected**: AI calls `manage_rule_machine.create_rm_rule` with `name='BAT-RM-SwitchBundle'`, a `certainTime` trigger, and a 4-entry actions list covering on/off/toggle/flash. Calls `get_rm_rule(ruleId)` — response `actions` array has 4 entries referencing the 4 BAT-RM-Sw* device IDs in order. Invariants: [INV-1] `configPage.error == null`; [INV-2] `statusJson.eventSubscriptions.length > 0`; [INV-3] the first action targets 2 devices (BAT-RM-Sw1 + BAT-RM-Sw2) — assert `statusJson.appSettings[<action-1-device-input>].multiple == true` (action-side flag-poisoning regression guard — the Phase 1 bug affects multi-device inputs on both the trigger and action sides). Teardown successful.
 
 ### T351 — Switches per mode / choose switches per mode
 
@@ -645,7 +675,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` payload has two per-mode actions keyed by real hub mode IDs. `get_rm_rule` returns actions with both mode-keyed device maps preserved; `configPage.error` null.
+**Expected**: `create_rm_rule` payload has two per-mode actions keyed by real hub mode IDs. `get_rm_rule` returns actions with both mode-keyed device maps preserved; [INV-1] `configPage.error == null`.
 
 ### T352 — Button push + push-per-mode + choose-button-per-mode
 
@@ -657,7 +687,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: All three button-flavored actions serialize with correct button numbers + device/mode mappings. `get_rm_rule.actions.length === 3`. `configPage.error` is null.
+**Expected**: All three button-flavored actions serialize with correct button numbers + device/mode mappings. `get_rm_rule.actions.length === 3`. [INV-1] `configPage.error == null`.
 
 ### T353 — Dimmer set/toggle/adjust with Delay? option
 
@@ -669,7 +699,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Action 1 payload includes inline `delay` with 2-second value and cancelable=true. `get_rm_rule` round-trips delay metadata; actions 2 and 3 have no delay. `configPage.error` null.
+**Expected**: Action 1 payload includes inline `delay` with 2-second value and cancelable=true. `get_rm_rule` round-trips delay metadata; actions 2 and 3 have no delay. [INV-1] `configPage.error == null`.
 
 ### T354 — Dimmer per mode + fade over time + stop fade
 
@@ -681,7 +711,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions` has 3 entries; fade action has duration=30s with start/end levels; per-mode action has mode→level map. `configPage.error` null.
+**Expected**: `get_rm_rule.actions` has 3 entries; fade action has duration=30s with start/end levels; per-mode action has mode→level map. [INV-1] `configPage.error == null`.
 
 ### T355 — Start/stop raising + lowering dimmer
 
@@ -705,7 +735,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Action 1 has setColor with `{hue:0, saturation:100, level:70}`; action 3 has mode→color map. `get_rm_rule` preserves all HSL triplets integer-for-integer. `configPage.error` null.
+**Expected**: Action 1 has setColor with `{hue:0, saturation:100, level:70}`; action 3 has mode→color map. `get_rm_rule` preserves all HSL triplets integer-for-integer. [INV-1] `configPage.error == null`.
 
 ### T357 — Color temperature set/toggle/per-mode/change-over-time/stop
 
@@ -717,7 +747,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions.length === 5`. Kelvin values preserved as integers; action 4 has duration=60s + start/end Kelvin. `configPage.error` null.
+**Expected**: `get_rm_rule.actions.length === 5`. Kelvin values preserved as integers; action 4 has duration=60s + start/end Kelvin. [INV-1] `configPage.error == null`.
 
 ### T358 — Shades + blinds + fan speed + cycle fans
 
@@ -729,7 +759,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 6 actions preserved. Shade position = 45 (integer); fan speed enum preserved. `configPage.error` null.
+**Expected**: 6 actions preserved. Shade position = 45 (integer); fan speed enum preserved. [INV-1] `configPage.error == null`. [INV-3] if any action takes multi-device input (e.g., if BAT-RM-Shade is grouped with other shades in a shade-position action), assert `statusJson.appSettings[<action-input>].multiple == true`.
 
 ### T359 — Activate scenes + activate scenes per mode
 
@@ -753,7 +783,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Rule is created DISABLED/paused; `statusJson` shows rule disabled. `get_rm_rule.actions` has all 4 HSM actions. HSM real state untouched. `configPage.error` null.
+**Expected**: Rule is created DISABLED/paused; `statusJson` shows rule disabled. `get_rm_rule.actions` has all 4 HSM actions. HSM real state untouched. [INV-1] `configPage.error == null`.
 
 ### T361 — HSM per-rule arm/disarm + cancel rule alert + arm all rules
 
@@ -772,12 +802,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual devices: BAT-RM-Garage (driver: Virtual Garage Door Opener), BAT-RM-Lock (driver: Virtual Lock), BAT-RM-Valve (driver: Virtual Valve). Verify none of them are production devices.",
-  "test_prompt": "Create rule 'BAT-RM-GarageLockValve' with a Certain Time trigger. Actions: (1) Open BAT-RM-Garage, (2) Close BAT-RM-Garage, (3) Lock BAT-RM-Lock, (4) Unlock BAT-RM-Lock, (5) Open BAT-RM-Valve, (6) Close BAT-RM-Valve. Verify all six round-trip.",
+  "test_prompt": "Create rule 'BAT-RM-GarageLockValve-DoNotRun' paused with a year-2099 Certain Time trigger (so actions never fire). Actions: (1) Open BAT-RM-Garage, (2) Close BAT-RM-Garage, (3) Lock BAT-RM-Lock, (4) Unlock BAT-RM-Lock, (5) Open BAT-RM-Valve, (6) Close BAT-RM-Valve. Verify all six round-trip via get_rm_rule. Rule must stay paused; actions must NOT fire against the virtual devices.",
   "teardown_prompt": "Delete rule and all three virtual devices."
 }
 ```
 
-**Expected**: `get_rm_rule.actions.length === 6` with correct on/off-style commands per device type. AI refuses if device IDs resolve to anything non-BAT (safety).
+**Expected**: `get_rm_rule.actions.length === 6` with correct on/off-style commands per device type. AI refuses if device IDs resolve to anything non-BAT (safety). [INV-1] `configPage.error == null`. [INV-3] each action targets a single device so `multiple=true` is not load-bearing here — but if the implementation uses `capability.*` inputs with `multiple=true` even for single-device selections (common Hubitat pattern), assert `multiple == true` on each action's device-input setting anyway.
 
 ### T363 — Thermostat set + scheduler + controller sensors (virtual only)
 
@@ -789,7 +819,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Thermostat action carries mode='heat' and heatingSetpoint=68. Controller action binds thermostat→sensor. `configPage.error` null. AI refuses to target any non-BAT thermostat.
+**Expected**: Thermostat action carries mode='heat' and heatingSetpoint=68. Controller action binds thermostat→sensor. [INV-1] `configPage.error == null`. AI refuses to target any non-BAT thermostat.
 
 ### T364 — Send/Speak message + Log message + built-in %device% and %now%
 
@@ -801,7 +831,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions[0].message` contains literal `%device%` and `%now%`; `actions[1].message` contains `%device%` and `%value%`. No encoding mutation. `configPage.error` null. `statusJson.eventSubscriptions.length > 0`.
+**Expected**: `get_rm_rule.actions[0].message` contains literal `%device%` and `%now%`; `actions[1].message` contains `%device%` and `%value%`. No encoding mutation. [INV-1] `configPage.error == null`. `statusJson.eventSubscriptions.length > 0`.
 
 ### T365 — HTTP GET + POST + Ping IP
 
@@ -813,7 +843,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: All three actions present in `get_rm_rule`. URLs preserved, POST body preserved byte-for-byte. `configPage.error` null. Rule never fires (trigger year 2099).
+**Expected**: All three actions present in `get_rm_rule`. URLs preserved, POST body preserved byte-for-byte. [INV-1] `configPage.error == null`. Rule never fires (trigger year 2099).
 
 ### T366 — Music player control + set volume + mute
 
@@ -825,7 +855,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 4 actions in `get_rm_rule` with command='play', volume=35, mute/unmute preserved. `configPage.error` null.
+**Expected**: 4 actions in `get_rm_rule` with command='play', volume=35, mute/unmute preserved. [INV-1] `configPage.error == null`.
 
 ### T367 — Sound tone + chime + siren (virtual only)
 
@@ -837,7 +867,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 3 audio actions round-trip. Rule is paused; siren never fires. `configPage.error` null.
+**Expected**: 3 audio actions round-trip. Rule is paused; siren never fires. [INV-1] `configPage.error == null`.
 
 ### T368 — Set Mode + Run Custom Action
 
@@ -849,7 +879,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions[0]` has modeId matching mode[0]. Actions 1 and 2 have `command='on'` and `command='setLevel'` with `parameters=[75,3]` preserved as numbers (not stringified). `configPage.error` null.
+**Expected**: `get_rm_rule.actions[0]` has modeId matching mode[0]. Actions 1 and 2 have `command='on'` and `command='setLevel'` with `parameters=[75,3]` preserved as numbers (not stringified). [INV-1] `configPage.error == null`.
 
 ### T369 — Local file write/append/delete
 
@@ -861,7 +891,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 3 file actions round-trip with exact filename and content strings. Rule paused; file never written/deleted. `configPage.error` null.
+**Expected**: 3 file actions round-trip with exact filename and content strings. Rule paused; file never written/deleted. [INV-1] `configPage.error == null`.
 
 ### T370 — Private Boolean set self + other rule
 
@@ -873,7 +903,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Actions 1/2 reference self-rule (or omit ruleId); actions 3/4 reference BAT-RM-PB-Target.id. `get_rm_rule` preserves both. `configPage.error` null.
+**Expected**: Actions 1/2 reference self-rule (or omit ruleId); actions 3/4 reference BAT-RM-PB-Target.id. `get_rm_rule` preserves both. [INV-1] `configPage.error == null`.
 
 ### T371 — Run Rule Actions (other) + Cancel Rule Timers + Pause/Resume rules
 
@@ -885,7 +915,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions.length === 4`; each references BAT-RM-RunTarget.id. `configPage.error` null.
+**Expected**: `get_rm_rule.actions.length === 4`; each references BAT-RM-RunTarget.id. [INV-1] `configPage.error == null`.
 
 ### T372 — Room Lights activate-for-mode + turn off
 
@@ -904,12 +934,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create two virtual switches BAT-RM-StateSw1 and BAT-RM-StateSw2.",
-  "test_prompt": "Create rule 'BAT-RM-StateBundle' with Certain Time trigger. Actions: (1) Capture Devices [BAT-RM-StateSw1, BAT-RM-StateSw2], (2) Restore Devices [same two], (3) Refresh devices [same two], (4) Poll devices [same two], (5) Disable devices [BAT-RM-StateSw1], (6) Enable devices [BAT-RM-StateSw1]. Verify all six round-trip with correct device ID lists.",
+  "test_prompt": "Create rule 'BAT-RM-StateBundle-DoNotRun' paused with a year-2099 Certain Time trigger (so the Disable devices action never actually disables anything). Actions: (1) Capture Devices [BAT-RM-StateSw1, BAT-RM-StateSw2], (2) Restore Devices [same two], (3) Refresh devices [same two], (4) Poll devices [same two], (5) Disable devices [BAT-RM-StateSw1], (6) Enable devices [BAT-RM-StateSw1]. Verify all six round-trip with correct device ID lists. Rule must stay paused; actions must NOT fire.",
   "teardown_prompt": "Delete rule. Ensure BAT-RM-StateSw1 is enabled before deleting it (in case the rule accidentally fired). Delete both virtual switches."
 }
 ```
 
-**Expected**: 6 actions round-trip with device-ID lists preserved in order. `configPage.error` null. Teardown re-enables any device that may have been disabled.
+**Expected**: 6 actions round-trip with device-ID lists preserved in order. [INV-1] `configPage.error == null`. [INV-3] **CRITICAL**: actions 1–4 all take multi-device lists ([StateSw1, StateSw2]) — assert `statusJson.appSettings[<each-action's-device-input>].multiple == true`. Capture/Restore/Refresh/Poll/Enable-Disable are all vulnerable to the Phase 1 flag-poisoning bug on the action side; if `multiple: false` is silently written for any of these, RM will crash rendering on the action line the next time the page loads. Teardown re-enables any device that may have been disabled.
 
 ### T374 — Start/Stop Z-Wave Polling (configured, not fired)
 
@@ -921,7 +951,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 2 actions round-trip. Rule stays disabled. `configPage.error` null. Z-Wave polling real state untouched.
+**Expected**: 2 actions round-trip. Rule stays disabled. [INV-1] `configPage.error == null`. Z-Wave polling real state untouched.
 
 ### T375 — Delay? option variants: fixed, variable, cancelable
 
@@ -933,7 +963,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions[0].delay.fixed='00:00:10'`; `actions[1].delay.variable='batDelaySecs'` (variable name, not resolved value); `actions[2].delay.fixed='00:01:00' && cancelable===true`. `configPage.error` null.
+**Expected**: `get_rm_rule.actions[0].delay.fixed='00:00:10'`; `actions[1].delay.variable='batDelaySecs'` (variable name, not resolved value); `actions[2].delay.fixed='00:01:00' && cancelable===true`. [INV-1] `configPage.error == null`.
 
 ### T376 — Variable-sourced dimmer level
 
@@ -945,27 +975,27 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions[0].level` resolves to a variable reference (e.g. `{variable: 'batLevel'}` or equivalent schema), NOT a literal integer 65. `configPage.error` null.
+**Expected**: `get_rm_rule.actions[0].level` resolves to a variable reference (e.g. `{variable: 'batLevel'}` or equivalent schema), NOT a literal integer 65. [INV-1] `configPage.error == null`.
 
 ### T377 — Update an existing rule's action list
 
 ```json
 {
-  "setup_prompt": "Create virtual switches BAT-RM-UpdSw1 and BAT-RM-UpdSw2. Create rule 'BAT-RM-Update' with Certain Time trigger and one action: turn BAT-RM-UpdSw1 on. Capture the rule ID.",
-  "test_prompt": "Call update_rm_rule on BAT-RM-Update with a patch that replaces actions with: (1) turn BAT-RM-UpdSw1 off, (2) turn BAT-RM-UpdSw2 on, (3) toggle BAT-RM-UpdSw1. Read the rule back and confirm the new 3-action list is in place and the old action is gone.",
+  "setup_prompt": "Create virtual switches BAT-RM-UpdSw1 and BAT-RM-UpdSw2. Create rule 'BAT-RM-T377-Update' (unique name) with Certain Time trigger and one action: turn BAT-RM-UpdSw1 on. Capture the rule ID.",
+  "test_prompt": "Call update_rm_rule on BAT-RM-T377-Update with a patch that replaces actions with: (1) turn BAT-RM-UpdSw1 off, (2) turn BAT-RM-UpdSw2 on, (3) toggle BAT-RM-UpdSw1. Read the rule back and confirm the new 3-action list is in place and the old action is gone.",
   "teardown_prompt": "Delete the rule and both virtual switches."
 }
 ```
 
-**Expected**: `update_rm_rule` returns success. `get_rm_rule.actions.length === 3` with new commands; old single-action list is gone. `configPage.error` null. `statusJson.eventSubscriptions.length > 0` still true.
+**Expected**: `update_rm_rule` returns success. `get_rm_rule.actions.length === 3` with new commands; old single-action list is gone. [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length > 0` still true.
 
 ### T378 — Delete rule (soft) then delete with force
 
 ```json
 {
-  "setup_prompt": "Create virtual switch BAT-RM-DelSw. Create rule 'BAT-RM-Delete' with Certain Time trigger and one action: turn BAT-RM-DelSw on. Capture rule ID.",
-  "test_prompt": "Call delete_rm_rule without force on BAT-RM-Delete; expect success. Attempt get_rm_rule on that ID; expect 404/not-found. Then, for a second scenario, re-create the rule and call delete_rm_rule with force=true and confirm it also returns success and the rule is gone.",
-  "teardown_prompt": "Ensure no BAT-RM-Delete rule remains via list_rm_rules. Delete the virtual switch."
+  "setup_prompt": "Create virtual switch BAT-RM-DelSw. Create rule 'BAT-RM-T378-Delete' (unique name) with Certain Time trigger and one action: turn BAT-RM-DelSw on. Capture rule ID.",
+  "test_prompt": "Call delete_rm_rule without force on BAT-RM-T378-Delete; expect success. Attempt get_rm_rule on that ID; expect 404/not-found. Then, for a second scenario, re-create the rule and call delete_rm_rule with force=true and confirm it also returns success and the rule is gone.",
+  "teardown_prompt": "Ensure no BAT-RM-T378-Delete rule remains via list_rm_rules. Delete the virtual switch."
 }
 ```
 
@@ -981,7 +1011,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions.length === 6`, in insertion order. Device IDs on actions 1-5 match the BAT virtuals (compared as strings). Color triplet preserved. %now%/%device% preserved literally. `configPage.error` null. `statusJson.eventSubscriptions.length > 0`.
+**Expected**: `get_rm_rule.actions.length === 6`, in insertion order. Device IDs on actions 1-5 match the BAT virtuals (compared as strings). Color triplet preserved. %now%/%device% preserved literally. [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length > 0`. [INV-3] if any action in the sequence takes multi-device input (e.g., if actions 1 and 2 both target BAT-RM-MegaSw but are represented as one combined input internally), assert `statusJson.appSettings[<action-input>].multiple == true`.
 
 ### T380 — Mega-compound HSM-ish rule with messaging (paused, never fires)
 
@@ -993,7 +1023,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: 4 actions round-trip. Rule disabled per `statusJson`. Real HSM state untouched (matches pre-test). `configPage.error` null.
+**Expected**: 4 actions round-trip. Rule disabled per `statusJson`. Real HSM state untouched (matches pre-test). [INV-1] `configPage.error == null`.
 
 ### T381 — Action ordering invariant under update
 
@@ -1005,7 +1035,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `get_rm_rule.actions[0/1/2].deviceId` matches the requested order after each update. No phantom action duplication or reshuffling. `configPage.error` null.
+**Expected**: `get_rm_rule.actions[0/1/2].deviceId` matches the requested order after each update. No phantom action duplication or reshuffling. [INV-1] `configPage.error == null`.
 
 ### T382 — Device IDs round-trip as strings (not coerced to int)
 
@@ -1017,7 +1047,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `String(actions[0].deviceId) === String(capturedId)`. Type may vary but string comparison must be exact. `configPage.error` null.
+**Expected**: `String(actions[0].deviceId) === String(capturedId)`. Type may vary but string comparison must be exact. [INV-1] `configPage.error == null`.
 
 ### T383 — eventSubscriptions present when trigger exists
 
@@ -1029,7 +1059,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Post-create `statusJson.eventSubscriptions.length > 0`. Post-update to time-only trigger, no device eventSubscriptions remain. `configPage.error` null throughout.
+**Expected**: Post-create `statusJson.eventSubscriptions.length > 0`. Post-update to time-only trigger, no device eventSubscriptions remain. [INV-1] `configPage.error == null` throughout.
 
 ### T384 — AI refuses to target a non-BAT physical device
 
@@ -1075,7 +1105,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` returns success even with empty actions. `get_rm_rule.actions === []`. `configPage.error` null.
+**Expected**: `create_rm_rule` returns success even with empty actions. `get_rm_rule.actions === []`. [INV-1] `configPage.error == null`.
 
 ## Section 4: Expressions, variables, private boolean, control flow (T400–T429)
 
@@ -1089,7 +1119,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Calls `manage_rule_machine.create_rm_rule` with one required-expression condition, then `get_rm_rule` round-trips it. `configPage.error` is null. AI reports 1 condition, 1 trigger, and confirms the expression text matches.
+**Expected**: Calls `manage_rule_machine.create_rm_rule` with one required-expression condition, then `get_rm_rule` round-trips it. [INV-1] `configPage.error == null`. AI reports 1 condition, 1 trigger, and confirms the expression text matches.
 
 ### T401 — Create rule with AND of two conditions in Required Expression
 
@@ -1101,7 +1131,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` succeeds; `get_rm_rule` shows two conditions with AND operator. `configPage.error` is null. Round-trip preserves operator order.
+**Expected**: `create_rm_rule` succeeds; `get_rm_rule` shows two conditions with AND operator. [INV-1] `configPage.error == null`. Round-trip preserves operator order.
 
 ### T402 — Create rule with OR of two conditions
 
@@ -1125,7 +1155,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` builds expression with XOR + NOT + parens. `get_rm_rule` returns expression tree where NOT is scoped to X2, XOR joins the two. `configPage.error` is null.
+**Expected**: `create_rm_rule` builds expression with XOR + NOT + parens. `get_rm_rule` returns expression tree where NOT is scoped to X2, XOR joins the two. [INV-1] `configPage.error == null`.
 
 ### T404 — Nested sub-expression with mixed operator precedence
 
@@ -1161,7 +1191,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Four conditional-action constructs present in round-trip: IF, ELSE-IF, ELSE, END-IF. Exit Rule action nested inside ELSE branch. `configPage.error` is null.
+**Expected**: Four conditional-action constructs present in round-trip: IF, ELSE-IF, ELSE, END-IF. Exit Rule action nested inside ELSE branch. [INV-1] `configPage.error == null`.
 
 ### T407 — Nested IF inside IF + Simple Conditional Action
 
@@ -1221,7 +1251,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Five distinct delay shapes (fixed, variable, per-mode, cancelable, cancel) all round-trip. Per-mode delay has entry per hub mode. Cancelable flag preserved on the 4th delay.
+**Expected**: Five distinct delay shapes (fixed, variable, per-mode, cancelable, cancel) all round-trip. Per-mode delay has entry per hub mode. Cancelable flag preserved on the 4th delay. [INV-1] `configPage.error == null`. **Diagnostic note**: this test intentionally bundles five delay variants. If it fails, re-run with only actions (1)+(6) (fixed + cancel) to isolate the canceling interaction, then (1)+(2) (fixed + variable) to isolate variable sourcing, then (3) alone (per-mode) to isolate per-mode encoding. A per-variant failure likely means one of those three sub-features broke; a joint failure likely means the action-list encoding / ordering is wrong.
 
 ### T412 — Wait for Events: single, multiple-any, multiple-all, timeout, and-stays, elapsed-only
 
@@ -1233,7 +1263,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Six distinct Wait for Events shapes. `statusJson.appSettings` for multi-device wait slots has `multiple: true`. Timeout + and-stays durations preserved.
+**Expected**: Six distinct Wait for Events shapes. [INV-1] `configPage.error == null`. [INV-3] **CRITICAL**: Wait variants 2 and 3 bind multiple contact devices — assert `statusJson.appSettings[<wait-2-device-input>].multiple == true` AND `statusJson.appSettings[<wait-3-device-input>].multiple == true`. Wait-for-Events multi-device slots are a Phase 1 flag-poisoning vector on the action side (same bug class as tDev triggers). Timeout + and-stays durations preserved. **Diagnostic note**: this test bundles six Wait variants. If it fails, re-run with progressively fewer variants to isolate: start with (1) alone (single-event wait), add (2) (multi-any), add (3) (multi-all), add (4) (and-stays + timeout), add (5) (elapsed-only). The first variant whose addition breaks the test is the culprit encoding.
 
 ### T413 — Wait for Expression: basic, timeout, Use Duration
 
@@ -1281,7 +1311,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Speak message string preserves 7 substitution tokens on round-trip. `configPage.error` is null.
+**Expected**: Speak message string preserves 7 substitution tokens on round-trip. [INV-1] `configPage.error == null`.
 
 ### T417 — Variable math: arithmetic + Token (regex split) + device-attribute read
 
@@ -1305,7 +1335,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: HTTP Post body + Get URL round-trip with interpolation tokens intact. `configPage.error` is null. No actual HTTP call is required (example.invalid won't resolve).
+**Expected**: HTTP Post body + Get URL round-trip with interpolation tokens intact. [INV-1] `configPage.error == null`. No actual HTTP call is required (example.invalid won't resolve).
 
 ### T419 — Track event (trigger-sourced action value) on switch + dimmer
 
@@ -1341,7 +1371,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Conditional trigger with PB condition round-trips. Two Set Private Boolean actions targeting self, one true / one false. `configPage.error` is null.
+**Expected**: Conditional trigger with PB condition round-trips. Two Set Private Boolean actions targeting self, one true / one false. [INV-1] `configPage.error == null`.
 
 ### T422 — Cross-rule Private Boolean: Rule A toggles Rule B's PB
 
@@ -1353,7 +1383,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Rule A round-trip shows cross-rule PB references pointing at Rule B's app ID. `set_rm_rule_boolean` on Rule B returns `{success:true}`. Both rules' `configPage.error` null.
+**Expected**: Rule A round-trip shows cross-rule PB references pointing at Rule B's app ID. `set_rm_rule_boolean` on Rule B returns `{success:true}`. Both rules' [INV-1] `configPage.error == null`.
 
 ### T423 — Private Boolean default after Start button
 
@@ -1377,19 +1407,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Compound IF/ELSE-IF/ELSE/END-IF with 6 distinct nested action types all round-trip. `configPage.error` is null. Per-mode action has entry per hub mode. `statusJson.appSettings` shows `multiple:true` for any capability input with multi-device configuration.
+**Expected**: Compound IF/ELSE-IF/ELSE/END-IF with 6 distinct nested action types all round-trip. [INV-1] `configPage.error == null`. Per-mode action has entry per hub mode. [INV-3] **CRITICAL**: the per-mode switch action targets multiple modes via BAT-RM-KSDst — assert `statusJson.appSettings[<per-mode-action-input>].multiple == true` on the device-list input AND on any mode-keyed sub-inputs that accept multiple. Action-side flag-poisoning regression guard.
 
 ### T425 — update_rm_rule: mutate expression, add action, edit local var in one patch
 
 ```json
 {
-  "setup_prompt": "Create virtual switches 'BAT-RM-UpdA', 'BAT-RM-UpdB', 'BAT-RM-UpdC' and run T400 first to ensure the baseline create path works.",
-  "test_prompt": "Create rule 'BAT-RM-Update' with Required Expression 'BAT-RM-UpdA is on', trigger BAT-RM-UpdA changed, one local variable BAT-RM-Counter (number, 0), action log '%BAT-RM-Counter% fires'. Then call update_rm_rule with a patch that: (a) changes Required Expression to 'BAT-RM-UpdA is on AND BAT-RM-UpdB is on', (b) appends a second action 'Set BAT-RM-Counter = BAT-RM-Counter + 1' (arithmetic), (c) changes BAT-RM-Counter initial value to 10. Read back and confirm all three changes applied atomically and the rule still has exactly one trigger.",
-  "teardown_prompt": "Force-delete 'BAT-RM-Update'. Remove BAT-RM-UpdA, BAT-RM-UpdB, BAT-RM-UpdC."
+  "setup_prompt": "Create virtual switches 'BAT-RM-UpdA', 'BAT-RM-UpdB', 'BAT-RM-UpdC'. No cross-test dependency: this test is fully self-contained.",
+  "test_prompt": "Create rule 'BAT-RM-T425-Update' (unique name) with Required Expression 'BAT-RM-UpdA is on', trigger BAT-RM-UpdA changed, one local variable BAT-RM-Counter (number, 0), action log '%BAT-RM-Counter% fires'. Then call update_rm_rule with a patch that: (a) changes Required Expression to 'BAT-RM-UpdA is on AND BAT-RM-UpdB is on', (b) appends a second action 'Set BAT-RM-Counter = BAT-RM-Counter + 1' (arithmetic), (c) changes BAT-RM-Counter initial value to 10. Read back and confirm all three changes applied atomically and the rule still has exactly one trigger.",
+  "teardown_prompt": "Force-delete 'BAT-RM-T425-Update'. Remove BAT-RM-UpdA, BAT-RM-UpdB, BAT-RM-UpdC."
 }
 ```
 
-**Expected**: `update_rm_rule` returns success. `get_rm_rule` shows mutated expression (AND of two conditions), two actions (log + set-var-math), local var initial value=10. Trigger count unchanged.
+**Expected**: `update_rm_rule` returns success. `get_rm_rule` shows mutated expression (AND of two conditions), two actions (log + set-var-math), local var initial value=10. Trigger count unchanged. [INV-1] `configPage.error == null`. [INV-4] no stale `state.editCond` after the multi-field patch.
 
 ### T426 — delete_rm_rule soft vs force (with children)
 
@@ -1413,7 +1443,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Flat left-to-right operator sequence round-trips identically. No implicit re-parenthesization. `configPage.error` null.
+**Expected**: Flat left-to-right operator sequence round-trips identically. No implicit re-parenthesization. [INV-1] `configPage.error == null`.
 
 ### T428 — Wait for Events + cancel via Cancel Delayed Actions (interaction)
 
@@ -1437,7 +1467,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` returns `{success:false}` with clear error about malformed expression OR missing device reference, OR hub returns `configPage.error` non-null. No partial rule left behind. AI reports the validation failure without fabricating success.
+**Expected**: `create_rm_rule` returns `{success:false}` with clear error about malformed expression OR missing device reference, OR hub returns [INV-1 violation: `configPage.error != null`]. No partial rule left behind. AI reports the validation failure without fabricating success.
 
 ## Section 5: HTTP endpoints + edge cases (T430–T449)
 
@@ -1451,7 +1481,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Calls `manage_rule_machine.create_rm_rule` with a Local End Point trigger bound to `/runRuleAct=<target_id>`. `get_rm_rule` round-trip shows the endpoint URL in the rule config and the selected verb. `configPage.error` is null; `statusJson.eventSubscriptions.length > 0`. Teardown force-deletes both rules; final `list_rm_rules` count returns to baseline.
+**Expected**: Calls `manage_rule_machine.create_rm_rule` with a Local End Point trigger bound to `/runRuleAct=<target_id>`. `get_rm_rule` round-trip shows the endpoint URL in the rule config and the selected verb. [INV-1] `configPage.error == null`; `statusJson.eventSubscriptions.length > 0`. Teardown force-deletes both rules; final `list_rm_rules` count returns to baseline.
 
 ### T431 — Local End Point trigger with /stopRuleAct verb
 
@@ -1463,7 +1493,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` with Local End Point + verb `stopRuleAct`. Round-trip via `get_rm_rule` confirms the URL contains `/stopRuleAct=<id>`. `configPage.error` null. Clean teardown.
+**Expected**: `create_rm_rule` with Local End Point + verb `stopRuleAct`. Round-trip via `get_rm_rule` confirms the URL contains `/stopRuleAct=<id>`. [INV-1] `configPage.error == null`. Clean teardown.
 
 ### T432 — Local End Point pauseRule and resumeRule verbs (paired)
 
@@ -1475,7 +1505,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Two `create_rm_rule` calls, one per verb. `get_rm_rule` on each shows correct `/pauseRule=` and `/resumeRule=` endpoint paths. Both `configPage.error` null; both `eventSubscriptions.length > 0`. Teardown force-deletes all three.
+**Expected**: Two `create_rm_rule` calls, one per verb. `get_rm_rule` on each shows correct `/pauseRule=` and `/resumeRule=` endpoint paths. Both [INV-1] `configPage.error == null`; both `eventSubscriptions.length > 0`. Teardown force-deletes all three.
 
 ### T433 — Local End Point setRuleBooleanTrue / setRuleBooleanFalse (paired)
 
@@ -1487,7 +1517,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Two creates, each with the respective PB verb. Round-trip URLs contain the expected path segments. `configPage.error` null. Clean teardown.
+**Expected**: Two creates, each with the respective PB verb. Round-trip URLs contain the expected path segments. [INV-1] `configPage.error == null`. Clean teardown.
 
 ### T434 — Local End Point legacy /runRule verb
 
@@ -1510,7 +1540,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` with `getRuleList` verb (no rule id). `get_rm_rule` shows endpoint path ending in `/getRuleList`. `configPage.error` null. Clean teardown.
+**Expected**: `create_rm_rule` with `getRuleList` verb (no rule id). `get_rm_rule` shows endpoint path ending in `/getRuleList`. [INV-1] `configPage.error == null`. Clean teardown.
 
 ### T436 — Local End Point /setHubVariable verb
 
@@ -1522,7 +1552,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` with `setHubVariable` verb + target variable name. Round-trip shows the `:value` placeholder in the URL. `configPage.error` null. Teardown removes both the rule and the hub variable.
+**Expected**: `create_rm_rule` with `setHubVariable` verb + target variable name. Round-trip shows the `:value` placeholder in the URL. [INV-1] `configPage.error == null`. Teardown removes both the rule and the hub variable.
 
 ### T437 — Local End Point /setHubVariableEncoded (name with spaces)
 
@@ -1557,7 +1587,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` with Local End Point in "arbitrary string → %value%" mode — no verb selection. Round-trip confirms the catch-all configuration. `configPage.error` null. Clean teardown.
+**Expected**: `create_rm_rule` with Local End Point in "arbitrary string → %value%" mode — no verb selection. Round-trip confirms the catch-all configuration. [INV-1] `configPage.error == null`. Clean teardown.
 
 ### T440 — Cloud End Point trigger (cloud URL variant)
 
@@ -1569,7 +1599,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` with capability `Cloud End Point` (not Local). Round-trip confirms the `cloud.hubitat.com` URL prefix. `configPage.error` null. If cloud is unconfigured, AI reports that cleanly instead of fabricating a URL. Clean teardown.
+**Expected**: `create_rm_rule` with capability `Cloud End Point` (not Local). Round-trip confirms the `cloud.hubitat.com` URL prefix. [INV-1] `configPage.error == null`. If cloud is unconfigured, AI reports that cleanly instead of fabricating a URL. Clean teardown.
 
 ### T441 — Endpoint URL round-trips verbatim through update_rm_rule
 
@@ -1581,21 +1611,21 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` then `update_rm_rule` flips the endpoint target. `get_rm_rule` after update shows the new target id in the URL. `statusJson.eventSubscriptions` reflects the new binding (no stale A reference). `configPage.error` null throughout. Clean teardown.
+**Expected**: `create_rm_rule` then `update_rm_rule` flips the endpoint target. `get_rm_rule` after update shows the new target id in the URL. `statusJson.eventSubscriptions` reflects the new binding (no stale A reference). [INV-1] `configPage.error == null` throughout. Clean teardown.
 
-### T442 — Orphan cleanup after failed create (Phase 1 finding #1)
+### T442 — Orphan cleanup after failed create — must EXERCISE the cleanup path, not pre-validate
 
 ```json
 {
-  "setup_prompt": "Record baseline: call list_rm_rules and note the count N. Also get_app_config on the Rule Machine PARENT app and note its hasChildren count M.",
-  "test_prompt": "Attempt to create a rule 'BAT-RM-T442-Orphan' with a Switch trigger referencing device ID 99999999 (definitely nonexistent). The create should fail mid-wizard. Verify the tool detects the failure and force-deletes the orphan child (via /installedapp/forcedelete/<newId>/quiet) BEFORE returning the error to me. After the error, call list_rm_rules and get_app_config on the RM parent — count must still be N and M respectively.",
-  "teardown_prompt": "If for any reason an orphan persists, list installed apps filtered by name prefix 'BAT-RM-T442' and force-delete anything found. Re-verify counts match baseline."
+  "setup_prompt": "Record baseline: call list_rm_rules and note the count N. Also get_app_config on the Rule Machine PARENT app and note its hasChildren count M. Also enable MCP debug logging (set_log_level=debug) so we can capture the tool's internal trace.",
+  "test_prompt": "Attempt to create a rule 'BAT-RM-T442-Orphan' with a trigger that will PASS pre-validation (e.g., valid Motion trigger on an existing BAT-created virtual motion sensor) BUT configure an action that can only be validated server-side by posting it (e.g., reference a scene/app/rule ID that doesn't exist, or a custom command that the target device doesn't support — something that `createchild` will accept but the subsequent action-configuration POST to `/installedapp/update/json` will reject). The create must reach the `createchild` step (so a child app IS allocated server-side) and then fail during action configuration. Verify via MCP debug logs that: (a) `/installedapp/createchild/hubitat/Rule-5.1/parent/<rmParentId>` returned a 302 with a NEW child app ID, (b) the subsequent update/json or btn POST returned an error, (c) the tool then issued `/installedapp/forcedelete/<newChildId>/quiet` to clean up. All three steps MUST appear in the trace. After the error, call list_rm_rules and get_app_config on the RM parent — count must still be N and M respectively. A tool that pre-validates client-side and never calls createchild would 'pass' the count check but FAIL this test — the trace evidence of the three-step cycle is what proves the cleanup path works.",
+  "teardown_prompt": "If for any reason an orphan persists, list installed apps filtered by name prefix 'BAT-RM-T442' and force-delete anything found. Re-verify counts match baseline. Reset log level if changed."
 }
 ```
 
-**Expected**: `create_rm_rule` attempts `createchild`, gets new child ID, then configuration fails (unknown device). Tool MUST invoke `/installedapp/forcedelete/<id>/quiet` before returning. Returns `{success: false, error: <msg>, orphanCleaned: true}`. `list_rm_rules` count unchanged. RM parent `hasChildren` count unchanged. No stuck `editCond` on the parent.
+**Expected**: `create_rm_rule` performs `/installedapp/createchild/...` → gets new child ID → attempts configuration → hits server-side rejection → performs `/installedapp/forcedelete/<newChildId>/quiet` → returns `{success: false, error: <msg>, orphanCleaned: true, childIdCreated: <newId>, childIdForceDeleted: <newId>}`. **Trace evidence mandatory**: MCP debug logs must show all three framework endpoints called in order. Post-test: `list_rm_rules` count unchanged, RM parent `hasChildren` unchanged, no stuck `editCond`. A client-side-only validator that never hits `createchild` FAILS this test because the trace will be missing — the whole point is exercising the cleanup branch, not just observing clean state.
 
-### T443 — Multi-device trigger preserves multiple=true flag (Phase 1 finding #2)
+### T443 — Multi-device trigger preserves multiple=true flag (Phase 1 finding — multi-device `multiple=true` flag poisoning)
 
 ```json
 {
@@ -1605,19 +1635,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` emits the three-field group (`settings[tDev<N>]=csv`, `tDev<N>.type=capability.switch`, `tDev<N>.multiple=true`) in the SAME POST. Post-write verification reads `appSettings[tDev<N>].multiple` and asserts `true`. `get_app_config` succeeds (no "Command 'size' is not supported" error). `configPage.error` null.
+**Expected**: `create_rm_rule` emits the three-field group (`settings[tDev<N>]=csv`, `tDev<N>.type=capability.switch`, `tDev<N>.multiple=true`) in the SAME POST. Post-write verification reads `appSettings[tDev<N>].multiple` and asserts `true`. `get_app_config` succeeds (no "Command 'size' is not supported" error). [INV-1] `configPage.error == null`.
 
 ### T444 — multiple=true persists across update (remove one device)
 
 ```json
 {
-  "setup_prompt": "Complete T443 first (or recreate the same 3-device rule as BAT-RM-T444-MultiSwitch).",
-  "test_prompt": "Call update_rm_rule on BAT-RM-T444-MultiSwitch to REMOVE one of the three trigger devices (leaving 2). Immediately after, re-read appSettings[tDev<N>] and confirm multiple is STILL true (not silently rewritten to false). Also call get_app_config and confirm it renders without any 'Command size is not supported' error. This is the regression guard for Phase 1 finding #2.",
-  "teardown_prompt": "Force-delete BAT-RM-T444-MultiSwitch."
+  "setup_prompt": "Create three BAT-prefixed virtual switches via manage_virtual_device: BAT-T444-Sw1, BAT-T444-Sw2, BAT-T444-Sw3. Record their IDs. Create a new rule named 'BAT-RM-T444-MultiSwitch' via create_rm_rule with a single Switch trigger bound to all three virtual switches (multi-device). Verify at creation time that appSettings[tDev<N>].multiple == true as a baseline precondition.",
+  "test_prompt": "Call update_rm_rule on BAT-RM-T444-MultiSwitch to REMOVE one of the three trigger devices (leaving BAT-T444-Sw1 and BAT-T444-Sw2). Immediately after the update, re-read appSettings[tDev<N>] and confirm multiple is STILL true (not silently rewritten to false during the update). Also call get_app_config and confirm it renders without any 'Command size is not supported by device' RM rendering error. This test guards the update-path regression of the flag-poisoning bug described in the Phase 1 findings on #120.",
+  "teardown_prompt": "Force-delete BAT-RM-T444-MultiSwitch via delete_rm_rule(force=true). Delete all three BAT-T444-Sw* virtual devices."
 }
 ```
 
-**Expected**: `update_rm_rule` re-emits the same three-field group on every multi-device write — never just `settings[tDev<N>]` alone. `appSettings[tDev<N>].multiple == true` post-update. `configPage.error` null. No RM rendering crash. This test is the load-bearing regression guard for the flag-poisoning bug.
+**Expected**: `update_rm_rule` MUST re-emit the three-field group (`settings[<name>]` + `<name>.type=capability.*` + `<name>.multiple=true`) on every multi-device capability write — never just `settings[<name>]` alone. Post-update `appSettings[tDev<N>].multiple == true` (invariant INV-3). [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length >= 2` (one per remaining device). Self-contained — does not depend on T443 or any other test's artifacts.
 
 ### T445 — Flag-poisoning recovery (aspirational / self-heal)
 
@@ -1636,12 +1666,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create 'BAT-RM-T446-EditCond' with a multi-device trigger.",
-  "test_prompt": "This is a defensive test for Phase 1 finding #3 (stale state.editCond). After creation, if by construction state.editCond is ever stuck (inspect via get_app_config with includeSettings=true — look for state.editCond in the state map), the tool should detect this on the NEXT update_rm_rule call and call /installedapp/btn with name=updateRule to clear it. Attempt two back-to-back update_rm_rule calls that touch trigger config. Verify the final state.editCond is null/unset AND configPage.error is null. If the new tool design makes editCond-stuckness impossible to reach, note that and mark aspirational.",
+  "test_prompt": "This is a defensive test for Phase 1 finding — stuck `state.editCond` after a button-handler exception (stale state.editCond). After creation, if by construction state.editCond is ever stuck (inspect via get_app_config with includeSettings=true — look for state.editCond in the state map), the tool should detect this on the NEXT update_rm_rule call and call /installedapp/btn with name=updateRule to clear it. Attempt two back-to-back update_rm_rule calls that touch trigger config. Verify the final state.editCond is null/unset AND configPage.error is null. If the new tool design makes editCond-stuckness impossible to reach, note that and mark aspirational.",
   "teardown_prompt": "Force-delete BAT-RM-T446-EditCond. Final check: no rule with prefix 'BAT-RM-T446' appears in list_rm_rules."
 }
 ```
 
-**Expected**: Tool detects stuck `state.editCond` if present and POSTs `updateRule` to clear. Post-test `state.editCond` is null. `configPage.error` null. If unreachable by design, test is aspirational — both conditions (editCond clear AND final config error null) still asserted as preconditions for teardown.
+**Expected**: Tool detects stuck `state.editCond` if present and POSTs `updateRule` to clear. Post-test `state.editCond` is null. [INV-1] `configPage.error == null`. If unreachable by design, test is aspirational — both conditions (editCond clear AND final config error null) still asserted as preconditions for teardown.
 
 ### T447 — Concurrent update race (same rule, rapid updates)
 
@@ -1653,7 +1683,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Both `update_rm_rule` calls return `{success: true}`. Final state is consistent (one of the two values, not garbled). `eventSubscriptions.length > 0`. No orphan state. If RM itself serializes writes, the tool should transparently handle that without surfacing 500s to the AI.
+**Expected**: Both `update_rm_rule` calls return `{success: true}`. Final state is consistent (one of the two values, not garbled). `eventSubscriptions.length > 0`. No orphan state. If RM itself serializes writes, the tool should transparently handle that without surfacing 500s to the AI. **Skip condition**: if the test client does not support parallel/async request dispatch, mark SKIPPED (the concurrent race cannot be reproduced with sequential calls — and if the client serializes transparently, the bug class being tested cannot manifest from this test).
 
 ### T448 — Parent-ID discovery on first run (rmParentId unset)
 
@@ -1665,7 +1695,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: First `create_rm_rule` triggers parent discovery via `list_installed_apps`, caches id, creates rule. Second call uses cache. Both creates succeed. `configPage.error` null on both. If the MCP log shows only one parent-discovery call, caching is working.
+**Expected**: First `create_rm_rule` triggers parent discovery via `list_installed_apps`, caches id, creates rule. Second call uses cache. Both creates succeed. [INV-1] `configPage.error == null` on both. If the MCP log shows only one parent-discovery call, caching is working. **Skip condition**: if no debug-trace mechanism exists to observe the parent-discovery call sequence, fall back to functional-only assertion — both creates must succeed. Caching behavior then becomes observational rather than asserted.
 
 ### T449 — Rule Machine not installed (clean error)
 
@@ -1677,4 +1707,36 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `create_rm_rule` returns `{success: false, error: <msg mentioning 'Rule Machine' + 'Apps → Add Built-In App'>}`. No orphan child in `list_installed_apps`. `list_rm_rules` returns empty (or unchanged). AI reports the missing-RM condition to the user verbatim rather than inventing a workaround.
+**Expected**: `create_rm_rule` returns `{success: false, error: <msg mentioning 'Rule Machine' + 'Apps → Add Built-In App'>}`. No orphan child in `list_installed_apps`. `list_rm_rules` returns empty (or unchanged). AI reports the missing-RM condition to the user verbatim rather than inventing a workaround. **Aspirational**: if the live hub always has RM installed and it cannot be safely uninstalled for the test, mark this test as environment-dependent and skip.
+
+### T450 — update_rm_rule on non-existent ruleId (negative path)
+
+```json
+{
+  "test_prompt": "Call manage_rule_machine.update_rm_rule with ruleId=99999999 and a harmless patch (e.g. change comments to 'x'). Because the rule does not exist, the tool MUST return a clean error response — NOT silently succeed, NOT create a new rule with that ID, NOT fabricate success. Report the error message verbatim."
+}
+```
+
+**Expected**: `update_rm_rule(ruleId=99999999, patch={comments:'x'})` returns `{success:false, error:<not-found message>}` OR throws `IllegalArgumentException` with a clear not-found message. AI does NOT fabricate a rule. Companion to T385 (which covers `get_rm_rule` negative path); closes the silent-failure gap in the update path surfaced by the PR #133 review.
+
+### T451 — delete_rm_rule on non-existent ruleId (negative path)
+
+```json
+{
+  "test_prompt": "Call manage_rule_machine.delete_rm_rule with ruleId=99999999 and force=false. Then call again with force=true. In both cases, the tool MUST return a clean response — either `{success:false, error:<not-found>}` or (if the framework's underlying endpoint returns 302/success for nonexistent IDs) `{success:true, note:<no-op>}` with a clear indication that no deletion actually occurred. The tool must NOT claim to have deleted something that did not exist, and must NOT throw an unhandled exception."
+}
+```
+
+**Expected**: Both soft and force delete return a structured response distinguishing 'deleted real rule' from 'no such rule / no-op'. The hub's `/installedapp/forcedelete/<id>/quiet` endpoint returns 302 for any input (including nonexistent IDs); the tool MUST not interpret that as 'successfully deleted a real rule' when the ID was never valid. Companion to T385 and T450.
+
+### T452 — MCP feature flag gating: tools absent when Rule Machine Tools disabled
+
+```json
+{
+  "setup_prompt": "Record the current state of the MCP 'Enable Built-in App Tools' setting AND any new 'Enable Native RM CRUD Tools' setting (if #120 Phase 2 adds one). Note: this test assumes the legacy-gating design from the #120 Phase 3 plan — if the gating setting doesn't exist yet, mark this test aspirational.",
+  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools (either 'Enable Built-in App Tools' or a new 'Enable Native RM CRUD Tools' flag introduced by #120). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, `get_rm_rule` are COMPLETELY ABSENT from the returned tool list — NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. This matches the #120 Phase 3 design: 'When the legacy toggle is off, the custom-engine tools must not appear in the MCP tool list at all.' Same gating semantic applies to the new native-RM tools. Then re-enable the setting and confirm the tools reappear in tools/list.",
+  "teardown_prompt": "Restore the MCP setting to its original state as recorded in setup."
+}
+```
+
+**Expected**: With feature flag OFF, `tools/list` response does NOT include any of the four new native-RM tools. With feature flag ON, all four appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error — the tool surface must match the user's enablement state. **Aspirational** if the gating setting doesn't exist yet in Phase 2 — document in the output which gating mechanism is being tested.
