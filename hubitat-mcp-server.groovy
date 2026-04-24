@@ -2409,7 +2409,10 @@ def toolListRules() {
 def toolGetRule(ruleId) {
     def childApp = getChildAppById(ruleId)
     if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${ruleId}")
+        def redirect = findRuleAppRedirect(ruleId, "read")
+        def msg = "Rule not found: ${ruleId}"
+        if (redirect) msg += ". ${redirect}"
+        throw new IllegalArgumentException(msg)
     }
 
     return childApp.getRuleData()
@@ -2518,7 +2521,10 @@ def toolCreateRule(args) {
 def toolUpdateRule(ruleId, args) {
     def childApp = getChildAppById(ruleId)
     if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${ruleId}")
+        def redirect = findRuleAppRedirect(ruleId, "write")
+        def msg = "Rule not found: ${ruleId}"
+        if (redirect) msg += ". ${redirect}"
+        throw new IllegalArgumentException(msg)
     }
 
     // Normalize and validate any provided triggers
@@ -2577,7 +2583,10 @@ def toolDeleteRule(args) {
 
     def childApp = getChildAppById(args.ruleId)
     if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${args.ruleId}")
+        def redirect = findRuleAppRedirect(args.ruleId, "write")
+        def msg = "Rule not found: ${args.ruleId}"
+        if (redirect) msg += ". ${redirect}"
+        throw new IllegalArgumentException(msg)
     }
 
     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
@@ -2655,13 +2664,129 @@ def toolDeleteRule(args) {
 def toolTestRule(ruleId) {
     def childApp = getChildAppById(ruleId)
     if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${ruleId}")
+        def redirect = findRuleAppRedirect(ruleId, "write")
+        def msg = "Rule not found: ${ruleId}"
+        if (redirect) msg += ". ${redirect}"
+        throw new IllegalArgumentException(msg)
     }
 
     return childApp.testRuleFromParent()
 }
 
 // ==================== RULE HELPERS ====================
+
+/**
+ * Best-effort check: given a numeric id that was not found as an MCP child-app rule, look it up
+ * in the hub's installed-app list (/hub2/appsList). If the id belongs to a known rule-like
+ * built-in (Rule Machine, Room Lighting, Basic Rules, Visual Rules Builder), return a
+ * verb-appropriate redirect hint string. Returns null on any failure (fetch error, parse error,
+ * id not present, app not rule-like) so callers always get graceful fallback.
+ *
+ * Rule-like detection uses two complementary signals:
+ *   1. classLocation from systemAppTypes[] (authoritative SDK string: ruleApp51, roomLightsApp, etc.)
+ *   2. type string from the instance data (human-readable: "Rule-5.1", "Room Lights", etc.)
+ * Either signal matching is sufficient.
+ *
+ * @param ruleId  the ID to look up (String or numeric)
+ * @param verb    "read" (get/export) or "write" (update/delete/test/clone) -- controls hint phrasing
+ * @return        redirect hint String, or null if no redirect applies
+ */
+private String findRuleAppRedirect(ruleId, String verb) {
+    // Soft gate: only enrich the error when Built-in App Tools are enabled.
+    // Prevents leaking that an app exists at this id (or its type) when the
+    // operator has intentionally restricted built-in app visibility.
+    if (!settings.enableBuiltinAppRead) return null
+
+    // Known classLocation values for rule-like built-in apps.
+    // ruleApp51 = Rule Machine 5.1, ruleApp50 = Rule Machine 5.0,
+    // ruleApp = Rule Machine 4.x (legacy), roomLightsApp = Room Lighting parent,
+    // roomLightsChildApp = Room Lighting instance, basicRulesApp = Basic Rules,
+    // vrb = Visual Rules Builder.
+    def ruleClassLocations = [
+        "ruleApp51", "ruleApp50", "ruleApp",
+        "roomLightsApp", "roomLightsChildApp",
+        "basicRulesApp", "vrb"
+    ] as Set
+
+    // Human-readable type-string fragments to match as a fallback when classLocation
+    // is unavailable (e.g., systemAppTypes absent from the firmware's appsList response).
+    def ruleTypeFragments = [
+        "rule machine", "rule-5", "rule-4", "room light", "basic rules", "visual rules"
+    ]
+
+    def idStr = ruleId?.toString()?.trim()
+    if (!idStr || !idStr.isInteger()) return null
+
+    try {
+        def responseText = hubInternalGet("/hub2/appsList")
+        if (!responseText) return null
+
+        def parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        } catch (Exception ignored) {
+            return null
+        }
+
+        if (!(parsed instanceof Map)) return null
+
+        // Build a classLocation lookup map from systemAppTypes[]: id -> classLocation.
+        def classLocationById = [:]
+        def systemTypes = parsed.systemAppTypes
+        if (systemTypes instanceof List) {
+            systemTypes.each { t ->
+                if (t instanceof Map && t.id != null && t.classLocation) {
+                    classLocationById[t.id.toString()] = t.classLocation.toString()
+                }
+            }
+        }
+
+        // Flatten the apps[] tree to find the app instance with matching id.
+        // Reuses the same flatten-and-search pattern as toolListInstalledApps.
+        def flat = []
+        def flatten
+        flatten = { List nodes ->
+            nodes?.each { node ->
+                if (!(node instanceof Map)) return
+                def d = node.data
+                if (d instanceof Map) flat << d
+                def children = node.children
+                if (children instanceof List) flatten(children)
+            }
+        }
+        def apps = parsed.apps
+        if (!(apps instanceof List)) return null
+        flatten(apps)
+
+        def foundData = flat.find { it?.id?.toString() == idStr }
+        if (!foundData) return null
+
+        // Determine whether this app type is rule-like via classLocation or type string.
+        def appTypeName = foundData.type?.toString() ?: "built-in app"
+        def appTypeId = foundData.appTypeId?.toString()
+        def classLoc = appTypeId ? classLocationById[appTypeId] : null
+
+        boolean isRuleLike = (classLoc && ruleClassLocations.contains(classLoc)) ||
+            ruleTypeFragments.any { frag -> appTypeName.toLowerCase().contains(frag) }
+
+        if (!isRuleLike) return null
+
+        // Build verb-appropriate redirect hint.
+        if (verb == "read") {
+            return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
+                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` to read its configuration. " +
+                "`get_rule` and `export_rule` only handle MCP's own rule engine, not Hubitat built-in apps."
+        } else {
+            return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
+                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
+                "Hubitat built-in rules cannot be programmatically modified via MCP at this time -- " +
+                "use the Hubitat Rule Machine UI for changes."
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "rules", "findRuleAppRedirect lookup failed for id ${idStr}: ${e.message ?: e.toString()}")
+        return null
+    }
+}
 
 /**
  * Build a portable rule export object from rule data (excludes runtime state like id, lastTriggered, executionCount).
@@ -2688,7 +2813,10 @@ def toolExportRule(args) {
 
     def childApp = getChildAppById(args.ruleId)
     if (!childApp) {
-        throw new IllegalArgumentException("Rule not found: ${args.ruleId}")
+        def redirect = findRuleAppRedirect(args.ruleId, "read")
+        def msg = "Rule not found: ${args.ruleId}"
+        if (redirect) msg += ". ${redirect}"
+        throw new IllegalArgumentException(msg)
     }
 
     def ruleData = childApp.getRuleData()

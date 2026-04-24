@@ -2396,6 +2396,31 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 
 **Expected**: AI uses the Rule Machine app ID discovered in setup, then calls `manage_installed_apps(tool='list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list with a single entry `{name: 'mainPage', role: 'primary'}` plus a `note` confirming rules are single-page. AI explains there is only one page (mainPage) and no sub-pages are available.
 
+### T219 — get_rule on a Rule Machine rule ID (redirect hint)
+
+```json
+{
+  "setup_prompt": "Built-in App Tools is enabled. Use list_rm_rules or list_installed_apps to find an existing Rule Machine rule and note its app ID (not an MCP rule ID).",
+  "test_prompt": "Call get_rule with the Rule Machine app ID you just found and tell me what error message you receive.",
+  "teardown_prompt": "No teardown needed."
+}
+```
+
+**Expected**: `get_rule` throws `IllegalArgumentException` containing both "Rule not found: <id>" and a redirect hint like:
+> "Rule <id> is a Hubitat built-in Rule-5.1 app. Use `manage_installed_apps -> get_app_config(appId=<id>)` to read its configuration."
+
+AI should:
+1. Report the full error including the redirect hint
+2. Recognize that `get_rule` only handles MCP's own rule engine
+3. Follow the hint by calling `manage_installed_apps(tool='get_app_config', args={appId: <id>})` to read the rule's configuration
+
+This scenario validates that an agent landing on the wrong tool is efficiently redirected to the correct one in a single round-trip rather than wasting 3-4 tool calls.
+
+**Failure modes to flag:**
+- AI receives a redirect hint but ignores it and keeps calling `get_rule` variants
+- AI receives "Rule not found" with no redirect hint (suggests `enableBuiltinAppRead` is disabled and the `/hub2/appsList` lookup couldn't run -- check hub settings)
+- AI follows the hint successfully but reports confusion about read vs write capabilities
+
 ---
 
 ## Section 12: Developer Mode Tests

@@ -25,6 +25,8 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | `create_rule` | Create a new automation rule. | None |
 | `update_rule` | Update rule triggers, conditions, or actions. Also handles enable/disable via `enabled=true/false`. | None |
 
+> **Note:** `get_rule` and `update_rule` only operate on MCP-native rules. Passing a Hubitat built-in rule id yields a redirect hint (see `manage_rules_admin` note below).
+
 ### Device Management (1)
 
 | Tool | Description | Access Gate |
@@ -75,6 +77,8 @@ Rule administration: delete, test, export, import, and clone rules.
 | `export_rule` | Export rule as portable JSON. | None |
 | `import_rule` | Import a rule from exported JSON. | None |
 | `clone_rule` | Duplicate an existing rule. | None |
+
+> **Built-in rule redirect:** `get_rule`, `export_rule`, `update_rule`, `delete_rule`, `test_rule`, and `clone_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `manage_installed_apps -> get_app_config(appId=<id>)`. This redirect fires only when Built-in App Tools are enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
 
 ### manage_hub_variables (4 tools)
 
