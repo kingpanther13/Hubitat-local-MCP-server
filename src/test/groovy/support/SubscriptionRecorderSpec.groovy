@@ -93,25 +93,44 @@ class SubscriptionRecorderSpec extends Specification {
         thrown(IllegalStateException)
     }
 
-    def "fireEvent dispatches a defensive copy so handler mutations do not leak across handlers"() {
-        given: 'two subscriptions on the same source+attribute, first one mutates its event'
+    def "fireEvent dispatches a defensive copy so one handler's mutation does not leak into the next handler's event"() {
+        given: 'two distinct handlers on the same source+attribute — first mutates, second observes'
         def dev = new Object()
-        def mutatingScript = new FakeScript() {
-            Object handleDeviceEvent(Map evt) {
-                evt.value = 'TAMPERED'  // attempt to change what the second handler sees
-                super.handleDeviceEvent(evt)
-            }
-        }
-        recorder.record(dev, 'switch', 'handleDeviceEvent')
-        recorder.record(dev, 'switch', 'handleDeviceEvent')
+        def twoHandlerScript = new TwoHandlerScript()
+        recorder.record(dev, 'switch', 'mutatingHandler')
+        recorder.record(dev, 'switch', 'observingHandler')
 
         when:
-        recorder.fireEvent(mutatingScript, dev, 'switch', 'on')
+        recorder.fireEvent(twoHandlerScript, dev, 'switch', 'on')
 
-        then: 'both handlers ran, but each saw the original value — the mutation did not escape the first copy'
-        mutatingScript.handledDevice.size() == 2
-        mutatingScript.handledDevice[0].value == 'TAMPERED'   // first saw its own mutation
-        mutatingScript.handledDevice[1].value == 'on'         // second saw the pristine original
+        then: 'observing handler got a fresh copy where value is still "on", not "TAMPERED"'
+        twoHandlerScript.mutatingReceived.value == 'TAMPERED'   // first handler mutated its own copy
+        twoHandlerScript.observingReceived.value == 'on'        // second handler's copy was not affected
+
+        and: 'the two handlers received distinct Map instances (defensive-copy proof)'
+        !twoHandlerScript.mutatingReceived.is(twoHandlerScript.observingReceived)
+    }
+
+    /**
+     * Two-handler script — first mutates its event, second only observes. Lets a spec
+     * verify that the recorder's defensive copy isolates handler-side mutations per
+     * dispatch. A self-mutating single handler can't prove isolation because the
+     * second dispatch's fresh copy also gets mutated by the same handler code.
+     */
+    static class TwoHandlerScript {
+        Map mutatingReceived = null
+        Map observingReceived = null
+
+        Object mutatingHandler(Map evt) {
+            mutatingReceived = evt
+            evt.value = 'TAMPERED'
+            return null
+        }
+
+        Object observingHandler(Map evt) {
+            observingReceived = evt
+            return null
+        }
     }
 
     def "fireEvent passes overrides merged over the defaults"() {

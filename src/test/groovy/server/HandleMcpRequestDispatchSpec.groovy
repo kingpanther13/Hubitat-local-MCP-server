@@ -67,10 +67,15 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.id == 2
         response.result.tools instanceof List
 
-        and: 'at least these well-known tools are in the catalog by name'
+        and: 'at least these well-known entries are in the catalog by name (non-gatewayed base tools + a gateway)'
         def names = response.result.tools*.name as Set
-        names.contains('list_rooms')
+        // list_devices + get_device are base tools (not behind a gateway) — getToolDefinitions
+        // at hubitat-mcp-server.groovy:717-744 folds gatewayed tools under a gateway entry
+        // instead of listing them individually.
+        names.contains('list_devices')
         names.contains('get_device')
+        // manage_rooms is a gateway, so it appears by its gateway name, not its sub-tool names.
+        names.contains('manage_rooms')
 
         and: 'every entry has the MCP tool shape with non-blank name + description'
         response.result.tools.every {
@@ -85,6 +90,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         script.metaClass.getRooms = { ->
             [[id: 1L, name: 'Living Room'], [id: 2L, name: 'Kitchen']]
         }
+        // list_rooms lives behind the manage_rooms gateway in tools/list, but executeTool
+        // still dispatches it directly by tool name at hubitat-mcp-server.groovy:1853 — the
+        // gateway is a tools/list folding convention, not a dispatch barrier.
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 3, method: 'tools/call',
             params: [name: 'list_rooms', arguments: [:]]
