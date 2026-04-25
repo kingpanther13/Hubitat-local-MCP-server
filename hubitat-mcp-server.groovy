@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+runcmd-firstparam-direct-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addtrigger-cap-normalize-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3309,7 +3309,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+runcmd-firstparam-direct-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addtrigger-cap-normalize-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9388,11 +9388,25 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", conditionId.toString(), applied)
     }
 
-    // Settings are written sequentially — the wizard schema is incremental,
-    // so each write may unlock the next set of inputs. The known/unknown
-    // split inside _rmWriteSettingOnPage skips fields not in the current
-    // schema and falls through to the next call.
-    _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", cap, applied)
+    // Normalize capability to the canonical case Hubitat's enum expects.
+    // The tCapab<N> input is an enum and its `options` list contains
+    // properly-cased labels like "Switch", "Motion", "Contact". Writing
+    // a value that isn't in the list is silently rejected by Hubitat:
+    // the field stays unset, the schema doesn't progress, and tDev<N>
+    // never appears — leaving us to commit a phantom "**Broken
+    // Trigger**" via hasAll. Match case-insensitively against the live
+    // options and write back the canonical value. Verified live in
+    // Chrome 2026-04-25: tCapab2='switch' rejected, tCapab2='Switch'
+    // exposes tDev2 of type capability.switch.
+    def capPageConfig = _rmFetchConfigJson(appId, "selectTriggers")
+    def capInput = (capPageConfig?.configPage?.sections ?: []).collectMany { it?.input ?: [] }.find { it?.name == "tCapab${idx}".toString() }
+    if (!capInput) throw new IllegalStateException("addTrigger: tCapab${idx} not present in selectTriggers schema — wizard didn't open. Was the moreCond click consumed?")
+    def capOptions = (capInput.options ?: []) as List
+    def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
+    if (!capCanonical) {
+        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list. Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+    }
+    _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", capCanonical, applied)
 
     // Helper closures (sandbox-friendly: no closure recursion on private methods)
     def writeIfPresent = { String name, Object value, String typeHint = null ->
@@ -9402,6 +9416,15 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // Device-based capabilities use tDev<N>. Time and other non-device
     // capabilities skip this block.
     if (triggerSpec.deviceIds != null) {
+        // Defense-in-depth: if the caller passed deviceIds, tDev<N> MUST
+        // be in the schema after the tCapab<N> write. If it isn't, the
+        // capability normalization above missed something — abort
+        // before clicking hasAll on a broken half-baked trigger.
+        def afterCap = _rmFetchConfigJson(appId, "selectTriggers")
+        def afterInputs = (afterCap?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        if (!afterInputs.find { it?.name == "tDev${idx}".toString() }) {
+            throw new IllegalStateException("addTrigger: tDev${idx} did not appear after writing tCapab${idx}=${capCanonical}; refusing to commit a broken trigger. Schema names: ${afterInputs.collect { it?.name }.findAll{it}.join(', ')}")
+        }
         writeIfPresent("tDev${idx}", triggerSpec.deviceIds)
     }
 
