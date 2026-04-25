@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addTrigger-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addTrigger-stays-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3093,7 +3093,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addTrigger-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addTrigger-stays-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9213,9 +9213,16 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (triggerSpec.andStays instanceof Map) {
         writeIfPresent("stays${idx}", true)
         def s = triggerSpec.andStays as Map
-        if (s.hours != null) writeIfPresent("SHours${idx}", s.hours)
-        if (s.minutes != null) writeIfPresent("SMins${idx}", s.minutes)
-        if (s.seconds != null) writeIfPresent("SSecs${idx}", s.seconds)
+        // RM's allHandler computes total wait time as SHours*3600 + SMins*60
+        // + SSecs and crashes with NullPointerException on .multiply() if
+        // any of the three are null when the trigger fires. Always write
+        // all three (default 0) so the math survives even when caller only
+        // specified one component (e.g. minutes: 2). Verified live: rule
+        // with stays=true and only SMins=2 NPEs on the next contact event;
+        // adding SHours=0 + SSecs=0 fixes it.
+        writeIfPresent("SHours${idx}", s.hours != null ? s.hours : 0)
+        writeIfPresent("SMins${idx}", s.minutes != null ? s.minutes : 0)
+        writeIfPresent("SSecs${idx}", s.seconds != null ? s.seconds : 0)
     }
 
     // Caller escape hatch.
