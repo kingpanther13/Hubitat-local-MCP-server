@@ -1655,7 +1655,7 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
             name: "get_app_config",
             description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
 
-Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
+Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so update_native_app can drive them). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
 
 Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
 
@@ -6433,6 +6433,73 @@ private stripOptionsHtml(options) {
 }
 
 /**
+ * Extract clickable affordances from raw paragraph HTML into structured data.
+ *
+ * Background: RM 5.1 (and several other classic SmartApps with multi-step
+ * wizards — Room Lighting button-rule editors, Basic Rules condition editor,
+ * HPM repository drill-downs, etc.) embed action buttons inside paragraph
+ * HTML rather than emitting them as `input.type=button` schema entries.
+ * Without extraction, paragraphs like "Create New Trigger Event" appear as
+ * stripped plain text in get_app_config — a tool-only LLM has no way to
+ * discover the button name (`true`) or the stateAttribute (`moreCond`) it
+ * needs to pass to update_native_app, so the entire trigger/action wizard
+ * is undriveable from tools alone.
+ *
+ * Pattern (verified live on firmware 2.5.0.123):
+ *   Each clickable affordance is a `<div class='submitOnChange'>` carrying
+ *   `title='<HUMAN>'` and optionally `data-stateAttribute='<STATE>'`, with
+ *   a paired `<input type='hidden' name='<NAME>.type' value='button'>` in
+ *   the same form group. The `<NAME>` prefix on the hidden input is the
+ *   button name to POST as `name=<NAME>` against /installedapp/btn (which
+ *   is what update_native_app does when given button=<NAME>).
+ *
+ * Returns a list of maps:
+ *   [{name: "true", title: "Create New Trigger", stateAttribute: "moreCond"},
+ *    {name: "1",    title: "Edit Trigger",       stateAttribute: "editCond",
+ *                   description: "BAT-RM Switch 1, ... any turns on"}, ...]
+ *
+ * Pairing strategy: collect all hidden button-type inputs in document order,
+ * collect all submitOnChange divs in document order, and pair by index. RM
+ * always emits them 1:1 for every clickable, so ordinal pairing is reliable.
+ * If the counts diverge (a future firmware shape we haven't verified),
+ * pairs that exist on both sides still resolve correctly; extras drop.
+ */
+private List _extractEmbeddedActions(String html) {
+    if (!html) return []
+    def buttonNames = []
+    def im = (html =~ /<input\s+type=['"]hidden['"]\s+name=['"]([^'"]+?)\.type['"]\s+value=['"]button['"][^>]*>/)
+    while (im.find()) {
+        buttonNames << im.group(1)
+    }
+    def divs = []
+    def dm = (html =~ /(?s)<div([^>]*)class=['"]submitOnChange['"]([^>]*)>(.*?)<\/div>/)
+    while (dm.find()) {
+        def attrs = (dm.group(1) ?: "") + (dm.group(2) ?: "")
+        def innerRaw = dm.group(3) ?: ""
+        def title = null
+        def state = null
+        def tm = attrs =~ /title=['"]([^'"]+?)['"]/
+        if (tm.find()) title = tm.group(1)
+        def sm = attrs =~ /data-stateAttribute=['"]([^'"]+?)['"]/
+        if (sm.find()) state = sm.group(1)
+        def inner = innerRaw.replaceAll(/<[^>]+>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
+        divs << [title: title, stateAttribute: state, description: inner ?: null]
+    }
+    if (!buttonNames || !divs) return []
+    def actions = []
+    int n = Math.min(buttonNames.size(), divs.size())
+    for (int i = 0; i < n; i++) {
+        def a = [name: buttonNames[i]]
+        def d = divs[i]
+        if (d.title) a.title = d.title
+        if (d.stateAttribute) a.stateAttribute = d.stateAttribute
+        if (d.description) a.description = d.description
+        actions << a
+    }
+    return actions
+}
+
+/**
  * Read an installed app's configuration via the hub's SDK-level rendering endpoint
  * /installedapp/configure/json/<appId>[/<pageName>]. Returns a normalized structure
  * covering app identity, page sections, inputs, and optionally the raw settings map.
@@ -6578,13 +6645,31 @@ def toolGetAppConfig(args) {
         // Paragraph/body content (informational text in the config page). Keep any
         // non-"Click to set" string — including short labels like "Enabled" / "Warning!"
         // that the SDK emits as standalone body paragraphs.
+        //
+        // RM 5.1 (and other classic SmartApps that drive multi-step wizards) embed
+        // clickable affordances inside paragraph HTML rather than emitting them as
+        // structured `input.type=button` entries — e.g. on the selectTriggers page,
+        // "Create New Trigger Event" is a `<div class='submitOnChange'>` with a
+        // `data-stateAttribute='moreCond'` and a sibling `<input type='hidden'
+        // name='true.type' value='button'>` that identifies the button name. Without
+        // extraction, a tool-only LLM sees only the stripped text "Create New Trigger
+        // Event" with no way to discover the button name or stateAttribute. Extract
+        // these into a structured `embeddedActions` field so the wizard buttons are
+        // first-class data on every paragraph-bearing page.
         def paragraphs = []
+        def embeddedActions = []
         for (b in (s.body ?: [])) {
             if (!(b instanceof Map)) continue
-            def text = stripAppConfigHtml(b.description ?: b.title)
+            def rawHtml = (b.description ?: b.title)?.toString()
+            def text = stripAppConfigHtml(rawHtml)
             if (text && text != "Click to set") paragraphs << text
+            if (rawHtml) {
+                def acts = _extractEmbeddedActions(rawHtml)
+                if (acts) embeddedActions.addAll(acts)
+            }
         }
         if (paragraphs) section.paragraphs = paragraphs
+        if (embeddedActions) section.embeddedActions = embeddedActions
         sections << section
     }
 
