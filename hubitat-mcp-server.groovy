@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+toggle-rename-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+permode-multistep-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1929,6 +1929,8 @@ Capability families and the spec fields each accepts:
 
   - Switch (capability='switch'):
       action='on'/'off'/'toggle'/'flash' + deviceIds
+      action='setPerMode' + deviceIds + perMode={modeIdOrName: 'on'|'off', ...}
+      action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}
       NOTE: action='flash' starts a flash schedule on devices that
       support .flash() (Hue groups, many Z-Wave/Zigbee dimmer modules).
       RM 5.1 has NO native "stop flash" action subtype — calling
@@ -1946,6 +1948,7 @@ Capability families and the spec fields each accepts:
       action='stopFade'   (no fields)
       action='startRaiseLower' + deviceIds + direction='raise'|'lower'
       action='stopChanging'    + deviceIds
+      action='setLevelPerMode' + deviceIds + perMode={modeIdOrName: level, ...} + optional fadeSeconds
 
   - Color (capability='color', RGBW bulbs):
       action='setColor'    + deviceIds + colorName + optional level
@@ -3282,7 +3285,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+toggle-rename-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+permode-multistep-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9561,6 +9564,41 @@ private void _rmNavigateToPage(Integer appId, String fromPage, String targetPage
  * firmware 2.5.0.123 (curl probe, 2026-04-25). Idempotent — safe to call
  * before every addAction.
  */
+/**
+ * Resolve a collection of mode keys (Integer IDs OR String names like "Day"/
+ * "Away") into a List of mode IDs as Strings, in insertion order. Used by
+ * per-mode action subtypes to write the modes list field. The hub's mode
+ * IDs come from location.modes.
+ */
+private List _rmResolveModeIds(Collection keys) {
+    def hubModes = location?.modes ?: []
+    def nameToId = [:]
+    hubModes.each { m -> if (m?.name && m?.id != null) nameToId[m.name.toString()] = m.id.toString() }
+    def out = []
+    keys.each { k ->
+        def s = k?.toString()
+        if (!s) return
+        if (s.isInteger()) { out << s; return }
+        def mapped = nameToId[s]
+        if (mapped) { out << mapped; return }
+        throw new IllegalArgumentException("Unknown mode '${s}' — must be an integer mode ID or one of: ${nameToId.keySet().sort().join(', ')}")
+    }
+    return out
+}
+
+/**
+ * True if `key` (Integer or String mode-name) refers to the same hub mode as
+ * the numeric `mid` (String form). Used by per-mode action subtypes to look
+ * up per-mode values keyed by either ID or name.
+ */
+private boolean _rmModeIdMatches(Object key, String mid) {
+    def s = key?.toString()
+    if (!s) return false
+    if (s == mid) return true
+    def hubModes = location?.modes ?: []
+    return hubModes.any { m -> m?.name?.toString() == s && m?.id?.toString() == mid }
+}
+
 private void _rmInitSelectActionsPage(Integer appId) {
     def cfg
     try { cfg = _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { return }
@@ -9693,8 +9731,45 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 // arbitrary device commands (flashOff, refresh, etc.) can
                 // be called from rules.
                 break
+            case "setPerMode":
+                // switchActs/getModeSwitch — same device list, per-mode on/off.
+                // Wire format (verified live 2026-04-25):
+                //   switchM.<N>      = devices (capability.switch multi)
+                //   switchModes.<N>  = mode IDs (enum multi, JSON-array)
+                //   switch<modeID>.<N> = "on" | "off" for each selected mode
+                actSubType = "getModeSwitch"
+                if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+                    throw new IllegalArgumentException("switch.setPerMode requires perMode={modeIdOrName: 'on'|'off', ...}")
+                }
+                def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+                fields = ["switchM.@N": deviceIds, "switchModes.@N": modeIds]
+                modeIds.each { mid ->
+                    def val = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+                    if (val != null) fields["switch${mid}.@N"] = val.toString()
+                }
+                break
+            case "choosePerMode":
+                // switchActs/getChooseSwitch — different device lists per mode for ON / OFF.
+                // Wire format (verified live):
+                //   chooseModes.<N>     = mode IDs
+                //   chooseSwOn<modeID>.<N>  = devices to turn ON for that mode
+                //   chooseSwOff<modeID>.<N> = devices to turn OFF for that mode
+                actSubType = "getChooseSwitch"
+                if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+                    throw new IllegalArgumentException("switch.choosePerMode requires perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}")
+                }
+                def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+                fields = ["chooseModes.@N": modeIds]
+                modeIds.each { mid ->
+                    def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+                    if (cfg instanceof Map) {
+                        if (cfg.on != null) fields["chooseSwOn${mid}.@N"] = cfg.on
+                        if (cfg.off != null) fields["chooseSwOff${mid}.@N"] = cfg.off
+                    }
+                }
+                break
             default:
-                throw new IllegalArgumentException("Unknown switch action '${action}' — supported: on, off, toggle, flash")
+                throw new IllegalArgumentException("Unknown switch action '${action}' — supported: on, off, toggle, flash, setPerMode, choosePerMode")
         }
     } else if (cap == "dimmer") {
         actType = "dimmerActs"
@@ -9744,8 +9819,27 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             case "stopChanging":
                 actSubType = "getStopDimmer"; fields = ["dimStop.@N": deviceIds]
                 break
+            case "setLevelPerMode":
+                // dimmerActs/getDimmersPerMode — same dimmer device list, per-mode level.
+                // Field naming (verified live 2026-04-25):
+                //   dimM.<N>           = devices (capability.switchLevel multi)
+                //   dimmerModes.<N>    = mode IDs
+                //   level<modeID>.<N>  = number 0-100 for each mode
+                //   dimMR.<N>          = optional fade seconds
+                actSubType = "getDimmersPerMode"
+                if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+                    throw new IllegalArgumentException("dimmer.setLevelPerMode requires perMode={modeIdOrName: level (0-100), ...}")
+                }
+                def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+                fields = ["dimM.@N": deviceIds, "dimmerModes.@N": modeIds]
+                modeIds.each { mid ->
+                    def val = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+                    if (val != null) fields["level${mid}.@N"] = val
+                }
+                if (actionSpec.fadeSeconds != null) fields["dimMR.@N"] = actionSpec.fadeSeconds
+                break
             default:
-                throw new IllegalArgumentException("Unknown dimmer action '${action}' — supported: setLevel, toggle, adjust, fade, stopFade, startRaiseLower, stopChanging")
+                throw new IllegalArgumentException("Unknown dimmer action '${action}' — supported: setLevel, toggle, adjust, fade, stopFade, startRaiseLower, stopChanging, setLevelPerMode")
         }
     } else if (cap == "color") {
         // Color (RGBW) family — capability.colorControl.
