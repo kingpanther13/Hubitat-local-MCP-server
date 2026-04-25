@@ -4,7 +4,12 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+74ab17e-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ *
+ * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
+ * iteration so we can visually confirm which build is loaded in the Apps
+ * Code editor. Strip the suffix from this header AND from the
+ * info.mcpServerVersion concat in toolGetHubInfo before merging.
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
