@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addTrigger-stays-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addTrigger-conditional-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3093,7 +3093,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addTrigger-stays-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addTrigger-conditional-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9139,25 +9139,40 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!cap) throw new IllegalArgumentException("addTrigger.capability is required")
 
     // Discover next trigger index by scanning existing tCapab<N> settings.
-    def status = _rmFetchStatusJson(appId)
-    def existing = []
-    (status?.appSettings ?: []).each { s ->
-        def n = s?.name?.toString()
-        if (n) {
-            def m = (n =~ /^tCapab(\d+)$/)
-            if (m.matches()) existing << (m[0][1] as Integer)
-        }
-    }
+    def existing = _rmCollectTriggerIndices(appId)
     def idx = (existing ? existing.max() + 1 : 1)
 
     // Open the trigger editor (state.moreCond=true).
     _rmClickAppButton(appId, "true", "moreCond", "selectTriggers")
 
+    // CONDITIONAL TRIGGER PATH. When `condition` is provided, the trigger is
+    // bound to a freshly-created condition. RM 5.1's wizard for conditional
+    // triggers is two-stage: first stage builds a condition (consumes one
+    // trigger index for the condition's setup state), second stage builds
+    // the actual trigger that REFERENCES the saved condition by ID.
+    // Verified live by walking the UI in Chrome with network capture
+    // (firmware 2.5.0.123): clicking "Done with this Condition" advances
+    // state.moreCond to the next trigger index, and the trigger that
+    // follows is at idx+1, with condTrig.<idx+1>=<conditionId> binding it.
+    def conditionSpec = (triggerSpec.condition instanceof Map) ? (triggerSpec.condition as Map) : null
+    def conditionId = null
+    def applied = []
+    if (conditionSpec) {
+        conditionId = _rmBuildCondition(appId, idx, conditionSpec, applied)
+        // The condition wizard advanced the trigger index by one, so the
+        // actual conditional trigger now lives at idx+1.
+        idx = idx + 1
+        // Re-open the trigger editor for the new index. Toggle isCondTrig
+        // back on (Done-with-Condition resets the toggle) and bind the
+        // condition we just saved by its ID.
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", conditionId.toString(), applied)
+    }
+
     // Settings are written sequentially — the wizard schema is incremental,
     // so each write may unlock the next set of inputs. The known/unknown
     // split inside _rmWriteSettingOnPage skips fields not in the current
     // schema and falls through to the next call.
-    def applied = []
     _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", cap, applied)
 
     // Helper closures (sandbox-friendly: no closure recursion on private methods)
@@ -9238,10 +9253,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // _rmClickAppButton directly, so do the finalize inline here.
     _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
 
-    // Auto-finalize the residual Conditional? prompt. If conditional=true,
-    // set isCondTrig.<N>=true so caller can drive the condition wizard
-    // separately; otherwise =false to close the prompt cleanly.
-    def condValue = (triggerSpec.conditional == true)
+    // Auto-finalize the residual Conditional? prompt:
+    //   - If a condition is bound (conditionSpec set OR conditional=true),
+    //     keep isCondTrig.<idx>=true so the trigger stays conditional.
+    //   - Otherwise =false to close the prompt cleanly without allocating
+    //     a phantom trigger.
+    def condValue = (conditionSpec != null) || (triggerSpec.conditional == true)
     try {
         _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", condValue, applied)
     } catch (Exception ignored) {
@@ -9254,13 +9271,104 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     try { finalConfig = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception ignored) { finalConfig = null }
     def err = finalConfig?.configPage?.error
 
-    return [
+    def result = [
         success: !err,
         triggerIndex: idx,
         capability: cap,
         settingsApplied: applied,
         configPageError: err
     ]
+    if (conditionId != null) result.conditionId = conditionId
+    return result
+}
+
+/**
+ * Scan an RM rule's appSettings for tCapab<N> entries and return the
+ * Set of trigger indices currently in use. Used by _rmAddTrigger to pick
+ * the next free index without colliding with existing triggers.
+ */
+private List _rmCollectTriggerIndices(Integer appId) {
+    def status = _rmFetchStatusJson(appId)
+    def out = []
+    (status?.appSettings ?: []).each { s ->
+        def n = s?.name?.toString()
+        if (n) {
+            def m = (n =~ /^tCapab(\d+)$/)
+            if (m.matches()) out << (m[0][1] as Integer)
+        }
+    }
+    return out
+}
+
+/**
+ * Build a fresh condition for a conditional trigger. Drives the condition
+ * sub-wizard inside selectTriggers: isCondTrig.<N>=true → condTrig.<N>="a"
+ * (new condition) → walk rCapab_<N> / rDev_<N> / state_<N> / not<N>
+ * → click hasAll (Done with this Condition). After hasAll, the wizard
+ * advances state.moreCond by one index — _rmAddTrigger then re-opens the
+ * trigger editor at idx+1 to actually build the conditional trigger.
+ *
+ * Returns the condition's auto-assigned ID (currently equal to the index
+ * passed in, since RM allocates condition IDs sequentially starting at 1).
+ *
+ * Spec fields (parallel to trigger spec but for the condition):
+ *   capability (required) — RM condition capabilities are a SUPERSET of
+ *     trigger capabilities; extras include: Time of day, Time Since Event,
+ *     Between two times, Between two dates, Days of week, On a Day,
+ *     Window Shade, Fan Speed, Lock codes
+ *   deviceIds (for device-based conditions)
+ *   state (for enum-state conditions: "on", "active", "open", etc.)
+ *   comparator + value (for numeric conditions)
+ *   buttonNumber (for Button conditions)
+ *   attribute (for Custom Attribute conditions)
+ *   not (bool, default false) — sets not<N>=true to negate the condition
+ *   rawSettings (escape hatch for advanced fields)
+ */
+private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List applied) {
+    def condCap = condSpec.capability?.toString()?.trim()
+    if (!condCap) throw new IllegalArgumentException("condition.capability is required")
+
+    // Toggle conditional + open the new-condition picker.
+    _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied)
+    _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", "a", applied)
+
+    // Walk the condition wizard. Field names use rCapab_<N> / rDev_<N> /
+    // state_<N> / not<N> with an underscore (vs trigger's tCapab<N> /
+    // tDev<N> / tstate<N> without).
+    _rmWriteSettingOnPage(appId, "selectTriggers", "rCapab_${idx}", condCap, applied)
+
+    if (condSpec.deviceIds != null) {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condSpec.deviceIds, applied)
+    }
+    if (condSpec.comparator != null) {
+        if (condSpec.attribute != null) {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "rCustomAttr_${idx}", condSpec.attribute, applied)
+        }
+        _rmWriteSettingOnPage(appId, "selectTriggers", "compareCond_${idx}", condSpec.comparator, applied)
+    }
+    if (condSpec.buttonNumber != null) {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "ButtontDev_${idx}", condSpec.buttonNumber, applied)
+    }
+    def stateValue = condSpec.state != null ? condSpec.state : condSpec.value
+    if (stateValue != null) {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "state_${idx}", stateValue, applied)
+    }
+    if (condSpec.not == true) {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "not${idx}", true, applied)
+    }
+    if (condSpec.rawSettings instanceof Map) {
+        condSpec.rawSettings.each { k, v ->
+            if (v != null) _rmWriteSettingOnPage(appId, "selectTriggers", k.toString(), v, applied)
+        }
+    }
+
+    // Done with this Condition. Click hasAll on the condition page —
+    // saves the condition with auto-assigned ID = idx (RM allocates
+    // sequentially), and advances the wizard's trigger index.
+    _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
+
+    // Condition ID equals the trigger index that "owned" its setup.
+    return idx
 }
 
 /**
