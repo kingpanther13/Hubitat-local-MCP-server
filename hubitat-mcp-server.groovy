@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addAction-bulkapi-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+navmarker-bake-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3138,7 +3138,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addAction-bulkapi-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+navmarker-bake-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9311,6 +9311,14 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // check inside _rmWriteSettingOnPage skips it.
     }
 
+    // Navigate back to mainPage to commit the in-flight trigger.
+    // Mirrors the action-wizard pattern (_rmAddAction navigates
+    // doActPage→selectActions for the bake) — the live UI's "Done with
+    // Triggers" button submits a form with `_action_href_name|mainPage|0`
+    // that signals the page transition. This ensures trigger state is
+    // fully baked before the next addTrigger call (or final updateRule).
+    _rmNavigateToPage(appId, "selectTriggers", "mainPage")
+
     // Final config-error check.
     def finalConfig
     try { finalConfig = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception ignored) { finalConfig = null }
@@ -9382,16 +9390,16 @@ private List _rmCollectActionIndices(Integer appId) {
  * navigation marker to perform the transition. We don't need to mirror
  * every hidden button input on the source page.
  */
-private void _rmNavigateToPage(Integer appId, String targetPage) {
+private void _rmNavigateToPage(Integer appId, String fromPage, String targetPage) {
     def body = [
         id: appId.toString(),
         formAction: "update",
-        currentPage: "doActPage",
+        currentPage: fromPage,
         pageBreadcrumbs: '["mainPage"]',
         ("_action_href_name|${targetPage}|0".toString()): ""
     ]
     try {
-        def cfg = _rmFetchConfigJson(appId, "doActPage")
+        def cfg = _rmFetchConfigJson(appId, fromPage)
         def v = cfg?.app?.version
         if (v != null) body.version = v.toString()
     } catch (Exception ignored) { /* best effort */ }
@@ -9585,7 +9593,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // Mirror the navigation by POSTing to selectActions's update/json
     // endpoint with a minimal form body — the server will commit the
     // action's settings and bake into actions[].
-    _rmNavigateToPage(appId, "selectActions")
+    _rmNavigateToPage(appId, "doActPage", "selectActions")
 
     // Final config-error check.
     def finalConfig
