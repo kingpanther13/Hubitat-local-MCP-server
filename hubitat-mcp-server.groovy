@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+d8c3691-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+9ee049a-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3061,7 +3061,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+d8c3691-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+9ee049a-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9004,16 +9004,60 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
 /**
  * Click a button on an app's config page via /installedapp/btn. Used for
  * RM's page-transition buttons: updateRule, pausRule, runAction, editCond,
- * editAct, etc. Stable across RM 5.0 and 5.1 per Phase 1 field-name audit.
+ * editAct, hasAll, etc. Stable across RM 5.0 and 5.1.
+ *
+ * Body format captured live from the Hubitat web UI's hasAll click on
+ * firmware 2.5.0.123 (network panel):
+ *   id=<appId>
+ *   name=<buttonName>
+ *   settings[<buttonName>]=clicked       <-- key bracket-form (NOT bare `<buttonName>=clicked`)
+ *   <buttonName>.type=button
+ *   formAction=update                    <-- form-context: load-bearing for wizard-Done buttons
+ *   version=<app version>                <-- ditto
+ *   currentPage=<pageName>               <-- ditto
+ *   pageBreadcrumbs=["mainPage", ...]    <-- navigation history
+ *   stateAttribute=<value>               <-- only when caller passes one (e.g. moreCond, editCond)
+ *
+ * Earlier versions of this helper sent bare `<buttonName>=clicked`
+ * without the `settings[]` wrapper AND omitted formAction/version/
+ * currentPage/pageBreadcrumbs, which the hub's button handler accepted
+ * with HTTP 200 but did NOT fully process for wizard-Done buttons —
+ * manifested as the "first hasAll click leaves editor scaffold open"
+ * bug that required a second click to commit. With the full form-
+ * context body, a single hasAll click commits the trigger cleanly:
+ * editor closes, no residual isCondTrig prompt, no phantom trigger.
+ *
+ * `pageName` is optional. When omitted, formAction/version/currentPage
+ * are also omitted (the minimal POST works fine for top-level buttons
+ * like updateRule, pausRule, stopRule that operate on the main page).
+ * Pass pageName for sub-page wizard buttons (hasAll on selectTriggers,
+ * actionDone on selectActions, etc.) so the form-context fields fire.
  */
-private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null) {
+private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null, String pageName = null) {
     def body = [
         id: appId.toString(),
         name: buttonName,
-        (buttonName): "clicked",
-        "${buttonName}.type": "button"
+        "settings[${buttonName}]".toString(): "clicked",
+        "${buttonName}.type".toString(): "button"
     ]
     if (stateAttribute) body.stateAttribute = stateAttribute
+    if (pageName) {
+        body.formAction = "update"
+        body.currentPage = pageName
+        body.pageBreadcrumbs = '["mainPage"]'
+        // The hub uses `version` to detect concurrent edits. Fetch the
+        // current value so we replay the exact one the UI would send.
+        try {
+            def cfg = _rmFetchConfigJson(appId, pageName)
+            def v = cfg?.app?.version
+            if (v != null) body.version = v.toString()
+        } catch (Exception ignored) {
+            // version fetch failure is recoverable — the button click
+            // works without it for top-level buttons; for wizard-Done
+            // buttons the hub may need a second click. Don't fail the
+            // whole call here.
+        }
+    }
     def resp = hubInternalPostForm("/installedapp/btn", body)
     if (resp?.status != null && resp.status >= 400) {
         throw new IllegalArgumentException("Button click '${buttonName}' on app ${appId} failed: status=${resp.status}")
@@ -9502,7 +9546,7 @@ def toolUpdateNativeApp(args) {
         }
 
         if (button) {
-            _rmClickAppButton(appId, button, args?.stateAttribute?.toString())
+            _rmClickAppButton(appId, button, args?.stateAttribute?.toString(), pageName)
             result.buttonClicked = button
 
             // Wizard-Done finalize. Verified live on firmware 2.5.0.123 that
