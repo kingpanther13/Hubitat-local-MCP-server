@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+permode-multistep-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+section3-complete-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1953,12 +1953,31 @@ Capability families and the spec fields each accepts:
   - Color (capability='color', RGBW bulbs):
       action='setColor'    + deviceIds + colorName + optional level
       action='toggleColor' + deviceIds + colorName + optional level
+      action='setColorPerMode' + deviceIds + perMode={modeIdOrName: {color: 'Red', level: 70}, ...}
 
   - Color Temperature (capability='colorTemp'):
       action='setColorTemp'    + deviceIds + kelvin + optional level
       action='toggleColorTemp' + deviceIds + kelvin + optional level
       action='fadeColorTemp'   + deviceIds + targetKelvin + minutes + direction
       action='stopColorTempFade'
+      action='setColorTempPerMode' + deviceIds + perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}
+
+  - Button (capability='button', capability.pushableButton devices):
+      action='push'           + deviceIds + buttonNumber
+      action='pushPerMode'    + deviceIds + perMode={modeIdOrName: buttonNumber, ...}
+      action='choosePerMode'  + buttonNumber + perMode={modeIdOrName: [deviceIds], ...}
+
+  - Run Custom Action (capability='runCommand'):
+      command + deviceIds + capabilityFilter (default 'Switch') + optional parameters=[{type:'NUMBER',value:75},...] + optional useLastEventDevice
+      Calls any device-driver command (off/on/setLevel/flashOff/refresh/etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings (e.g. flashOff to stop a flash, custom-driver verbs).
+
+  - File IO (capability='fileWrite' / 'fileAppend' / 'fileDelete'):
+      fileWrite   + fileName + content (overwrites)
+      fileAppend  + fileName + content (file must already exist; localFile is an enum picker)
+      fileDelete  + fileName
+
+  - Z-Wave Polling (capability='zwavePoll'):
+      action='start'/'stop' + deviceIds (Z-Wave switches/dimmers only) + target='switches'|'dimmers'
 
   - Lock (capability='lock'):
       action='lock'/'unlock' + deviceIds
@@ -2004,23 +2023,28 @@ Capability families and the spec fields each accepts:
       capability='poll'           + deviceIds
       capability='disableDevice'  + action='disable'/'enable' + deviceIds
 
-  - Flow control (capability='delay'/'cancelDelay'/'exitRule'/'comment'/'repeat'/'stopRepeat'):
-      capability='delay'       + hours/minutes/seconds + optional cancelable/random
-      capability='cancelDelay' (no fields)
-      capability='exitRule'    (no fields)
-      capability='comment'     + text
-      capability='repeat'      + hours/minutes/seconds + optional times + stoppable
-      capability='stopRepeat'  (no fields)
+  - Flow control (capability='delay'/'cancelDelay'/'exitRule'/'comment'/'repeat'/'stopRepeat'/'delayPerMode'):
+      capability='delay'        + hours/minutes/seconds + optional cancelable/random   OR  variable=<varName> (variable-sourced seconds)
+      capability='delayPerMode' + perMode={modeIdOrName: {hours, minutes, seconds}, ...}
+      capability='cancelDelay'  (no fields)
+      capability='exitRule'     (no fields)
+      capability='comment'      + text
+      capability='repeat'       + hours/minutes/seconds + optional times + stoppable
+      capability='stopRepeat'   (no fields)
+
+Variable-sourced values (works on dimmer.setLevel, delay):
+  - dimmer.setLevel: pass `levelVariable: '<hubVarName>'` instead of `level`
+  - delay:           pass `variable: '<hubVarName>'` instead of hours/minutes/seconds
+  Both write the wizard's uVar=true + xVar=<varName> pair so the value is
+  resolved at fire time from a hub variable.
 
 NOT yet mapped (use rawSettings escape hatch with @N placeholder):
-  - per-mode switch/button subtypes (getModeSwitch/getChooseSwitch/getPushButton*/getChooseButton) — multi-step mode wizard
-  - Run Custom Action (getDefinedAction)
-  - Color/ColorTemp PerMode (getColorPerMode/getColorTempPerMode) — multi-step mode wizard
-  - Local file IO (getWriteLocalFile/getAppendLocalFile/getDeleteLocalFile)
+  - HSM Arm/Disarm/Cancel All Alerts (separate actSubType not in lockActs dropdown — only appears when HSM is installed and may need a different actType)
+  - Garage door open/close (different lockActs subtype, only visible with garage device)
+  - Valve open/close (similar)
+  - Wait for Events / Wait for Expression (getWaitEvents / getWaitRule) — multi-step expression editor
   - Repeat-While Expression (getWhile)
-  - Wait for Events / Wait for Expression (getWaitEvents/getWaitRule)
-  - Delay Per Mode (getDelayPerMode)
-  - Conditional IF/THEN flow (condActs/getIfThen/getCondAct)
+  - Conditional IF/THEN flow (condActs/getIfThen / getCondAct) — Section 4 territory
 
 Optional fields on every spec:
   - delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>='hrs:min:sec' plus duration sub-fields
@@ -3285,7 +3309,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+permode-multistep-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+section3-complete-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9587,6 +9611,34 @@ private List _rmResolveModeIds(Collection keys) {
 }
 
 /**
+ * Resolve a collection of mode keys (IDs or names) into a List of mode NAMES
+ * in insertion order. Used by subtypes whose field-name suffix is the mode
+ * name rather than the ID (e.g. delayActs/getDelayPerMode uses
+ * delayHourDay.<N> / delayHourAway.<N> rather than delayHour1.<N> /
+ * delayHour4.<N>).
+ */
+private List _rmResolveModeNames(Collection keys) {
+    def hubModes = location?.modes ?: []
+    def idToName = [:]
+    def nameSet = [] as Set
+    hubModes.each { m ->
+        if (m?.id != null && m?.name) {
+            idToName[m.id.toString()] = m.name.toString()
+            nameSet << m.name.toString()
+        }
+    }
+    def out = []
+    keys.each { k ->
+        def s = k?.toString()
+        if (!s) return
+        if (s.isInteger() && idToName[s]) { out << idToName[s]; return }
+        if (nameSet.contains(s)) { out << s; return }
+        throw new IllegalArgumentException("Unknown mode '${s}' — must be an integer mode ID or one of: ${nameSet.sort().join(', ')}")
+    }
+    return out
+}
+
+/**
  * True if `key` (Integer or String mode-name) refers to the same hub mode as
  * the numeric `mid` (String form). Used by per-mode action subtypes to look
  * up per-mode values keyed by either ID or name.
@@ -9775,9 +9827,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actType = "dimmerActs"
         switch (action) {
             case "setLevel":
-                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.setLevel requires 'level' (0-100). Verified live: actionDone never appears in the wizard schema until level is set.")
                 actSubType = "getSetDimmer"
-                fields = ["dimA.@N": deviceIds, "dimLA.@N": actionSpec.level]
+                fields = ["dimA.@N": deviceIds]
+                if (actionSpec.levelVariable != null) {
+                    // Variable-sourced level: uVar.<N>=true + xVar.<N>=<varName>
+                    fields["uVar.@N"] = true
+                    fields["xVar.@N"] = actionSpec.levelVariable
+                } else {
+                    if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.setLevel requires 'level' (0-100) OR 'levelVariable' (hub variable name). Verified live: actionDone never appears until a level source is set.")
+                    fields["dimLA.@N"] = actionSpec.level
+                }
                 if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
                 break
             case "toggle":
@@ -9858,8 +9917,29 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 if (actionSpec.colorName != null) fields["colorTog.@N"] = actionSpec.colorName
                 if (actionSpec.level != null) fields["colorTogLevel.@N"] = actionSpec.level
                 break
+            case "setColorPerMode":
+                // dimmerActs/getColorPerMode — per-mode color + level (RGBW bulbs).
+                // Wire format (verified live):
+                //   bulbsM.<N>             = devices (capability.colorControl multi)
+                //   colorModes.<N>         = mode IDs
+                //   color<modeID>.<N>      = color enum (Red/Green/Blue/etc.) per mode
+                //   colorLevel<modeID>.<N> = bulb level (0-100) per mode
+                actSubType = "getColorPerMode"
+                if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+                    throw new IllegalArgumentException("color.setColorPerMode requires perMode={modeIdOrName: {color: 'Red', level: 70}, ...}")
+                }
+                def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+                fields = ["bulbsM.@N": deviceIds, "colorModes.@N": modeIds]
+                modeIds.each { mid ->
+                    def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+                    if (cfg instanceof Map) {
+                        if (cfg.color != null) fields["color${mid}.@N"] = cfg.color
+                        if (cfg.level != null) fields["colorLevel${mid}.@N"] = cfg.level
+                    }
+                }
+                break
             default:
-                throw new IllegalArgumentException("Unknown color action '${action}' — supported: setColor, toggleColor")
+                throw new IllegalArgumentException("Unknown color action '${action}' — supported: setColor, toggleColor, setColorPerMode")
         }
     } else if (cap == "colorTemp") {
         // Color temperature family — capability.colorTemperature.
@@ -9887,8 +9967,32 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             case "stopColorTempFade":
                 actSubType = "getStopCTFade"; fields = [:]
                 break
+            case "setColorTempPerMode":
+                // dimmerActs/getColorTempPerMode — per-mode kelvin + level.
+                // Wire format quirk: the LEVEL field name is ctMode<modeID>.<N>Level
+                // (the "Level" suffix appended after the action index).
+                //   ctM.<N>                     = devices (capability.colorTemperature multi)
+                //   ctModes.<N>                 = mode IDs
+                //   ctMode<modeID>.<N>          = kelvin per mode
+                //   ctMode<modeID>.<N>Level     = bulb level per mode  (note suffix order)
+                actSubType = "getColorTempPerMode"
+                if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+                    throw new IllegalArgumentException("colorTemp.setColorTempPerMode requires perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}")
+                }
+                def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+                fields = ["ctM.@N": deviceIds, "ctModes.@N": modeIds]
+                modeIds.each { mid ->
+                    def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+                    if (cfg instanceof Map) {
+                        if (cfg.kelvin != null) fields["ctMode${mid}.@N"] = cfg.kelvin
+                        // Level suffix goes AFTER the action index — encode the @N substitution
+                        // and append "Level" so the final key is ctMode<mid>.<idx>Level.
+                        if (cfg.level != null) fields["ctMode${mid}.@NLevel"] = cfg.level
+                    }
+                }
+                break
             default:
-                throw new IllegalArgumentException("Unknown colorTemp action '${action}' — supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade")
+                throw new IllegalArgumentException("Unknown colorTemp action '${action}' — supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade, setColorTempPerMode")
         }
     } else if (cap == "lock") {
         actType = "lockActs"
@@ -9943,6 +10047,113 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             throw new IllegalArgumentException("mode action requires modeId (Integer) or modeName (String)")
         }
         fields = ["mode.@N": (actionSpec.modeId != null ? actionSpec.modeId : actionSpec.modeName)]
+    } else if (cap == "runCommand") {
+        // modeActs/getDefinedAction — Run Custom Action. Multi-step:
+        //   useLastDev.<N>  = false (use selected devices, not the trigger device)
+        //   myCapab.<N>     = capability filter (e.g. "Switch", "Switch Level")
+        //   devices.<N>     = device list (capability.<lowercased>)
+        //   cCmd.<N>        = command name (one of the device driver's commands)
+        //   cpType<i>.<N>   = type for parameter i (e.g. NUMBER, STRING) — optional
+        //   cpVal<i>.<N>    = value for parameter i — optional
+        // Verified live: no-arg commands (off/on/refresh) need only useLastDev+
+        // myCapab+devices+cCmd. Parameterized commands also need the cpType/cpVal pairs.
+        actType = "modeActs"
+        actSubType = "getDefinedAction"
+        if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
+        def capFilter = actionSpec.capabilityFilter ?: "Switch"
+        fields = [
+            "useLastDev.@N": (actionSpec.useLastEventDevice == true),
+            "myCapab.@N": capFilter,
+            "devices.@N": deviceIds,
+            "cCmd.@N": actionSpec.command
+        ]
+        if (actionSpec.parameters instanceof List) {
+            actionSpec.parameters.eachWithIndex { p, i ->
+                def idx1 = i + 1
+                if (p instanceof Map) {
+                    if (p.type != null) fields["cpType${idx1}.@N"] = p.type
+                    if (p.value != null) fields["cpVal${idx1}.@N"] = p.value
+                } else {
+                    // Scalar — assume STRING by default
+                    fields["cpType${idx1}.@N"] = "STRING"
+                    fields["cpVal${idx1}.@N"] = p.toString()
+                }
+            }
+        }
+    } else if (cap == "fileWrite") {
+        // modeActs/getWriteLocalFile — write content to a local file (overwrite).
+        actType = "modeActs"
+        actSubType = "getWriteLocalFile"
+        fields = ["localFile.@N": (actionSpec.fileName ?: ""), "fileContents.@N": (actionSpec.content ?: "")]
+    } else if (cap == "fileAppend") {
+        // modeActs/getAppendLocalFile — append content to existing file.
+        // localFile.<N> is an enum (existing files only), not a free-text input.
+        actType = "modeActs"
+        actSubType = "getAppendLocalFile"
+        fields = ["localFile.@N": (actionSpec.fileName ?: ""), "fileContents.@N": (actionSpec.content ?: "")]
+    } else if (cap == "fileDelete") {
+        actType = "modeActs"
+        actSubType = "getDeleteLocalFile"
+        fields = ["deleteFile.@N": (actionSpec.fileName ?: "")]
+    } else if (cap == "zwavePoll") {
+        // deviceActs/getStartStopZPoll — start or stop Z-Wave polling on switches/dimmers.
+        //   ssZ.<N>     = true (start) | false (stop)
+        //   ssSD.<N>    = true (Switches) | false (Dimmers)
+        //   ssZPoll.<N> = devices (device.GenericZ-WaveSwitch) — Z-Wave devices only
+        actType = "deviceActs"
+        actSubType = "getStartStopZPoll"
+        fields = [
+            "ssZ.@N": (action == "start"),
+            "ssSD.@N": (actionSpec.target == "switches" || actionSpec.target == null)
+        ]
+        if (deviceIds) fields["ssZPoll.@N"] = deviceIds
+    } else if (cap == "button") {
+        actType = "switchActs"
+        switch (action) {
+            case "push":
+                // switchActs/getPushButton — push a specific button number on a button device.
+                //   pushButton.<N>      = devices (capability.pushableButton)
+                //   ButtontDev<N>       = button number
+                actSubType = "getPushButton"
+                if (actionSpec.buttonNumber == null) throw new IllegalArgumentException("button.push requires 'buttonNumber' (Integer)")
+                fields = ["pushButton.@N": deviceIds, "ButtonpushButton@N": actionSpec.buttonNumber]
+                break
+            case "pushPerMode":
+                // switchActs/getPushButtonPerMode — push different buttons per mode.
+                //   pushMBtn.<N>   = devices
+                //   buttonModes.<N>= mode IDs
+                //   button<modeID>.<N> = button number per mode
+                actSubType = "getPushButtonPerMode"
+                if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+                    throw new IllegalArgumentException("button.pushPerMode requires perMode={modeIdOrName: buttonNumber, ...}")
+                }
+                def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+                fields = ["pushMBtn.@N": deviceIds, "buttonModes.@N": modeIds]
+                modeIds.each { mid ->
+                    def n = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+                    if (n != null) fields["button${mid}.@N"] = n
+                }
+                break
+            case "choosePerMode":
+                // switchActs/getChooseButton — different DEVICES per mode, all push the same button.
+                //   chooseButtonModes.<N>     = mode IDs
+                //   chooseButton<modeID>.<N>  = devices for that mode
+                //   chooseButtonNum.<N>       = button number
+                actSubType = "getChooseButton"
+                if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+                    throw new IllegalArgumentException("button.choosePerMode requires perMode={modeIdOrName: [deviceIds], ...}")
+                }
+                if (actionSpec.buttonNumber == null) throw new IllegalArgumentException("button.choosePerMode requires 'buttonNumber'")
+                def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+                fields = ["chooseButtonModes.@N": modeIds, "chooseButtonNum.@N": actionSpec.buttonNumber]
+                modeIds.each { mid ->
+                    def devs = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+                    if (devs != null) fields["chooseButton${mid}.@N"] = devs
+                }
+                break
+            default:
+                throw new IllegalArgumentException("Unknown button action '${action}' — supported: push, pushPerMode, choosePerMode")
+        }
     } else if (cap == "log") {
         actType = "messageActs"
         actSubType = "getLogMsg"
@@ -10045,11 +10256,42 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actType = "delayActs"
         actSubType = "getDelay"
         fields = [:]
-        if (actionSpec.hours != null) fields["delayHour.@N"] = actionSpec.hours
-        if (actionSpec.minutes != null) fields["delayMinute.@N"] = actionSpec.minutes
-        if (actionSpec.seconds != null) fields["delaySecond.@N"] = actionSpec.seconds
+        if (actionSpec.variable != null) {
+            // Variable-sourced delay: uVar.<N>=true + xVar.<N>=<varName> picks the
+            // hub variable that supplies the seconds value at fire time.
+            fields["uVar.@N"] = true
+            fields["xVar.@N"] = actionSpec.variable
+        } else {
+            if (actionSpec.hours != null) fields["delayHour.@N"] = actionSpec.hours
+            if (actionSpec.minutes != null) fields["delayMinute.@N"] = actionSpec.minutes
+            if (actionSpec.seconds != null) fields["delaySecond.@N"] = actionSpec.seconds
+        }
         if (actionSpec.cancelable != null) fields["cancelAct.@N"] = actionSpec.cancelable
         if (actionSpec.random != null) fields["randomAct.@N"] = actionSpec.random
+    } else if (cap == "delayPerMode") {
+        // delayActs/getDelayPerMode — different delay durations per mode.
+        // Field naming uses mode NAMES (Day/Away/etc), NOT mode IDs:
+        //   delayModes.<N>            = mode IDs (the picker still uses IDs)
+        //   delayHour<ModeName>.<N>   = hours for that mode
+        //   delayMinute<ModeName>.<N> = minutes for that mode
+        //   delaySecond<ModeName>.<N> = seconds for that mode (decimal)
+        //   uVar<ModeName>.<N>        = bool, optional variable-source toggle
+        actType = "delayActs"
+        actSubType = "getDelayPerMode"
+        if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+            throw new IllegalArgumentException("delayPerMode requires perMode={modeIdOrName: {hours, minutes, seconds}, ...}")
+        }
+        def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+        def modeNames = _rmResolveModeNames(actionSpec.perMode.keySet())
+        fields = ["delayModes.@N": modeIds]
+        modeNames.eachWithIndex { mname, i ->
+            def cfg = actionSpec.perMode[modeIds[i]] ?: actionSpec.perMode[mname] ?: actionSpec.perMode[(modeIds[i] as Integer)]
+            if (cfg instanceof Map) {
+                if (cfg.hours != null)   fields["delayHour${mname}.@N"]   = cfg.hours
+                if (cfg.minutes != null) fields["delayMinute${mname}.@N"] = cfg.minutes
+                if (cfg.seconds != null) fields["delaySecond${mname}.@N"] = cfg.seconds
+            }
+        }
     } else if (cap == "cancelDelay") {
         actType = "delayActs"
         actSubType = "getCancelDelay"
