@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+section3-complete-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+runcmd-firstparam-direct-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3309,7 +3309,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+section3-complete-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+runcmd-firstparam-direct-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -10093,26 +10093,26 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             "devices.@N": deviceIds,
             "cCmd.@N": actionSpec.command
         ]
-        if (actionSpec.parameters instanceof List) {
-            actionSpec.parameters.eachWithIndex { p, i ->
-                def idx1 = i + 1
-                def pType, pValue
-                if (p instanceof Map) {
-                    pType = p.type
-                    pValue = p.value
-                } else {
-                    pType = "string"
-                    pValue = p
+        // First parameter pair: cpType1.<N>/cpVal1.<N> auto-appear after
+        // cCmd is written (schema refreshes between settings). Direct-write
+        // those alongside the rest. Subsequent params (2..K) require a
+        // moreParams button click each — handled below after the main loop.
+        if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
+            def first = actionSpec.parameters[0]
+            def fType, fValue
+            if (first instanceof Map) { fType = first.type; fValue = first.value }
+            else { fType = "string"; fValue = first }
+            if (fType != null) {
+                def t = fType.toString().toLowerCase()
+                if (!(t in ["string", "number", "decimal"])) {
+                    throw new IllegalArgumentException("runCommand parameter type '${fType}' invalid — must be 'string', 'number', or 'decimal'")
                 }
-                // Normalize type to lowercase ('string'/'number'/'decimal')
-                if (pType != null) {
-                    def t = pType.toString().toLowerCase()
-                    if (!(t in ["string", "number", "decimal"])) {
-                        throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid — must be 'string', 'number', or 'decimal'")
-                    }
-                    fields["cpType${idx1}.@N"] = t
-                }
-                if (pValue != null) fields["cpVal${idx1}.@N"] = pValue
+                fields["cpType1.@N"] = t
+            }
+            if (fValue != null) fields["cpVal1.@N"] = fValue
+            // Defer params[1..] until moreParams clicks expose them.
+            if (actionSpec.parameters.size() > 1) {
+                actionSpec.__runCommandExtraParams = actionSpec.parameters.drop(1)
             }
         }
     } else if (cap == "fileWrite") {
@@ -10393,6 +10393,45 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMins.${idx}", d.minutes, applied)
         if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySecs.${idx}", d.seconds, applied)
         if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelable.${idx}", d.cancelable, applied)
+    }
+
+    // runCommand: extra parameters beyond the first. Verified live (2026-04-25):
+    // cpType1/cpVal1 auto-appear after cCmd; only after cpVal1 is written does
+    // a `moreParams` button appear. Each click of moreParams allocates the
+    // next cpType<N>/cpVal<N> pair.
+    if (actionSpec.__runCommandExtraParams instanceof List && !actionSpec.__runCommandExtraParams.isEmpty()) {
+        actionSpec.__runCommandExtraParams.each { p ->
+            def pType, pValue
+            if (p instanceof Map) { pType = p.type; pValue = p.value }
+            else { pType = "string"; pValue = p }
+            if (pType != null) {
+                def t = pType.toString().toLowerCase()
+                if (!(t in ["string", "number", "decimal"])) {
+                    throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid — must be 'string', 'number', or 'decimal'")
+                }
+                pType = t
+            } else {
+                pType = "string"
+            }
+            def beforeCfg = _rmFetchConfigJson(appId, "doActPage")
+            def beforeNames = (beforeCfg?.configPage?.sections ?: []).collectMany { sec ->
+                (sec?.input ?: []).collect { it?.name?.toString() }
+            }
+            def beforeCpTypes = beforeNames.findAll { it?.startsWith("cpType") && it?.endsWith(".${idx}") } as Set
+            _rmClickAppButton(appId, "moreParams", null, "doActPage")
+            def afterCfg = _rmFetchConfigJson(appId, "doActPage")
+            def afterNames = (afterCfg?.configPage?.sections ?: []).collectMany { sec ->
+                (sec?.input ?: []).collect { it?.name?.toString() }
+            }
+            def newCpType = afterNames.find { it?.startsWith("cpType") && it?.endsWith(".${idx}") && !beforeCpTypes.contains(it) }
+            if (!newCpType) {
+                mcpLog("warn", "rm-native", "runCommand: moreParams click did not reveal a new cpType<N> field for action ${idx}; param skipped")
+                return
+            }
+            _rmWriteSettingOnPage(appId, "doActPage", newCpType, pType, applied)
+            def newCpVal = newCpType.replace("cpType", "cpVal")
+            if (pValue != null) _rmWriteSettingOnPage(appId, "doActPage", newCpVal, pValue, applied)
+        }
     }
 
     // Caller escape hatch.
