@@ -129,6 +129,9 @@ def mainPage() {
 
         section("Settings") {
             input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
+            input "useGateways", "bool", title: "Consolidate tools behind category gateways",
+                  description: "When ON (default): 22 core tools + 11 domain gateways are advertised on tools/list (33 entries). When OFF: every tool is exposed individually as a top-level MCP tool (~83 entries) and search_tools is hidden. Most LLM clients perform better with the gateway list; turn this off only if your client struggles with gateway dispatch.",
+                  defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -713,8 +716,16 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     return executeTool(toolName, safeArgs)
 }
 
-// Returns tool definitions visible to the MCP client (base tools + gateway tools)
+// Returns tool definitions visible to the MCP client. Default: 22 core tools + 11 gateway
+// entries. When useGateways is explicitly false, every tool is advertised individually
+// (~82 entries) and search_tools is dropped — it only helps navigate gateway-hidden tools.
 def getToolDefinitions() {
+    // Null (never saved) means existing installs keep gateway behavior on update; only
+    // an explicit false flips to flat mode.
+    if (settings.useGateways == false) {
+        return getAllToolDefinitions().findAll { it.name != 'search_tools' }
+    }
+
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
 

@@ -14,6 +14,12 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
+### Disabling Gateways (Flat Tool List)
+
+Gateways exist because most MCP clients struggle with long tool lists. Some clients now ship their own progressive-disclosure layer (deferred tools, built-in BM25 search, etc.) and don't need ours. For those, the **Consolidate tools behind category gateways** setting in the app preferences can be turned off — `tools/list` then advertises every tool individually (~82 entries) and `search_tools` is suppressed because it's only useful for navigating gateway-hidden tools.
+
+Default is **ON** (gateways enabled). Existing installations keep the gateway behavior on update.
+
 ## Device Authorization (CRITICAL)
 
 **Exact match rule:**
