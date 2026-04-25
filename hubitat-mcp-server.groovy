@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addAction-actNdx-watermark-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+clone-location-regex-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3371,7 +3371,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addAction-actNdx-watermark-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+clone-location-regex-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -11840,11 +11840,23 @@ def toolCloneNativeApp(args) {
     if (!clonerLocation) {
         throw new IllegalStateException("appCloner entry returned no Location header for source ${sourceAppId} (status=${entryResp?.status})")
     }
-    def m = (clonerLocation =~ /\/installedapp\/configure\/(\d+)/)
-    if (!m.find()) {
+    // Hubitat appCloner returns Location pointing at the cloner instance.
+    // Two observed shapes (firmware 2.5.0.123):
+    //   /installedapp/configure/<clonerId>          (UI-config path)
+    //   /apps/api/<clonerId>/app/<sourceId>?...     (API path with access token)
+    // Both carry the new cloner instance's app id as the digits right after
+    // the path's known prefix.
+    def clonerAppId = null
+    def m1 = (clonerLocation =~ /\/installedapp\/configure\/(\d+)/)
+    if (m1.find()) {
+        clonerAppId = m1[0][1] as Integer
+    } else {
+        def m2 = (clonerLocation =~ /\/apps\/api\/(\d+)\//)
+        if (m2.find()) clonerAppId = m2[0][1] as Integer
+    }
+    if (clonerAppId == null) {
         throw new IllegalStateException("Unexpected appCloner Location: ${clonerLocation}")
     }
-    def clonerAppId = m[0][1] as Integer
 
     // Step 2: optionally rename. The cloner's first input is `appLabel`
     // (or similar). We'll fetch the schema to pick the right field name
