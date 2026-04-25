@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+section3-bool-delay-fixes-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+action-mutation-tools-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1921,6 +1921,23 @@ Trigger index is auto-assigned (next available). The wizard's auto-finalize via 
                         description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so the actions[] map and subscriptions bake atomically. Pairs naturally with addTriggers — pass both to add many triggers + many actions in a single tool call.",
                         items: [type: "object"]
                     ],
+                    removeAction: [
+                        type: "object",
+                        description: "Delete a single action by its index. Pass {index: <N>}. RM preserves remaining indices (no renumbering on delete). updateRule fires after the deletion."
+                    ],
+                    clearActions: [
+                        type: "boolean",
+                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. updateRule fires after the clear."
+                    ],
+                    replaceActions: [
+                        type: "array",
+                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions, then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Use this for the T377 (update existing actions) and T381 (reorder by passing actions in the new order) patterns. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).",
+                        items: [type: "object"]
+                    ],
+                    moveAction: [
+                        type: "object",
+                        description: "Move a single action up or down by one slot. Pass {index: <N>, direction: 'up'|'down'}. For arbitrary reorders, prefer replaceActions with the new order — that's a single atomic operation."
+                    ],
                     addAction: [
                         type: "object",
                         description: """Add a Rule Machine ACTION to the rule via the high-level structured API. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally — initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
@@ -3309,7 +3326,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+section3-bool-delay-fixes-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+action-mutation-tools-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9570,6 +9587,51 @@ private List _rmCollectActionIndices(Integer appId) {
 }
 
 /**
+ * Delete a single action at a specific index. Verified live 2026-04-25
+ * by inspecting the live UI HTML on selectActions: the per-row trash
+ * button has data-stateAttribute='delAct' and the form-input name is
+ * just the action index as a digit (e.g. name='2' for action 2). RM's
+ * appButtonHandler dispatches on the stateAttribute and uses the name
+ * to identify which action to delete.
+ *
+ * After delete, RM does NOT renumber remaining actions — indices are
+ * preserved with gaps. Subsequent addAction picks the next free index
+ * via _rmCollectActionIndices' max+1 logic.
+ */
+private void _rmDeleteAction(Integer appId, Integer actionIdx) {
+    _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
+}
+
+/**
+ * Delete every action on a rule. Iterates highest-to-lowest so RM's
+ * row-rendering doesn't get confused by mid-iteration index shifts
+ * (defensive — verified RM keeps indices stable on delete, but
+ * highest-first is still the safer order). Returns the list of
+ * indices that were deleted.
+ */
+private List _rmClearActions(Integer appId) {
+    def indices = _rmCollectActionIndices(appId).sort().reverse()
+    indices.each { idx -> _rmDeleteAction(appId, idx as Integer) }
+    return indices
+}
+
+/**
+ * Move an action one slot in the given direction. Verified live
+ * 2026-04-25: per-row up/down arrows have data-stateAttribute='arrowUp'
+ * / 'arrowDn' and use the action index as the button name (same
+ * convention as delAct). Returns the request response status.
+ *
+ * Note: RM may renumber actions when moves cross gaps — caller should
+ * re-collect indices via _rmCollectActionIndices if subsequent moves
+ * depend on positions.
+ */
+private void _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
+    def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
+    if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
+    _rmClickAppButton(appId, actionIdx.toString(), stateAttr, "selectActions")
+}
+
+/**
  * Navigate to a page by firing the form-submit equivalent of the live
  * UI's page transition. Hubitat's UI links (e.g. "Select Actions to Run"
  * on mainPage, or the implicit return-to-parent after a sub-page wizard
@@ -11095,8 +11157,13 @@ def toolUpdateNativeApp(args) {
     def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
     def addActionsList = args?.addActions instanceof List ? (args.addActions as List) : null
     def addTriggersList = args?.addTriggers instanceof List ? (args.addTriggers as List) : null
-    if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), or 'addActions' (List) — none provided.")
+    def removeActionSpec = args?.removeAction instanceof Map ? args.removeAction : null
+    def clearActionsFlag = args?.clearActions == true
+    def replaceActionsList = args?.replaceActions instanceof List ? (args.replaceActions as List) : null
+    def moveActionSpec = args?.moveAction instanceof Map ? args.moveAction : null
+    if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
+            && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), or 'moveAction' ({index:N, direction:up|down}) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -11105,8 +11172,74 @@ def toolUpdateNativeApp(args) {
         (addTriggerSpec ? "pre-addTrigger" :
         (addActionSpec ? "pre-addAction" :
         (addActionsList ? "pre-addActions-bulk" :
-        (addTriggersList ? "pre-addTriggers-bulk" : "pre-update"))))
+        (addTriggersList ? "pre-addTriggers-bulk" :
+        (removeActionSpec ? "pre-removeAction" :
+        (clearActionsFlag ? "pre-clearActions" :
+        (replaceActionsList != null ? "pre-replaceActions" :
+        (moveActionSpec ? "pre-moveAction" : "pre-update"))))))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
+
+    // Action mutation paths — single delete, clear-all, replace-all, move.
+    // All re-fire updateRule at the end so actions[] map and subscriptions
+    // bake from the new state.
+    if (removeActionSpec || clearActionsFlag || replaceActionsList != null || moveActionSpec) {
+        try {
+            def removed = []
+            def addedResults = []
+            if (removeActionSpec) {
+                if (removeActionSpec.index == null) throw new IllegalArgumentException("removeAction.index is required")
+                def idx = (removeActionSpec.index as Integer)
+                _rmDeleteAction(appId, idx)
+                removed << idx
+            }
+            if (moveActionSpec) {
+                if (moveActionSpec.index == null) throw new IllegalArgumentException("moveAction.index is required")
+                def dir = moveActionSpec.direction?.toString()
+                if (!(dir in ["up", "down"])) throw new IllegalArgumentException("moveAction.direction must be 'up' or 'down'")
+                _rmMoveAction(appId, moveActionSpec.index as Integer, dir)
+            }
+            if (clearActionsFlag || replaceActionsList != null) {
+                removed = (removed + _rmClearActions(appId))*.toString().unique()*.toInteger()
+            }
+            if (replaceActionsList != null) {
+                replaceActionsList.eachWithIndex { spec, i ->
+                    if (!(spec instanceof Map)) {
+                        addedResults << [success: false, error: "replaceActions[${i}] is not a Map", spec: spec]
+                        return
+                    }
+                    try { addedResults << _rmAddAction(appId, spec as Map) }
+                    catch (Exception ae) {
+                        addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
+                        mcpLog("warn", "rm-native", "update_native_app: replaceActions[${i}] (${spec.capability}/${spec.action}) failed — ${ae.message}")
+                    }
+                }
+            }
+            _rmClickAppButton(appId, "updateRule")
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
+        def addedOk = (addedResults ?: []).count { it?.success != false }
+        def addedTotal = (replaceActionsList ?: []).size()
+        return [
+            success: addedOk == addedTotal,
+            appId: appId,
+            backup: backup,
+            removedIndices: removed ?: null,
+            addedActions: addedResults ?: null,
+            note: replaceActionsList != null
+                ? "Replaced actions: removed ${removed?.size() ?: 0}, added ${addedOk}/${addedTotal}; updateRule fired."
+                : (clearActionsFlag ? "Cleared ${removed?.size() ?: 0} actions; updateRule fired."
+                : (moveActionSpec ? "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule fired."
+                : "Removed action ${removeActionSpec?.index}; updateRule fired."))
+        ]
+    }
 
     if (addTriggerSpec) {
         // High-level structured trigger creation. Replaces the 6-8 wizard
