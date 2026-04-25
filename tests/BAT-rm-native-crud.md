@@ -146,16 +146,26 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: AI calls `update_rm_rule(ruleId, patch={logging: ['Events','Triggers','Actions'], dValues: true})`. `get_rm_rule(ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
 
-### T306 — Full round-trip: create with many fields at once
+### T306 — Full round-trip: many fields populated and surviving an updateRule re-init
 
 ```json
 {
-  "test_prompt": "Create a Rule Machine rule in a single call with ALL of these fields set at creation time: name='BAT-RM-Full Create', comments='Created in a single call with every rule-level field populated', useST=true, isFunction=false, logging=['Triggers','Actions'], dValues=true. Capture the returned ruleId. Then call get_rm_rule on that id and confirm every one of those fields round-trips. Report any field whose read value does not match what you sent.",
-  "teardown_prompt": "Delete the rule via delete_rm_rule(ruleId, force=true)."
+  "setup_prompt": "Create a scratch native RM rule via create_native_app(appType='rule_machine', name='BAT-RM-Full Create', confirm=true). Capture the returned appId.",
+  "test_prompt": "STEP 1 (populate in one update): Call update_native_app(appId=<id>, settings={comments: 'Created with every rule-level field populated', useST: true, isFunction: false, logging: ['Triggers','Actions'], dValues: true}, confirm=true). Verify the response reports configPageError=null and settingsApplied lists all five keys.\n\nSTEP 2 (read-back #1): Call get_app_config(appId=<id>, includeSettings=true). Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Call update_native_app(appId=<id>, button='updateRule', confirm=true). Verify configPageError is null.\n\nSTEP 4 (read-back #2, post re-init): Call get_app_config(appId=<id>, includeSettings=true). Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
+  "teardown_prompt": "Force-delete the rule via delete_native_app(appId=<id>, force=true, confirm=true)."
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine.create_rm_rule(name=..., comments=..., requiredExpression=true or useST=true, logging=[...], ...)` in one shot, then `get_rm_rule` confirms all six fields. Post-test invariants: [INV-1] `configPage.error == null`; logging remains an array of length 2; useST=true exposes required-expression editor section.
+**Expected**: AI calls `create_native_app` → `update_native_app(settings={...})` (single multi-field update) → `get_app_config` → `update_native_app(button='updateRule')` → `get_app_config` → `delete_native_app(force=true)`.
+
+**Pass criteria** (ALL must hold):
+- After STEP 2: `settings.comments`, `settings.useST`, `settings.isFunction`, `settings.logging`, `settings.dValues` all round-trip. `settings.logging` is a JSON array of exactly 2 strings `["Triggers","Actions"]` (NOT collapsed to the CSV string `"Triggers,Actions"`).
+- `app.label` round-trips as the rule name passed to `create_native_app`.
+- `useST=true` exposes the required-expression editor section (look for the 'Define Required Expression' paragraph on mainPage).
+- After STEP 4: every field from STEP 2 is still present with unchanged values; `logging` is still a 2-element array.
+- [INV-1] `configPage.error == null` in both read-backs.
+
+**Why two-step, not single-call**: `create_native_app` is deliberately minimal (appType + name). All rule-level fields (useST, logging, dValues, isFunction, comments) are written through `update_native_app`. The test still verifies the important round-trip property — five non-trivial fields applied in one `settings` map, persisting through an updateRule re-init — which is the regression surface that matters.
 
 ### T307 — Soft delete succeeds on childless rule
 

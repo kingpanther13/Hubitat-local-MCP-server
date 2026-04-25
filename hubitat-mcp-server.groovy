@@ -8232,12 +8232,48 @@ def toolListRmRules(args) {
         v5Error = e.toString()
     }
 
+    // Filter RMUtils ghosts. RMUtils.getRuleList() reads a cached child
+    // list inside the RM parent app and that cache keeps returning an id
+    // for some time (seconds to minutes, non-deterministic) after the
+    // rule's InstalledApp row is deleted — verified live on firmware
+    // 2.5.0.123 for both /installedapp/delete/<id> and
+    // /installedapp/forcedelete/<id>/quiet. Hub UI never shows these
+    // because it reads /hub2/appsList, which is authoritative. Cross-
+    // check against that tree and drop any rule whose id isn't in it.
+    // If /hub2/appsList itself fails, fall through with unfiltered
+    // output + a warning so callers don't lose visibility on a
+    // transient hub error.
+    def ghostIds = []
+    try {
+        def liveIds = _collectLiveAppIds()
+        if (liveIds != null) {
+            def filtered = [:]
+            combined.each { id, entry ->
+                def idInt
+                try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
+                catch (Exception ignored) { idInt = null }
+                if (idInt != null && liveIds.contains(idInt)) {
+                    filtered[id] = entry
+                } else {
+                    if (idInt != null) ghostIds << idInt
+                }
+            }
+            combined = filtered
+        }
+    } catch (Throwable e) {
+        mcpLog("warn", "rm-interop", "list_rm_rules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
+    }
+
     def rules = combined.values().sort { it.label ?: "" }
 
     def result = [
         rules: rules,
         count: rules.size()
     ]
+    if (ghostIds) {
+        result.ghostsFiltered = ghostIds.sort()
+        result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
+    }
     // Classify the failures. A "missing class" error (RM not installed) is quiet whether
     // the other version succeeded OR both versions failed the same way (both-absent path).
     // A non-missing-class error (e.g. timeout, internal platform issue) is always surfaced
@@ -8548,6 +8584,49 @@ private Map _appTypeRegistry() {
         rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"]
         // Add more entries as they're verified on the live hub.
     ]
+}
+
+/**
+ * Collect all installed-app ids currently present in the hub's authoritative
+ * /hub2/appsList tree. Used by list_rm_rules to filter out stale RMUtils-
+ * cache ghosts after a rule is deleted (the delete itself succeeds at the
+ * InstalledApp table, but RMUtils' internal rule list lags for seconds-to-
+ * minutes — hub UI lists never show these because they read /hub2/appsList,
+ * not RMUtils, so we do the same).
+ *
+ * Returns a Set<Integer> of all live ids across the tree (any depth), or
+ * null if the endpoint is unreachable / malformed. Callers treat null as
+ * "cannot filter — surface RMUtils output unfiltered" rather than as an
+ * empty set (which would drop every rule).
+ */
+private Set _collectLiveAppIds() {
+    def responseText
+    try {
+        responseText = hubInternalGet("/hub2/appsList")
+    } catch (Exception e) {
+        mcpLog("warn", "rm-interop", "_collectLiveAppIds: /hub2/appsList fetch failed (${e.message})")
+        return null
+    }
+    if (!responseText) return null
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        mcpLog("warn", "rm-interop", "_collectLiveAppIds: /hub2/appsList parse failed (${e.message})")
+        return null
+    }
+    def ids = [] as Set
+    def walk
+    walk = { node ->
+        if (node == null) return
+        def idVal = node?.data?.id ?: node?.id
+        if (idVal != null) {
+            try { ids << (idVal as Integer) } catch (Exception ignored) { /* skip non-int ids */ }
+        }
+        (node?.children ?: []).each { walk(it) }
+    }
+    (parsed?.apps ?: []).each { walk(it) }
+    return ids
 }
 
 /**
