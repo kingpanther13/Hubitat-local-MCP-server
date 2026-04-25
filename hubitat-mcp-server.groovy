@@ -8662,6 +8662,47 @@ private Map _appTypeRegistry() {
 }
 
 /**
+ * Decide whether a just-clicked updateRule left an RM rule with pending
+ * subscription work. Returns null if the rule has no trigger-bearing
+ * settings at all (no lag to detect), otherwise returns a small map with
+ * `unsettled` (Boolean) + `triggerCount` (Integer) + `subCount` (Integer)
+ * so the caller can decide whether to auto-retry / warn.
+ *
+ * Unsettled = rule has at least one tDev<N> multi-device capability
+ * setting (trigger is device-backed) but eventSubscriptions is empty.
+ * HTTP-only, time-only, and triggerless rules legitimately have empty
+ * eventSubscriptions, so we scope the "unsettled" flag to the specific
+ * trigger shape that MUST produce subscriptions when initialized.
+ *
+ * Verified live on firmware 2.5.0.123: after a fresh trigger-wizard
+ * hasAll commit followed by updateRule, eventSubscriptions can stay
+ * at 0 for up to ~minute before populating — a second updateRule click
+ * typically settles them immediately. This function detects the case
+ * so update_native_app can auto-retry once + surface a clean warning
+ * if the retry still doesn't help.
+ */
+private Map _rmCheckSubscriptionSettle(Integer appId) {
+    def status
+    try {
+        status = _rmFetchStatusJson(appId)
+    } catch (Exception e) {
+        return null
+    }
+    def settings = status?.appSettings ?: []
+    def triggerDevs = settings.findAll { s ->
+        def n = s?.name?.toString()
+        n?.matches(/^tDev\d+$/) && (s?.deviceIdsForDeviceList instanceof List) && s.deviceIdsForDeviceList
+    }
+    if (!triggerDevs) return null
+    def subs = status?.eventSubscriptions ?: []
+    return [
+        unsettled: subs.isEmpty(),
+        triggerCount: triggerDevs.size(),
+        subCount: subs.size()
+    ]
+}
+
+/**
  * Collect all installed-app ids currently present in the hub's authoritative
  * /hub2/appsList tree. Used by list_rm_rules to filter out stale RMUtils-
  * cache ghosts after a rule is deleted (the delete itself succeeds at the
@@ -9249,7 +9290,28 @@ def toolUpdateNativeApp(args) {
         if (settingsMap) {
             def config = _rmFetchConfigJson(appId, pageName)
             def schema = _rmCollectInputSchema(config?.configPage)
-            _rmUpdateAppSettings(appId, settingsMap, schema)
+            // Detect settings whose key isn't in the current page's schema.
+            // The hub silently drops writes that lack a `<key>.type` sidecar
+            // (we can only emit .type when the schema knows the input type),
+            // so callers who include a setting that isn't yet on the page
+            // would see success=true but the value never gets saved. This is
+            // the top source of "why isn't my trigger working" on the RM
+            // wizards: tstate1/AlltDev1 etc. only appear AFTER tCapab1/tDev1
+            // are written, so bundling them drops tstate1. Pre-split the map
+            // into known vs unknown and write only the known ones; surface
+            // the unknown set loudly so the caller sees what was skipped.
+            def knownSettings = [:]
+            def unknownSettings = []
+            settingsMap.each { k, v ->
+                if (schema?.containsKey(k.toString())) {
+                    knownSettings[k] = v
+                } else {
+                    unknownSettings << k.toString()
+                }
+            }
+            if (knownSettings) {
+                _rmUpdateAppSettings(appId, knownSettings, schema)
+            }
             // Auto-fire updateRule only for main-page writes. On sub-pages
             // (selectTriggers, selectActions, trigger/action/condition
             // editors, etc.) the commit pattern is to click the page's
@@ -9264,8 +9326,12 @@ def toolUpdateNativeApp(args) {
             // sub-page Done button, then call update_native_app once
             // more with button='updateRule' to re-initialize the rule.
             def isMainPage = (!pageName || pageName == "mainPage")
-            if (!button && isMainPage) _rmClickAppButton(appId, "updateRule")
-            result.settingsApplied = settingsMap.keySet().toList()
+            if (!button && isMainPage && knownSettings) _rmClickAppButton(appId, "updateRule")
+            result.settingsApplied = knownSettings.keySet().toList()
+            if (unknownSettings) {
+                result.settingsSkipped = unknownSettings
+                result.unknownSettingsWarning = "Setting(s) ${unknownSettings} are not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental — e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
+            }
             if (!isMainPage) {
                 result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call update_native_app(button='updateRule') to commit."
             }
@@ -9286,6 +9352,33 @@ def toolUpdateNativeApp(args) {
             result.restoreHint = "Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
         }
         result.configPageError = err
+
+        // Post-updateRule subscription-settling check. After clicking the
+        // main-page updateRule button (either explicit via button param
+        // or implicit after a main-page settings write), RM's initialize()
+        // should have repopulated eventSubscriptions for any non-HTTP,
+        // non-time trigger the rule carries. Verified live on firmware
+        // 2.5.0.123 that this sometimes lags: the first updateRule after
+        // a fresh trigger-wizard hasAll returns success but leaves subs=0
+        // for ~minute; a second updateRule click (often issued after any
+        // other activity) populates them. Surface the lag as a structured
+        // warning + autoretry so callers don't silently ship rules that
+        // never fire.
+        def clickedUpdateRule = (button == "updateRule") ||
+            (settingsMap && (!pageName || pageName == "mainPage") && !button)
+        if (clickedUpdateRule) {
+            def settleStatus = _rmCheckSubscriptionSettle(appId)
+            if (settleStatus?.unsettled) {
+                mcpLog("info", "rm-native", "updateRule subscription settle lag on app ${appId} — retrying")
+                _rmClickAppButton(appId, "updateRule")
+                settleStatus = _rmCheckSubscriptionSettle(appId)
+                result.subscriptionSettle = settleStatus?.unsettled ?
+                    "WARN: rule has ${settleStatus.triggerCount} trigger(s) but eventSubscriptions=0 after two updateRule clicks. The trigger is likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
+                    "OK after auto-retry"
+            } else if (settleStatus != null) {
+                result.subscriptionSettle = "OK"
+            }
+        }
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
