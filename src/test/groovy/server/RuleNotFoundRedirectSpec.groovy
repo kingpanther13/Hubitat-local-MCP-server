@@ -95,6 +95,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('get_app_config(appId=832)')
         ex.message.contains('get_rule')
         ex.message.contains('export_rule')
+        ex.message.contains('clone_rule')
         // read-verb phrasing: should NOT contain write-verb phrasing
         !ex.message.contains('cannot be programmatically modified')
     }
@@ -240,6 +241,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('get_app_config(appId=500)')
         ex.message.contains('get_rule')
         ex.message.contains('export_rule')
+        ex.message.contains('clone_rule')
         !ex.message.contains('cannot be programmatically modified')
     }
 
@@ -388,6 +390,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('get_app_config(appId=700)')
         // export_rule is called internally by clone_rule, so read-verb phrasing applies
         ex.message.contains('export_rule')
+        ex.message.contains('clone_rule')
     }
 
     def "clone_rule (c) id not found anywhere -- generic not found"() {
