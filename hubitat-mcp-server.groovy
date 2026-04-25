@@ -10050,17 +10050,43 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     } else if (cap == "runCommand") {
         // modeActs/getDefinedAction — Run Custom Action. Multi-step:
         //   useLastDev.<N>  = false (use selected devices, not the trigger device)
-        //   myCapab.<N>     = capability filter (e.g. "Switch", "Switch Level")
-        //   devices.<N>     = device list (capability.<lowercased>)
+        //   myCapab.<N>     = Hubitat capability CLASS NAME (verified live):
+        //                     'Switch', 'SwitchLevel' (Dimmer), 'Lock',
+        //                     'PushableButton' (Button), 'ColorControl',
+        //                     'ColorTemperature', 'WindowShade', 'WindowBlind',
+        //                     'FanControl', 'MusicPlayer', 'AudioVolume',
+        //                     'GarageDoorControl', 'DoorControl', 'Valve',
+        //                     'Lock', 'Thermostat', 'Tone', 'SpeechSynthesis', etc.
+        //   devices.<N>     = device list (capability.<key-lowercased>)
         //   cCmd.<N>        = command name (one of the device driver's commands)
-        //   cpType<i>.<N>   = type for parameter i (e.g. NUMBER, STRING) — optional
+        //   cpType<i>.<N>   = parameter type (LOWERCASE: 'string', 'number', 'decimal') — optional
         //   cpVal<i>.<N>    = value for parameter i — optional
         // Verified live: no-arg commands (off/on/refresh) need only useLastDev+
-        // myCapab+devices+cCmd. Parameterized commands also need the cpType/cpVal pairs.
+        // myCapab+devices+cCmd. Parameterized commands need cpType/cpVal pairs.
         actType = "modeActs"
         actSubType = "getDefinedAction"
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
-        def capFilter = actionSpec.capabilityFilter ?: "Switch"
+        // Friendly names → Hubitat capability class keys
+        def friendlyToKey = [
+            "switch": "Switch", "Switch": "Switch",
+            "dimmer": "SwitchLevel", "Dimmer": "SwitchLevel", "switchLevel": "SwitchLevel", "SwitchLevel": "SwitchLevel", "Switch Level": "SwitchLevel",
+            "color": "ColorControl", "Color": "ColorControl", "ColorControl": "ColorControl",
+            "colorTemp": "ColorTemperature", "ColorTemperature": "ColorTemperature", "Color Temperature": "ColorTemperature",
+            "lock": "Lock", "Lock": "Lock",
+            "button": "PushableButton", "Button": "PushableButton", "PushableButton": "PushableButton",
+            "shade": "WindowShade", "WindowShade": "WindowShade", "Window Shade": "WindowShade",
+            "blind": "WindowBlind", "WindowBlind": "WindowBlind", "Window Blind": "WindowBlind",
+            "fan": "FanControl", "FanControl": "FanControl", "Fan Control": "FanControl",
+            "music": "MusicPlayer", "MusicPlayer": "MusicPlayer", "Music Player": "MusicPlayer",
+            "garage": "GarageDoorControl", "GarageDoorControl": "GarageDoorControl", "Garage door": "GarageDoorControl",
+            "door": "DoorControl", "DoorControl": "DoorControl",
+            "valve": "Valve", "Valve": "Valve",
+            "thermostat": "Thermostat", "Thermostat": "Thermostat",
+            "tone": "Tone", "Tone": "Tone",
+            "speech": "SpeechSynthesis", "SpeechSynthesis": "SpeechSynthesis"
+        ]
+        def capFilterRaw = actionSpec.capabilityFilter ?: "Switch"
+        def capFilter = friendlyToKey[capFilterRaw.toString()] ?: capFilterRaw.toString()
         fields = [
             "useLastDev.@N": (actionSpec.useLastEventDevice == true),
             "myCapab.@N": capFilter,
@@ -10070,14 +10096,23 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (actionSpec.parameters instanceof List) {
             actionSpec.parameters.eachWithIndex { p, i ->
                 def idx1 = i + 1
+                def pType, pValue
                 if (p instanceof Map) {
-                    if (p.type != null) fields["cpType${idx1}.@N"] = p.type
-                    if (p.value != null) fields["cpVal${idx1}.@N"] = p.value
+                    pType = p.type
+                    pValue = p.value
                 } else {
-                    // Scalar — assume STRING by default
-                    fields["cpType${idx1}.@N"] = "STRING"
-                    fields["cpVal${idx1}.@N"] = p.toString()
+                    pType = "string"
+                    pValue = p
                 }
+                // Normalize type to lowercase ('string'/'number'/'decimal')
+                if (pType != null) {
+                    def t = pType.toString().toLowerCase()
+                    if (!(t in ["string", "number", "decimal"])) {
+                        throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid — must be 'string', 'number', or 'decimal'")
+                    }
+                    fields["cpType${idx1}.@N"] = t
+                }
+                if (pValue != null) fields["cpVal${idx1}.@N"] = pValue
             }
         }
     } else if (cap == "fileWrite") {
