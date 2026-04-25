@@ -16,9 +16,14 @@ All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved �
 
 ### Disabling Gateways (Flat Tool List)
 
-Gateways exist because most MCP clients struggle with long tool lists. Some clients now ship their own progressive-disclosure layer (deferred tools, built-in BM25 search, etc.) and don't need ours. For those, the **Consolidate tools behind category gateways** setting in the app preferences can be turned off — `tools/list` then advertises every tool individually (~82 entries) and `search_tools` is suppressed because it's only useful for navigating gateway-hidden tools.
+Gateways exist because most MCP clients struggle with long tool lists. Some clients now ship their own progressive-disclosure layer (deferred tools, built-in BM25 search, etc.) and don't need ours. For those, the **Consolidate tools behind category gateways** setting in the app preferences can be turned off.
 
-Default is **ON** (gateways enabled). Existing installations keep the gateway behavior on update.
+The total tool inventory stays at 83 either way — only the *advertised* `tools/list` shape changes:
+
+- **Gateways ON (default):** 33 entries (22 core + 11 gateways); the other 61 tools are reached via gateway dispatch.
+- **Gateways OFF:** 82 entries — every tool except `search_tools`, which is hidden because its only purpose is finding tools hidden behind gateways.
+
+Default is **ON** (gateways enabled). Existing installations keep the gateway behavior on update. If a stale or cached client tries to call a gateway name (e.g. `manage_rooms`) while the toggle is off, the server returns a soft `isError` pointing at the underlying sub-tools rather than silently servicing the call with a gateway-shaped response.
 
 ## Device Authorization (CRITICAL)
 

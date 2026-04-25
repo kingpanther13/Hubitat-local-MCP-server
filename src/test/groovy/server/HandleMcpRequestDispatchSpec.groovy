@@ -85,6 +85,32 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         }
     }
 
+    def "tools/list with useGateways=false returns the flat catalog through the JSON-RPC envelope"() {
+        // Pins the integration boundary, not just getToolDefinitions() in isolation —
+        // catches regressions where handleMcpRequest/handleToolsList caches or short-circuits
+        // around the setting.
+        given:
+        settingsMap.useGateways = false
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 50, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.jsonrpc == '2.0'
+        response.id == 50
+        def names = response.result.tools*.name as Set
+
+        and: 'gateway entries gone, sub-tools surface, search_tools suppressed'
+        !names.contains('manage_rooms')
+        !names.contains('manage_files')
+        !names.contains('search_tools')
+        names.contains('list_rooms')
+        names.contains('list_files')
+        names.contains('list_devices')
+    }
+
     def "tools/call list_rooms flows through render with an MCP content envelope"() {
         given: 'a stubbed getRooms returning a deterministic list'
         script.metaClass.getRooms = { ->
