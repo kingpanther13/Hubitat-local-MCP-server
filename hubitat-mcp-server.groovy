@@ -8724,18 +8724,28 @@ private Map _rmCollectInputSchema(Map configPage) {
 /**
  * Build the form body for /installedapp/update/json from a flat settings
  * map. For each key, emit:
- *   settings[<key>] = <value>  (CSV if list for multi-device capability)
- *   <key>.type      = <capability.X or input type>  (if schema says so)
- *   <key>.multiple  = true                          (if capability & multiple)
+ *   settings[<key>] = <value>      (List → CSV for capability-multi, JSON-array for enum-multi)
+ *   <key>.type     = <input type>  (if schema says so)
+ *   <key>.multiple = true          (if multi)
  *
- * Omitting the .multiple=true sidecar on a capability.* input silently
- * flips the AppSetting DB flag to false and every subsequent render of
- * the rule throws `Command 'size' is not supported by device`. This
- * function emits the full 3-field group for every capability input in
- * the schema, whether the caller remembered or not.
+ * Wire-format rules verified live against firmware 2.5.0.123:
  *
- * settingsMap values: String/Number/Boolean for scalars, List for
- * multi-device capability selections.
+ *   capability.X multiple=true → CSV: "8,9". JSON-array shape errors HTTP 500.
+ *   enum         multiple=true → JSON-array: "[\"X\",\"Y\"]". CSV stores raw
+ *       string after the next updateRule click (looks correct in storage
+ *       but downstream readers expecting List get a String). The native UI
+ *       uses JSON-array exclusively for any <select multiple> element
+ *       (appUI.js:579 `JSON.stringify($(this).val())`), so matching that is
+ *       the canonical path.
+ *
+ * Omitting the .multiple=true sidecar on capability.* silently flips the
+ * AppSetting DB flag to false and every subsequent rule render throws
+ * `Command 'size' is not supported by device`. This function emits the
+ * full 3-field group for every multi input in the schema, whether the
+ * caller remembered or not.
+ *
+ * settingsMap values: String/Number/Boolean for scalars; List for
+ * multi-value (device-id list for capability, option list for enum).
  */
 private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
     def body = [id: appId.toString()]
@@ -8744,12 +8754,19 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         def meta = schema?."${key}"
         def typeHint = meta?.type
         def isCapability = typeHint?.startsWith("capability.")
+        def isEnum = typeHint == "enum"
         def isMulti = meta?.multiple == true || (isCapability && rawVal instanceof List)
 
-        // Serialize value: List → CSV for multi-device, else toString
+        // Serialize value: branch by input type for multi-value writes.
+        // Capability multi: CSV ("8,9"). Enum multi: JSON-array ('["X","Y"]').
+        // Everything else: toString.
         def serialized
         if (rawVal instanceof List) {
-            serialized = rawVal.collect { it?.toString() }.findAll { it != null }.join(",")
+            if (isEnum) {
+                serialized = groovy.json.JsonOutput.toJson(rawVal.collect { it?.toString() }.findAll { it != null })
+            } else {
+                serialized = rawVal.collect { it?.toString() }.findAll { it != null }.join(",")
+            }
         } else if (rawVal == null) {
             serialized = ""
         } else {
