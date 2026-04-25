@@ -3052,7 +3052,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion()
+    info.mcpServerVersion = currentVersion() + "+9125622-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9647,11 +9647,7 @@ private Map _rmRestoreFromBackup(Map entry) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    // TEMPORARY — REMOVE COMMIT SUFFIX BEFORE MERGING PR #134.
-    // While iterating on PR #134 fixes, the SHA suffix lets us confirm
-    // which build is live on the hub via get_hub_info -> mcpServerVersion.
-    // Updated on every commit; the literal "0.10.1" comes back at merge.
-    return "0.10.1+9efd31d-prdev-build-marker"
+    return "0.10.1"
 }
 
 def isNewerVersion(String remote, String local) {
