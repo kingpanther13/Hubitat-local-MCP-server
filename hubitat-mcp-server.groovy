@@ -9429,10 +9429,12 @@ private void _rmInitSelectActionsPage(Integer appId) {
  *   rawSettings { fieldName: value } — escape hatch (use @N as a literal
  *     placeholder in the field name to substitute the action index)
  *
- * The caller is expected to issue update_native_app(button='updateRule')
- * after adding all actions to fire initialize() and bake the actions
- * map. _rmAddAction does NOT fire updateRule itself, so multi-action
- * rules avoid N redundant re-inits.
+ * The helper fires updateRule internally at the end so the action is
+ * fully baked into actions[] and state.actNdx is advanced before the
+ * next addAction can land. Verified live (2026-04-25) that actionDone
+ * alone DOES NOT bake — actionList stays stale and the next call's
+ * editor opens with empty schema (writes silently skip). One updateRule
+ * per action is unavoidable for correctness; the cost is ~100ms each.
  *
  * Returns: [success, actionIndex, capability, action, settingsApplied,
  * configPageError]
@@ -9536,6 +9538,18 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // Click actionDone (with form context) to commit. By now the schema
     // has settled and actionDone is present.
     _rmClickAppButton(appId, "actionDone", null, "doActPage")
+
+    // Fire updateRule to advance state.actNdx so the next addAction
+    // call's click_n opens at the correct slot. Verified live
+    // (2026-04-25): without an updateRule between successive addAction
+    // calls, the second call's click_n opens with empty schema and all
+    // writes silently skip. NOTE: the action just committed still lags
+    // by one updateRule before it lands in actions[] — the second
+    // updateRule (fired by the next addAction call OR an explicit
+    // caller-side updateRule) bakes it. For bulk addActions the
+    // dispatch fires an extra updateRule at the very end to bake the
+    // last action.
+    _rmClickAppButton(appId, "updateRule")
 
     // Final config-error check.
     def finalConfig
@@ -10193,7 +10207,7 @@ def toolUpdateNativeApp(args) {
             actSubType: actResult?.actSubType,
             settingsApplied: actResult?.settingsApplied,
             configPageError: actResult?.configPageError,
-            note: "Action added. Call update_native_app(button='updateRule') after adding all actions to fire initialize() and bake the actions[] map."
+            note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake — no manual updateRule needed."
         ]
     }
 
@@ -10227,7 +10241,9 @@ def toolUpdateNativeApp(args) {
                     mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed — ${ae.message}")
                 }
             }
-            // One updateRule fires after everything — bakes triggers + actions atomically.
+            // After the loop: fire an EXTRA updateRule to bake the last
+            // action (each individual addAction's updateRule lags by one,
+            // so the LAST action wouldn't land in actions[] otherwise).
             _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addTriggers/addActions bulk failed for app ${appId}: ${e.message}")
