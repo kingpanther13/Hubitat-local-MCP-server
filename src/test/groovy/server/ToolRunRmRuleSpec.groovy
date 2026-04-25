@@ -1,5 +1,6 @@
 package server
 
+import groovy.json.JsonOutput
 import support.RMUtilsMock
 import support.ToolSpecBase
 
@@ -7,7 +8,9 @@ import support.ToolSpecBase
  * Spec for toolRunRmRule (hubitat-mcp-server.groovy approx line 7788).
  * Gateway: manage_native_rules_and_apps -> run_rm_rule.
  *
- * Covers: gate-throw, missing ruleId, action-to-rmAction mapping (rule/actions/stop),
+ * Covers: gate-throw, missing ruleId, action-to-rmAction mapping (rule/actions
+ * via RMUtils; stop/start via the stopRule button toggle because RMUtils has
+ * no startRule verb), idempotent stop/start behavior based on state.stopped,
  * invalid action rejection, String ruleId coercion, non-numeric ruleId rejection.
  */
 class ToolRunRmRuleSpec extends ToolSpecBase {
@@ -21,6 +24,25 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def cleanup() {
         rmUtils?.uninstall()
+    }
+
+    /**
+     * Minimal statusJson stub for stop/start toggle tests — carries
+     * appState entries so _readAppStateBoolean can find state.stopped.
+     */
+    private String minimalStatusJson(int ruleId, boolean stopped) {
+        JsonOutput.toJson([
+            installedApp: [id: ruleId],
+            appSettings: [],
+            eventSubscriptions: [],
+            scheduledJobs: [],
+            appState: [
+                [name: "running", value: false, type: "Boolean"],
+                [name: "stopped", value: stopped, type: "Boolean"]
+            ],
+            childAppCount: 0,
+            childDeviceCount: 0
+        ])
     }
 
     def "throws when Built-in App Read is disabled"() {
@@ -72,16 +94,81 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRuleAct' }
     }
 
-    def "action=stop dispatches stopRuleAct"() {
+    def "action=stop clicks stopRule button when rule is currently running (state.stopped=false)"() {
         given:
         settingsMap.enableBuiltinAppRead = true
+        hubGet.register('/installedapp/statusJson/103') { params -> minimalStatusJson(103, false) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
 
         when:
         def result = script.toolRunRmRule([ruleId: 103, action: 'stop'])
 
-        then:
+        then: "stopRule button POST issued; not routed through RMUtils.sendAction"
         result.success == true
-        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'stopRuleAct' }
+        result.ruleId == 103
+        posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
+        !rmUtils.calls.any { it.method == 'sendAction' && it.action == 'stopRuleAct' }
+    }
+
+    def "action=stop is idempotent — no-ops when rule is already stopped"() {
+        given:
+        settingsMap.enableBuiltinAppRead = true
+        hubGet.register('/installedapp/statusJson/104') { params -> minimalStatusJson(104, true) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 104, action: 'stop'])
+
+        then: "no button click — clicking stopRule while stopped=true would toggle to running"
+        result.success == true
+        result.rmAction == 'noop'
+        posts.isEmpty()
+    }
+
+    def "action=start clicks stopRule button when rule is currently stopped (state.stopped=true)"() {
+        given:
+        settingsMap.enableBuiltinAppRead = true
+        hubGet.register('/installedapp/statusJson/105') { params -> minimalStatusJson(105, true) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 105, action: 'start'])
+
+        then: "stopRule button POST toggles stopped flag off + re-inits + resets private boolean"
+        result.success == true
+        result.ruleId == 105
+        posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
+    }
+
+    def "action=start is idempotent — no-ops when rule is already running"() {
+        given:
+        settingsMap.enableBuiltinAppRead = true
+        hubGet.register('/installedapp/statusJson/106') { params -> minimalStatusJson(106, false) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 106, action: 'start'])
+
+        then: "no button click — rule was already running"
+        result.success == true
+        result.rmAction == 'noop'
+        posts.isEmpty()
     }
 
     def "default action (no action arg) dispatches runRule"() {
@@ -89,7 +176,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinAppRead = true
 
         when:
-        def result = script.toolRunRmRule([ruleId: 104])
+        def result = script.toolRunRmRule([ruleId: 107])
 
         then:
         result.success == true
@@ -101,7 +188,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinAppRead = true
 
         when:
-        script.toolRunRmRule([ruleId: 105, action: 'explode'])
+        script.toolRunRmRule([ruleId: 108, action: 'explode'])
 
         then:
         def ex = thrown(IllegalArgumentException)
