@@ -1787,7 +1787,17 @@ pageName: optional — target a specific sub-page whose schema drives the settin
 
 stateAttribute: optional string passed with the button click (e.g., RM uses this for editCond/editAct to identify which trigger/action).
 
-BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with restore_item_backup (in manage_apps_drivers) if the write goes wrong. Settings writes are automatically followed by an updateRule button click so initialize() re-fires and subscriptions repopulate.
+BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with restore_item_backup (in manage_apps_drivers) if the write goes wrong.
+
+Auto-updateRule: main-page settings writes are followed by an implicit updateRule button click so initialize() re-fires. Sub-page writes (pageName=selectTriggers, selectActions, etc.) skip the auto-click so the wizard's stateAttribute (moreCond, editCond, editAct, ...) survives — commit the wizard via its own Done button (RM triggers: hasAll; RM actions: actionDone) and issue a final update_native_app(button='updateRule') to re-initialize.
+
+RM 5.1 trigger flow (example — adding a multi-device switch trigger):
+  1. update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers') — opens the trigger editor.
+  2. update_native_app(appId, settings={tCapab1: 'Switch'}, pageName='selectTriggers') — picks the capability; page re-renders with the device picker.
+  3. update_native_app(appId, settings={tDev1: [<deviceId>, ...]}, pageName='selectTriggers') — writes devices (multi-device 3-field contract is automatic).
+  4. update_native_app(appId, settings={tstate1: 'on'}, pageName='selectTriggers') — sets the attribute/value.
+  5. update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger.
+  6. update_native_app(appId, button='updateRule') — re-initialize so subscriptions populate.
 
 Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
@@ -9240,12 +9250,25 @@ def toolUpdateNativeApp(args) {
             def config = _rmFetchConfigJson(appId, pageName)
             def schema = _rmCollectInputSchema(config?.configPage)
             _rmUpdateAppSettings(appId, settingsMap, schema)
-            // updateRule re-runs initialize() on the app so event
-            // subscriptions repopulate after the settings change. The
-            // button param, if also given, takes precedence over the
-            // implicit updateRule click.
-            if (!button) _rmClickAppButton(appId, "updateRule")
+            // Auto-fire updateRule only for main-page writes. On sub-pages
+            // (selectTriggers, selectActions, trigger/action/condition
+            // editors, etc.) the commit pattern is to click the page's
+            // own Done button — for RM 5.1 triggers that's `hasAll`; for
+            // actions it's `actionDone`; other wizard editors follow
+            // the same "Done on sub-page, updateRule at the end" shape.
+            // Firing updateRule mid-wizard clears stateAttribute flags
+            // (moreCond, editCond, editAct, ...) and resets the editor,
+            // so any subsequent sub-page write lands in the wrong state.
+            // Callers orchestrating a sub-page flow should: write their
+            // page-specific settings with pageName=<sub>, click the
+            // sub-page Done button, then call update_native_app once
+            // more with button='updateRule' to re-initialize the rule.
+            def isMainPage = (!pageName || pageName == "mainPage")
+            if (!button && isMainPage) _rmClickAppButton(appId, "updateRule")
             result.settingsApplied = settingsMap.keySet().toList()
+            if (!isMainPage) {
+                result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call update_native_app(button='updateRule') to commit."
+            }
         }
 
         if (button) {
