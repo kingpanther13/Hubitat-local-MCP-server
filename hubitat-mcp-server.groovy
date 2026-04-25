@@ -1874,10 +1874,10 @@ Capability families and the spec fields each accepts:
       action='on'/'off'/'toggle'/'flash' + deviceIds
 
   - Dimmer (capability='dimmer'):
-      action='setLevel'   + deviceIds + level (0-100) + optional fadeSeconds
-      action='toggle'     + deviceIds + optional level/fadeSeconds
-      action='adjust'     + deviceIds + adjustBy (-100..100) + optional fadeSeconds
-      action='fade'       + deviceIds + targetLevel + minutes + optional intervalSeconds + direction='raise'|'lower'
+      action='setLevel'   + deviceIds + level (0-100) [required] + optional fadeSeconds
+      action='toggle'     + deviceIds + level (0-100) [required — the level to set when toggling from off to on] + optional fadeSeconds
+      action='adjust'     + deviceIds + adjustBy (-100..100) [required] + optional fadeSeconds
+      action='fade'       + deviceIds + targetLevel [required] + minutes [required] + direction='raise'|'lower' + optional intervalSeconds
       action='stopFade'   (no fields)
       action='startRaiseLower' + deviceIds + direction='raise'|'lower'
       action='stopChanging'    + deviceIds
@@ -9603,25 +9603,35 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actType = "dimmerActs"
         switch (action) {
             case "setLevel":
+                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.setLevel requires 'level' (0-100). Verified live: actionDone never appears in the wizard schema until level is set.")
                 actSubType = "getSetDimmer"
                 fields = ["dimA.@N": deviceIds, "dimLA.@N": actionSpec.level]
                 if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
                 break
             case "toggle":
+                // level IS required by RM 5.1's getToggleDimmer wizard — it
+                // is the level the dimmer goes to when toggling FROM off TO on.
+                // Verified live in Chrome (2026-04-25): actionDone button
+                // doesn't appear in the schema until 'To this level (0..100)*'
+                // is filled. The * indicates required.
+                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.toggle requires 'level' (0-100) — the level to set when toggling from off to on. Verified live: actionDone never appears in the schema until level is set (the wizard input is marked required with *).")
                 actSubType = "getToggleDimmer"
-                fields = ["dimA.@N": deviceIds]
-                if (actionSpec.level != null) fields["dimLA.@N"] = actionSpec.level
+                fields = ["dimA.@N": deviceIds, "dimLA.@N": actionSpec.level]
                 if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
                 break
             case "adjust":
+                // adjustBy IS required — the +/- amount (-100..100). Without
+                // it, actionDone never appears (same pattern as toggle).
+                if (actionSpec.adjustBy == null) throw new IllegalArgumentException("dimmer.adjust requires 'adjustBy' (signed integer -100..100). Without it the wizard's actionDone button never renders.")
                 actSubType = "getAdjustDimmer"
-                fields = ["dimA.@N": deviceIds]
-                if (actionSpec.adjustBy != null) fields["dimAdj.@N"] = actionSpec.adjustBy
+                fields = ["dimA.@N": deviceIds, "dimAdj.@N": actionSpec.adjustBy]
                 if (actionSpec.fadeSeconds != null) fields["dimAdjR.@N"] = actionSpec.fadeSeconds
                 break
             case "fade":
                 // Fade dimmer over time (raise OR lower) — getFadeDimmer.
                 // dimFadeUp.<N>: true=Raise, false=Lower
+                if (actionSpec.targetLevel == null) throw new IllegalArgumentException("dimmer.fade requires 'targetLevel' (0-100). Without it the wizard's actionDone button never renders.")
+                if (actionSpec.minutes == null) throw new IllegalArgumentException("dimmer.fade requires 'minutes' (over how long to fade). Without it the wizard's actionDone button never renders.")
                 actSubType = "getFadeDimmer"
                 fields = ["dimFade.@N": deviceIds, "dimFadeUp.@N": (actionSpec.direction == "raise"), "dimFadeTarget.@N": actionSpec.targetLevel, "dimFadeTime.@N": actionSpec.minutes]
                 if (actionSpec.intervalSeconds != null) fields["dimFadeInterval.@N"] = actionSpec.intervalSeconds
