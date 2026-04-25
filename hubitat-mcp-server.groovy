@@ -1877,6 +1877,12 @@ Capability families and the spec fields each accepts:
     action='flash'   → flash deviceIds
     Required field: deviceIds (List of device IDs; multi-device contract automatic).
 
+  - Dimmer family (capability='dimmer', uses capability.switchLevel devices):
+    action='setLevel'  → deviceIds + level (0-100) + optional fadeSeconds
+    action='toggle'    → toggle deviceIds (turn on→off / off→on, level retained)
+    action='adjust'    → deviceIds + adjustBy (signed integer, e.g. +10 / -5)
+    Required: deviceIds, level (for setLevel), adjustBy (for adjust)
+
   More families coming online as Section 3 BAT tests expand the helper:
   Dimmer (set/toggle/adjust/per-mode/fade/start-stop), Color/CT, Lock,
   Mode, HSM, Notification, Run/Cancel/Pause Rules, Delay/Wait, etc. For
@@ -9524,8 +9530,37 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             default:
                 throw new IllegalArgumentException("Unknown switch action '${action}' — supported: on, off, toggle, flash")
         }
+    } else if (cap == "dimmer") {
+        // Dimmer family — capability.switchLevel (covers Virtual Dimmer,
+        // Z-Wave/Zigbee dimmer modules, Hue bulbs, etc).
+        // Verified live (2026-04-25): set/toggle/adjust subtypes share the
+        // same dimA.<N> device input but each writes a different actSubType.
+        // For setLevel: dimLA.<N> = level (0-100) and dimRA.<N> = fade seconds
+        // are the literal-value fields that appear after dimA is written.
+        actType = "dimmerActs"
+        switch (action) {
+            case "setLevel":
+                actSubType = "getSetDimmer"
+                fields = ["dimA.@N": deviceIds, "dimLA.@N": actionSpec.level]
+                if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
+                break
+            case "toggle":
+                actSubType = "getToggleDimmer"
+                fields = ["dimA.@N": deviceIds]
+                break
+            case "adjust":
+                // Adjust by + or - amount (RM 5.1 wire format unconfirmed —
+                // caller can use rawSettings to pin specific fields if the
+                // default mapping doesn't land what they want).
+                actSubType = "getAdjustDimmer"
+                fields = ["dimA.@N": deviceIds]
+                if (actionSpec.adjustBy != null) fields["adjLevel.@N"] = actionSpec.adjustBy
+                break
+            default:
+                throw new IllegalArgumentException("Unknown dimmer action '${action}' — supported: setLevel, toggle, adjust. Use rawSettings for not-yet-mapped subtypes (fade/perMode/RL/etc.)")
+        }
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported today: switch (on/off/toggle/flash). More families coming as Section 3 BAT tests expand the helper.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported today: switch (on/off/toggle/flash), dimmer (setLevel/toggle/adjust). More families coming as Section 3 BAT tests expand the helper. Use rawSettings={fieldName: value, ...} as escape hatch for any not-yet-mapped subtype.")
     }
 
     // Open the new-action editor.
