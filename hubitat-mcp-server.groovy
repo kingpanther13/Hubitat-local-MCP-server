@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+navmarker-bake-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addaction-fullmap-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1870,24 +1870,89 @@ Trigger index is auto-assigned (next available). The wizard's auto-finalize via 
 
 Capability families and the spec fields each accepts:
 
-  - Switch family (capability='switch'):
-    action='on'      → turn deviceIds on
-    action='off'     → turn deviceIds off
-    action='toggle'  → toggle deviceIds
-    action='flash'   → flash deviceIds
-    Required field: deviceIds (List of device IDs; multi-device contract automatic).
+  - Switch (capability='switch'):
+      action='on'/'off'/'toggle'/'flash' + deviceIds
 
-  - Dimmer family (capability='dimmer', uses capability.switchLevel devices):
-    action='setLevel'  → deviceIds + level (0-100) + optional fadeSeconds
-    action='toggle'    → toggle deviceIds (turn on→off / off→on, level retained)
-    action='adjust'    → deviceIds + adjustBy (signed integer, e.g. +10 / -5)
-    Required: deviceIds, level (for setLevel), adjustBy (for adjust)
+  - Dimmer (capability='dimmer'):
+      action='setLevel'   + deviceIds + level (0-100) + optional fadeSeconds
+      action='toggle'     + deviceIds + optional level/fadeSeconds
+      action='adjust'     + deviceIds + adjustBy (-100..100) + optional fadeSeconds
+      action='fade'       + deviceIds + targetLevel + minutes + optional intervalSeconds + direction='raise'|'lower'
+      action='stopFade'   (no fields)
+      action='startRaiseLower' + deviceIds + direction='raise'|'lower'
+      action='stopChanging'    + deviceIds
 
-  More families coming online as Section 3 BAT tests expand the helper:
-  Dimmer (set/toggle/adjust/per-mode/fade/start-stop), Color/CT, Lock,
-  Mode, HSM, Notification, Run/Cancel/Pause Rules, Delay/Wait, etc. For
-  not-yet-mapped subtypes use rawSettings as an escape hatch in the
-  meantime (or drop to the manual settings/button flow).
+  - Color (capability='color', RGBW bulbs):
+      action='setColor'    + deviceIds + colorName + optional level
+      action='toggleColor' + deviceIds + colorName + optional level
+
+  - Color Temperature (capability='colorTemp'):
+      action='setColorTemp'    + deviceIds + kelvin + optional level
+      action='toggleColorTemp' + deviceIds + kelvin + optional level
+      action='fadeColorTemp'   + deviceIds + targetKelvin + minutes + direction
+      action='stopColorTempFade'
+
+  - Lock (capability='lock'):
+      action='lock'/'unlock' + deviceIds
+
+  - Thermostat (capability='thermostat'):
+      action= (any) + deviceIds + optional mode/fanMode/heatingSetpoint/
+        coolingSetpoint/adjustHeating/adjustCooling
+
+  - Shade/blind (capability='shade'):
+      action='open'/'close'/'stop' + deviceIds
+      action='setPosition' + deviceIds + position (0-100)
+
+  - Fan (capability='fan'):
+      action='setSpeed' + deviceIds + speed (low/med/high/auto/etc.)
+      action='cycle'    + deviceIds
+
+  - Mode (capability='mode'):
+      action='setMode' + modeId (Integer) or modeName (String)
+
+  - Logging / Messaging:
+      capability='log' + message
+      capability='notification' + deviceIds + message
+      capability='httpGet'  + url
+      capability='httpPost' + url + body + optional contentType
+      capability='ping'     + ip
+
+  - Music/Sound (capability='volume'/'mute'/'chime'/'siren'):
+      capability='volume' + deviceIds + level
+      capability='mute'   + action='mute'/'unmute' + deviceIds
+      capability='chime'  + deviceIds + optional playStop/soundNumber
+      capability='siren'  + deviceIds + optional sirenAction
+
+  - Rules (capability='privateBoolean'/'runRule'/'cancelTimers'/'pauseRule'):
+      capability='privateBoolean' + ruleIds + value (Boolean)
+      capability='runRule'        + ruleIds   (run actions of named rules)
+      capability='cancelTimers'   + ruleIds   (cancel timed actions)
+      capability='pauseRule' + action='pause'/'resume' + ruleIds
+
+  - Device control:
+      capability='capture'        + deviceIds (capture state)
+      capability='restore'                      (restore captured state)
+      capability='refresh'        + deviceIds
+      capability='poll'           + deviceIds
+      capability='disableDevice'  + action='disable'/'enable' + deviceIds
+
+  - Flow control (capability='delay'/'cancelDelay'/'exitRule'/'comment'/'repeat'/'stopRepeat'):
+      capability='delay'       + hours/minutes/seconds + optional cancelable/random
+      capability='cancelDelay' (no fields)
+      capability='exitRule'    (no fields)
+      capability='comment'     + text
+      capability='repeat'      + hours/minutes/seconds + optional times + stoppable
+      capability='stopRepeat'  (no fields)
+
+NOT yet mapped (use rawSettings escape hatch with @N placeholder):
+  - per-mode switch/button subtypes (getModeSwitch/getChooseSwitch/getPushButton*/getChooseButton) — multi-step mode wizard
+  - Run Custom Action (getDefinedAction)
+  - Color/ColorTemp PerMode (getColorPerMode/getColorTempPerMode) — multi-step mode wizard
+  - Local file IO (getWriteLocalFile/getAppendLocalFile/getDeleteLocalFile)
+  - Repeat-While Expression (getWhile)
+  - Wait for Events / Wait for Expression (getWaitEvents/getWaitRule)
+  - Delay Per Mode (getDelayPerMode)
+  - Conditional IF/THEN flow (condActs/getIfThen/getCondAct)
 
 Optional fields on every spec:
   - delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>='hrs:min:sec' plus duration sub-fields
@@ -3144,7 +3209,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+navmarker-bake-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addaction-fullmap-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9531,12 +9596,6 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 throw new IllegalArgumentException("Unknown switch action '${action}' — supported: on, off, toggle, flash")
         }
     } else if (cap == "dimmer") {
-        // Dimmer family — capability.switchLevel (covers Virtual Dimmer,
-        // Z-Wave/Zigbee dimmer modules, Hue bulbs, etc).
-        // Verified live (2026-04-25): set/toggle/adjust subtypes share the
-        // same dimA.<N> device input but each writes a different actSubType.
-        // For setLevel: dimLA.<N> = level (0-100) and dimRA.<N> = fade seconds
-        // are the literal-value fields that appear after dimA is written.
         actType = "dimmerActs"
         switch (action) {
             case "setLevel":
@@ -9547,20 +9606,272 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             case "toggle":
                 actSubType = "getToggleDimmer"
                 fields = ["dimA.@N": deviceIds]
+                if (actionSpec.level != null) fields["dimLA.@N"] = actionSpec.level
+                if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
                 break
             case "adjust":
-                // Adjust by + or - amount (RM 5.1 wire format unconfirmed —
-                // caller can use rawSettings to pin specific fields if the
-                // default mapping doesn't land what they want).
                 actSubType = "getAdjustDimmer"
                 fields = ["dimA.@N": deviceIds]
-                if (actionSpec.adjustBy != null) fields["adjLevel.@N"] = actionSpec.adjustBy
+                if (actionSpec.adjustBy != null) fields["dimAdj.@N"] = actionSpec.adjustBy
+                if (actionSpec.fadeSeconds != null) fields["dimAdjR.@N"] = actionSpec.fadeSeconds
+                break
+            case "fade":
+                // Fade dimmer over time (raise OR lower) — getFadeDimmer.
+                // dimFadeUp.<N>: true=Raise, false=Lower
+                actSubType = "getFadeDimmer"
+                fields = ["dimFade.@N": deviceIds, "dimFadeUp.@N": (actionSpec.direction == "raise"), "dimFadeTarget.@N": actionSpec.targetLevel, "dimFadeTime.@N": actionSpec.minutes]
+                if (actionSpec.intervalSeconds != null) fields["dimFadeInterval.@N"] = actionSpec.intervalSeconds
+                break
+            case "stopFade":
+                actSubType = "getStopFade"; fields = [:]
+                break
+            case "startRaiseLower":
+                // dimRL.<N>: true=Raise, false=Lower
+                actSubType = "getRLDimmer"
+                fields = ["dimRL.@N": (actionSpec.direction == "raise"), "dimRaiseLower.@N": deviceIds]
+                break
+            case "stopChanging":
+                actSubType = "getStopDimmer"; fields = ["dimStop.@N": deviceIds]
                 break
             default:
-                throw new IllegalArgumentException("Unknown dimmer action '${action}' — supported: setLevel, toggle, adjust. Use rawSettings for not-yet-mapped subtypes (fade/perMode/RL/etc.)")
+                throw new IllegalArgumentException("Unknown dimmer action '${action}' — supported: setLevel, toggle, adjust, fade, stopFade, startRaiseLower, stopChanging")
         }
+    } else if (cap == "color") {
+        // Color (RGBW) family — capability.colorControl.
+        actType = "dimmerActs"
+        switch (action) {
+            case "setColor":
+                actSubType = "getSetColor"
+                fields = ["bulbs.@N": deviceIds]
+                if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
+                if (actionSpec.level != null) fields["colorLevel.@N"] = actionSpec.level
+                // For custom HSV: pass hue/saturation/level via rawSettings (colorH.<N> takes a JSON-encoded color picker value)
+                break
+            case "toggleColor":
+                actSubType = "getToggleColor"
+                fields = ["bulbsTog.@N": deviceIds]
+                if (actionSpec.colorName != null) fields["colorTog.@N"] = actionSpec.colorName
+                if (actionSpec.level != null) fields["colorTogLevel.@N"] = actionSpec.level
+                break
+            default:
+                throw new IllegalArgumentException("Unknown color action '${action}' — supported: setColor, toggleColor")
+        }
+    } else if (cap == "colorTemp") {
+        // Color temperature family — capability.colorTemperature.
+        actType = "dimmerActs"
+        switch (action) {
+            case "setColorTemp":
+                actSubType = "getSetColorTemp"
+                fields = ["ct.@N": deviceIds]
+                if (actionSpec.kelvin != null) fields["ctL.@N"] = actionSpec.kelvin
+                if (actionSpec.level != null) fields["ctLevel.@N"] = actionSpec.level
+                break
+            case "toggleColorTemp":
+                actSubType = "getToggleColorTemp"
+                fields = ["ctTog.@N": deviceIds]
+                if (actionSpec.kelvin != null) fields["ctLTog.@N"] = actionSpec.kelvin
+                if (actionSpec.level != null) fields["ctTogLevel.@N"] = actionSpec.level
+                break
+            case "fadeColorTemp":
+                actSubType = "getFadeCT"
+                fields = ["ctFade.@N": deviceIds, "ctFadeUp.@N": (actionSpec.direction == "raise"), "ctFadeTarget.@N": actionSpec.targetKelvin, "ctFadeTime.@N": actionSpec.minutes]
+                if (actionSpec.intervalSeconds != null) fields["ctFadeInterval.@N"] = actionSpec.intervalSeconds
+                if (actionSpec.changeLevel != null) fields["bothCTandL.@N"] = actionSpec.changeLevel
+                if (actionSpec.targetLevel != null) fields["ctFadeLevel.@N"] = actionSpec.targetLevel
+                break
+            case "stopColorTempFade":
+                actSubType = "getStopCTFade"; fields = [:]
+                break
+            default:
+                throw new IllegalArgumentException("Unknown colorTemp action '${action}' — supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade")
+        }
+    } else if (cap == "lock") {
+        actType = "lockActs"
+        actSubType = "getLULock"
+        switch (action) {
+            case "lock":   fields = ["lockRL.@N": true, "lockLockUnlock.@N": deviceIds]; break
+            case "unlock": fields = ["lockRL.@N": false, "lockLockUnlock.@N": deviceIds]; break
+            default: throw new IllegalArgumentException("Unknown lock action '${action}' — supported: lock, unlock")
+        }
+    } else if (cap == "thermostat") {
+        // Thermostat with optional mode, fan, heating/cooling setpoints.
+        actType = "lockActs"
+        actSubType = "getSetThermostat"
+        fields = ["thermo.@N": deviceIds]
+        if (actionSpec.mode != null)              fields["thermoMode.@N"] = actionSpec.mode
+        if (actionSpec.fanMode != null)           fields["thermoFan.@N"] = actionSpec.fanMode
+        if (actionSpec.heatingSetpoint != null)   fields["thermoSetHeat.@N"] = actionSpec.heatingSetpoint
+        if (actionSpec.adjustHeating != null)     fields["thermoAdjHeat.@N"] = actionSpec.adjustHeating
+        if (actionSpec.coolingSetpoint != null)   fields["thermoSetCool.@N"] = actionSpec.coolingSetpoint
+        if (actionSpec.adjustCooling != null)     fields["thermoAdjCool.@N"] = actionSpec.adjustCooling
+    } else if (cap == "shade") {
+        actType = "sceneActs"
+        switch (action) {
+            case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": true, "shadeOpenClose.@N": deviceIds]; break
+            case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
+            case "setPosition":
+                actSubType = "getShadePosition"
+                fields = ["shadePosition.@N": deviceIds]
+                if (actionSpec.position != null) fields["shadeLevel.@N"] = actionSpec.position
+                break
+            case "stop": actSubType = "getStopShade"; fields = ["shadeStop.@N": deviceIds]; break
+            default: throw new IllegalArgumentException("Unknown shade action '${action}' — supported: open, close, setPosition, stop")
+        }
+    } else if (cap == "fan") {
+        actType = "sceneActs"
+        switch (action) {
+            case "setSpeed":
+                actSubType = "getFanSpeed"
+                fields = ["fanDevice.@N": deviceIds]
+                if (actionSpec.speed != null) fields["fanSpeed.@N"] = actionSpec.speed
+                break
+            case "cycle":
+                actSubType = "getAdjustFan"
+                fields = ["fanAdjust.@N": deviceIds]
+                break
+            default: throw new IllegalArgumentException("Unknown fan action '${action}' — supported: setSpeed, cycle")
+        }
+    } else if (cap == "mode") {
+        actType = "modeActs"
+        actSubType = "getSetMode"
+        if (actionSpec.modeId == null && actionSpec.modeName == null) {
+            throw new IllegalArgumentException("mode action requires modeId (Integer) or modeName (String)")
+        }
+        fields = ["mode.@N": (actionSpec.modeId != null ? actionSpec.modeId : actionSpec.modeName)]
+    } else if (cap == "log") {
+        actType = "messageActs"
+        actSubType = "getLogMsg"
+        fields = ["logmsg.@N": (actionSpec.message ?: "")]
+    } else if (cap == "notification") {
+        actType = "messageActs"
+        actSubType = "getMsg"
+        fields = ["msg.@N": (actionSpec.message ?: ""), "note.@N": deviceIds]
+    } else if (cap == "httpGet") {
+        actType = "messageActs"
+        actSubType = "getHTTPGet"
+        fields = ["httper.@N": (actionSpec.url ?: "")]
+    } else if (cap == "httpPost") {
+        actType = "messageActs"
+        actSubType = "getHTTPPost"
+        fields = [
+            "httper.@N": (actionSpec.url ?: ""),
+            "httpPostBody.@N": (actionSpec.body ?: ""),
+            "httpPostType.@N": (actionSpec.contentType ?: "application/x-www-form-urlencoded")
+        ]
+    } else if (cap == "ping") {
+        actType = "messageActs"
+        actSubType = "getPingIP"
+        fields = ["pingIP.@N": (actionSpec.ip ?: "")]
+    } else if (cap == "volume") {
+        actType = "soundActs"
+        actSubType = "getSetVolume"
+        fields = ["volume.@N": deviceIds]
+        if (actionSpec.level != null) fields["volumeVal.@N"] = actionSpec.level
+    } else if (cap == "mute") {
+        actType = "soundActs"
+        actSubType = "getMuteUnmute"
+        switch (action) {
+            case "mute":   fields = ["mU.@N": true, "muteUnmute.@N": deviceIds]; break
+            case "unmute": fields = ["mU.@N": false, "muteUnmute.@N": deviceIds]; break
+            default: throw new IllegalArgumentException("Unknown mute action '${action}' — supported: mute, unmute")
+        }
+    } else if (cap == "chime") {
+        actType = "soundActs"
+        actSubType = "getChime"
+        fields = ["chime.@N": deviceIds]
+        if (actionSpec.playStop != null) fields["chimePlayStop.@N"] = actionSpec.playStop
+        if (actionSpec.soundNumber != null) fields["chimePlaySound.@N"] = actionSpec.soundNumber
+    } else if (cap == "siren") {
+        actType = "soundActs"
+        actSubType = "getSiren"
+        fields = ["siren.@N": deviceIds]
+        if (actionSpec.sirenAction != null) fields["sirenAct.@N"] = actionSpec.sirenAction
+    } else if (cap == "privateBoolean") {
+        actType = "rulesActs"
+        actSubType = "getSetPrivateBoolean"
+        fields = [
+            "pvRuleType.@N": "Rule Machine",
+            "pvTF.@N": (actionSpec.value as Boolean),
+            "privateT.@N": (actionSpec.ruleIds ?: deviceIds)
+        ]
+    } else if (cap == "runRule") {
+        actType = "rulesActs"
+        actSubType = "getRuleActions"
+        fields = [
+            "runRuleType.@N": "Rule Machine",
+            "ruleAct.@N": (actionSpec.ruleIds ?: deviceIds)
+        ]
+    } else if (cap == "cancelTimers") {
+        actType = "rulesActs"
+        actSubType = "getStopActions"
+        fields = [
+            "stopRuleType.@N": "Rule Machine",
+            "stopAct.@N": (actionSpec.ruleIds ?: deviceIds)
+        ]
+    } else if (cap == "pauseRule") {
+        actType = "rulesActs"
+        actSubType = "getPauseResumeRules"
+        switch (action) {
+            case "pause":  fields = ["pR.@N": true, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
+            case "resume": fields = ["pR.@N": false, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
+            default: throw new IllegalArgumentException("Unknown pauseRule action '${action}' — supported: pause, resume")
+        }
+    } else if (cap == "capture") {
+        actType = "deviceActs"
+        actSubType = "getCapture"
+        fields = ["capture.@N": deviceIds]
+    } else if (cap == "restore") {
+        actType = "deviceActs"
+        actSubType = "getRestore"
+        fields = [:]
+    } else if (cap == "refresh") {
+        actType = "deviceActs"
+        actSubType = "getRefreshSwitch"
+        fields = ["refresh.@N": deviceIds]
+    } else if (cap == "poll") {
+        actType = "deviceActs"
+        actSubType = "getPollSwitch"
+        fields = ["poll.@N": deviceIds]
+    } else if (cap == "disableDevice") {
+        actType = "deviceActs"
+        actSubType = "getDisable"
+        fields = ["disEn.@N": (action == "disable"), "devDisable.@N": deviceIds]
+    } else if (cap == "delay") {
+        actType = "delayActs"
+        actSubType = "getDelay"
+        fields = [:]
+        if (actionSpec.hours != null) fields["delayHour.@N"] = actionSpec.hours
+        if (actionSpec.minutes != null) fields["delayMinute.@N"] = actionSpec.minutes
+        if (actionSpec.seconds != null) fields["delaySecond.@N"] = actionSpec.seconds
+        if (actionSpec.cancelable != null) fields["cancelAct.@N"] = actionSpec.cancelable
+        if (actionSpec.random != null) fields["randomAct.@N"] = actionSpec.random
+    } else if (cap == "cancelDelay") {
+        actType = "delayActs"
+        actSubType = "getCancelDelay"
+        fields = [:]
+    } else if (cap == "exitRule") {
+        actType = "delayActs"
+        actSubType = "getExitRule"
+        fields = [:]
+    } else if (cap == "comment") {
+        actType = "delayActs"
+        actSubType = "getComment"
+        fields = ["comment.@N": (actionSpec.text ?: "")]
+    } else if (cap == "repeat") {
+        actType = "repeatActs"
+        actSubType = "getRepeat"
+        fields = [:]
+        if (actionSpec.hours != null) fields["repeatHour.@N"] = actionSpec.hours
+        if (actionSpec.minutes != null) fields["repeatMinute.@N"] = actionSpec.minutes
+        if (actionSpec.seconds != null) fields["repeatSecond.@N"] = actionSpec.seconds
+        if (actionSpec.times != null) fields["repeatN.@N"] = actionSpec.times
+        if (actionSpec.stoppable != null) fields["stopRepeat.@N"] = actionSpec.stoppable
+    } else if (cap == "stopRepeat") {
+        actType = "repeatActs"
+        actSubType = "getStopRepeat"
+        fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported today: switch (on/off/toggle/flash), dimmer (setLevel/toggle/adjust). More families coming as Section 3 BAT tests expand the helper. Use rawSettings={fieldName: value, ...} as escape hatch for any not-yet-mapped subtype.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
     }
 
     // Open the new-action editor.
