@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+scope-hoist-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addAction-actNdx-watermark-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3371,7 +3371,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+scope-hoist-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addAction-actNdx-watermark-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -10544,6 +10544,26 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // data-stateAttribute='doAct' attribute with the button name 'N' before
     // POSTing — so we mirror the post-concatenation form here.
     _rmClickAppButton(appId, "N", "doActN", "selectActions")
+
+    // Re-read the index RM actually allocated. RM keeps a high-water mark
+    // (state.actNdx) — even after clearActions deletes all actions, the
+    // next "Create New Action" click allocates idx = high_water + 1,
+    // not idx = 1. Verified live 2026-04-25: a rule that had actions
+    // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
+    // Use the schema's freshly-exposed actType.<N> as ground truth.
+    def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
+    def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
+    def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+    if (actTypeField) {
+        def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
+        if (m.matches()) {
+            def actualIdx = m[0][1] as Integer
+            if (actualIdx != idx) {
+                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) — using ${actualIdx}")
+                idx = actualIdx
+            }
+        }
+    }
 
     def applied = []
     def skipped = []
