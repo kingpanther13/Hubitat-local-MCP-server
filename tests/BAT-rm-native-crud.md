@@ -134,17 +134,27 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: AI calls `update_rm_rule(ruleId, patch={isFunction: true})`, then `get_rm_rule(ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
 
-### T305 — Set all three logging options + dValues toggle
+### T305 — Logging enum-multi: array shape MUST survive an updateRule re-init (wire-format regression guard)
 
 ```json
 {
-  "setup_prompt": "Create a scratch rule via create_rm_rule with name='BAT-RM-Logging Combo' and remember its id.",
-  "test_prompt": "Use update_rm_rule to set the rule's logging options to include all three values ['Events', 'Triggers', 'Actions'] and also enable Display Current Values (dValues=true). Read back with get_rm_rule and confirm: (a) logging contains all three entries, (b) dValues is true.",
-  "teardown_prompt": "Delete the rule via delete_rm_rule(ruleId, force=true)."
+  "setup_prompt": "Create a scratch native RM rule named 'BAT-RM-T305-LoggingShape' via create_native_app(appType='rule_machine', name='BAT-RM-T305-LoggingShape', confirm=true). Capture the returned appId.",
+  "test_prompt": "STEP 1 (write): Call update_native_app(appId=<id>, settings={logging: ['Events','Triggers','Actions'], dValues: true}, confirm=true). Verify the response shows configPageError=null and settingsApplied includes both 'logging' and 'dValues'.\n\nSTEP 2 (read-back #1, immediately after write): Call get_app_config(appId=<id>, includeSettings=true). The persisted value at settings.logging MUST be a JSON array of exactly 3 strings: ['Events','Triggers','Actions'] — NOT the single string 'Events,Triggers,Actions' (which would indicate the legacy CSV-collapse bug). Assert array length === 3 and each element matches one of the three values.\n\nSTEP 3 (force a re-init): Call update_native_app(appId=<id>, button='updateRule', confirm=true). The 'updateRule' button click is what re-runs initialize() on the rule and triggers Hubitat to re-marshal every setting from its stored form. THIS is the path the original bug only manifested through — an immediate read-back can mask a wire-format bug because the in-memory representation may still be the array we just wrote, but the next button-click re-marshals from the persisted form.\n\nSTEP 4 (read-back #2, after re-init): Call get_app_config(appId=<id>, includeSettings=true) again. settings.logging MUST STILL be the 3-element JSON array — same exact shape as STEP 2. If it has collapsed to the string 'Events,Triggers,Actions' or any other non-array form, the wire-format fix has regressed.\n\nSTEP 5 (assert no rendering damage): configPage.error MUST be null in both read-backs. statusJson can be empty for eventSubscriptions (no triggers on this rule) — that exception is fine.",
+  "teardown_prompt": "Force-delete the scratch rule: delete_native_app(appId=<id>, force=true, confirm=true). Verify subsequent get_app_config(appId=<id>) returns 404/not-found."
 }
 ```
 
-**Expected**: AI calls `update_rm_rule(ruleId, patch={logging: ['Events','Triggers','Actions'], dValues: true})`. `get_rm_rule(ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
+**Expected**: AI calls `create_native_app` → `update_native_app(settings)` → `get_app_config` (assert array shape) → `update_native_app(button='updateRule')` → `get_app_config` (assert array shape STILL holds) → `delete_native_app(force=true)`.
+
+**Pass criteria** (ALL must hold):
+- After STEP 2: `settings.logging` is an Array of 3 strings, exactly `["Events","Triggers","Actions"]` (order preserved)
+- After STEP 4: `settings.logging` is the SAME Array — must not have collapsed to a String, must not have lost or duplicated entries
+- `dValues` round-trips as `"true"` (Hubitat stores bools as stringified)
+- [INV-1] `configPage.error == null` in both read-backs
+
+**Regression guard rationale**: PR #134's commit `d276576` ("fix(rm-native): JSON-stringify enum-multi values in form POST body") fixed a real bug where `_rmBuildSettingsBody` was joining List values as CSV for both capability-multi AND enum-multi inputs. CSV works for capability-multi (Hubitat parses `"8,9"` into a device-id list) but is wrong for enum-multi (Hubitat stores the raw CSV string and downstream readers expecting List get a String back). The bug only manifested AFTER an `updateRule` button click — an immediate read-back returned the in-memory array we'd just written, masking the persistence-layer regression. **The button-click re-init in STEP 3 is the load-bearing part of this test** — without it, a regression of this exact bug class would slip past the assertions.
+
+The wire-format rules verified live (firmware 2.5.0.123): `capability.X multiple=true` → CSV (`"8,9"`) works, JSON-array errors HTTP 500. `enum multiple=true` → JSON-array (`'["X","Y"]'`) works, CSV stores as raw String after the next updateRule click. The native UI (`appUI.js:579`) JSON.stringify's any `<select multiple>` value — that's the canonical wire format for any multi-select widget. Mixing the two shapes silently corrupts the persisted form on the next button click, so a future regression of this class needs both an immediate read-back AND a post-`updateRule` read-back to be detectable.
 
 ### T306 — Full round-trip: create with many fields at once
 
