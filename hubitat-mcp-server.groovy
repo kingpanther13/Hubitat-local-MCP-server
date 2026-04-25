@@ -636,7 +636,7 @@ def getGatewayConfig() {
             tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app"],
             summaries: [
                 list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                run_rm_rule: "Trigger an RM rule (RMUtils). Args: ruleId, action (rule/actions/stop, default rule)",
+                run_rm_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
                 pause_rm_rule: "Pause an RM rule (RMUtils). Args: ruleId",
                 resume_rm_rule: "Resume a paused RM rule (RMUtils). Args: ruleId",
                 set_rm_rule_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
@@ -1708,7 +1708,7 @@ Requires Hub Admin Read.""",
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", description: "Rule ID from list_rm_rules"],
-                    action: [type: "string", enum: ["rule", "actions", "stop"], description: "Which RM action to invoke. Default: rule"]
+                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. 'rule'=runRule, 'actions'=runRuleAct, 'stop'/'start'=toggle stopRule button (routes through the RM UI button, not RMUtils, because RMUtils has no startRule verb; 'start' also resets the private boolean). Default: rule"]
                 ],
                 required: ["ruleId"]
             ]
@@ -8389,7 +8389,11 @@ private void registerRmRule(Map combined, def r, String version) {
 }
 
 /**
- * Trigger a Rule Machine rule via RMUtils.sendAction().
+ * Trigger a Rule Machine rule via RMUtils.sendAction() or the lifecycle
+ * button for stop/start (RMUtils has no startRule verb — the RM 5.1 UI
+ * uses the stopRule button as a toggle on state.stopped, and clicking
+ * it while stopped restarts the rule and resets the private boolean).
+ *
  * Not destructive — invokes existing user-configured automation.
  */
 def toolRunRmRule(args) {
@@ -8398,15 +8402,76 @@ def toolRunRmRule(args) {
     def ruleId = normalizeRuleId(args.ruleId)
     def action = args?.action ?: "rule"
 
+    // start/stop route through the stopRule button click (a toggle on
+    // state.stopped) rather than RMUtils.sendAction — verified live on
+    // firmware 2.5.0.123 that clicking stopRule when state.stopped=false
+    // sets it true (unsubscribe + cancel delays/repeats/waits) and when
+    // state.stopped=true clears it + re-runs initialize() + resets the
+    // private boolean. To keep the verb idempotent, we read state before
+    // clicking and no-op if the rule is already in the target state.
+    if (action == "stop" || action == "start") {
+        return _rmToggleStopped(ruleId, action)
+    }
+
     def rmAction
     switch (action) {
         case "rule": rmAction = "runRule"; break
         case "actions": rmAction = "runRuleAct"; break
-        case "stop": rmAction = "stopRuleAct"; break
-        default: throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', or 'stop'.")
+        default: throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
     }
 
     return sendRmAction(ruleId, rmAction, "run_rm_rule action=${action}")
+}
+
+/**
+ * Drive the RM 5.1 stopRule button — the same toggle the hub UI exposes
+ * for Stop/Start. `action` is one of "stop" or "start". Idempotent:
+ * clicking stopRule when state.stopped is already the target value would
+ * toggle it the wrong way (running -> stopped, stopped -> running), so
+ * we read state.stopped first and no-op if we're already there.
+ */
+private Map _rmToggleStopped(Integer ruleId, String action) {
+    def status
+    try {
+        status = _rmFetchStatusJson(ruleId)
+    } catch (Exception e) {
+        return [success: false, ruleId: ruleId, error: "run_rm_rule action=${action}: cannot read rule state before toggle (${e.message})"]
+    }
+    def stoppedNow = _readAppStateBoolean(status, "stopped", false)
+    def targetStopped = (action == "stop")
+    if (stoppedNow == targetStopped) {
+        return [
+            success: true,
+            ruleId: ruleId,
+            rmAction: "noop",
+            note: "Rule was already ${action == 'stop' ? 'stopped' : 'running (not stopped)'} — stopRule button not clicked."
+        ]
+    }
+    try {
+        _rmClickAppButton(ruleId, "stopRule")
+    } catch (Exception e) {
+        return [success: false, ruleId: ruleId, error: "run_rm_rule action=${action}: stopRule button click failed (${e.message})"]
+    }
+    return [
+        success: true,
+        ruleId: ruleId,
+        rmAction: (action == "stop") ? "stopRule button -> state.stopped=true" : "stopRule button -> state.stopped=false (initialize + private boolean reset)"
+    ]
+}
+
+/**
+ * Pull a named Boolean out of statusJson.appState[]. Hubitat serializes
+ * Booleans in appState entries as the real `true`/`false` value, but
+ * occasionally as the string "true"/"false" — treat both equivalently.
+ */
+private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) {
+    def entry = (status?.appState ?: []).find { it?.name == name }
+    if (entry == null) return fallback
+    def v = entry.value
+    if (v instanceof Boolean) return v
+    if (v == "true") return true
+    if (v == "false") return false
+    return fallback
 }
 
 /**
