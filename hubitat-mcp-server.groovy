@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+82743a3-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+d8c3691-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1796,13 +1796,17 @@ BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to Fi
 
 Auto-updateRule: main-page settings writes are followed by an implicit updateRule button click so initialize() re-fires. Sub-page writes (pageName=selectTriggers, selectActions, etc.) skip the auto-click so the wizard's stateAttribute (moreCond, editCond, editAct, ...) survives — commit the wizard via its own Done button (RM triggers: hasAll; RM actions: actionDone) and issue a final update_native_app(button='updateRule') to re-initialize.
 
+Wizard-Done auto-finalize: clicking hasAll on selectTriggers commits the trigger to the rule's summary row but RM 5.1 leaves a single residual `isCondTrig.<N>` ("Conditional Trigger?") prompt on the page. This tool auto-writes `isCondTrig.<N>=false` after the click to clear the prompt without consuming an extra trigger index. Reported in the response as wizardDoneAutoRetry: 'OK' / 'OK after finalize ...' / 'WARN: ...'. (Earlier versions clicked hasAll twice instead, which inadvertently allocated phantom "**Broken Trigger**" rows; the finalize-via-isCondTrig path keeps trigger indices contiguous: 1, 2, 3 instead of 1, 3, 5.)
+
 RM 5.1 trigger flow (example — adding a multi-device switch trigger):
   1. update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers') — opens the trigger editor.
   2. update_native_app(appId, settings={tCapab1: 'Switch'}, pageName='selectTriggers') — picks the capability; page re-renders with the device picker.
   3. update_native_app(appId, settings={tDev1: [<deviceId>, ...]}, pageName='selectTriggers') — writes devices (multi-device 3-field contract is automatic).
   4. update_native_app(appId, settings={tstate1: 'on'}, pageName='selectTriggers') — sets the attribute/value.
-  5. update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger.
+  5. update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger; the residual Conditional? prompt is auto-finalized.
   6. update_native_app(appId, button='updateRule') — re-initialize so subscriptions populate.
+
+Adding a second trigger uses the SAME flow with index 2 (tCapab2, tDev2, tstate2), then a third uses index 3, etc. After the auto-finalize fix the indices are sequential.
 
 Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
@@ -3057,7 +3061,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+82743a3-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+d8c3691-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -8785,6 +8789,43 @@ private boolean _rmHasWizardScaffold(Map configPage) {
 }
 
 /**
+ * After a wizard-Done button click, the trigger summary row appears
+ * but the page sometimes leaves a single `isCondTrig.<N>` input on its
+ * own — RM 5.1's "Conditional Trigger?" follow-up prompt. Returns that
+ * input name (e.g. "isCondTrig.3") if it's the ONLY trigger-edit input
+ * remaining on the page, or null otherwise. Callers use this to auto-
+ * finalize by writing `<name>=false` (the canonical "no, not
+ * conditional" answer that closes the prompt without consuming an extra
+ * trigger index, unlike a second hasAll click).
+ *
+ * Returns null if either:
+ *   - No isCondTrig.<N> input is present (nothing to finalize)
+ *   - Other editor-scaffold inputs are also present (caller hasn't
+ *     finished filling the trigger; finalizing now would commit an
+ *     incomplete trigger). The caller's higher-level scaffold check
+ *     handles that case separately.
+ */
+private String _rmFindResidualCondTrig(Map configPage) {
+    if (!(configPage?.sections instanceof List)) return null
+    def condTrigPattern = ~/^isCondTrig\.\d+$/
+    def otherScaffoldPattern = ~/^(tCapab\d+|tDev\d+|tstate\d+|AlltDev\d+|stays\d+|editAct\d+|editCond\d+)$/
+    String foundCondTrig = null
+    for (sec in configPage.sections) {
+        for (inp in (sec?.input ?: [])) {
+            def n = inp?.name?.toString()
+            if (!n) continue
+            if (condTrigPattern.matcher(n).matches()) {
+                if (foundCondTrig != null) return null  // Multiple condTrigs — not a clean finalize case
+                foundCondTrig = n
+            } else if (otherScaffoldPattern.matcher(n).matches()) {
+                return null  // Wider scaffold present — let the WARN path handle
+            }
+        }
+    }
+    return foundCondTrig
+}
+
+/**
  * Decide whether a just-clicked updateRule left an RM rule with pending
  * subscription work. Returns null if the rule has no trigger-bearing
  * settings at all (no lag to detect), otherwise returns a small map with
@@ -9464,34 +9505,41 @@ def toolUpdateNativeApp(args) {
             _rmClickAppButton(appId, button, args?.stateAttribute?.toString())
             result.buttonClicked = button
 
-            // Wizard-Done auto-retry. Verified live on firmware 2.5.0.123
-            // that the first hasAll click on the selectTriggers wizard
-            // (and analogous Done buttons on other wizard sub-pages) often
-            // returns success while leaving the editor scaffold in place —
-            // i.e. the page still shows the trigger-edit inputs (isCondTrig.N,
-            // tCapab.N, tDev.N, tstate.N, AlltDev.N, stays.N) instead of
-            // collapsing them into a committed trigger row, so subsequent
-            // updateRule fires against a half-committed trigger and produces
-            // 0 subscriptions. Reproduced with both single-device (motion)
-            // and multi-device (switch) triggers; second click of the same
-            // button always commits cleanly. To make the wizard tool-only-
-            // driveable, when the caller passes button=<wizard-Done> on a
-            // sub-page, re-fetch the page after the click and check for
-            // residual editor scaffold; if found, click the same button
-            // once more and re-verify.
+            // Wizard-Done finalize. Verified live on firmware 2.5.0.123 that
+            // the first hasAll click on the selectTriggers wizard DOES commit
+            // the trigger to the rule's summary row, but leaves a single
+            // residual `isCondTrig.<N>` input ("Conditional Trigger?") on the
+            // page asking the user to decide whether the just-committed
+            // trigger is conditional. The earlier auto-retry hack of clicking
+            // hasAll again ALSO closed that prompt, but at the cost of
+            // inadvertently allocating a phantom trigger N+1 (the second
+            // hasAll fires moreCond and creates a "**Broken Trigger**" row
+            // for an empty next-trigger slot — visible in subsequent
+            // selectTriggers fetches). Correct cleanup is to *write*
+            // `isCondTrig.<N>=false` instead, which closes the prompt
+            // without consuming a trigger index. After this fix:
+            //   - 1 hasAll click commits the trigger
+            //   - Residual isCondTrig.<N> gets auto-finalized to false
+            //   - Editor closes, no phantom trigger
+            // Multi-trigger flows (T322, etc.) now use sequential trigger
+            // indices 1, 2, 3 instead of 1, 3, 5.
             def buttonIsWizardDone = ["hasAll", "actionDone", "doneCond", "doneAct"].contains(button)
             def isSubPage = pageName && pageName != "mainPage"
             if (buttonIsWizardDone && isSubPage) {
                 def afterClickConfig
                 try { afterClickConfig = _rmFetchConfigJson(appId, pageName) } catch (Exception ignored) { afterClickConfig = null }
-                if (_rmHasWizardScaffold(afterClickConfig?.configPage)) {
-                    mcpLog("info", "rm-native", "Wizard-Done click '${button}' left editor scaffold on app ${appId} pageName=${pageName} — clicking '${button}' again to commit")
-                    _rmClickAppButton(appId, button, args?.stateAttribute?.toString())
-                    def secondCheck
-                    try { secondCheck = _rmFetchConfigJson(appId, pageName) } catch (Exception ignored) { secondCheck = null }
-                    result.wizardDoneAutoRetry = _rmHasWizardScaffold(secondCheck?.configPage) ?
-                        "WARN: wizard scaffold still present after retry — caller should call update_native_app(button='${button}') again or inspect get_app_config(pageName='${pageName}') for missing fields" :
-                        "OK after auto-retry"
+                def residualCondTrigName = _rmFindResidualCondTrig(afterClickConfig?.configPage)
+                if (residualCondTrigName) {
+                    mcpLog("info", "rm-native", "Wizard-Done click '${button}' left ${residualCondTrigName} prompt on app ${appId} — auto-finalizing with =false to avoid phantom trigger")
+                    try {
+                        def finalizeSchema = _rmCollectInputSchema(afterClickConfig?.configPage)
+                        _rmUpdateAppSettings(appId, [(residualCondTrigName): false], finalizeSchema)
+                        result.wizardDoneAutoRetry = "OK after finalize (set ${residualCondTrigName}=false to clear residual Conditional? prompt)"
+                    } catch (Exception finalizeErr) {
+                        result.wizardDoneAutoRetry = "WARN: failed to auto-finalize ${residualCondTrigName} (${finalizeErr.message}) — trigger committed but the residual Conditional? prompt is still open; call update_native_app(settings={${residualCondTrigName}: false}, pageName='${pageName}') to clear it manually"
+                    }
+                } else if (_rmHasWizardScaffold(afterClickConfig?.configPage)) {
+                    result.wizardDoneAutoRetry = "WARN: wizard scaffold still present after click — caller probably hasn't filled all required fields (capability, device, state); inspect get_app_config(pageName='${pageName}')"
                 } else {
                     result.wizardDoneAutoRetry = "OK"
                 }
