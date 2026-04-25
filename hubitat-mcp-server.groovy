@@ -2741,24 +2741,26 @@ private String findRuleAppRedirect(ruleId, String verb) {
             }
         }
 
-        // Flatten the apps[] tree to find the app instance with matching id.
-        // Reuses the same flatten-and-search pattern as toolListInstalledApps.
-        def flat = []
-        def flatten
-        flatten = { List nodes ->
-            nodes?.each { node ->
-                if (!(node instanceof Map)) return
+        // Walk the apps[] tree with an early-exit DFS to find the app instance
+        // with matching id. Avoids building a full flat list when the target
+        // is found partway through a large app tree.
+        def foundData = null
+        def findInNodes
+        findInNodes = { List nodes ->
+            for (node in nodes) {
+                if (!(node instanceof Map)) continue
                 def d = node.data
-                if (d instanceof Map) flat << d
-                def children = node.children
-                if (children instanceof List) flatten(children)
+                if (d instanceof Map && d.id?.toString() == idStr) {
+                    foundData = d
+                    return true
+                }
+                if (node.children instanceof List && findInNodes(node.children)) return true
             }
+            return false
         }
         def apps = parsed.apps
         if (!(apps instanceof List)) return null
-        flatten(apps)
-
-        def foundData = flat.find { it?.id?.toString() == idStr }
+        findInNodes(apps)
         if (!foundData) return null
 
         // Determine whether this app type is rule-like via classLocation or type string.
@@ -2775,7 +2777,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
         if (verb == "read") {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `manage_installed_apps -> get_app_config(appId=${idStr})` to read its configuration. " +
-                "`get_rule` and `export_rule` only handle MCP's own rule engine, not Hubitat built-in apps."
+                "`get_rule`, `export_rule`, and `clone_rule` only handle MCP's own rule engine, not Hubitat built-in apps."
         } else {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
