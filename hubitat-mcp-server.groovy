@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+action-mutation-tools-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+clearActions-trashAll-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3326,7 +3326,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+action-mutation-tools-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+clearActions-trashAll-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9603,15 +9603,30 @@ private void _rmDeleteAction(Integer appId, Integer actionIdx) {
 }
 
 /**
- * Delete every action on a rule. Iterates highest-to-lowest so RM's
- * row-rendering doesn't get confused by mid-iteration index shifts
- * (defensive — verified RM keeps indices stable on delete, but
- * highest-first is still the safer order). Returns the list of
- * indices that were deleted.
+ * Delete every action on a rule via the multi-delete pattern (per-row
+ * checkboxes + global trashAll). Verified live 2026-04-25:
+ *
+ *   1. Set settings[chkBox<idx>]=true for each action to delete.
+ *   2. Click button name='trashAll' stateAttribute='trash'.
+ *
+ * The per-row delAct button gets hidden by RM's render when only one
+ * action remains, so per-row iteration leaves the last action stuck.
+ * The multi-delete path (trash + chkBoxN) handles any count including
+ * deleting down to zero.
+ *
+ * Returns the list of indices that were marked for deletion.
  */
 private List _rmClearActions(Integer appId) {
-    def indices = _rmCollectActionIndices(appId).sort().reverse()
-    indices.each { idx -> _rmDeleteAction(appId, idx as Integer) }
+    def indices = _rmCollectActionIndices(appId)
+    if (!indices) return []
+    // Mark every action's checkbox.
+    def cfg = _rmFetchConfigJson(appId, "selectActions")
+    def schema = _rmCollectInputSchema(cfg?.configPage)
+    def chkSettings = [:]
+    indices.each { idx -> chkSettings["chkBox${idx}".toString()] = true }
+    if (chkSettings) _rmUpdateAppSettings(appId, chkSettings, schema)
+    // Click the global trash button.
+    _rmClickAppButton(appId, "trashAll", "trash", "selectActions")
     return indices
 }
 
@@ -11199,7 +11214,8 @@ def toolUpdateNativeApp(args) {
                 _rmMoveAction(appId, moveActionSpec.index as Integer, dir)
             }
             if (clearActionsFlag || replaceActionsList != null) {
-                removed = (removed + _rmClearActions(appId))*.toString().unique()*.toInteger()
+                def cleared = _rmClearActions(appId) ?: []
+                removed = (removed + cleared).unique()
             }
             if (replaceActionsList != null) {
                 replaceActionsList.eachWithIndex { spec, i ->
