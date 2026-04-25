@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addTrigger-conditional-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addAction-switchfamily-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1849,6 +1849,36 @@ Optional fields on every spec:
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow."""
                     ],
+                    addAction: [
+                        type: "object",
+                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally — initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
+
+Capability families and the spec fields each accepts:
+
+  - Switch family (capability='switch'):
+    action='on'      → turn deviceIds on
+    action='off'     → turn deviceIds off
+    action='toggle'  → toggle deviceIds
+    action='flash'   → flash deviceIds
+    Required field: deviceIds (List of device IDs; multi-device contract automatic).
+
+  More families coming online as Section 3 BAT tests expand the helper:
+  Dimmer (set/toggle/adjust/per-mode/fade/start-stop), Color/CT, Lock,
+  Mode, HSM, Notification, Run/Cancel/Pause Rules, Delay/Wait, etc. For
+  not-yet-mapped subtypes use rawSettings as an escape hatch in the
+  meantime (or drop to the manual settings/button flow).
+
+Optional fields on every spec:
+  - delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>='hrs:min:sec' plus duration sub-fields
+  - rawSettings { fieldName: value, ... } — escape hatch for advanced fields not yet mapped. Use the literal token '@N' anywhere in a field name to substitute the auto-assigned action index (e.g. {'flashRate.@N': 750}).
+
+Action index is auto-assigned (next available). One addAction call replaces the 6-7 calls of the manual doActPage flow.
+
+Wire-format quirks the helper handles for you (so callers don't need to know):
+  1. The 'Create New Action' button (name=N) requires stateAttribute='doActN' (concatenated), not 'doAct'. The Hubitat UI's buttonClick() handler concatenates data-stateAttribute='doAct' + button name 'N' → doActN before POSTing; sending stateAttribute='doAct' alone leaves state.doActN null and doActPage NPEs.
+  2. doActPage's schema is incremental: actionDone only appears AFTER all required type-specific fields are set. The helper re-fetches the schema before each write.
+  3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST."""
+                    ],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
@@ -3093,7 +3123,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addTrigger-conditional-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addAction-switchfamily-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9301,6 +9331,215 @@ private List _rmCollectTriggerIndices(Integer appId) {
 }
 
 /**
+ * Scan an RM rule's appSettings for actType.<N> entries and return the
+ * Set of action indices currently in use. Used by _rmAddAction to pick
+ * the next free index. Note action keys use a dot-N suffix (actType.1)
+ * vs trigger keys without (tCapab1).
+ */
+private List _rmCollectActionIndices(Integer appId) {
+    def status = _rmFetchStatusJson(appId)
+    def out = []
+    (status?.appSettings ?: []).each { s ->
+        def n = s?.name?.toString()
+        if (n) {
+            def m = (n =~ /^actType\.(\d+)$/)
+            if (m.matches()) out << (m[0][1] as Integer)
+        }
+    }
+    return out
+}
+
+/**
+ * Initialize state.actNdx by firing the selectActions page hook via an
+ * empty POST. Required after rule creation BEFORE the first N click on
+ * an empty rule — without it, doActPage errors with "Cannot invoke method
+ * startsWith() on null object" because actNdx is null. Verified live on
+ * firmware 2.5.0.123 (curl probe, 2026-04-25). Idempotent — safe to call
+ * before every addAction.
+ */
+private void _rmInitSelectActionsPage(Integer appId) {
+    def cfg
+    try { cfg = _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { return }
+    def body = [
+        id: appId.toString(),
+        formAction: "update",
+        currentPage: "selectActions",
+        pageBreadcrumbs: '["mainPage"]'
+    ]
+    def v = cfg?.app?.version
+    if (v != null) body.version = v.toString()
+    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception ignored) { /* idempotent */ }
+}
+
+/**
+ * High-level structured action creation for Rule Machine 5.1.
+ *
+ * Replaces the 6-7 wizard calls (init selectActions → click N with
+ * stateAttribute=doActN → set actType → set actSubType → set type-specific
+ * fields → wait for actionDone to appear → click actionDone) with one
+ * orchestrated call. Discovers the next action index, opens the wizard,
+ * walks the schema-aware writes, and commits via actionDone.
+ *
+ * Important wire-format quirks discovered live (2026-04-25, firmware
+ * 2.5.0.123 via Chrome DevTools + curl):
+ *
+ *   1. The "Create New Action" button (name=N) requires
+ *      stateAttribute=**doActN** — the literal concatenation of "doAct"
+ *      and the button name "N". Sending stateAttribute=doAct alone sets
+ *      state.doAct='N' but NOT state.doActN, and doActPage then errors
+ *      with "Cannot invoke method startsWith() on null object".
+ *
+ *   2. doActPage's schema is incremental: actionDone only appears AFTER
+ *      all required type-specific fields are set. _rmWriteSettingOnPage
+ *      re-fetches the schema before each write, so calling it for every
+ *      field guarantees actionDone is present by the final click.
+ *
+ *   3. selectActions' page hook initializes state.actNdx. On a freshly
+ *      created rule with zero actions, state.actNdx is null and the
+ *      doActPage renders with actType.null (broken). Fire an empty POST
+ *      to selectActions FIRST to initialize actNdx — _rmInitSelectActionsPage
+ *      handles this idempotently.
+ *
+ * Capability families and the spec fields each accepts:
+ *
+ *   Switch family — capability=switch:
+ *     action='on'      → onOffSwitch.<N>=devices, onOff.<N>=true
+ *     action='off'     → onOffSwitch.<N>=devices, onOff.<N>=false
+ *     action='toggle'  → toggleSwitch.<N>=devices
+ *     action='flash'   → flashSwitch.<N>=devices
+ *
+ * Optional modifier fields on every spec:
+ *   delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>=
+ *     'hrs:min:sec' + duration sub-fields
+ *   rawSettings { fieldName: value } — escape hatch (use @N as a literal
+ *     placeholder in the field name to substitute the action index)
+ *
+ * The caller is expected to issue update_native_app(button='updateRule')
+ * after adding all actions to fire initialize() and bake the actions
+ * map. _rmAddAction does NOT fire updateRule itself, so multi-action
+ * rules avoid N redundant re-inits.
+ *
+ * Returns: [success, actionIndex, capability, action, settingsApplied,
+ * configPageError]
+ */
+private Map _rmAddAction(Integer appId, Map actionSpec) {
+    if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
+    def cap = actionSpec.capability?.toString()?.trim()
+    def action = actionSpec.action?.toString()?.trim()
+    if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch')")
+    if (!action) throw new IllegalArgumentException("addAction.action is required (e.g. 'on', 'off', 'toggle', 'flash')")
+
+    // Initialize state.actNdx if this is the first action on the rule
+    // — avoids the doActPage 'startsWith on null' error on empty rules.
+    _rmInitSelectActionsPage(appId)
+
+    // Discover next action index by scanning existing actType.<N> settings.
+    def existing = _rmCollectActionIndices(appId)
+    def idx = (existing ? existing.max() + 1 : 1)
+
+    // Map (capability, action) → (actType, actSubType, fields)
+    def actType = null
+    def actSubType = null
+    def fields = [:]  // key: field name with @N placeholder, value: the value
+    def deviceIds = actionSpec.deviceIds
+
+    if (cap == "switch") {
+        actType = "switchActs"
+        switch (action) {
+            case "on":
+                actSubType = "getOnOffSwitch"
+                fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": true]
+                break
+            case "off":
+                actSubType = "getOnOffSwitch"
+                fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": false]
+                break
+            case "toggle":
+                actSubType = "getToggleSwitch"
+                fields = ["toggleSwitch.@N": deviceIds]
+                break
+            case "flash":
+                actSubType = "getFlashSwitch"
+                fields = ["flashSwitch.@N": deviceIds]
+                break
+            default:
+                throw new IllegalArgumentException("Unknown switch action '${action}' — supported: on, off, toggle, flash")
+        }
+    } else {
+        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported today: switch (on/off/toggle/flash). More families coming as Section 3 BAT tests expand the helper.")
+    }
+
+    // Open the new-action editor.
+    // CRITICAL: stateAttribute must be 'doActN' (concatenated), not 'doAct'.
+    // Verified live: stateAttribute=doAct sets state.doAct='N' which leaves
+    // state.doActN null, and doActPage's renderer NPEs with startsWith on
+    // null. The Hubitat UI's buttonClick(this) handler concatenates the
+    // data-stateAttribute='doAct' attribute with the button name 'N' before
+    // POSTing — so we mirror the post-concatenation form here.
+    _rmClickAppButton(appId, "N", "doActN", "selectActions")
+
+    def applied = []
+
+    // Set actType + actSubType. Each write re-fetches the schema, so the
+    // subsequent fields appear as the wizard expands.
+    _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied)
+    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied)
+
+    // Type-specific fields. The @N placeholder in keys is substituted with
+    // the action index here.
+    fields.each { rawKey, value ->
+        if (value != null) {
+            def fieldName = rawKey.toString().replace("@N", idx.toString())
+            _rmWriteSettingOnPage(appId, "doActPage", fieldName, value, applied)
+        }
+    }
+
+    // Optional Delay? modifier — delayAct.<N>='hrs:min:sec' triggers
+    // additional schema fields for hrs/min/sec/cancelable.
+    if (actionSpec.delay instanceof Map) {
+        def d = actionSpec.delay as Map
+        _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied)
+        // Schema fields for the delay component appear after delayAct is
+        // set; _rmWriteSettingOnPage no-ops on missing keys, so callers
+        // can include any subset.
+        if (d.hours != null) _rmWriteSettingOnPage(appId, "doActPage", "delayHrs.${idx}", d.hours, applied)
+        if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMins.${idx}", d.minutes, applied)
+        if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySecs.${idx}", d.seconds, applied)
+        if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelable.${idx}", d.cancelable, applied)
+    }
+
+    // Caller escape hatch.
+    if (actionSpec.rawSettings instanceof Map) {
+        actionSpec.rawSettings.each { k, v ->
+            if (v != null) {
+                def fieldName = k.toString().replace("@N", idx.toString())
+                _rmWriteSettingOnPage(appId, "doActPage", fieldName, v, applied)
+            }
+        }
+    }
+
+    // Click actionDone (with form context) to commit. By now the schema
+    // has settled and actionDone is present.
+    _rmClickAppButton(appId, "actionDone", null, "doActPage")
+
+    // Final config-error check.
+    def finalConfig
+    try { finalConfig = _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { finalConfig = null }
+    def err = finalConfig?.configPage?.error
+
+    return [
+        success: !err,
+        actionIndex: idx,
+        capability: cap,
+        action: action,
+        actType: actType,
+        actSubType: actSubType,
+        settingsApplied: applied,
+        configPageError: err
+    ]
+}
+
+/**
  * Build a fresh condition for a conditional trigger. Drives the condition
  * sub-wizard inside selectTriggers: isCondTrig.<N>=true → condTrig.<N>="a"
  * (new condition) → walk rCapab_<N> / rDev_<N> / state_<N> / not<N>
@@ -9841,13 +10080,15 @@ def toolUpdateNativeApp(args) {
     def settingsMap = args?.settings instanceof Map ? args.settings : null
     def button = args?.button?.toString()?.trim() ?: null
     def addTriggerSpec = args?.addTrigger instanceof Map ? args.addTrigger : null
-    if (!settingsMap && !button && !addTriggerSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), or 'addTrigger' (Map) — none provided.")
+    def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
+    if (!settingsMap && !button && !addTriggerSpec && !addActionSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), or 'addAction' (Map) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
     // restore channel if anything downstream goes wrong.
-    def backup = _rmBackupRuleSnapshot(appId, button ? "pre-button-${button}" : (addTriggerSpec ? "pre-addTrigger" : "pre-update"))
+    def backupReason = button ? "pre-button-${button}" : (addTriggerSpec ? "pre-addTrigger" : (addActionSpec ? "pre-addAction" : "pre-update"))
+    def backup = _rmBackupRuleSnapshot(appId, backupReason)
 
     if (addTriggerSpec) {
         // High-level structured trigger creation. Replaces the 6-8 wizard
@@ -9875,6 +10116,40 @@ def toolUpdateNativeApp(args) {
             settingsApplied: trigResult?.settingsApplied,
             configPageError: trigResult?.configPageError,
             note: "Trigger added. Call update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions."
+        ]
+    }
+
+    if (addActionSpec) {
+        // High-level structured action creation. Mirrors addTrigger:
+        // replaces the 6-7 wizard calls of the manual doActPage flow
+        // with one orchestrated call. After the helper commits, the
+        // caller still issues update_native_app(button='updateRule') to
+        // bake the actions[] map.
+        def actResult
+        try {
+            actResult = _rmAddAction(appId, addActionSpec)
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "addAction failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
+        return [
+            success: actResult?.success != false,
+            appId: appId,
+            backup: backup,
+            actionIndex: actResult?.actionIndex,
+            capability: actResult?.capability,
+            action: actResult?.action,
+            actType: actResult?.actType,
+            actSubType: actResult?.actSubType,
+            settingsApplied: actResult?.settingsApplied,
+            configPageError: actResult?.configPageError,
+            note: "Action added. Call update_native_app(button='updateRule') after adding all actions to fire initialize() and bake the actions[] map."
         ]
     }
 
