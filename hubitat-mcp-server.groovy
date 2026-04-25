@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+74ab17e-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+82743a3-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3057,7 +3057,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+9125622-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+82743a3-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -8752,6 +8752,39 @@ private Map _appTypeRegistry() {
 }
 
 /**
+ * Detect whether the given configPage still carries an open RM-style
+ * wizard editor scaffold (any input whose name matches the well-known
+ * trigger/condition/action edit-scaffold patterns). Used by
+ * update_native_app to decide whether a wizard-Done button (`hasAll`,
+ * `actionDone`, ...) actually closed the editor or whether it needs a
+ * second click to commit. Verified live on firmware 2.5.0.123: the
+ * first wizard-Done click frequently leaves the scaffold in place and
+ * a second click of the same button finalizes the commit.
+ *
+ * Patterns recognized:
+ *   isCondTrig.<N>   trigger-N "is conditional?" toggle (always present
+ *                    while a trigger row is open for editing)
+ *   tCapab<N>        trigger-N capability picker
+ *   tDev<N>          trigger-N device picker
+ *   tstate<N>        trigger-N state value
+ *   AlltDev<N>       trigger-N "all of these?" toggle
+ *   stays<N>         trigger-N "and stays?" toggle
+ *   editAct<N>       action-N edit scaffold
+ *   editCond<N>      condition-N edit scaffold
+ */
+private boolean _rmHasWizardScaffold(Map configPage) {
+    if (!(configPage?.sections instanceof List)) return false
+    def scaffoldPattern = ~/^(isCondTrig\.\d+|tCapab\d+|tDev\d+|tstate\d+|AlltDev\d+|stays\d+|editAct\d+|editCond\d+)$/
+    for (sec in configPage.sections) {
+        for (inp in (sec?.input ?: [])) {
+            def n = inp?.name?.toString()
+            if (n && scaffoldPattern.matcher(n).matches()) return true
+        }
+    }
+    return false
+}
+
+/**
  * Decide whether a just-clicked updateRule left an RM rule with pending
  * subscription work. Returns null if the rule has no trigger-bearing
  * settings at all (no lag to detect), otherwise returns a small map with
@@ -9430,6 +9463,39 @@ def toolUpdateNativeApp(args) {
         if (button) {
             _rmClickAppButton(appId, button, args?.stateAttribute?.toString())
             result.buttonClicked = button
+
+            // Wizard-Done auto-retry. Verified live on firmware 2.5.0.123
+            // that the first hasAll click on the selectTriggers wizard
+            // (and analogous Done buttons on other wizard sub-pages) often
+            // returns success while leaving the editor scaffold in place —
+            // i.e. the page still shows the trigger-edit inputs (isCondTrig.N,
+            // tCapab.N, tDev.N, tstate.N, AlltDev.N, stays.N) instead of
+            // collapsing them into a committed trigger row, so subsequent
+            // updateRule fires against a half-committed trigger and produces
+            // 0 subscriptions. Reproduced with both single-device (motion)
+            // and multi-device (switch) triggers; second click of the same
+            // button always commits cleanly. To make the wizard tool-only-
+            // driveable, when the caller passes button=<wizard-Done> on a
+            // sub-page, re-fetch the page after the click and check for
+            // residual editor scaffold; if found, click the same button
+            // once more and re-verify.
+            def buttonIsWizardDone = ["hasAll", "actionDone", "doneCond", "doneAct"].contains(button)
+            def isSubPage = pageName && pageName != "mainPage"
+            if (buttonIsWizardDone && isSubPage) {
+                def afterClickConfig
+                try { afterClickConfig = _rmFetchConfigJson(appId, pageName) } catch (Exception ignored) { afterClickConfig = null }
+                if (_rmHasWizardScaffold(afterClickConfig?.configPage)) {
+                    mcpLog("info", "rm-native", "Wizard-Done click '${button}' left editor scaffold on app ${appId} pageName=${pageName} — clicking '${button}' again to commit")
+                    _rmClickAppButton(appId, button, args?.stateAttribute?.toString())
+                    def secondCheck
+                    try { secondCheck = _rmFetchConfigJson(appId, pageName) } catch (Exception ignored) { secondCheck = null }
+                    result.wizardDoneAutoRetry = _rmHasWizardScaffold(secondCheck?.configPage) ?
+                        "WARN: wizard scaffold still present after retry — caller should call update_native_app(button='${button}') again or inspect get_app_config(pageName='${pageName}') for missing fields" :
+                        "OK after auto-retry"
+                } else {
+                    result.wizardDoneAutoRetry = "OK"
+                }
+            }
         }
 
         // Final verification: the config page's error field is null on
