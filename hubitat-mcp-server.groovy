@@ -167,6 +167,9 @@ def mainPage() {
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
                   description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_list_rules, custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
+            input "useGateways", "bool", title: "Consolidate tools behind category gateways",
+                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and search_tools is hidden. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer.",
+                  defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -824,9 +827,9 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     return executeTool(toolName, safeArgs)
 }
 
-// Returns tool definitions visible to the MCP client. Default: 22 core tools + 11 gateway
+// Returns tool definitions visible to the MCP client. Default: 22 core tools + gateway
 // entries. When useGateways is explicitly false, every tool is advertised individually
-// (~82 entries) and search_tools is dropped — it only helps navigate gateway-hidden tools.
+// and search_tools is dropped — it only helps navigate gateway-hidden tools.
 //
 // Toggle-based hides (apply in BOTH flat and gateway modes — when a feature toggle is off,
 // its tools are completely REMOVED from tools/list, not just gated at call time):
@@ -840,6 +843,9 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 //     hidden:  custom_create_rule, custom_delete_rule, custom_export_rule,
 //              custom_import_rule, custom_clone_rule
 //   enableCustomRuleEngine=true → all 10 custom_* tools shown (full mode)
+//   useGateways=false → tools/list is flat (every tool individually) and search_tools is hidden.
+//                        Null (never saved) means existing installs keep gateway behavior; only
+//                        an explicit false flips to flat mode.
 def getToolDefinitions() {
     def builtinAppOn = settings.enableBuiltinApp == true
     def customEngineOn = settings.enableCustomRuleEngine == true
