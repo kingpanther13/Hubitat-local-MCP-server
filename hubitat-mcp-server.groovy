@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+clone-location-regex-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+condTrig-late-bind-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3371,7 +3371,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+clone-location-regex-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+condTrig-late-bind-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9442,13 +9442,14 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (conditionSpec) {
         conditionId = _rmBuildCondition(appId, idx, conditionSpec, applied)
         // The condition wizard advanced the trigger index by one, so the
-        // actual conditional trigger now lives at idx+1.
+        // actual conditional trigger now lives at idx+1. The isCondTrig
+        // and condTrig writes are deferred to the post-tCapab finalize
+        // block below — verified live 2026-04-25 that schema doesn't
+        // expose isCondTrig.<idx+1>/condTrig.<idx+1> until tCapab<idx+1>
+        // is set + tDev<idx+1>/tstate<idx+1> populated. Writing them
+        // early gets silently dropped (settingsSkipped reveals
+        // available=[cancelCapab, isCondTrig.<old>, tCapab<new>]).
         idx = idx + 1
-        // Re-open the trigger editor for the new index. Toggle isCondTrig
-        // back on (Done-with-Condition resets the toggle) and bind the
-        // condition we just saved by its ID.
-        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied, null, skipped)
-        _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", conditionId.toString(), applied, null, skipped)
     }
 
     // Normalize capability to the canonical case Hubitat's enum expects.
@@ -9566,6 +9567,14 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def condValue = (conditionSpec != null) || (triggerSpec.conditional == true)
     try {
         _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", condValue, applied, null, skipped)
+        // When a condition was built, bind it to this trigger via condTrig.<idx>.
+        // This must come AFTER isCondTrig.<idx>=true exposes condTrig.<idx>.
+        // Verified live 2026-04-25: writing condTrig.<idx> earlier fails
+        // (settingsSkipped: not_in_schema). Putting both writes here in order
+        // is the corrected sequence vs the earlier early-write design.
+        if (conditionId != null) {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", conditionId.toString(), applied, null, skipped)
+        }
     } catch (Exception ignored) {
         // Best-effort: if the prompt isn't there (clean exit), the schema
         // check inside _rmWriteSettingOnPage skips it.
