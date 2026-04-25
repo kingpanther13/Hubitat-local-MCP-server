@@ -321,11 +321,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateNativeApp([appId: 100, button: "updateRule", confirm: true])
 
-        then:
-        result.success == true  // write itself succeeded
+        then: "success=false when health check sees the configPage.error — fail-loud so the LLM sees the broken state"
+        result.success == false
         result.configPageError?.contains("'size'")
         result.warning?.contains("rendering error")
         result.restoreHint?.contains("restore_item_backup")
+        result.health?.ok == false
+        result.health?.configPageError?.contains("'size'")
     }
 
     def "update_rm_rule button mode clicks without writing settings"() {
