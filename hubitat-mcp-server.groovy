@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+condTrig-late-bind-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+walkstep-primitive-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1942,6 +1942,30 @@ Trigger index is auto-assigned (next available). The wizard's auto-finalize via 
                         type: "object",
                         description: "Move a single action up or down by one slot. Pass {index: <N>, direction: 'up'|'down'}. For arbitrary reorders, prefer replaceActions with the new order — that's a single atomic operation."
                     ],
+                    walkStep: [
+                        type: "object",
+                        description: """Schema-aware single-step wizard walker. Use this when the high-level addAction/addTrigger helpers don't cover the capability you need (e.g. Periodic Schedule sub-pages, conditional trigger binding, IF/THEN/ELSE flow control, RM features added in a later firmware). Each call performs one operation on one wizard page and returns a structured snapshot — schema before/after, schema diff (which inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, list-count change for actions/triggers (disambiguates 'committed' from 'broke and lost the row'), full health check.
+
+Spec shape:
+  {
+    page: <page name>,           // e.g. "selectTriggers", "selectActions", "doActPage", "mainPage", "periodic"
+    operation: "introspect" | "write" | "click" | "navigate",
+    write?: {<schemaFieldName>: <value>},          // exactly one key per call
+    click?: {name: <btnName>, stateAttribute?},    // for buttons / hrefs
+    navigate?: {targetPage: <page>},               // form-submit page transition
+    validateEnum?: <bool>                          // when true, reject writes whose value isn't in the input's options list
+  }
+
+Recommended driving loop for an LLM:
+  1. operation:"introspect" to see what fields the page exposes
+  2. Pick the next required field; for enums echo back an option you actually saw
+  3. operation:"write" with that one field
+  4. Inspect diff.appeared / valueEcho.match / silentRejection in the response
+  5. Repeat until schema exposes a commit button (actionDone / hasAll), then operation:"click" it
+  6. operation:"navigate" if a sub-page href is exposed and you need to enter it
+
+Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response — these are the fail-loud signals."""
+                    ],
                     addAction: [
                         type: "object",
                         description: """Add a Rule Machine ACTION to the rule via the high-level structured API. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally — initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
@@ -3371,7 +3395,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+condTrig-late-bind-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+walkstep-primitive-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -10931,6 +10955,251 @@ private Map _rmCheckRuleHealth(Integer appId) {
     ]
 }
 
+/**
+ * Strip a configPage's schema down to the fields an LLM caller actually
+ * needs to drive the wizard. Drops sandbox-blocked HTML, layout hints,
+ * and other noise that bloats responses without adding decision-making
+ * value.
+ *
+ * Returns a list of {name, type, title, multiple, required, options,
+ * currentValue} for each input the page exposes, plus {hrefs} for any
+ * navigation links pointing at sub-pages.
+ */
+private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
+    def inputs = []
+    def hrefs = []
+    def hasActionDone = false
+    def hasHasAll = false
+    def hasCancel = false
+    for (s in (configPage?.sections ?: [])) {
+        for (i in (s?.input ?: [])) {
+            if (!(i instanceof Map) || !i.name) continue
+            def name = i.name.toString()
+            def entry = [
+                name: name,
+                type: i.type?.toString(),
+                title: (i.title?.toString() ?: "").take(80),
+                multiple: i.multiple == true,
+                required: i.required == true
+            ]
+            if (i.options != null) {
+                // Enum options can be list of strings or list of single-key maps.
+                // Surface as a flat list of {value, label} pairs for clarity.
+                def opts = []
+                (i.options as List).each { o ->
+                    if (o instanceof Map && !o.isEmpty()) {
+                        def k = o.keySet().iterator().next()
+                        opts << [value: k.toString(), label: o[k]?.toString()]
+                    } else {
+                        opts << [value: o?.toString(), label: o?.toString()]
+                    }
+                }
+                entry.options = opts
+            }
+            if (liveSettings != null && liveSettings.containsKey(name)) {
+                entry.currentValue = liveSettings[name]
+            }
+            inputs << entry
+            if (i.type == "button") {
+                if (name == "actionDone") hasActionDone = true
+                if (name == "hasAll") hasHasAll = true
+                if (name?.toLowerCase()?.contains("cancel")) hasCancel = true
+            }
+        }
+        for (b in (s?.body ?: [])) {
+            if (b instanceof Map && b.element == "href" && b.page) {
+                hrefs << [
+                    name: b.name?.toString(),
+                    title: b.title?.toString(),
+                    targetPage: b.page?.toString(),
+                    params: b.params
+                ]
+            }
+        }
+    }
+    return [
+        inputs: inputs,
+        hrefs: hrefs,
+        commitButtons: [
+            actionDone: hasActionDone,
+            hasAll: hasHasAll,
+            cancel: hasCancel
+        ]
+    ]
+}
+
+/**
+ * walkStep — single-step wizard introspection + write/click/navigate.
+ *
+ * Designed for LLM-driven dynamic wizard walking. Each call performs at
+ * most ONE operation and returns a structured snapshot of how the page
+ * changed: schema diff (inputs that appeared/disappeared/changed), the
+ * stored-value echo for any write (catches enum case normalization +
+ * coercion that the schema wouldn't reveal), sub-page hrefs with their
+ * target page, list-count change for actions/triggers (disambiguates
+ * "wizard committed cleanly" from "schema went empty because the rule
+ * is broken"), and a full health check.
+ *
+ * Spec shape:
+ *   { page: <pageName>,
+ *     operation: "introspect" | "write" | "click" | "navigate",
+ *     write?: {<key>: <value>},
+ *     click?: {name, stateAttribute?},
+ *     navigate?: {targetPage},
+ *     validateEnum?: bool   // if true, reject writes whose value
+ *                           // isn't in the input's options list
+ *   }
+ *
+ * For "introspect" the call only fetches the schema — no mutation. The
+ * `before` snapshot is the same as `after` and `diff` is empty.
+ */
+private Map _rmWalkStep(Integer appId, Map spec) {
+    def page = spec?.page?.toString()?.trim()
+    if (!page) throw new IllegalArgumentException("walkStep.page is required (e.g. 'selectTriggers', 'selectActions', 'doActPage', 'mainPage', 'periodic')")
+    if (!page.matches(/[A-Za-z0-9_]+/)) throw new IllegalArgumentException("walkStep.page must be alphanumeric/underscore")
+    def operation = spec?.operation?.toString()?.trim() ?: "introspect"
+    def validateEnum = spec?.validateEnum == true
+
+    // Capture BEFORE state.
+    def beforeCfg = _rmFetchConfigJson(appId, page)
+    def beforeStatus = _rmFetchStatusJson(appId)
+    def beforeSettings = (beforeStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    def beforeSchema = _rmCollectWalkSchema(beforeCfg?.configPage, beforeSettings)
+    def beforeActionCount = _rmCollectActionIndices(appId).size()
+    def beforeTriggerCount = _rmCollectTriggerIndices(appId).size()
+
+    def opResult = [:]
+    def writtenKey = null
+    def writtenValue = null
+
+    if (operation == "introspect") {
+        // No mutation — just return the schema snapshot.
+    } else if (operation == "write") {
+        if (!(spec?.write instanceof Map) || ((Map) spec.write).isEmpty()) {
+            throw new IllegalArgumentException("walkStep operation='write' requires write={<key>: <value>}")
+        }
+        def writeMap = spec.write as Map
+        if (writeMap.size() != 1) throw new IllegalArgumentException("walkStep.write should contain exactly one key — call once per field for clean schema-diff signals")
+        writtenKey = writeMap.keySet().iterator().next().toString()
+        writtenValue = writeMap[writtenKey]
+        // Validate against schema if asked.
+        def schemaInput = beforeSchema.inputs.find { it.name == writtenKey }
+        if (!schemaInput) {
+            opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${beforeSchema.inputs.collect { it.name }}. The write will be attempted but the hub may silently drop it."
+        }
+        if (validateEnum && schemaInput?.options) {
+            def validValues = schemaInput.options.collect { it.value?.toString() }
+            def writtenStr = writtenValue?.toString()
+            // For multi-enum, value may be a list — check each.
+            def values = (writtenValue instanceof List) ? writtenValue.collect { it?.toString() } : [writtenStr]
+            def invalid = values.findAll { v -> v != null && !validValues.contains(v) }
+            if (invalid) {
+                throw new IllegalArgumentException("walkStep.write enum validation failed: value(s) ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
+            }
+        }
+        // Build the schema map _rmUpdateAppSettings expects.
+        def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
+        _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap)
+        opResult.wrote = [(writtenKey): writtenValue]
+    } else if (operation == "click") {
+        if (!(spec?.click instanceof Map) || !spec.click.name) {
+            throw new IllegalArgumentException("walkStep operation='click' requires click={name, stateAttribute?}")
+        }
+        def btnName = spec.click.name?.toString()
+        def stateAttr = spec.click.stateAttribute?.toString()
+        _rmClickAppButton(appId, btnName, stateAttr, page)
+        opResult.clicked = [name: btnName, stateAttribute: stateAttr]
+    } else if (operation == "navigate") {
+        def target = spec?.navigate?.targetPage?.toString()
+        if (!target) throw new IllegalArgumentException("walkStep operation='navigate' requires navigate={targetPage}")
+        _rmNavigateToPage(appId, page, target)
+        opResult.navigated = [from: page, to: target]
+        // After navigation the schema lives at the target page, not the source.
+        page = target
+    } else {
+        throw new IllegalArgumentException("walkStep.operation must be 'introspect', 'write', 'click', or 'navigate'; got '${operation}'")
+    }
+
+    // Capture AFTER state.
+    def afterCfg = _rmFetchConfigJson(appId, page)
+    def afterStatus = _rmFetchStatusJson(appId)
+    def afterSettings = (afterStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    def afterSchema = _rmCollectWalkSchema(afterCfg?.configPage, afterSettings)
+    def afterActionCount = _rmCollectActionIndices(appId).size()
+    def afterTriggerCount = _rmCollectTriggerIndices(appId).size()
+
+    // Schema diff.
+    def beforeNames = beforeSchema.inputs.collect { it.name } as Set
+    def afterNames = afterSchema.inputs.collect { it.name } as Set
+    def appeared = (afterNames - beforeNames).toList().sort()
+    def disappeared = (beforeNames - afterNames).toList().sort()
+
+    // Value-echo: did the write survive the round-trip with the same value?
+    // Catches enum case normalization, multiple-flag coercion, anything
+    // hub does silently between accepting and storing the write.
+    def valueEcho = null
+    if (writtenKey != null) {
+        def storedValue = afterSettings[writtenKey]
+        // Normalize comparison — both serialized to strings.
+        def writtenStr = writtenValue instanceof List
+            ? writtenValue.collect { it?.toString() }.join(",")
+            : (writtenValue?.toString() ?: "")
+        def storedStr = storedValue instanceof Map
+            ? storedValue.keySet().toList().join(",")
+            : (storedValue instanceof List ? storedValue.join(",") : (storedValue?.toString() ?: ""))
+        valueEcho = [
+            key: writtenKey,
+            written: writtenValue,
+            stored: storedValue,
+            match: writtenStr == storedStr
+        ]
+        if (!valueEcho.match) {
+            valueEcho.note = "Stored value differs from written value — hub may have normalized case, coerced type, or rejected silently. Inspect 'stored' to see what RM has."
+        }
+    }
+
+    // Disambiguate "schema empty after click = wizard committed" vs
+    // "schema empty = wizard broke and dropped the trigger/action".
+    def commitSignal = null
+    if (afterSchema.inputs.isEmpty() && (operation == "click" || operation == "navigate")) {
+        if (afterActionCount > beforeActionCount) {
+            commitSignal = "action_committed"
+        } else if (afterTriggerCount > beforeTriggerCount) {
+            commitSignal = "trigger_committed"
+        } else if (afterActionCount == beforeActionCount && afterTriggerCount == beforeTriggerCount) {
+            commitSignal = "schema_empty_no_commit_check_health"
+        }
+    }
+
+    def health = _rmCheckRuleHealth(appId)
+    def silentRejection = (operation == "write") &&
+        appeared.isEmpty() && disappeared.isEmpty() &&
+        valueEcho?.match == false
+
+    return [
+        success: health.ok && (operation != "write" || (valueEcho?.match != false)),
+        page: page,
+        operation: operation,
+        before: beforeSchema,
+        after: afterSchema,
+        diff: [
+            appeared: appeared,
+            disappeared: disappeared
+        ],
+        opResult: opResult,
+        valueEcho: valueEcho,
+        listCounts: [
+            beforeActions: beforeActionCount,
+            afterActions: afterActionCount,
+            beforeTriggers: beforeTriggerCount,
+            afterTriggers: afterTriggerCount
+        ],
+        commitSignal: commitSignal,
+        silentRejection: silentRejection,
+        health: health
+    ]
+}
+
 private Map _rmCollectInputSchema(Map configPage) {
     def schema = [:]
     for (s in (configPage?.sections ?: [])) {
@@ -11365,9 +11634,10 @@ def toolUpdateNativeApp(args) {
     def clearActionsFlag = args?.clearActions == true
     def replaceActionsList = args?.replaceActions instanceof List ? (args.replaceActions as List) : null
     def moveActionSpec = args?.moveAction instanceof Map ? args.moveAction : null
+    def walkStepSpec = args?.walkStep instanceof Map ? args.walkStep : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
-            && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), or 'moveAction' ({index:N, direction:up|down}) — none provided.")
+            && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -11380,8 +11650,36 @@ def toolUpdateNativeApp(args) {
         (removeActionSpec ? "pre-removeAction" :
         (clearActionsFlag ? "pre-clearActions" :
         (replaceActionsList != null ? "pre-replaceActions" :
-        (moveActionSpec ? "pre-moveAction" : "pre-update"))))))))
+        (moveActionSpec ? "pre-moveAction" :
+        (walkStepSpec ? "pre-walkStep" : "pre-update")))))))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
+
+    // walkStep — schema-aware single-step wizard walker. Lets a caller
+    // (typically an LLM) drive any RM wizard page dynamically: introspect
+    // the current schema, perform one operation (write/click/navigate),
+    // and see the schema diff + value-echo + health check + sub-page
+    // links surfaced in the response. The hardcoded addAction/addTrigger
+    // helpers stay as fast paths for common shapes; walkStep is the
+    // escape hatch for anything they don't handle (Periodic Schedule
+    // sub-pages, conditional trigger binding, IF/THEN/ELSE flow control,
+    // not-yet-mapped capability handlers, future RM features).
+    if (walkStepSpec) {
+        try {
+            def result = _rmWalkStep(appId, walkStepSpec)
+            result.appId = appId
+            result.backup = backup
+            return result
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "walkStep failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
+    }
 
     // Action mutation paths — single delete, clear-all, replace-all, move.
     // All re-fire updateRule at the end so actions[] map and subscriptions
