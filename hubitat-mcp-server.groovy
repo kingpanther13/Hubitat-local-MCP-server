@@ -9557,7 +9557,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch')")
-    if (!action) throw new IllegalArgumentException("addAction.action is required (e.g. 'on', 'off', 'toggle', 'flash')")
+    // 'action' is required only for capabilities that have multiple action
+    // variants (e.g. switch needs on/off/toggle/flash). Single-action
+    // capabilities (log, mode, delay, comment, exitRule, capture, restore,
+    // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
+    // action — each capability's branch validates as needed.
 
     // Initialize state.actNdx if this is the first action on the rule
     // — avoids the doActPage 'startsWith on null' error on empty rules.
