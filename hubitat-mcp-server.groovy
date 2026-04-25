@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+clearActions-trashAll-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+clearActions-trashActs-enum-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3326,7 +3326,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+clearActions-trashAll-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+clearActions-trashActs-enum-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9603,30 +9603,39 @@ private void _rmDeleteAction(Integer appId, Integer actionIdx) {
 }
 
 /**
- * Delete every action on a rule via the multi-delete pattern (per-row
- * checkboxes + global trashAll). Verified live 2026-04-25:
+ * Delete every action on a rule via the trashAll → trashActs flow.
+ * Verified live 2026-04-25:
  *
- *   1. Set settings[chkBox<idx>]=true for each action to delete.
- *   2. Click button name='trashAll' stateAttribute='trash'.
+ *   1. Click button name='trashAll' stateAttribute='trash'. RM enters
+ *      trash-confirmation mode and exposes a `trashActs` multi-enum
+ *      whose options are the current action indices.
+ *   2. Set settings[trashActs]=<indices-as-JSON-array>. RM deletes the
+ *      selected actions and exits trash-confirmation mode (auto-applies
+ *      because trashActs has submitOnChange=true).
  *
- * The per-row delAct button gets hidden by RM's render when only one
- * action remains, so per-row iteration leaves the last action stuck.
- * The multi-delete path (trash + chkBoxN) handles any count including
- * deleting down to zero.
+ * Per-row delAct buttons get hidden when only one action remains, so
+ * per-row iteration leaves the final action stuck. The trashActs enum
+ * path handles any count including deleting down to zero.
  *
  * Returns the list of indices that were marked for deletion.
  */
 private List _rmClearActions(Integer appId) {
     def indices = _rmCollectActionIndices(appId)
     if (!indices) return []
-    // Mark every action's checkbox.
+    // Step 1: enter trash-confirmation mode.
+    _rmClickAppButton(appId, "trashAll", "trash", "selectActions")
+    // Step 2: re-fetch schema (now exposes trashActs) and write the
+    // indices as the multi-enum value. Hubitat's enum-multi expects
+    // a JSON-array string; _rmUpdateAppSettings handles that encoding
+    // when the schema declares multiple=true.
     def cfg = _rmFetchConfigJson(appId, "selectActions")
     def schema = _rmCollectInputSchema(cfg?.configPage)
-    def chkSettings = [:]
-    indices.each { idx -> chkSettings["chkBox${idx}".toString()] = true }
-    if (chkSettings) _rmUpdateAppSettings(appId, chkSettings, schema)
-    // Click the global trash button.
-    _rmClickAppButton(appId, "trashAll", "trash", "selectActions")
+    if (schema?.containsKey("trashActs")) {
+        def stringIndices = indices.collect { it.toString() }
+        _rmUpdateAppSettings(appId, ["trashActs": stringIndices], schema)
+    } else {
+        mcpLog("warn", "rm-native", "_rmClearActions: trashActs not in selectActions schema after trashAll click for app ${appId} — RM didn't enter trash mode")
+    }
     return indices
 }
 
