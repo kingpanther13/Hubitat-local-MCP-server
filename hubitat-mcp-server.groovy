@@ -9365,6 +9365,40 @@ private List _rmCollectActionIndices(Integer appId) {
 }
 
 /**
+ * Navigate to a page by firing the form-submit equivalent of the live
+ * UI's page transition. Hubitat's UI links (e.g. "Select Actions to Run"
+ * on mainPage, or the implicit return-to-parent after a sub-page wizard
+ * commits) submit the current page form WITH a special
+ * `_action_href_name|<targetPage>|<idx>` marker that tells the server
+ * to navigate. Verified live in Chrome network capture (2026-04-25).
+ *
+ * Used by _rmAddAction to navigate from doActPage back to selectActions
+ * after the actionDone click — the navigation TRIGGERS the bake of the
+ * in-flight action into actions[]. Without it, the action's settings
+ * stay in appSettings but never land in the actions[] map, and
+ * state.actNdx never advances.
+ *
+ * The body is intentionally minimal — the server only needs the
+ * navigation marker to perform the transition. We don't need to mirror
+ * every hidden button input on the source page.
+ */
+private void _rmNavigateToPage(Integer appId, String targetPage) {
+    def body = [
+        id: appId.toString(),
+        formAction: "update",
+        currentPage: "doActPage",
+        pageBreadcrumbs: '["mainPage"]',
+        ("_action_href_name|${targetPage}|0".toString()): ""
+    ]
+    try {
+        def cfg = _rmFetchConfigJson(appId, "doActPage")
+        def v = cfg?.app?.version
+        if (v != null) body.version = v.toString()
+    } catch (Exception ignored) { /* best effort */ }
+    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception ignored) { /* idempotent */ }
+}
+
+/**
  * Initialize state.actNdx by firing the selectActions page hook via an
  * empty POST. Required after rule creation BEFORE the first N click on
  * an empty rule — without it, doActPage errors with "Cannot invoke method
@@ -9539,17 +9573,19 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // has settled and actionDone is present.
     _rmClickAppButton(appId, "actionDone", null, "doActPage")
 
-    // Fire updateRule to advance state.actNdx so the next addAction
-    // call's click_n opens at the correct slot. Verified live
-    // (2026-04-25): without an updateRule between successive addAction
-    // calls, the second call's click_n opens with empty schema and all
-    // writes silently skip. NOTE: the action just committed still lags
-    // by one updateRule before it lands in actions[] — the second
-    // updateRule (fired by the next addAction call OR an explicit
-    // caller-side updateRule) bakes it. For bulk addActions the
-    // dispatch fires an extra updateRule at the very end to bake the
-    // last action.
-    _rmClickAppButton(appId, "updateRule")
+    // Navigate back to selectActions to commit the in-flight action.
+    // Verified live in Chrome (2026-04-25) on a clean rule walkthrough:
+    // the UI's "Done with Action" click triggers (1) the actionDone
+    // button POST, then (2) full doActPage form submissions that carry
+    // a `_action_href_name|selectActions|<idx>` navigation marker. The
+    // server bakes the action when transitioning OFF doActPage. After
+    // that sequence completes, state.actionList contains the new index,
+    // state.actNdx is advanced, and NO updateRule is required.
+    //
+    // Mirror the navigation by POSTing to selectActions's update/json
+    // endpoint with a minimal form body — the server will commit the
+    // action's settings and bake into actions[].
+    _rmNavigateToPage(appId, "selectActions")
 
     // Final config-error check.
     def finalConfig
@@ -10241,9 +10277,12 @@ def toolUpdateNativeApp(args) {
                     mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed — ${ae.message}")
                 }
             }
-            // After the loop: fire an EXTRA updateRule to bake the last
-            // action (each individual addAction's updateRule lags by one,
-            // so the LAST action wouldn't land in actions[] otherwise).
+            // One updateRule fires after everything to populate
+            // eventSubscriptions and re-run initialize(). Each
+            // _rmAddAction self-bakes its own action via the
+            // doActPage→selectActions navigation, so this trailing
+            // click is just for the final re-init (mirrors the UI's
+            // top-level "Update Rule" / "Done" press).
             _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addTriggers/addActions bulk failed for app ${appId}: ${e.message}")
