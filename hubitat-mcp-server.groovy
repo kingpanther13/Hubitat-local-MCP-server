@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addtrigger-cap-normalize-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+section3-bool-delay-fixes-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3309,7 +3309,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addtrigger-cap-normalize-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+section3-bool-delay-fixes-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9894,9 +9894,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 actSubType = "getStopFade"; fields = [:]
                 break
             case "startRaiseLower":
-                // dimRL.<N>: true=Raise, false=Lower
+                // dimRL.<N>: true=LOWER, false=Raise (verified live 2026-04-25
+                // via T355 sweep — the boolean is inverted relative to the
+                // intuition the field name suggests).
                 actSubType = "getRLDimmer"
-                fields = ["dimRL.@N": (actionSpec.direction == "raise"), "dimRaiseLower.@N": deviceIds]
+                fields = ["dimRL.@N": (actionSpec.direction != "raise"), "dimRaiseLower.@N": deviceIds]
                 break
             case "stopChanging":
                 actSubType = "getStopDimmer"; fields = ["dimStop.@N": deviceIds]
@@ -10018,11 +10020,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 throw new IllegalArgumentException("Unknown colorTemp action '${action}' — supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade, setColorTempPerMode")
         }
     } else if (cap == "lock") {
+        // lockRL.<N>: true=UNLOCK, false=Lock (verified live 2026-04-25 via
+        // T362 sweep — boolean is inverted relative to field-name intuition).
         actType = "lockActs"
         actSubType = "getLULock"
         switch (action) {
-            case "lock":   fields = ["lockRL.@N": true, "lockLockUnlock.@N": deviceIds]; break
-            case "unlock": fields = ["lockRL.@N": false, "lockLockUnlock.@N": deviceIds]; break
+            case "lock":   fields = ["lockRL.@N": false, "lockLockUnlock.@N": deviceIds]; break
+            case "unlock": fields = ["lockRL.@N": true,  "lockLockUnlock.@N": deviceIds]; break
             default: throw new IllegalArgumentException("Unknown lock action '${action}' — supported: lock, unlock")
         }
     } else if (cap == "thermostat") {
@@ -10037,10 +10041,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (actionSpec.coolingSetpoint != null)   fields["thermoSetCool.@N"] = actionSpec.coolingSetpoint
         if (actionSpec.adjustCooling != null)     fields["thermoAdjCool.@N"] = actionSpec.adjustCooling
     } else if (cap == "shade") {
+        // shadeRL.<N>: true=CLOSE, false=Open (verified live 2026-04-25 via
+        // T358 sweep — boolean is inverted relative to field-name intuition).
         actType = "sceneActs"
         switch (action) {
-            case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": true, "shadeOpenClose.@N": deviceIds]; break
-            case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
+            case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
+            case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": true,  "shadeOpenClose.@N": deviceIds]; break
             case "setPosition":
                 actSubType = "getShadePosition"
                 fields = ["shadePosition.@N": deviceIds]
@@ -10261,11 +10267,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         fields = ["siren.@N": deviceIds]
         if (actionSpec.sirenAction != null) fields["sirenAct.@N"] = actionSpec.sirenAction
     } else if (cap == "privateBoolean") {
+        // pvTF.<N>: true=FALSE, false=True (verified live 2026-04-25 via
+        // T370 sweep — boolean is inverted relative to its field name).
         actType = "rulesActs"
         actSubType = "getSetPrivateBoolean"
         fields = [
             "pvRuleType.@N": "Rule Machine",
-            "pvTF.@N": (actionSpec.value as Boolean),
+            "pvTF.@N": !(actionSpec.value as Boolean),
             "privateT.@N": (actionSpec.ruleIds ?: deviceIds)
         ]
     } else if (cap == "runRule") {
@@ -10283,11 +10291,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             "stopAct.@N": (actionSpec.ruleIds ?: deviceIds)
         ]
     } else if (cap == "pauseRule") {
+        // pR.<N>: true=RESUME, false=Pause (verified live 2026-04-25 via
+        // T371 sweep — boolean is inverted relative to its field name).
         actType = "rulesActs"
         actSubType = "getPauseResumeRules"
         switch (action) {
-            case "pause":  fields = ["pR.@N": true, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
-            case "resume": fields = ["pR.@N": false, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
+            case "pause":  fields = ["pR.@N": false, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
+            case "resume": fields = ["pR.@N": true,  "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
             default: throw new IllegalArgumentException("Unknown pauseRule action '${action}' — supported: pause, resume")
         }
     } else if (cap == "capture") {
@@ -10307,9 +10317,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actSubType = "getPollSwitch"
         fields = ["poll.@N": deviceIds]
     } else if (cap == "disableDevice") {
+        // disEn.<N>: true=ENABLE, false=Disable (verified live 2026-04-25 via
+        // T373 sweep — boolean is inverted relative to its field name).
         actType = "deviceActs"
         actSubType = "getDisable"
-        fields = ["disEn.@N": (action == "disable"), "devDisable.@N": deviceIds]
+        fields = ["disEn.@N": (action != "disable"), "devDisable.@N": deviceIds]
     } else if (cap == "delay") {
         actType = "delayActs"
         actSubType = "getDelay"
@@ -10404,18 +10416,30 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         }
     }
 
-    // Optional Delay? modifier — delayAct.<N>='hrs:min:sec' triggers
-    // additional schema fields for hrs/min/sec/cancelable.
+    // Optional Delay? modifier on an action. Verified live 2026-04-25:
+    //   delayAct.<N> options: ["none", "hrs:min:sec", "variable"]
+    //   After delayAct=hrs:min:sec the schema exposes:
+    //     delayHor.<N>  (number)  Hours
+    //     delayMin.<N>  (number)  Minutes
+    //     delaySec.<N>  (decimal) Seconds
+    //     randomAct.<N> (bool)    Random?
+    //     cancelAct.<N> (bool)    Cancelable?
+    //   After delayAct=variable the schema exposes:
+    //     xVarD.<N>     (enum)    Select variable (hub variable name)
+    //     randomAct.<N>, cancelAct.<N>
     if (actionSpec.delay instanceof Map) {
         def d = actionSpec.delay as Map
-        _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied)
-        // Schema fields for the delay component appear after delayAct is
-        // set; _rmWriteSettingOnPage no-ops on missing keys, so callers
-        // can include any subset.
-        if (d.hours != null) _rmWriteSettingOnPage(appId, "doActPage", "delayHrs.${idx}", d.hours, applied)
-        if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMins.${idx}", d.minutes, applied)
-        if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySecs.${idx}", d.seconds, applied)
-        if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelable.${idx}", d.cancelable, applied)
+        if (d.variable != null) {
+            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "variable", applied)
+            _rmWriteSettingOnPage(appId, "doActPage", "xVarD.${idx}", d.variable, applied)
+        } else {
+            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied)
+            if (d.hours != null)   _rmWriteSettingOnPage(appId, "doActPage", "delayHor.${idx}", d.hours, applied)
+            if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMin.${idx}", d.minutes, applied)
+            if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySec.${idx}", d.seconds, applied)
+        }
+        if (d.random != null)     _rmWriteSettingOnPage(appId, "doActPage", "randomAct.${idx}", d.random, applied)
+        if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied)
     }
 
     // runCommand: extra parameters beyond the first. Verified live (2026-04-25):
