@@ -1872,6 +1872,14 @@ Capability families and the spec fields each accepts:
 
   - Switch (capability='switch'):
       action='on'/'off'/'toggle'/'flash' + deviceIds
+      NOTE: action='flash' starts a flash schedule on devices that
+      support .flash() (Hue groups, many Z-Wave/Zigbee dimmer modules).
+      RM 5.1 has NO native "stop flash" action subtype — calling
+      switch.on/.off afterward does NOT cancel the flash schedule. To
+      stop a running flash from within a rule, use Run Custom Action
+      (capability='runCommand', not yet mapped — see TODO in helper).
+      For now, the only way to stop flash is to call .flashOff() on the
+      device externally (e.g. via send_command).
 
   - Dimmer (capability='dimmer'):
       action='setLevel'   + deviceIds + level (0-100) [required] + optional fadeSeconds
@@ -9595,6 +9603,27 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             case "flash":
                 actSubType = "getFlashSwitch"
                 fields = ["flashSwitch.@N": deviceIds]
+                // FOLLOW-UP (verified live 2026-04-25): RM 5.1's switchActs
+                // category exposes getFlashSwitch (start flashing) but NO
+                // matching "stop flashing" subtype. Calling switch.on/.off
+                // afterward DOES NOT cancel the flash schedule — the device
+                // keeps pulsing on/off until something explicitly calls its
+                // .flashOff() command (verified: rule that did Flash → Delay
+                // 5s → On left lights flashing for ~90s after the rule
+                // completed, until I sent .flashOff() directly via
+                // send_command).
+                //
+                // To cancel a running flash from within a rule, the LLM
+                // currently needs to use modeActs/getDefinedAction (Run
+                // Custom Action) to call .flashOff() on the device — but
+                // that subtype is not yet mapped in this helper (multi-step
+                // wizard for capability/command/parameter selection).
+                //
+                // TODO: add capability='switch' + action='stopFlash' that
+                // wires up getDefinedAction with cCmd=flashOff. Or expose
+                // getDefinedAction directly as capability='runCommand' so
+                // arbitrary device commands (flashOff, refresh, etc.) can
+                // be called from rules.
                 break
             default:
                 throw new IllegalArgumentException("Unknown switch action '${action}' — supported: on, off, toggle, flash")
