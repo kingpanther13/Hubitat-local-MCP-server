@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+health-skipped-clone-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+scope-hoist-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3371,7 +3371,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+health-skipped-clone-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+scope-hoist-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -11358,9 +11358,12 @@ def toolUpdateNativeApp(args) {
     // All re-fire updateRule at the end so actions[] map and subscriptions
     // bake from the new state.
     if (removeActionSpec || clearActionsFlag || replaceActionsList != null || moveActionSpec) {
+        // Hoisted out of the try block — Groovy `def` is block-scoped, so
+        // declaring inside try would leave these undefined for the return
+        // statement below.
+        def removed = []
+        def addedResults = []
         try {
-            def removed = []
-            def addedResults = []
             if (removeActionSpec) {
                 if (removeActionSpec.index == null) throw new IllegalArgumentException("removeAction.index is required")
                 def idx = (removeActionSpec.index as Integer)
