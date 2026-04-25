@@ -3053,6 +3053,7 @@ def toolGetHubInfo() {
 
     // MCP-specific stats (always available)
     info.mcpServerVersion = currentVersion()
+    info.prDevBuildMarker = prDevBuildMarker()  // TEMPORARY — remove before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9648,6 +9649,16 @@ private Map _rmRestoreFromBackup(Map entry) {
 
 def currentVersion() {
     return "0.10.1"
+}
+
+/**
+ * TEMPORARY — REMOVE BEFORE MERGE.
+ * Returns a short marker for the latest commit's content so we can verify
+ * which build is live on the hub during PR #134 development. Updated on
+ * every commit; removed when this PR is merged.
+ */
+def prDevBuildMarker() {
+    return "63988fb-embedded-actions-extraction"
 }
 
 def isNewerVersion(String remote, String local) {
