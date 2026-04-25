@@ -133,9 +133,22 @@ def mainPage() {
         }
 
         section("Settings") {
+            // Migration warning: the legacy 'enableRuleEngine' toggle (default ON)
+            // was renamed to 'enableCustomRuleEngine' (default OFF). Existing users
+            // who had child rules created via the MCP custom rule engine will see
+            // their rules become unreachable via tools/list until they explicitly
+            // re-enable the toggle. Surface this prominently when we detect the
+            // mismatch (child apps exist but the new toggle is off/null).
+            def existingRuleCount = getChildApps()?.size() ?: 0
+            def customEngineExplicitlyOn = settings.enableCustomRuleEngine == true
+            if (existingRuleCount > 0 && !customEngineExplicitlyOn) {
+                paragraph "<b style='color: red;'>⚠ MIGRATION NOTICE: ${existingRuleCount} custom MCP rule(s) exist on this hub but the <b>Enable Custom Rule Engine</b> toggle is OFF.</b><br>" +
+                          "The toggle was renamed from 'Enable Rule Engine' (defaulted ON) to 'Enable Custom Rule Engine' (defaults OFF) — your existing rules continue to fire as installed apps, but the <code>custom_*</code> MCP tools (list/create/update/delete/test rules via Claude) are hidden from <code>tools/list</code> until you re-enable the toggle below.<br>" +
+                          "If you actively use the MCP custom rule tools, turn the toggle ON. If you've migrated to native Rule Machine via Built-in App Tools and don't need the custom engine, leave it off."
+            }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine",
                   description: "Exposes the custom_* tools (custom_list_rules, custom_create_rule, custom_update_rule, custom_delete_rule, custom_test_rule, custom_get_rule, custom_export_rule, custom_import_rule, custom_clone_rule, custom_get_rule_diagnostics) for the MCP-managed rule engine. When off, these tools disappear from tools/list. The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this.",
-                  defaultValue: true, submitOnChange: true
+                  defaultValue: false, submitOnChange: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -738,7 +751,7 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 //   enableCustomRuleEngine=false (legacy default true) → hides all 10 custom_* tools
 def getToolDefinitions() {
     def builtinAppOn = settings.enableBuiltinApp == true
-    def customEngineOn = settings.enableCustomRuleEngine == true || settings.enableCustomRuleEngine == null  // legacy default true
+    def customEngineOn = settings.enableCustomRuleEngine == true
     def hideByName = [] as Set
     def hideGatewaySubTools = [:].withDefault { [] as Set }
 
@@ -2075,7 +2088,7 @@ def executeTool(toolName, args) {
     // refuse any custom_* tool call before dispatch. The tools also
     // disappear from tools/list (see getToolDefinitions), but a stale
     // client cache could still try to call one — fail clearly here.
-    def customEngineOn = settings.enableCustomRuleEngine == true || settings.enableCustomRuleEngine == null
+    def customEngineOn = settings.enableCustomRuleEngine == true
     if (toolName?.startsWith("custom_") && !customEngineOn) {
         throw new IllegalArgumentException("Custom Rule Engine is disabled. Enable 'Enable Custom Rule Engine' in MCP Rule Server app settings to use ${toolName}.")
     }
