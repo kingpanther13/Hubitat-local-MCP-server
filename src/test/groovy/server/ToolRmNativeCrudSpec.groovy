@@ -217,7 +217,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("SAFETY CHECK FAILED")
     }
 
-    def "update_rm_rule requires either settings or button"() {
+    def "update_rm_rule requires settings, button, or addTrigger"() {
         given:
         enableHubAdminWrite()
 
@@ -226,7 +226,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("either 'settings'")
+        ex.message.contains("settings")
+        ex.message.contains("button")
+        ex.message.contains("addTrigger")
     }
 
     def "update_rm_rule emits the 3-field capability contract for multi-device inputs"() {
