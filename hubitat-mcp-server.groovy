@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+9ee049a-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addTrigger-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1769,12 +1769,19 @@ This is COMPLETELY SEPARATE from the MCP custom rule engine (custom_list_rules /
 
 Workflow: create_native_app(appType=\"rule_machine\", name=\"...\") → get_app_config(appId) to read the page schema → update_native_app(appId, settings={...}) to add triggers/conditions/actions. Each update_native_app call auto-backs-up first, enforces the multiple=true capability contract, and verifies post-write that the app still renders cleanly.
 
+Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape update_native_app's `addTrigger` parameter accepts (capability + capability-specific fields). Use this when you know all the triggers up-front; for incremental editing use update_native_app(addTrigger=…) instead.
+
 Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appType: [type: "string", enum: ["rule_machine"], description: "Which native app class to create. Default: rule_machine. Add more types by populating _appTypeRegistry."],
                     name: [type: "string", description: "Human-readable label for the new app (shown in the hub's app list). Required."],
+                    triggers: [
+                        type: "array",
+                        description: "Optional list of trigger specs to populate after creating the empty rule. Each spec follows the same shape as update_native_app(addTrigger=…). When provided, the tool creates the rule, adds every trigger sequentially (1 wizard run per spec), and fires updateRule once at the end. Returns triggerIndices in the response. Empty/omitted = create-only behavior, same as before.",
+                        items: [type: "object"]
+                    ],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
                 ],
                 required: ["name", "confirm"]
@@ -1817,6 +1824,31 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
+                    addTrigger: [
+                        type: "object",
+                        description: """Add a Rule Machine trigger to the rule via the high-level structured API. The tool orchestrates the full RM 5.1 wizard internally — discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions.
+
+Capability families and the spec fields each accepts:
+  - Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source):
+    capability, deviceIds, state ('on', 'active', 'open', 'unlocked', etc.)
+  - Multi-device 'all of these': add allOfThese=true to the device-state spec
+  - Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints):
+    capability, deviceIds, comparator ('=', '<', '>', '<=', '>=', '*changed*'), value
+  - Button (Button capability):
+    capability='Button', deviceIds, buttonNumber, state ('pushed' | 'held' | 'doubleTapped' | 'released')
+  - Custom Attribute (any device's non-built-in attribute):
+    capability='Custom Attribute', deviceIds, attribute (the attribute name), comparator, value
+  - And-stays sticky modifier (works on any device-state or numeric trigger):
+    add andStays={hours, minutes, seconds} to the spec
+  - Time / Sunrise / Sunset (Certain Time and optional date):
+    capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime (ISO datetime for specific time), offset (minutes for sunrise/sunset)
+
+Optional fields on every spec:
+  - conditional (default false) — sets isCondTrig.<N>=true. The condition's own wizard (rCapab_<N>, rDev_<N>, state_<N>) is NOT driven by addTrigger yet — pass conditional=true and then orchestrate the condition fields via separate update_native_app(settings=…) calls.
+  - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.)
+
+Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow."""
+                    ],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
@@ -3061,7 +3093,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+9ee049a-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addTrigger-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9066,6 +9098,193 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
 }
 
 /**
+ * High-level structured trigger creation for Rule Machine 5.1.
+ *
+ * Replaces the 6-8 wizard calls (open editor → set capability → set device
+ * → set state-or-comparator → optional modifiers → hasAll → finalize) with
+ * one orchestrated call. Discovers the next trigger index from existing
+ * settings, opens the wizard, walks the schema-aware writes, commits via
+ * hasAll, and the auto-finalize on update_native_app's path closes the
+ * residual isCondTrig prompt.
+ *
+ * Capability-family field mapping:
+ *   - Device-state (Switch / Motion / Contact / Lock / Garage / Door /
+ *     Valve / Window Shade / Presence / Power source / etc.):
+ *       capability + deviceIds + state
+ *   - Numeric (Temperature / Humidity / Battery / Illuminance / Power /
+ *     Energy / CO2 / Dimmer / Thermostat setpoints):
+ *       capability + deviceIds + comparator + value
+ *   - Button: capability='Button' + deviceIds + buttonNumber + state
+ *   - Custom Attribute: capability='Custom Attribute' + deviceIds +
+ *       attribute + comparator + value
+ *   - Time: capability='Certain Time (and optional date)' + time
+ *       (specific/Sunrise/Sunset) + atTime (ISO) + offset (mins)
+ *
+ * Optional modifiers on any spec:
+ *   allOfThese (multi-device "all of these")
+ *   andStays { hours, minutes, seconds }
+ *   conditional (sets isCondTrig.<N>=true; condition wizard not driven)
+ *   rawSettings { fieldName: value, ... } — escape hatch
+ *
+ * The caller is expected to issue update_native_app(button='updateRule')
+ * after adding all triggers to fire initialize() and populate
+ * subscriptions. _rmAddTrigger does NOT fire updateRule itself, so
+ * multi-trigger rules avoid N redundant re-inits.
+ *
+ * Returns: [success, triggerIndex, settingsApplied, configPageError]
+ */
+private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
+    if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec")
+    def cap = triggerSpec.capability?.toString()?.trim()
+    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required")
+
+    // Discover next trigger index by scanning existing tCapab<N> settings.
+    def status = _rmFetchStatusJson(appId)
+    def existing = []
+    (status?.appSettings ?: []).each { s ->
+        def n = s?.name?.toString()
+        if (n) {
+            def m = (n =~ /^tCapab(\d+)$/)
+            if (m.matches()) existing << (m[0][1] as Integer)
+        }
+    }
+    def idx = (existing ? existing.max() + 1 : 1)
+
+    // Open the trigger editor (state.moreCond=true).
+    _rmClickAppButton(appId, "true", "moreCond", "selectTriggers")
+
+    // Settings are written sequentially — the wizard schema is incremental,
+    // so each write may unlock the next set of inputs. The known/unknown
+    // split inside _rmWriteSettingOnPage skips fields not in the current
+    // schema and falls through to the next call.
+    def applied = []
+    _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", cap, applied)
+
+    // Helper closures (sandbox-friendly: no closure recursion on private methods)
+    def writeIfPresent = { String name, Object value, String typeHint = null ->
+        if (value != null) _rmWriteSettingOnPage(appId, "selectTriggers", name, value, applied, typeHint)
+    }
+
+    // Device-based capabilities use tDev<N>. Time and other non-device
+    // capabilities skip this block.
+    if (triggerSpec.deviceIds != null) {
+        writeIfPresent("tDev${idx}", triggerSpec.deviceIds)
+    }
+
+    // Numeric / text comparator path (Temperature, Humidity, Battery,
+    // Custom Attribute, etc.)
+    if (triggerSpec.comparator != null) {
+        // Custom Attribute requires picking the attribute first.
+        if (triggerSpec.attribute != null) {
+            writeIfPresent("tCustomAttr${idx}", triggerSpec.attribute)
+        }
+        writeIfPresent("ReltDev${idx}", triggerSpec.comparator)
+    }
+
+    // Button capability has its own button-number field.
+    if (triggerSpec.buttonNumber != null) {
+        writeIfPresent("ButtontDev${idx}", triggerSpec.buttonNumber)
+    }
+
+    // tstate<N> covers both enum-state ("on"/"active") and numeric value
+    // (Temperature reading) paths. value field is the numeric form.
+    def stateValue = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
+    if (stateValue != null) {
+        writeIfPresent("tstate${idx}", stateValue)
+    }
+
+    // Time-based capability uses time1, atTime1, atSunriseOffset1 etc.
+    // The wizard uses index 1 for the time fields regardless of trigger
+    // index because RM models time triggers as singletons within the
+    // trigger row — the index is on the wrapper trigger, not the inner
+    // time picker. (Verified live on firmware 2.5.0.123.)
+    if (triggerSpec.time != null) {
+        writeIfPresent("time${idx}", triggerSpec.time)
+        if (triggerSpec.atTime != null) writeIfPresent("atTime${idx}", triggerSpec.atTime)
+        if (triggerSpec.offset != null) {
+            def t = triggerSpec.time?.toString()
+            if (t == "Sunrise") writeIfPresent("atSunriseOffset${idx}", triggerSpec.offset)
+            else if (t == "Sunset") writeIfPresent("atSunsetOffset${idx}", triggerSpec.offset)
+        }
+    }
+
+    // Optional modifier fields.
+    if (triggerSpec.allOfThese == true) writeIfPresent("AlltDev${idx}", true)
+    if (triggerSpec.andStays instanceof Map) {
+        writeIfPresent("stays${idx}", true)
+        def s = triggerSpec.andStays as Map
+        if (s.hours != null) writeIfPresent("SHours${idx}", s.hours)
+        if (s.minutes != null) writeIfPresent("SMins${idx}", s.minutes)
+        if (s.seconds != null) writeIfPresent("SSecs${idx}", s.seconds)
+    }
+
+    // Caller escape hatch.
+    if (triggerSpec.rawSettings instanceof Map) {
+        triggerSpec.rawSettings.each { k, v ->
+            writeIfPresent(k.toString(), v)
+        }
+    }
+
+    // Click hasAll (with form context) to commit. The shared wizard-Done
+    // auto-finalize logic in toolUpdateNativeApp's button branch handles
+    // the residual isCondTrig.<N>=false write — but _rmAddTrigger calls
+    // _rmClickAppButton directly, so do the finalize inline here.
+    _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
+
+    // Auto-finalize the residual Conditional? prompt. If conditional=true,
+    // set isCondTrig.<N>=true so caller can drive the condition wizard
+    // separately; otherwise =false to close the prompt cleanly.
+    def condValue = (triggerSpec.conditional == true)
+    try {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", condValue, applied)
+    } catch (Exception ignored) {
+        // Best-effort: if the prompt isn't there (clean exit), the schema
+        // check inside _rmWriteSettingOnPage skips it.
+    }
+
+    // Final config-error check.
+    def finalConfig
+    try { finalConfig = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception ignored) { finalConfig = null }
+    def err = finalConfig?.configPage?.error
+
+    return [
+        success: !err,
+        triggerIndex: idx,
+        capability: cap,
+        settingsApplied: applied,
+        configPageError: err
+    ]
+}
+
+/**
+ * Single-setting write to a sub-page that no-ops if the key isn't in the
+ * current schema. Used by _rmAddTrigger to walk the wizard's incremental
+ * schema progression without surfacing settingsSkipped warnings on every
+ * field that hasn't appeared yet.
+ *
+ * The `applied` accumulator collects every key that actually landed on
+ * the page so the caller can include it in the response.
+ */
+private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null) {
+    def config = _rmFetchConfigJson(appId, pageName)
+    def schema = _rmCollectInputSchema(config?.configPage)
+    if (!schema?.containsKey(key)) {
+        return  // Field not in current schema — silently skip; expected for incremental wizard advancement.
+    }
+    def settingsMap = [(key): value]
+    def schemaForBuild = schema
+    if (typeHintOverride && schema?."${key}" != null) {
+        // Allow caller to override the inferred type (rare; mostly for
+        // raw-settings escape hatch where the schema's declared type is
+        // wrong). Clone so we don't mutate the cached schema map.
+        schemaForBuild = [:] + schema
+        schemaForBuild[key] = ([:] + schema[key]) << [type: typeHintOverride]
+    }
+    _rmUpdateAppSettings(appId, settingsMap, schemaForBuild)
+    applied << key
+}
+
+/**
  * Fetch /installedapp/configure/json/<appId>[/<pageName>] and parse.
  * Returns the raw map (app, configPage, settings, childApps, ...).
  * Callers (get_rm_rule, update_native_app) use this to discover the input
@@ -9429,8 +9648,31 @@ def toolCreateNativeApp(args) {
         // commit button, the registry can carry a commitButton field.
         _rmClickAppButton(newId, "updateRule")
 
+        // Optional bulk-trigger creation. When `triggers` is passed, walk
+        // the list and call _rmAddTrigger for each spec. After all are
+        // committed, fire updateRule once at the end so subscriptions
+        // populate from a fully-loaded rule (avoids N redundant inits).
+        def triggerSpecs = args?.triggers instanceof List ? (args.triggers as List) : []
+        def triggerResults = []
+        if (triggerSpecs) {
+            triggerSpecs.eachWithIndex { spec, i ->
+                if (!(spec instanceof Map)) {
+                    triggerResults << [success: false, error: "triggers[${i}] is not a Map", spec: spec]
+                    return
+                }
+                try {
+                    triggerResults << _rmAddTrigger(newId, spec as Map)
+                } catch (Exception te) {
+                    triggerResults << [success: false, error: te.message, specCapability: spec.capability]
+                    mcpLog("warn", "rm-native", "create_native_app: trigger ${i} (capability=${spec.capability}) failed — ${te.message}")
+                }
+            }
+            // Re-init once after all triggers are committed.
+            _rmClickAppButton(newId, "updateRule")
+        }
+
         def status = _rmFetchStatusJson(newId)
-        return [
+        def result = [
             success: true,
             appId: newId,
             appType: appType,
@@ -9440,8 +9682,12 @@ def toolCreateNativeApp(args) {
                 eventSubscriptions: (status?.eventSubscriptions?.size() ?: 0),
                 scheduledJobs: (status?.scheduledJobs?.size() ?: 0)
             ],
-            note: "Empty ${appType} app created (id=${newId}). Use update_native_app to populate, or get_app_config to inspect."
+            note: triggerSpecs ?
+                "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success != false }} of ${triggerSpecs.size()} triggers committed. updateRule fired once after all triggers added." :
+                "Empty ${appType} app created (id=${newId}). Use update_native_app to populate, or get_app_config to inspect."
         ]
+        if (triggerSpecs) result.triggers = triggerResults
+        return result
     } catch (Exception e) {
         // Orphan cleanup: caller didn't get a usable app, so remove the
         // half-created shell rather than leaving it under the parent.
@@ -9479,13 +9725,43 @@ def toolUpdateNativeApp(args) {
     def appId = normalizeRuleId(args.appId)
     def settingsMap = args?.settings instanceof Map ? args.settings : null
     def button = args?.button?.toString()?.trim() ?: null
-    if (!settingsMap && !button) {
-        throw new IllegalArgumentException("update_native_app requires either 'settings' (Map) or 'button' (String) — neither was provided.")
+    def addTriggerSpec = args?.addTrigger instanceof Map ? args.addTrigger : null
+    if (!settingsMap && !button && !addTriggerSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), or 'addTrigger' (Map) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
     // restore channel if anything downstream goes wrong.
-    def backup = _rmBackupRuleSnapshot(appId, button ? "pre-button-${button}" : "pre-update")
+    def backup = _rmBackupRuleSnapshot(appId, button ? "pre-button-${button}" : (addTriggerSpec ? "pre-addTrigger" : "pre-update"))
+
+    if (addTriggerSpec) {
+        // High-level structured trigger creation. Replaces the 6-8 wizard
+        // calls of the manual flow with one orchestrated call. After the
+        // helper commits, the caller still issues update_native_app(button=
+        // 'updateRule') to re-init and populate subscriptions.
+        def trigResult
+        try {
+            trigResult = _rmAddTrigger(appId, addTriggerSpec)
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "addTrigger failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
+        return [
+            success: trigResult?.success != false,
+            appId: appId,
+            backup: backup,
+            triggerIndex: trigResult?.triggerIndex,
+            settingsApplied: trigResult?.settingsApplied,
+            configPageError: trigResult?.configPageError,
+            note: "Trigger added. Call update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions."
+        ]
+    }
 
     def pageName = args?.pageName?.toString()?.trim() ?: null
     if (pageName && !pageName.matches(/[A-Za-z0-9_]+/)) {
