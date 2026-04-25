@@ -29,7 +29,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "throws when Built-in App Read is disabled"() {
         given:
-        settingsMap.enableBuiltinAppRead = false
+        settingsMap.enableBuiltinApp = false
 
         when:
         script.toolSetRmRuleBoolean([ruleId: 1, value: true])
@@ -41,7 +41,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "throws when ruleId is missing"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolSetRmRuleBoolean([value: true])
@@ -53,7 +53,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "throws when value is missing"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolSetRmRuleBoolean([ruleId: 1])
@@ -65,7 +65,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "Boolean true dispatches setRuleBooleanTrue"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 800, value: true])
@@ -77,7 +77,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "Boolean false dispatches setRuleBooleanFalse"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 801, value: false])
@@ -89,7 +89,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "String 'true' is accepted and dispatches setRuleBooleanTrue"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 802, value: 'true'])
@@ -101,7 +101,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "String 'false' is accepted and dispatches setRuleBooleanFalse"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 803, value: 'false'])
@@ -113,7 +113,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "reject matrix: capitalized and uppercase boolean strings are rejected"(Object value) {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolSetRmRuleBoolean([ruleId: 999, value: value])
@@ -128,7 +128,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "reject matrix: truthy-looking non-boolean strings are rejected"(Object value) {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolSetRmRuleBoolean([ruleId: 999, value: value])
@@ -143,7 +143,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "reject matrix: integer values are rejected"(Object value) {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolSetRmRuleBoolean([ruleId: 999, value: value])
@@ -158,7 +158,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to set_rm_rule_boolean"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.handleGateway('manage_native_rules_and_apps', 'set_rm_rule_boolean', [ruleId: 900, value: true])

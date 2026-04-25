@@ -39,13 +39,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     private void enableHubAdminWrite() {
         settingsMap.enableHubAdminWrite = true
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         settingsMap.enableHubAdminRead = true
         stateMap.lastBackupTimestamp = 1234567890000L
     }
 
     private void enableReadOnly() {
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         settingsMap.enableHubAdminRead = true
     }
 

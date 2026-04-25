@@ -47,7 +47,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "throws when Built-in App Read is disabled"() {
         given:
-        settingsMap.enableBuiltinAppRead = false
+        settingsMap.enableBuiltinApp = false
 
         when:
         script.toolRunRmRule([ruleId: 1])
@@ -59,7 +59,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "throws when ruleId is missing"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolRunRmRule([:])
@@ -71,7 +71,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "action=rule dispatches runRule"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolRunRmRule([ruleId: 101, action: 'rule'])
@@ -84,7 +84,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "action=actions dispatches runRuleAct"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolRunRmRule([ruleId: 102, action: 'actions'])
@@ -96,7 +96,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "action=stop clicks stopRule button when rule is currently running (state.stopped=false)"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/installedapp/statusJson/103') { params -> minimalStatusJson(103, false) }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -116,7 +116,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "action=stop is idempotent — no-ops when rule is already stopped"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/installedapp/statusJson/104') { params -> minimalStatusJson(104, true) }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -135,7 +135,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "action=start clicks stopRule button when rule is currently stopped (state.stopped=true)"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/installedapp/statusJson/105') { params -> minimalStatusJson(105, true) }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -154,7 +154,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "action=start is idempotent — no-ops when rule is already running"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/installedapp/statusJson/106') { params -> minimalStatusJson(106, false) }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -173,7 +173,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "default action (no action arg) dispatches runRule"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolRunRmRule([ruleId: 107])
@@ -185,7 +185,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "invalid action throws IllegalArgumentException"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolRunRmRule([ruleId: 108, action: 'explode'])
@@ -197,7 +197,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "String ruleId is coerced to Integer before dispatch"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolRunRmRule([ruleId: '202'])
@@ -210,7 +210,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "non-numeric ruleId throws IllegalArgumentException"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolRunRmRule([ruleId: 'not-a-number'])
@@ -222,7 +222,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to run_rm_rule"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.handleGateway('manage_native_rules_and_apps', 'run_rm_rule', [ruleId: 300, action: 'rule'])

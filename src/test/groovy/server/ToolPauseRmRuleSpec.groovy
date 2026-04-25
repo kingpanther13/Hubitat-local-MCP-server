@@ -25,7 +25,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "throws when Built-in App Read is disabled"() {
         given:
-        settingsMap.enableBuiltinAppRead = false
+        settingsMap.enableBuiltinApp = false
 
         when:
         script.toolPauseRmRule([ruleId: 1])
@@ -37,7 +37,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "throws when ruleId is missing"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolPauseRmRule([:])
@@ -49,7 +49,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "golden path: dispatches pauseRule sendAction for the given ruleId"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolPauseRmRule([ruleId: 400])
@@ -62,7 +62,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "String ruleId is coerced to Integer"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolPauseRmRule([ruleId: '401'])
@@ -75,7 +75,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "non-numeric ruleId throws IllegalArgumentException"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolPauseRmRule([ruleId: 'abc'])
@@ -87,7 +87,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to pause_rm_rule"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.handleGateway('manage_native_rules_and_apps', 'pause_rm_rule', [ruleId: 500])

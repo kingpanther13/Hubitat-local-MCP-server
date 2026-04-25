@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addaction-fullmap-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+toggle-rename-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -82,10 +82,10 @@ def mainPage() {
         }
 
         section("Built-in App Integration") {
-            paragraph "<b>Built-in App Tools</b> expose read-only visibility into Hubitat's built-in apps (Rule Machine, Room Lighting, Scenes, Mode Manager, etc.) and allow controlling Rule Machine rules via the official <code>hubitat.helper.RMUtils</code> API."
-            paragraph "<i>Hubitat's platform blocks creating, modifying, or deleting built-in app instances from third-party apps. Use the native UI for configuration. These tools are read + trigger only.</i>"
-            input "enableBuiltinAppRead", "bool", title: "Enable Built-in App Tools",
-                  description: "Allows MCP to list all installed apps (built-in + user), find apps using a device, list Rule Machine rules, and trigger/pause/resume RM rules",
+            paragraph "<b>Built-in App Tools</b> expose read AND write access to Hubitat's built-in apps (Rule Machine, Room Lighting, Scenes, Mode Manager, etc.). Enables: (a) listing all installed apps and finding which apps use a device, (b) listing/triggering/pausing/resuming/setting-private-boolean on Rule Machine rules via <code>hubitat.helper.RMUtils</code>, and (c) creating, updating, and deleting native classic SmartApp instances (RM rules + others) via the hub's admin-layer endpoints — including full CRUD on Rule Machine rules with structured trigger/action APIs."
+            paragraph "<i>The CRUD operations (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write — both toggles must be on. The toggle is gated to opt-in because admin-layer writes touch the same endpoints as the native UI and can modify or delete rules.</i>"
+            input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write)",
+                  description: "Allows MCP to list all installed apps (built-in + user), find apps using a device, list/trigger/pause/resume/private-boolean Rule Machine rules, AND create/update/delete native classic SmartApp instances. CRUD ops additionally require Hub Admin Write.",
                   defaultValue: false, submitOnChange: true
         }
 
@@ -133,7 +133,9 @@ def mainPage() {
         }
 
         section("Settings") {
-            input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
+            input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine",
+                  description: "Exposes the custom_* tools (custom_list_rules, custom_create_rule, custom_update_rule, custom_delete_rule, custom_test_rule, custom_get_rule, custom_export_rule, custom_import_rule, custom_clone_rule, custom_get_rule_diagnostics) for the MCP-managed rule engine. When off, these tools disappear from tools/list. The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this.",
+                  defaultValue: true, submitOnChange: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -724,31 +726,73 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     return executeTool(toolName, safeArgs)
 }
 
-// Returns tool definitions visible to the MCP client (base tools + gateway tools)
+// Returns tool definitions visible to the MCP client. Default: 22 core tools + 11 gateway
+// entries. When useGateways is explicitly false, every tool is advertised individually
+// (~82 entries) and search_tools is dropped — it only helps navigate gateway-hidden tools.
+//
+// Toggle-based hides (apply in BOTH flat and gateway modes — when a feature toggle is off,
+// its tools are completely REMOVED from tools/list, not just gated at call time):
+//   enableBuiltinApp=false  → hides list_installed_apps, get_device_in_use_by, list_rm_rules,
+//                              run_rm_rule, pause_rm_rule, resume_rm_rule, set_rm_rule_boolean,
+//                              create_native_app, update_native_app, delete_native_app
+//   enableCustomRuleEngine=false (legacy default true) → hides all 10 custom_* tools
 def getToolDefinitions() {
+    def builtinAppOn = settings.enableBuiltinApp == true
+    def customEngineOn = settings.enableCustomRuleEngine == true || settings.enableCustomRuleEngine == null  // legacy default true
+    def hideByName = [] as Set
+    def hideGatewaySubTools = [:].withDefault { [] as Set }
+
+    if (!builtinAppOn) {
+        def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app"]
+        biTools.each { hideByName << it }
+        // Sub-tool removal from gateways (when in gateway mode):
+        //   manage_native_rules_and_apps: ALL 8 sub-tools require enableBuiltinApp → empty gateway → drops entirely
+        //   manage_installed_apps: 2/4 sub-tools require enableBuiltinApp; the other 2 (get_app_config, list_app_pages) only need Hub Admin Read
+        hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app"] as Set
+        hideGatewaySubTools["manage_installed_apps"] = ["list_installed_apps", "get_device_in_use_by"] as Set
+    }
+    if (!customEngineOn) {
+        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule", "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
+            hideByName << it
+        }
+    }
+
+    // Flat mode: every tool advertised individually under its real name; search_tools
+    // is dropped because it only helps navigate gateway-hidden tools.
+    if (settings.useGateways == false) {
+        return getAllToolDefinitions().findAll {
+            it.name != 'search_tools' && !hideByName.contains(it.name)
+        }
+    }
+
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
 
-    // Base tools: all tools NOT behind a gateway
-    def baseTools = getAllToolDefinitions().findAll { !proxiedNames.contains(it.name) }
+    // Base tools: all tools NOT behind a gateway, minus any hidden by toggles.
+    def baseTools = getAllToolDefinitions().findAll {
+        !proxiedNames.contains(it.name) && !hideByName.contains(it.name)
+    }
 
-    // Gateway tools: one tool per gateway
-    def gatewayTools = gatewayConfig.collect { gwName, config ->
-        def catalog = config.tools.collect { toolName ->
+    // Gateway tools: one tool per gateway, with sub-tool list filtered. If a gateway
+    // ends up with zero remaining sub-tools, drop the gateway entry entirely.
+    def gatewayTools = gatewayConfig.collectMany { gwName, config ->
+        def hiddenInGw = hideGatewaySubTools[gwName] ?: ([] as Set)
+        def visibleSubTools = config.tools.findAll { !hiddenInGw.contains(it) }
+        if (!visibleSubTools) return []
+        def catalog = visibleSubTools.collect { toolName ->
             "- ${toolName}: ${config.summaries[toolName]}"
         }.join("\n")
-
-        [
+        [[
             name: gwName,
             description: "${config.description}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
             inputSchema: [
                 type: "object",
                 properties: [
-                    tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: config.tools],
+                    tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: visibleSubTools],
                     args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
                 ]
             ]
-        ]
+        ]]
     }
 
     return baseTools + gatewayTools
@@ -2027,6 +2071,14 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
 }
 
 def executeTool(toolName, args) {
+    // Custom Rule Engine gate: when 'Enable Custom Rule Engine' is off,
+    // refuse any custom_* tool call before dispatch. The tools also
+    // disappear from tools/list (see getToolDefinitions), but a stale
+    // client cache could still try to call one — fail clearly here.
+    def customEngineOn = settings.enableCustomRuleEngine == true || settings.enableCustomRuleEngine == null
+    if (toolName?.startsWith("custom_") && !customEngineOn) {
+        throw new IllegalArgumentException("Custom Rule Engine is disabled. Enable 'Enable Custom Rule Engine' in MCP Rule Server app settings to use ${toolName}.")
+    }
     switch (toolName) {
         // Device Tools
         case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter)
@@ -3217,7 +3269,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addaction-fullmap-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+toggle-rename-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -3227,7 +3279,7 @@ def toolGetHubInfo() {
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
-    info.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
+    info.builtinAppEnabled = settings.enableBuiltinApp ?: false
 
     // PII/location data requires Hub Admin Read
     if (settings.enableHubAdminRead) {
@@ -4341,12 +4393,15 @@ def requireHubAdminRead() {
 }
 
 /**
- * Check if Built-in App Read access is enabled. Throws if not.
- * Gates installed-app enumeration, device-in-use-by lookup, and Rule Machine interop tools.
+ * Check if Built-in App Tools (read + write) is enabled. Throws if not.
+ * Gates installed-app enumeration, device-in-use-by lookup, Rule Machine
+ * interop (RMUtils-based list/run/pause/resume/setBoolean), AND native
+ * classic SmartApp CRUD (create_native_app / update_native_app /
+ * delete_native_app). The CRUD tools additionally require Hub Admin Write.
  */
-def requireBuiltinAppRead() {
-    if (!settings.enableBuiltinAppRead) {
-        throw new IllegalArgumentException("Built-in App Tools are disabled. Enable 'Enable Built-in App Tools' in MCP Rule Server app settings to use this tool.")
+def requireBuiltinApp() {
+    if (!settings.enableBuiltinApp) {
+        throw new IllegalArgumentException("Built-in App Tools are disabled. Enable 'Enable Built-in App Tools (read + write)' in MCP Rule Server app settings to use this tool.")
     }
 }
 
@@ -5471,7 +5526,7 @@ def toolGetHubDetails(args) {
     details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
-    details.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
+    details.builtinAppEnabled = settings.enableBuiltinApp ?: false
 
     mcpLog("info", "hub-admin", "Retrieved extended hub details")
     return details
@@ -8312,7 +8367,7 @@ def toolRenameRoom(args) {
  * installed-package metadata.
  */
 def toolListInstalledApps(args) {
-    requireBuiltinAppRead()
+    requireBuiltinApp()
     def filter = args?.filter ?: "all"
     def includeHidden = args?.includeHidden == true
 
@@ -8402,7 +8457,7 @@ def toolListInstalledApps(args) {
  * Backed by /device/fullJson/<id> which exposes appsUsing — the same data the Hubitat device page shows.
  */
 def toolGetDeviceInUseBy(args) {
-    requireBuiltinAppRead()
+    requireBuiltinApp()
     if (!args?.deviceId) throw new IllegalArgumentException("deviceId is required")
     def deviceId = args.deviceId.toString().trim()
     // /device/fullJson/<id> returns a parseable non-empty body even for unknown ids
@@ -8473,7 +8528,7 @@ def toolGetDeviceInUseBy(args) {
  * treat as a quiet "RM not installed".
  */
 def toolListRmRules(args) {
-    requireBuiltinAppRead()
+    requireBuiltinApp()
     def combined = [:]
     def v4Error = null
     def v5Error = null
@@ -8657,7 +8712,7 @@ private void registerRmRule(Map combined, def r, String version) {
  * Not destructive — invokes existing user-configured automation.
  */
 def toolRunRmRule(args) {
-    requireBuiltinAppRead()
+    requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     def ruleId = normalizeRuleId(args.ruleId)
     def action = args?.action ?: "rule"
@@ -8739,7 +8794,7 @@ private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) 
  * Idempotent on the hub side: pausing an already-paused rule is a no-op.
  */
 def toolPauseRmRule(args) {
-    requireBuiltinAppRead()
+    requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     return sendRmAction(normalizeRuleId(args.ruleId), "pauseRule", "pause_rm_rule")
 }
@@ -8749,7 +8804,7 @@ def toolPauseRmRule(args) {
  * Idempotent on the hub side: resuming an already-active rule is a no-op.
  */
 def toolResumeRmRule(args) {
-    requireBuiltinAppRead()
+    requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     return sendRmAction(normalizeRuleId(args.ruleId), "resumeRule", "resume_rm_rule")
 }
@@ -8767,7 +8822,7 @@ def toolResumeRmRule(args) {
  * worse than the friction of requiring explicit true/false.
  */
 def toolSetRmRuleBoolean(args) {
-    requireBuiltinAppRead()
+    requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     if (args?.value == null) throw new IllegalArgumentException("value (boolean) is required")
     // Accept Boolean or the canonical lowercase strings 'true'/'false' only. Reject other
@@ -10434,6 +10489,7 @@ private Map _rmSoftDeleteApp(Integer appId) {
  * shells under the RM parent.
  */
 def toolCreateNativeApp(args) {
+    requireBuiltinApp()
     requireHubAdminWrite(args?.confirm as Boolean)
     def appType = args?.appType?.toString()?.trim() ?: "rule_machine"
     def reg = _appTypeRegistry()[appType]
@@ -10559,6 +10615,7 @@ def toolCreateNativeApp(args) {
  * that page so settings named on that page get correct marshaling.
  */
 def toolUpdateNativeApp(args) {
+    requireBuiltinApp()
     requireHubAdminWrite(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
@@ -10868,6 +10925,7 @@ def toolUpdateNativeApp(args) {
  * Button Controllers, Basic Rules, Notifier, etc.
  */
 def toolDeleteNativeApp(args) {
+    requireBuiltinApp()
     requireHubAdminWrite(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
@@ -11511,7 +11569,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         builtin_app_tools: '''## Built-in App Tools
 
-Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools" toggle (requireBuiltinAppRead). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). All manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
 
 **manage_installed_apps (4 tools):**
 
