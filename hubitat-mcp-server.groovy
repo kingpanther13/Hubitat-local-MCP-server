@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+clearActions-trash-state-detect-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+health-skipped-clone-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -653,7 +653,7 @@ def getGatewayConfig() {
         ],
         manage_native_rules_and_apps: [
             description: "Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules — any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean — RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write.",
-            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app"],
+            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "check_rule_health"],
             summaries: [
                 list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 run_rm_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
@@ -662,7 +662,9 @@ def getGatewayConfig() {
                 set_rm_rule_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
                 create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use update_native_app next to populate.",
                 update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic) or click a page-transition button. Auto-backs-up first. Args: appId, settings|button, pageName (opt), stateAttribute (opt), confirm",
-                delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm"
+                delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
+                clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than creating from scratch + walking the wizard. Args: sourceAppId, newName (opt), confirm. Returns newAppId.",
+                check_rule_health: "Inspect a rule for broken state (label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption). Args: appId. Returns {ok, issues, ...}. Auto-attached to update_native_app responses too."
             ],
             searchHints: [
                 list_rm_rules: "rule machine rules native builtin automation list enumerate",
@@ -672,7 +674,9 @@ def getGatewayConfig() {
                 set_rm_rule_boolean: "private boolean flag rule machine rule condition",
                 create_native_app: "create new native rule machine room lighting button controller basic rule notifier scene group automation app",
                 update_native_app: "modify edit change native rule machine room lighting button controller basic rule notifier app trigger action condition setting",
-                delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app"
+                delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
+                clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
+                check_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption"
             ]
         ]
     ]
@@ -756,12 +760,12 @@ def getToolDefinitions() {
     def hideGatewaySubTools = [:].withDefault { [] as Set }
 
     if (!builtinAppOn) {
-        def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app"]
+        def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "check_rule_health"]
         biTools.each { hideByName << it }
         // Sub-tool removal from gateways (when in gateway mode):
         //   manage_native_rules_and_apps: ALL 8 sub-tools require enableBuiltinApp → empty gateway → drops entirely
         //   manage_installed_apps: 2/4 sub-tools require enableBuiltinApp; the other 2 (get_app_config, list_app_pages) only need Hub Admin Read
-        hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app"] as Set
+        hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "check_rule_health"] as Set
         hideGatewaySubTools["manage_installed_apps"] = ["list_installed_apps", "get_device_in_use_by"] as Set
     }
     if (!customEngineOn) {
@@ -2080,6 +2084,45 @@ Wire-format quirks the helper handles for you (so callers don't need to know):
             ]
         ],
         [
+            name: "clone_native_app",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner. Lower-overhead alternative to creating from scratch + walking the wizard for every field — clone an existing rule that has the shape you want, then surgically edit a few fields via update_native_app.
+
+The clone preserves the full rule shape including state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays — things the wizard-driving path can't easily reconstruct from a spec. Pair with a small library of template rules to cover most user intents.
+
+Endpoint: GET /installedapp/sysAppApi/appCloner/app/<sourceAppId> (no body), then walk appCloner's wizard via update_native_app calls. Returns newAppId and the cloner's appId in case the caller wants to inspect/cancel it.
+
+Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone."],
+                    newName: [type: "string", description: "Label for the new cloned app. If omitted, the cloner picks a default like 'Source-Label (clone)'."],
+                    confirm: [type: "boolean", description: "Must be true."]
+                ],
+                required: ["sourceAppId", "confirm"]
+            ]
+        ],
+        [
+            name: "check_rule_health",
+            description: """Inspect a rule's current state and return a structured health report — the LLM uses this to detect broken rules without having to investigate via curl. Surfaces:
+
+  - configPage.error: page render failures (often caused by multi-flag DB poisoning)
+  - label markers: '*BROKEN*' suffix RM appends when a rule has a malformed trigger or action
+  - paragraph markers: '**Broken Trigger**', '**Broken Action**', '**Broken Condition**'
+  - multiple-flag corruption: lists settings whose statusJson .multiple flag has been flipped to false despite the schema declaring multiple=true
+
+Run after every mutation to confirm the change didn't leave the rule in a broken state. update_native_app already attaches this report automatically as `health` on every response, but you can call it explicitly any time.
+
+Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoison: [...], issues: [...]}. ok=false means at least one issue was found; the issues list explains what.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "integer", description: "Installed-app ID to check."]
+                ],
+                required: ["appId"]
+            ]
+        ],
+        [
             name: "delete_native_app",
             description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them. Two modes:
 
@@ -2264,6 +2307,8 @@ def executeTool(toolName, args) {
         case "create_native_app": return toolCreateNativeApp(args)
         case "update_native_app": return toolUpdateNativeApp(args)
         case "delete_native_app": return toolDeleteNativeApp(args)
+        case "clone_native_app": return toolCloneNativeApp(args)
+        case "check_rule_health": return toolCheckRuleHealth(args)
 
         // Tool Guide
         case "get_tool_guide": return toolGetToolGuide(args.section)
@@ -3326,7 +3371,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+clearActions-trash-state-detect-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+health-skipped-clone-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9393,6 +9438,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def conditionSpec = (triggerSpec.condition instanceof Map) ? (triggerSpec.condition as Map) : null
     def conditionId = null
     def applied = []
+    def skipped = []
     if (conditionSpec) {
         conditionId = _rmBuildCondition(appId, idx, conditionSpec, applied)
         // The condition wizard advanced the trigger index by one, so the
@@ -9401,8 +9447,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // Re-open the trigger editor for the new index. Toggle isCondTrig
         // back on (Done-with-Condition resets the toggle) and bind the
         // condition we just saved by its ID.
-        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied)
-        _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", conditionId.toString(), applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied, null, skipped)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", conditionId.toString(), applied, null, skipped)
     }
 
     // Normalize capability to the canonical case Hubitat's enum expects.
@@ -9423,11 +9469,11 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!capCanonical) {
         throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list. Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}")
     }
-    _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", capCanonical, applied)
+    _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", capCanonical, applied, null, skipped)
 
     // Helper closures (sandbox-friendly: no closure recursion on private methods)
     def writeIfPresent = { String name, Object value, String typeHint = null ->
-        if (value != null) _rmWriteSettingOnPage(appId, "selectTriggers", name, value, applied, typeHint)
+        if (value != null) _rmWriteSettingOnPage(appId, "selectTriggers", name, value, applied, typeHint, skipped)
     }
 
     // Device-based capabilities use tDev<N>. Time and other non-device
@@ -9519,7 +9565,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     //     a phantom trigger.
     def condValue = (conditionSpec != null) || (triggerSpec.conditional == true)
     try {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", condValue, applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", condValue, applied, null, skipped)
     } catch (Exception ignored) {
         // Best-effort: if the prompt isn't there (clean exit), the schema
         // check inside _rmWriteSettingOnPage skips it.
@@ -9538,12 +9584,16 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     try { finalConfig = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception ignored) { finalConfig = null }
     def err = finalConfig?.configPage?.error
 
+    def health = _rmCheckRuleHealth(appId)
+
     def result = [
-        success: !err,
+        success: !err && health.ok,
         triggerIndex: idx,
         capability: cap,
         settingsApplied: applied,
-        configPageError: err
+        settingsSkipped: skipped,
+        configPageError: err,
+        health: health
     ]
     if (conditionId != null) result.conditionId = conditionId
     return result
@@ -10496,18 +10546,19 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     _rmClickAppButton(appId, "N", "doActN", "selectActions")
 
     def applied = []
+    def skipped = []
 
     // Set actType + actSubType. Each write re-fetches the schema, so the
     // subsequent fields appear as the wizard expands.
-    _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied)
-    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied)
+    _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied, null, skipped)
+    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied, null, skipped)
 
     // Type-specific fields. The @N placeholder in keys is substituted with
     // the action index here.
     fields.each { rawKey, value ->
         if (value != null) {
             def fieldName = rawKey.toString().replace("@N", idx.toString())
-            _rmWriteSettingOnPage(appId, "doActPage", fieldName, value, applied)
+            _rmWriteSettingOnPage(appId, "doActPage", fieldName, value, applied, null, skipped)
         }
     }
 
@@ -10525,16 +10576,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     if (actionSpec.delay instanceof Map) {
         def d = actionSpec.delay as Map
         if (d.variable != null) {
-            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "variable", applied)
-            _rmWriteSettingOnPage(appId, "doActPage", "xVarD.${idx}", d.variable, applied)
+            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "variable", applied, null, skipped)
+            _rmWriteSettingOnPage(appId, "doActPage", "xVarD.${idx}", d.variable, applied, null, skipped)
         } else {
-            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied)
-            if (d.hours != null)   _rmWriteSettingOnPage(appId, "doActPage", "delayHor.${idx}", d.hours, applied)
-            if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMin.${idx}", d.minutes, applied)
-            if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySec.${idx}", d.seconds, applied)
+            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied, null, skipped)
+            if (d.hours != null)   _rmWriteSettingOnPage(appId, "doActPage", "delayHor.${idx}", d.hours, applied, null, skipped)
+            if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMin.${idx}", d.minutes, applied, null, skipped)
+            if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySec.${idx}", d.seconds, applied, null, skipped)
         }
-        if (d.random != null)     _rmWriteSettingOnPage(appId, "doActPage", "randomAct.${idx}", d.random, applied)
-        if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied)
+        if (d.random != null)     _rmWriteSettingOnPage(appId, "doActPage", "randomAct.${idx}", d.random, applied, null, skipped)
+        if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied, null, skipped)
     }
 
     // runCommand: extra parameters beyond the first. Verified live (2026-04-25):
@@ -10570,9 +10621,9 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 mcpLog("warn", "rm-native", "runCommand: moreParams click did not reveal a new cpType<N> field for action ${idx}; param skipped")
                 return
             }
-            _rmWriteSettingOnPage(appId, "doActPage", newCpType, pType, applied)
+            _rmWriteSettingOnPage(appId, "doActPage", newCpType, pType, applied, null, skipped)
             def newCpVal = newCpType.replace("cpType", "cpVal")
-            if (pValue != null) _rmWriteSettingOnPage(appId, "doActPage", newCpVal, pValue, applied)
+            if (pValue != null) _rmWriteSettingOnPage(appId, "doActPage", newCpVal, pValue, applied, null, skipped)
         }
     }
 
@@ -10581,7 +10632,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actionSpec.rawSettings.each { k, v ->
             if (v != null) {
                 def fieldName = k.toString().replace("@N", idx.toString())
-                _rmWriteSettingOnPage(appId, "doActPage", fieldName, v, applied)
+                _rmWriteSettingOnPage(appId, "doActPage", fieldName, v, applied, null, skipped)
             }
         }
     }
@@ -10609,15 +10660,19 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     try { finalConfig = _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { finalConfig = null }
     def err = finalConfig?.configPage?.error
 
+    def health = _rmCheckRuleHealth(appId)
+
     return [
-        success: !err,
+        success: !err && health.ok,
         actionIndex: idx,
         capability: cap,
         action: action,
         actType: actType,
         actSubType: actSubType,
         settingsApplied: applied,
-        configPageError: err
+        settingsSkipped: skipped,
+        configPageError: err,
+        health: health
     ]
 }
 
@@ -10701,11 +10756,18 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
  * The `applied` accumulator collects every key that actually landed on
  * the page so the caller can include it in the response.
  */
-private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null) {
+private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null, List skipped = null) {
     def config = _rmFetchConfigJson(appId, pageName)
     def schema = _rmCollectInputSchema(config?.configPage)
     if (!schema?.containsKey(key)) {
-        return  // Field not in current schema — silently skip; expected for incremental wizard advancement.
+        // Field not in current schema. This is normal for incremental
+        // wizards (writing tCapab1 unlocks tDev1 next), so it's not
+        // necessarily a bug — but caller wants visibility. Surface the
+        // skip via the `skipped` list when caller provided one.
+        if (skipped != null) {
+            skipped << [key: key, reason: "not_in_schema", value: value, available: schema?.keySet()?.toList()?.sort()]
+        }
+        return
     }
     def settingsMap = [(key): value]
     def schemaForBuild = schema
@@ -10762,6 +10824,84 @@ private Map _rmFetchStatusJson(Integer appId) {
  * name → metadata map. Used to decide which settings need the .type +
  * .multiple sidecar fields.
  */
+/**
+ * Inspect a rule's current state and return a structured health report.
+ * Surfaces problems an LLM caller needs to see and act on without having
+ * to re-investigate via curl. Verified live 2026-04-25:
+ *
+ *   - Rules with malformed triggers get a label suffix '*BROKEN*' and
+ *     paragraphs containing literal text '**Broken Trigger**' /
+ *     '**Broken Action**'. Both are stable strings RM emits in its
+ *     mainPage render.
+ *   - configPage.error is non-null when the page render itself failed
+ *     (e.g. .size() called on a Device that should be List<Device>
+ *     because of multiple-flag poisoning).
+ *   - statusJson.appSettings carries per-setting marshal flags including
+ *     `multiple` — comparing it to the schema's declared multiple
+ *     reveals DB flag corruption that will crash the rule on next event.
+ *
+ * Callers (toolUpdateNativeApp, toolCheckRuleHealth) attach this report
+ * to mutation responses so an LLM sees broken state immediately.
+ */
+private Map _rmCheckRuleHealth(Integer appId) {
+    def issues = []
+    def label = null
+    def configPageError = null
+    def brokenMarkers = []
+    def multipleFlagPoison = []
+    try {
+        def cfg = _rmFetchConfigJson(appId)
+        label = cfg?.app?.label?.toString()
+        configPageError = cfg?.configPage?.error
+        if (configPageError) {
+            issues << "configPage.error: ${configPageError}".toString()
+        }
+        if (label?.contains("*BROKEN*")) {
+            issues << "label contains *BROKEN* marker — rule has at least one malformed trigger or action".toString()
+        }
+        // Scan paragraphs for the well-known broken-state strings RM emits
+        // in its rendered output.
+        (cfg?.configPage?.sections ?: []).each { s ->
+            (s?.paragraphs ?: []).each { p ->
+                def text = p?.toString() ?: ""
+                ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].each { marker ->
+                    if (text.contains(marker)) brokenMarkers << marker
+                }
+            }
+        }
+        if (brokenMarkers) {
+            issues << "broken markers in render: ${brokenMarkers.unique().join(', ')}".toString()
+        }
+        // Multiple-flag corruption check. Compare schema declaration vs
+        // statusJson appSettings record for each setting that the schema
+        // says is multi.
+        def status = _rmFetchStatusJson(appId)
+        def schema = _rmCollectInputSchema(cfg?.configPage)
+        def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+        schema.each { name, meta ->
+            if (meta?.multiple == true) {
+                def rec = settingsByName[name]
+                if (rec != null && rec.multiple != true) {
+                    multipleFlagPoison << name.toString()
+                }
+            }
+        }
+        if (multipleFlagPoison) {
+            issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
+        }
+    } catch (Exception e) {
+        issues << "health check failed: ${e.message}".toString()
+    }
+    return [
+        ok: issues.isEmpty(),
+        label: label,
+        configPageError: configPageError,
+        brokenMarkers: brokenMarkers.unique(),
+        multipleFlagPoison: multipleFlagPoison,
+        issues: issues
+    ]
+}
+
 private Map _rmCollectInputSchema(Map configPage) {
     def schema = [:]
     for (s in (configPage?.sections ?: [])) {
@@ -11131,8 +11271,9 @@ def toolCreateNativeApp(args) {
         }
 
         def status = _rmFetchStatusJson(newId)
+        def health = _rmCheckRuleHealth(newId)
         def result = [
-            success: true,
+            success: health.ok,
             appId: newId,
             appType: appType,
             name: name,
@@ -11141,6 +11282,7 @@ def toolCreateNativeApp(args) {
                 eventSubscriptions: (status?.eventSubscriptions?.size() ?: 0),
                 scheduledJobs: (status?.scheduledJobs?.size() ?: 0)
             ],
+            health: health,
             note: (triggerSpecs || actionSpecs) ?
                 "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success != false }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success != false }}/${actionSpecs.size()} actions committed. updateRule fired once at the end." :
                 "Empty ${appType} app created (id=${newId}). Use update_native_app to populate, or get_app_config to inspect."
@@ -11261,12 +11403,14 @@ def toolUpdateNativeApp(args) {
         }
         def addedOk = (addedResults ?: []).count { it?.success != false }
         def addedTotal = (replaceActionsList ?: []).size()
+        def health = _rmCheckRuleHealth(appId)
         return [
-            success: addedOk == addedTotal,
+            success: (addedOk == addedTotal) && health.ok,
             appId: appId,
             backup: backup,
             removedIndices: removed ?: null,
             addedActions: addedResults ?: null,
+            health: health,
             note: replaceActionsList != null
                 ? "Replaced actions: removed ${removed?.size() ?: 0}, added ${addedOk}/${addedTotal}; updateRule fired."
                 : (clearActionsFlag ? "Cleared ${removed?.size() ?: 0} actions; updateRule fired."
@@ -11299,7 +11443,9 @@ def toolUpdateNativeApp(args) {
             backup: backup,
             triggerIndex: trigResult?.triggerIndex,
             settingsApplied: trigResult?.settingsApplied,
+            settingsSkipped: trigResult?.settingsSkipped,
             configPageError: trigResult?.configPageError,
+            health: trigResult?.health,
             note: "Trigger added. Call update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions."
         ]
     }
@@ -11333,7 +11479,9 @@ def toolUpdateNativeApp(args) {
             actType: actResult?.actType,
             actSubType: actResult?.actSubType,
             settingsApplied: actResult?.settingsApplied,
+            settingsSkipped: actResult?.settingsSkipped,
             configPageError: actResult?.configPageError,
+            health: actResult?.health,
             note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake — no manual updateRule needed."
         ]
     }
@@ -11389,12 +11537,14 @@ def toolUpdateNativeApp(args) {
         }
         def trigOk = triggerResults.count { it?.success != false }
         def actOk = actionResults.count { it?.success != false }
+        def health = _rmCheckRuleHealth(appId)
         return [
-            success: trigOk == triggerResults.size() && actOk == actionResults.size(),
+            success: trigOk == triggerResults.size() && actOk == actionResults.size() && health.ok,
             appId: appId,
             backup: backup,
             triggers: triggerResults,
             actions: actionResults,
+            health: health,
             note: "Bulk update committed: ${trigOk}/${triggerResults.size()} triggers + ${actOk}/${actionResults.size()} actions; updateRule fired once at the end."
         ]
     }
@@ -11539,6 +11689,10 @@ def toolUpdateNativeApp(args) {
                 result.subscriptionSettle = "OK"
             }
         }
+        // Always attach health to settings/button mutations too — the LLM
+        // sees broken state immediately without having to call check_rule_health.
+        result.health = _rmCheckRuleHealth(appId)
+        if (!result.health.ok) result.success = false
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
@@ -11611,6 +11765,121 @@ def toolDeleteNativeApp(args) {
             backup: backup
         ]
     }
+}
+
+/**
+ * check_rule_health — public tool wrapper around _rmCheckRuleHealth.
+ * Read-only; doesn't take a backup. Returns the same {ok, issues, ...}
+ * shape that update_native_app embeds as `health` on every response.
+ */
+def toolCheckRuleHealth(args) {
+    requireBuiltinApp()
+    if (args?.appId == null) throw new IllegalArgumentException("appId is required")
+    def appId = normalizeRuleId(args.appId)
+    return _rmCheckRuleHealth(appId)
+}
+
+/**
+ * clone_native_app — wraps Hubitat's first-party appCloner system app.
+ *
+ * Wire format verified live 2026-04-25 by inspecting the live UI:
+ *
+ *   1. GET /installedapp/sysAppApi/appCloner/app/<sourceAppId> → 302
+ *      Location: /installedapp/configure/<clonerAppId> (a transient
+ *      cloner instance is created on the fly, with sourceAppId loaded
+ *      into its state).
+ *   2. The cloner's mainPage exposes inputs to rename the clone, remap
+ *      device/app references, and a 'Done' button that commits the
+ *      clone as a new sibling of the source under the same parent.
+ *   3. After Done, /installedapp/configure/<clonerAppId> redirects to
+ *      the parent's mainPage with a banner indicating the new app's id.
+ *
+ * For now this implementation drives the simplest path: clone with no
+ * device/app remapping, optionally rename, commit. Callers that need
+ * device-replacement can pass remap maps via rawSettings (TODO).
+ */
+def toolCloneNativeApp(args) {
+    requireBuiltinApp()
+    requireHubAdminWrite(args?.confirm as Boolean)
+    if (args?.sourceAppId == null) throw new IllegalArgumentException("sourceAppId is required")
+    def sourceAppId = normalizeRuleId(args.sourceAppId)
+    def newName = args?.newName?.toString()?.trim()
+
+    // Step 1: hit appCloner's entry point. Hub responds with a 302 whose
+    // Location header carries the cloner instance ID.
+    def entryResp
+    try {
+        entryResp = hubInternalGetRaw("/installedapp/sysAppApi/appCloner/app/${sourceAppId}")
+    } catch (Exception e) {
+        throw new IllegalStateException("appCloner entry failed for source ${sourceAppId}: ${e.message}. The source app may not exist or appCloner may be unavailable.")
+    }
+    def clonerLocation = entryResp?.location
+    if (!clonerLocation) {
+        throw new IllegalStateException("appCloner entry returned no Location header for source ${sourceAppId} (status=${entryResp?.status})")
+    }
+    def m = (clonerLocation =~ /\/installedapp\/configure\/(\d+)/)
+    if (!m.find()) {
+        throw new IllegalStateException("Unexpected appCloner Location: ${clonerLocation}")
+    }
+    def clonerAppId = m[0][1] as Integer
+
+    // Step 2: optionally rename. The cloner's first input is `appLabel`
+    // (or similar). We'll fetch the schema to pick the right field name
+    // dynamically — appCloner's input names may differ across firmware.
+    def clonerCfg = _rmFetchConfigJson(clonerAppId)
+    def schema = _rmCollectInputSchema(clonerCfg?.configPage)
+    if (newName) {
+        // Try common label-input names in order. Most likely 'appLabel' or 'newLabel'.
+        def labelKey = ["appLabel", "newLabel", "newName", "origLabel"].find { schema?.containsKey(it) }
+        if (labelKey) {
+            _rmUpdateAppSettings(clonerAppId, [(labelKey): newName], schema)
+        } else {
+            mcpLog("warn", "rm-native", "clone_native_app: no label field found in cloner schema; available inputs: ${schema?.keySet()}")
+        }
+    }
+
+    // Step 3: click Done / commit. The cloner uses a button to finalize.
+    // Common names: 'Done', 'doClone', 'commit'. Fall back to scanning.
+    def doneBtn = (clonerCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        .find { it?.type == "button" && (it.title?.toString()?.toLowerCase()?.contains("done") || it.title?.toString()?.toLowerCase()?.contains("clone") || it.name?.toString()?.toLowerCase()?.contains("clone")) }
+    if (!doneBtn) {
+        return [
+            success: false,
+            sourceAppId: sourceAppId,
+            clonerAppId: clonerAppId,
+            error: "appCloner schema didn't expose a recognizable 'Done'/'Clone' button. Inspect /installedapp/configure/json/${clonerAppId} manually and use update_native_app(button=...) to commit.",
+            schemaInputs: schema?.keySet()?.toList()
+        ]
+    }
+    _rmClickAppButton(clonerAppId, doneBtn.name?.toString())
+
+    // After Done, the new app id is referenced in the post-commit response.
+    // Fall back: scan parent's children to find the most recent app whose
+    // label matches newName (or the source's label + " (Clone)").
+    def sourceCfg
+    try { sourceCfg = _rmFetchConfigJson(sourceAppId) } catch (Exception ignored) { sourceCfg = null }
+    def parentAppId = sourceCfg?.app?.parentAppId as Integer
+    def newAppId = null
+    if (parentAppId) {
+        def parentCfg = _rmFetchConfigJson(parentAppId)
+        def candidates = (parentCfg?.childApps ?: []).findAll { c ->
+            def label = c?.label?.toString() ?: ""
+            (newName && label == newName) || label.endsWith("(Clone)") || label.contains("Clone")
+        }
+        if (candidates) {
+            newAppId = candidates*.id*.toInteger().max()
+        }
+    }
+
+    return [
+        success: true,
+        sourceAppId: sourceAppId,
+        clonerAppId: clonerAppId,
+        newAppId: newAppId,
+        note: newAppId
+            ? "Cloned source ${sourceAppId} → new app ${newAppId}. Use update_native_app to surgically edit the clone."
+            : "Clone committed but couldn't auto-discover the new app ID. Inspect parent ${parentAppId} children to find it."
+    ]
 }
 
 /**
