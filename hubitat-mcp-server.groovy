@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addAction-switchfamily-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addAction-bulkapi-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1782,6 +1782,11 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
                         description: "Optional list of trigger specs to populate after creating the empty rule. Each spec follows the same shape as update_native_app(addTrigger=…). When provided, the tool creates the rule, adds every trigger sequentially (1 wizard run per spec), and fires updateRule once at the end. Returns triggerIndices in the response. Empty/omitted = create-only behavior, same as before.",
                         items: [type: "object"]
                     ],
+                    actions: [
+                        type: "array",
+                        description: "Optional list of action specs to populate after creating the rule (and any bundled triggers). Each spec follows the same shape as update_native_app(addAction=…). The tool creates the rule, adds every trigger, then every action sequentially, then fires updateRule once at the end so subscriptions and the actions[] map bake from a fully-loaded rule. Pairs naturally with the triggers array — pass both to build a complete rule (trigger + actions) in a single call. Empty/omitted = no actions added.",
+                        items: [type: "object"]
+                    ],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
                 ],
                 required: ["name", "confirm"]
@@ -1848,6 +1853,16 @@ Optional fields on every spec:
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.)
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow."""
+                    ],
+                    addTriggers: [
+                        type: "array",
+                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.",
+                        items: [type: "object"]
+                    ],
+                    addActions: [
+                        type: "array",
+                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so the actions[] map and subscriptions bake atomically. Pairs naturally with addTriggers — pass both to add many triggers + many actions in a single tool call.",
+                        items: [type: "object"]
                     ],
                     addAction: [
                         type: "object",
@@ -3123,7 +3138,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addAction-switchfamily-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addAction-bulkapi-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -10025,6 +10040,28 @@ def toolCreateNativeApp(args) {
             _rmClickAppButton(newId, "updateRule")
         }
 
+        // Optional bulk-action creation. Mirrors the triggers path but
+        // for actions. Each spec follows update_native_app's addAction
+        // shape. After all are committed, fire updateRule once so the
+        // actions[] map bakes from a fully-loaded rule.
+        def actionSpecs = args?.actions instanceof List ? (args.actions as List) : []
+        def actionResults = []
+        if (actionSpecs) {
+            actionSpecs.eachWithIndex { spec, i ->
+                if (!(spec instanceof Map)) {
+                    actionResults << [success: false, error: "actions[${i}] is not a Map", spec: spec]
+                    return
+                }
+                try {
+                    actionResults << _rmAddAction(newId, spec as Map)
+                } catch (Exception ae) {
+                    actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
+                    mcpLog("warn", "rm-native", "create_native_app: action ${i} (${spec.capability}/${spec.action}) failed — ${ae.message}")
+                }
+            }
+            _rmClickAppButton(newId, "updateRule")
+        }
+
         def status = _rmFetchStatusJson(newId)
         def result = [
             success: true,
@@ -10036,11 +10073,12 @@ def toolCreateNativeApp(args) {
                 eventSubscriptions: (status?.eventSubscriptions?.size() ?: 0),
                 scheduledJobs: (status?.scheduledJobs?.size() ?: 0)
             ],
-            note: triggerSpecs ?
-                "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success != false }} of ${triggerSpecs.size()} triggers committed. updateRule fired once after all triggers added." :
+            note: (triggerSpecs || actionSpecs) ?
+                "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success != false }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success != false }}/${actionSpecs.size()} actions committed. updateRule fired once at the end." :
                 "Empty ${appType} app created (id=${newId}). Use update_native_app to populate, or get_app_config to inspect."
         ]
         if (triggerSpecs) result.triggers = triggerResults
+        if (actionSpecs) result.actions = actionResults
         return result
     } catch (Exception e) {
         // Orphan cleanup: caller didn't get a usable app, so remove the
@@ -10081,13 +10119,19 @@ def toolUpdateNativeApp(args) {
     def button = args?.button?.toString()?.trim() ?: null
     def addTriggerSpec = args?.addTrigger instanceof Map ? args.addTrigger : null
     def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
-    if (!settingsMap && !button && !addTriggerSpec && !addActionSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), or 'addAction' (Map) — none provided.")
+    def addActionsList = args?.addActions instanceof List ? (args.addActions as List) : null
+    def addTriggersList = args?.addTriggers instanceof List ? (args.addTriggers as List) : null
+    if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), or 'addActions' (List) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
     // restore channel if anything downstream goes wrong.
-    def backupReason = button ? "pre-button-${button}" : (addTriggerSpec ? "pre-addTrigger" : (addActionSpec ? "pre-addAction" : "pre-update"))
+    def backupReason = button ? "pre-button-${button}" :
+        (addTriggerSpec ? "pre-addTrigger" :
+        (addActionSpec ? "pre-addAction" :
+        (addActionsList ? "pre-addActions-bulk" :
+        (addTriggersList ? "pre-addTriggers-bulk" : "pre-update"))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
 
     if (addTriggerSpec) {
@@ -10150,6 +10194,62 @@ def toolUpdateNativeApp(args) {
             settingsApplied: actResult?.settingsApplied,
             configPageError: actResult?.configPageError,
             note: "Action added. Call update_native_app(button='updateRule') after adding all actions to fire initialize() and bake the actions[] map."
+        ]
+    }
+
+    if (addTriggersList || addActionsList) {
+        // Bulk path: add many triggers + many actions in one tool call,
+        // then fire updateRule once at the end. This is the efficient
+        // shape for callers who already know all the triggers/actions
+        // they want — collapses N tool calls into 1.
+        def triggerResults = []
+        def actionResults = []
+        try {
+            (addTriggersList ?: []).eachWithIndex { spec, i ->
+                if (!(spec instanceof Map)) {
+                    triggerResults << [success: false, error: "addTriggers[${i}] is not a Map", spec: spec]
+                    return
+                }
+                try { triggerResults << _rmAddTrigger(appId, spec as Map) }
+                catch (Exception te) {
+                    triggerResults << [success: false, error: te.message, specCapability: spec.capability]
+                    mcpLog("warn", "rm-native", "update_native_app: addTriggers[${i}] (${spec.capability}) failed — ${te.message}")
+                }
+            }
+            (addActionsList ?: []).eachWithIndex { spec, i ->
+                if (!(spec instanceof Map)) {
+                    actionResults << [success: false, error: "addActions[${i}] is not a Map", spec: spec]
+                    return
+                }
+                try { actionResults << _rmAddAction(appId, spec as Map) }
+                catch (Exception ae) {
+                    actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
+                    mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed — ${ae.message}")
+                }
+            }
+            // One updateRule fires after everything — bakes triggers + actions atomically.
+            _rmClickAppButton(appId, "updateRule")
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "addTriggers/addActions bulk failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                triggerResults: triggerResults,
+                actionResults: actionResults,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
+        def trigOk = triggerResults.count { it?.success != false }
+        def actOk = actionResults.count { it?.success != false }
+        return [
+            success: trigOk == triggerResults.size() && actOk == actionResults.size(),
+            appId: appId,
+            backup: backup,
+            triggers: triggerResults,
+            actions: actionResults,
+            note: "Bulk update committed: ${trigOk}/${triggerResults.size()} triggers + ${actOk}/${actionResults.size()} actions; updateRule fired once at the end."
         ]
     }
 
