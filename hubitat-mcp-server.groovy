@@ -10335,10 +10335,15 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 // For custom HSV: pass hue/saturation/level via rawSettings (colorH.<N> takes a JSON-encoded color picker value)
                 break
             case "toggleColor":
+                // Verified live 2026-04-26: getToggleColor's actionDone button
+                // doesn't render until colorName AND level are set. Without
+                // them the action never bakes — the row stays in atomicState
+                // but actions[] doesn't advance, so the next addAction's
+                // index discovery returns the same idx and overwrites.
+                if (actionSpec.colorName == null) throw new IllegalArgumentException("color.toggleColor requires 'colorName' (e.g. 'Red'). Without it, actionDone never appears in the schema and the action silently fails to bake.")
+                if (actionSpec.level == null) throw new IllegalArgumentException("color.toggleColor requires 'level' (0-100). Without it, actionDone never appears in the schema and the action silently fails to bake.")
                 actSubType = "getToggleColor"
-                fields = ["bulbsTog.@N": deviceIds]
-                if (actionSpec.colorName != null) fields["colorTog.@N"] = actionSpec.colorName
-                if (actionSpec.level != null) fields["colorTogLevel.@N"] = actionSpec.level
+                fields = ["bulbsTog.@N": deviceIds, "colorTog.@N": actionSpec.colorName, "colorTogLevel.@N": actionSpec.level]
                 break
             case "setColorPerMode":
                 // dimmerActs/getColorPerMode — per-mode color + level (RGBW bulbs).
@@ -10520,27 +10525,23 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             "devices.@N": deviceIds,
             "cCmd.@N": actionSpec.command
         ]
-        // First parameter pair: cpType1.<N>/cpVal1.<N> auto-appear after
-        // cCmd is written (schema refreshes between settings). Direct-write
-        // those alongside the rest. Subsequent params (2..K) require a
-        // moreParams button click each — handled below after the main loop.
+        // ALL parameters require a moreParams click each. Verified live
+        // 2026-04-26: cCmd alone does NOT auto-expose cpType1/cpVal1 — the
+        // schema after writing cCmd shows just the moreParams button. Each
+        // moreParams click allocates the next cpType<N>/cpVal<N> pair. The
+        // earlier comment claiming cpType1 auto-appears was wrong.
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
-            def first = actionSpec.parameters[0]
-            def fType, fValue
-            if (first instanceof Map) { fType = first.type; fValue = first.value }
-            else { fType = "string"; fValue = first }
-            if (fType != null) {
-                def t = fType.toString().toLowerCase()
-                if (!(t in ["string", "number", "decimal"])) {
-                    throw new IllegalArgumentException("runCommand parameter type '${fType}' invalid — must be 'string', 'number', or 'decimal'")
+            // Validate types up-front so a bad type fails fast.
+            actionSpec.parameters.each { p ->
+                def pType = p instanceof Map ? p.type : "string"
+                if (pType != null) {
+                    def t = pType.toString().toLowerCase()
+                    if (!(t in ["string", "number", "decimal"])) {
+                        throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid — must be 'string', 'number', or 'decimal'")
+                    }
                 }
-                fields["cpType1.@N"] = t
             }
-            if (fValue != null) fields["cpVal1.@N"] = fValue
-            // Defer params[1..] until moreParams clicks expose them.
-            if (actionSpec.parameters.size() > 1) {
-                actionSpec.__runCommandExtraParams = actionSpec.parameters.drop(1)
-            }
+            actionSpec.__runCommandExtraParams = actionSpec.parameters
         }
     } else if (cap == "fileWrite") {
         // modeActs/getWriteLocalFile — write content to a local file (overwrite).
