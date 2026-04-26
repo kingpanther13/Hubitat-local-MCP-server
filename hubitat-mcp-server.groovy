@@ -9130,11 +9130,13 @@ private Map _appTypeRegistry() {
     return [
         rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"],
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers"],
-        groups_scenes: [namespace: "hubitat", appName: "Groups and Scenes", parentTypeName: "Groups and Scenes"],
-        notifier: [namespace: "hubitat", appName: "Notifications", parentTypeName: "Notifications"],
-        visual_rule: [namespace: "hubitat", appName: "Visual Rules Builder", parentTypeName: "Visual Rules Builder"]
-        // Basic Rule and Room Lighting parent apps not installed on this hub —
-        // add when needed.
+        groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
+        notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
+        visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"]
+        // Verified child appName values 2026-04-26 by listing parent
+        // apps' children on the live hub. Basic Rule / Room Lighting
+        // parents exist (ids 4 / 51) but have no children to model from
+        // yet — add when needed once probed.
     ]
 }
 
