@@ -12591,138 +12591,146 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     def cancelInFlightCondition = {
         try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") } catch (Exception ignored) { }
     }
-    conditions.eachWithIndex { condRaw, i ->
-        if (!(condRaw instanceof Map)) {
-            throw new IllegalArgumentException("addRequiredExpression.conditions[${i}] is not a Map")
-        }
-        def cond = condRaw as Map
-        def cap = cond.capability?.toString()?.trim()
-        if (!cap) {
-            throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].capability is required")
-        }
 
-        // Open new condition wizard. cond=a triggers reveal of rCapab_<N>.
-        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "a")
-        applied << "cond"
+    // Recursive walker — handles plain conditions AND sub-expressions
+    // (parens). Each condition can be:
+    //   {capability, deviceIds, state, ...}   — plain
+    //   {subExpression: {conditions: [...], operator/operators}}  — paren
+    // RM's STPage uses the LITERAL OPTION LABEL as the form value for
+    // cond/oper enums (verified 2026-04-26 via T404 probe: writing
+    // cond="b" silently rejected; cond="--> ( sub-expression" accepted).
+    // For "a" (new condition) RM accepts the bare key for legacy
+    // reasons, so we use that for backwards compat, but for "b"/"c"
+    // we MUST send the label.
+    def walkConds
+    walkConds = { List condList, String outerOp, List outerOpsList ->
+        condList.eachWithIndex { condRaw, i ->
+            if (!(condRaw instanceof Map)) {
+                throw new IllegalArgumentException("conditions[${i}] is not a Map")
+            }
+            def cond = condRaw as Map
 
-        try {
-
-        // Discover the live condition index by reading STPage's schema.
-        // The cond counter is shared at the parent (Rule Machine, app id 21)
-        // atomicState level, so it can start anywhere — don't assume _1.
-        def navResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
-        def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-        def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
-        if (!rCapabInput) {
-            throw new IllegalStateException("addRequiredExpression: rCapab_<N> not in STPage schema after writing cond=a; got ${stInputs.collect { it?.name }.findAll { it }.join(', ')}")
-        }
-        def m = rCapabInput.name.toString() =~ /rCapab_(\d+)/
-        def cIdx = m ? ((m[0] as List)[1] as Integer) : null
-        if (cIdx == null) {
-            throw new IllegalStateException("addRequiredExpression: couldn't parse condition index from '${rCapabInput.name}'")
-        }
-        conditionIndices << cIdx
-
-        // Validate + canonicalize capability against STPage's enum options
-        // (case-insensitive match → canonical case the hub expects).
-        def capOptions = (rCapabInput.options ?: []) as List
-        def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
-        if (!capCanonical) {
-            throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].capability '${cap}' not in STPage's option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
-        }
-        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCapab_${cIdx}", capCanonical)
-        applied << "rCapab_${cIdx}".toString()
-
-        // Device picker (capability.* types). Omit for non-device caps
-        // (Mode, Private Boolean, time-based) — caller handles via
-        // rawSettings or cap-specific fields.
-        if (cond.deviceIds != null) {
-            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rDev_${cIdx}", cond.deviceIds)
-            applied << "rDev_${cIdx}".toString()
-        }
-
-        // State enum (on/off, active/inactive, open/closed, locked/unlocked,
-        // present/not_present, true/false for Private Boolean, etc.)
-        // Validate against the schema's enum options BEFORE writing — RM
-        // 5.1 silently accepts any string at the field-write level and
-        // even renders garbage values into the expression paragraph
-        // (verified live 2026-04-26: state_1='bogusValue' produced a rule
-        // with paragraph 'Sw1 is bogusValue' that can never evaluate
-        // true). The bake-check catches placeholder-only failures but not
-        // valid-shape-with-garbage-value failures, so we have to validate
-        // at the source.
-        if (cond.state != null) {
-            def stateNavResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
-            def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-            def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
-            if (stateInput?.options) {
-                def stateOptions = (stateInput.options ?: []).collect { o ->
-                    (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
-                }.findAll { it }
-                def matched = stateOptions.find { it.equalsIgnoreCase(cond.state.toString()) }
-                if (!matched && stateOptions) {
-                    throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].state '${cond.state}' is not in capability '${cap}' domain. Valid options: ${stateOptions.sort().join(', ')}")
+            if (cond.subExpression instanceof Map) {
+                // Sub-expression branch: open paren, pick inner op, walk
+                // inner conditions recursively, close paren.
+                def subSpec = cond.subExpression as Map
+                def subConds = subSpec.conditions
+                if (!(subConds instanceof List) || subConds.isEmpty()) {
+                    throw new IllegalArgumentException("conditions[${i}].subExpression.conditions must be a non-empty List")
                 }
-                if (matched) cond.state = matched  // canonical case
+                def subOp = subSpec.operator?.toString()?.toUpperCase()
+                def subOpsList = (subSpec.operators instanceof List) ? (subSpec.operators as List).collect { it?.toString()?.toUpperCase() } : null
+                if (subOp && !(subOp in ["AND", "OR", "XOR"])) {
+                    throw new IllegalArgumentException("conditions[${i}].subExpression.operator must be AND/OR/XOR (got '${subOp}')")
+                }
+                if (subConds.size() > 1 && !subOp && !subOpsList) {
+                    throw new IllegalArgumentException("conditions[${i}].subExpression with ${subConds.size()} conds requires operator or operators")
+                }
+                // Open paren — RM expects the LITERAL LABEL string here.
+                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "--> ( sub-expression")
+                applied << "cond(open-paren)"
+                // Inside the sub-expression, the wizard exposes oper enum
+                // including 'end-sub-expression )' as a 4th option. Pick the
+                // operator for the FIRST inner pair (RM uses this as the
+                // join between inner conditions).
+                def initialInnerOp = subOpsList ? subOpsList[0] : subOp
+                if (initialInnerOp) {
+                    _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", initialInnerOp)
+                    applied << "oper(inner-init)"
+                }
+                // Recurse into inner conditions.
+                walkConds.call(subConds, subOp, subOpsList)
+                // Close paren.
+                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", "end-sub-expression )")
+                applied << "oper(close-paren)"
+            } else {
+                // Plain condition: cond=a, then walk fields, then hasAll.
+                def cap = cond.capability?.toString()?.trim()
+                if (!cap) {
+                    throw new IllegalArgumentException("conditions[${i}].capability is required")
+                }
+                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "a")
+                applied << "cond"
+                try {
+                    def navResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+                    def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+                    def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+                    if (!rCapabInput) {
+                        throw new IllegalStateException("addRequiredExpression: rCapab_<N> not in STPage schema after cond=a; got ${stInputs.collect { it?.name }.findAll { it }.join(', ')}")
+                    }
+                    def m = rCapabInput.name.toString() =~ /rCapab_(\d+)/
+                    def cIdx = m ? ((m[0] as List)[1] as Integer) : null
+                    if (cIdx == null) {
+                        throw new IllegalStateException("addRequiredExpression: couldn't parse condition index from '${rCapabInput.name}'")
+                    }
+                    conditionIndices << cIdx
+                    def capOptions = (rCapabInput.options ?: []) as List
+                    def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
+                    if (!capCanonical) {
+                        throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+                    }
+                    _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCapab_${cIdx}", capCanonical)
+                    applied << "rCapab_${cIdx}".toString()
+                    if (cond.deviceIds != null) {
+                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rDev_${cIdx}", cond.deviceIds)
+                        applied << "rDev_${cIdx}".toString()
+                    }
+                    if (cond.state != null) {
+                        def stateNavResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+                        def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+                        def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
+                        if (stateInput?.options) {
+                            def stateOptions = (stateInput.options ?: []).collect { o ->
+                                (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
+                            }.findAll { it }
+                            def matched = stateOptions.find { it.equalsIgnoreCase(cond.state.toString()) }
+                            if (!matched && stateOptions) {
+                                throw new IllegalArgumentException("conditions[${i}].state '${cond.state}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
+                            }
+                            if (matched) cond.state = matched
+                        }
+                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "state_${cIdx}", cond.state)
+                        applied << "state_${cIdx}".toString()
+                    }
+                    if (cond.comparator != null) {
+                        if (cond.attribute != null) {
+                            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCustomAttr_${cIdx}", cond.attribute)
+                            applied << "rCustomAttr_${cIdx}".toString()
+                        }
+                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "ReltDev_${cIdx}", cond.comparator)
+                        applied << "ReltDev_${cIdx}".toString()
+                    }
+                    if (cond.value != null) {
+                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "value_${cIdx}", cond.value)
+                        applied << "value_${cIdx}".toString()
+                    }
+                    if (cond.not == true) {
+                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "not${cIdx}", true)
+                        applied << "not${cIdx}".toString()
+                    }
+                    if (cond.rawSettings instanceof Map) {
+                        (cond.rawSettings as Map).each { rk, rv ->
+                            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, rk.toString(), rv)
+                            applied << rk.toString()
+                        }
+                    }
+                    _rmClickAppButton(appId, "hasAll", null, "STPage")
+                } catch (Exception perCondExc) {
+                    cancelInFlightCondition()
+                    throw perCondExc
+                }
             }
-            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "state_${cIdx}", cond.state)
-            applied << "state_${cIdx}".toString()
-        }
-
-        // Numeric comparator path (Temperature/Humidity/Battery/etc.)
-        if (cond.comparator != null) {
-            if (cond.attribute != null) {
-                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCustomAttr_${cIdx}", cond.attribute)
-                applied << "rCustomAttr_${cIdx}".toString()
+            // Joining operator for non-last condition at this level.
+            if (i < condList.size() - 1) {
+                def gapOp = outerOpsList ? outerOpsList[i] : outerOp
+                if (gapOp) {
+                    _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", gapOp)
+                    applied << "oper"
+                }
             }
-            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "ReltDev_${cIdx}", cond.comparator)
-            applied << "ReltDev_${cIdx}".toString()
-        }
-
-        if (cond.value != null) {
-            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "value_${cIdx}", cond.value)
-            applied << "value_${cIdx}".toString()
-        }
-
-        // NOT this condition?
-        if (cond.not == true) {
-            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "not${cIdx}", true)
-            applied << "not${cIdx}".toString()
-        }
-
-        // Caller escape hatch for fields not yet mapped above.
-        if (cond.rawSettings instanceof Map) {
-            (cond.rawSettings as Map).each { rk, rv ->
-                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, rk.toString(), rv)
-                applied << rk.toString()
-            }
-        }
-
-        // Click hasAll to commit this condition.
-        _rmClickAppButton(appId, "hasAll", null, "STPage")
-
-        // For non-last conditions, write the joining operator (revealed
-        // post-hasAll for multi-cond expressions). When operators (list)
-        // is provided, use the per-gap value; otherwise apply the single
-        // `operator` to every gap.
-        if (i < conditions.size() - 1) {
-            def gapOp = opsList ? opsList[i] : operator
-            if (gapOp) {
-                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", gapOp)
-                applied << "oper"
-            }
-        }
-
-        } catch (Exception perCondExc) {
-            // Validation or write failed mid-condition. Abort the in-flight
-            // edit so the wizard returns to a clean state — otherwise the
-            // next addRequiredExpression call hits "rCapab_<N> not in
-            // STPage schema" because the wizard is stuck on the half-
-            // edited condition.
-            cancelInFlightCondition()
-            throw perCondExc
         }
     }
+    walkConds.call(conditions, operator, opsList)
 
     // Step 3. Click hasRule to finalize the expression — but only if
     // present in the schema. RM exposes hasRule on multi-condition
