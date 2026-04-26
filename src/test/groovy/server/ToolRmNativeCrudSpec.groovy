@@ -536,4 +536,288 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.ruleId == 401
         result.originalRuleId == 400
     }
+
+    // ---------- wire-format invariants ----------
+    // These tests guard the wire-format fixes documented in the PR. Each is
+    // anchored to a specific live-hub failure and the corresponding fix
+    // commit. A regression here breaks user rules without producing any
+    // hub-side error, so the unit tests are the gate.
+
+    def "_rmBuildSettingsBody emits deviceList sidecar on capability writes"() {
+        given: "a rule with a capability.switch input"
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: true, value: "8,9"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        script.toolUpdateNativeApp([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+
+        then: "the update POST carries the deviceList=<keyname> sidecar marker"
+        def updatePost = posts.find { it.path == "/installedapp/update/json" }
+        updatePost.body["deviceList"] == "tDev0"
+    }
+
+    def "_rmClickAppButton emits bracket-form settings[btn]=clicked + form-context fields"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "we click a wizard-Done button via the button mode (which routes through _rmClickAppButton)"
+        script.toolUpdateNativeApp([appId: 100, button: "hasAll", pageName: "selectTriggers", confirm: true])
+
+        then: "the button POST carries the bracket form + form-context fields together"
+        def btnPost = posts.find { it.path == "/installedapp/btn" }
+        btnPost.body.id == "100"
+        btnPost.body.name == "hasAll"
+        btnPost.body["settings[hasAll]"] == "clicked"
+        btnPost.body["hasAll.type"] == "button"
+        btnPost.body.formAction == "update"
+        btnPost.body.currentPage == "selectTriggers"
+        btnPost.body.pageBreadcrumbs == '["mainPage"]'
+    }
+
+    def "addAction waitEvents click for anotherWait carries stateAttribute=anotherWait"() {
+        given: "a rule with selectActions schema and waitEvents action subtype"
+        enableHubAdminWrite()
+        // doActPage schema progresses across writes — the test stub returns
+        // a schema that contains tCapab-1, tCapab-2 (after first hasAll), etc.
+        // We just need to verify ONE shape: the anotherWait click body.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum"],
+                [name: "actSubType.1", type: "enum"],
+                [name: "tCapab-1", type: "enum", options: ["Switch"]],
+                [name: "tCapab-2", type: "enum", options: ["Motion"]]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "we explicitly invoke the anotherWait button click (matching the live-UI XHR captured 2026-04-26)"
+        script.toolUpdateNativeApp([appId: 100, button: "anotherWait", stateAttribute: "anotherWait", pageName: "doActPage", confirm: true])
+
+        then: "the click POST carries stateAttribute=anotherWait (without it RM no-ops the click and tCapab-N+1 never appears)"
+        def btnPost = posts.find { it.path == "/installedapp/btn" }
+        btnPost.body.name == "anotherWait"
+        btnPost.body["settings[anotherWait]"] == "clicked"
+        btnPost.body.stateAttribute == "anotherWait"
+    }
+
+    def "addRequiredExpression sub-page writes use pageBreadcrumbs=[] (not [\"mainPage\"]) on STPage"() {
+        given:
+        enableHubAdminWrite()
+        // STPage schema after useST=true is set; cond enum is the in-flight
+        // wizard picker. addRequiredExpression's _rmWriteSubPageField path
+        // must use pageBreadcrumbs=[] for STPage writes per the live UI
+        // capture; sending ["mainPage"] re-fires the action_href and
+        // resets the in-flight wizard accumulator.
+        def stPageInputs = [
+            [name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition", "b": "--> ( sub-expression"]],
+            [name: "doneST", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params -> ruleConfigJson(100, "r", stPageInputs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addRequiredExpression starts the STPage wizard"
+        try {
+            script.toolUpdateNativeApp([
+                appId: 100,
+                addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+                confirm: true
+            ])
+        } catch (Exception ignored) { /* schema stubs are minimal; partial walk is fine, we only assert the wire format */ }
+
+        then: "every STPage settings write uses pageBreadcrumbs=[]"
+        def stPageWrites = posts.findAll { it.path == "/installedapp/update/json" && it.body.currentPage == "STPage" }
+        stPageWrites.size() > 0
+        stPageWrites.every { it.body.pageBreadcrumbs == '[]' }
+
+        and: "no STPage write carries the action_href marker (those belong only on the navigation POST)"
+        stPageWrites.every { write ->
+            !write.body.keySet().any { k -> k.toString().startsWith("_action_href_") }
+        }
+    }
+
+    def "addRequiredExpression sub-expression open writes cond=b VALUE not literal label"() {
+        given:
+        enableHubAdminWrite()
+        def stPageInputs = [
+            [name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition", "b": "--> ( sub-expression"]],
+            [name: "doneST", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params -> ruleConfigJson(100, "r", stPageInputs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"M1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addRequiredExpression with a subExpression triggers cond=b for the open paren"
+        try {
+            script.toolUpdateNativeApp([
+                appId: 100,
+                addRequiredExpression: [conditions: [
+                    [capability: "Switch", deviceIds: [8], state: "on"],
+                    [subExpression: [conditions: [[capability: "Motion", deviceIds: [9], state: "active"]], operator: "OR"]]
+                ], operator: "AND"],
+                confirm: true
+            ])
+        } catch (Exception ignored) { /* schema stubs are minimal; we only assert the wire format */ }
+
+        then: "the open-paren write uses settings[cond]=b (the option VALUE) — never the label '--> ( sub-expression'"
+        def condBWrite = posts.find { it.path == "/installedapp/update/json" && it.body["settings[cond]"] == "b" }
+        condBWrite != null
+        !posts.any { it.body["settings[cond]"]?.toString()?.contains("sub-expression") }
+    }
+
+    def "addTrigger writes isCondTrig.<N>=false finalize for non-conditional triggers"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "tDev1", type: "capability.switch", multiple: true],
+                [name: "tstate1", type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        try {
+            script.toolUpdateNativeApp([
+                appId: 100,
+                addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+                confirm: true
+            ])
+        } catch (Exception ignored) { /* partial schema is fine for invariant assertion */ }
+
+        then: "addTrigger explicitly writes isCondTrig.1=false (avoids phantom Broken Trigger N+1)"
+        def isCondTrigWrite = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[isCondTrig.1]") }
+        isCondTrigWrite != null
+        isCondTrigWrite.body["settings[isCondTrig.1]"] == "false"
+    }
+
+    def "_rmValidateDeviceIdsExist rejects unknown device IDs in addTrigger before any write"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // Bogus device ID — /device/fullJson/99999 returns empty
+        hubGet.register('/device/fullJson/99999') { params -> "" }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [99999], state: "on"],
+            confirm: true
+        ])
+
+        then: "the call fails with a clear error before any wizard-edit POST fires"
+        result.success == false
+        result.error?.contains("99999")
+        result.error?.contains("does not exist")
+
+        and: "no /installedapp/update/json POST went out (validation runs pre-write)"
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    def "patches batch outer success rolls up inner sub-item success"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        // 99999 returns empty so deviceId pre-validation rejects it
+        hubGet.register('/device/fullJson/99999') { params -> "" }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "patches contains addTriggers with one valid + one bogus-id spec"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [[addTriggers: [
+                [capability: "Switch", deviceIds: [8], state: "on"],
+                [capability: "Switch", deviceIds: [99999], state: "on"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "outer patches[0].success is FALSE because one inner item failed"
+        result.patches.size() == 1
+        result.patches[0].op == "addTriggers"
+        result.patches[0].success == false
+        result.patches[0].results.size() == 2
+        result.patches[0].results[1].success == false
+        result.patches[0].results[1].error?.contains("99999")
+
+        and: "the user-visible result.success is also false"
+        result.success == false
+    }
 }
