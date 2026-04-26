@@ -12420,6 +12420,15 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // Step 2. Walk each condition through STPage's wizard.
     def hrefParams = [unUsed: null]
     def conditionIndices = []
+    // Cleanup helper: when a per-condition write fails partway, the
+    // wizard is left mid-edit (rCapab/rDev already written, state_<N>
+    // pending). Subsequent calls hit "rCapab_<N> not in STPage schema"
+    // because the wizard is still showing the half-edited condition's
+    // form. Click cancelCapab to abort the in-flight edit before
+    // propagating the error so the next caller starts fresh.
+    def cancelInFlightCondition = {
+        try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") } catch (Exception ignored) { }
+    }
     conditions.eachWithIndex { condRaw, i ->
         if (!(condRaw instanceof Map)) {
             throw new IllegalArgumentException("addRequiredExpression.conditions[${i}] is not a Map")
@@ -12433,6 +12442,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         // Open new condition wizard. cond=a triggers reveal of rCapab_<N>.
         _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "a")
         applied << "cond"
+
+        try {
 
         // Discover the live condition index by reading STPage's schema.
         // The cond counter is shared at the parent (Rule Machine, app id 21)
@@ -12538,6 +12549,16 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", gapOp)
                 applied << "oper"
             }
+        }
+
+        } catch (Exception perCondExc) {
+            // Validation or write failed mid-condition. Abort the in-flight
+            // edit so the wizard returns to a clean state — otherwise the
+            // next addRequiredExpression call hits "rCapab_<N> not in
+            // STPage schema" because the wizard is stuck on the half-
+            // edited condition.
+            cancelInFlightCondition()
+            throw perCondExc
         }
     }
 
