@@ -1969,7 +1969,7 @@ Per-condition spec fields:
 
 Sub-expressions (parens) — for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
   {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
-The walker recursively handles nested sub-expressions. KNOWN PARTIAL: RM 5.1 currently renders the open-paren marker as "**Broken Condition**" in the mainPage paragraph even though the structure commits correctly to settings. If round-trip rendering matters for your use case, fall back to walkStep until the wire-format quirk is resolved.
+The walker recursively handles nested sub-expressions of arbitrary depth.
 
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the parent (Rule Machine, app id 21) atomicState level — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
@@ -2155,7 +2155,7 @@ Capability families and the spec fields each accepts:
       capability='stopRepeat'    (no fields)
       capability='repeatWhile'   + expression={conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]} + optional hours/minutes/seconds/times/stoppable
       capability='waitExpression'+ expression={conditions:[...], operator?:..., operators?:[...]} + optional delay={hours,minutes,seconds} + useDuration=true|false
-      capability='waitEvents'    + events=[{capability, deviceIds, state, andStays?}, ...] (single-event ✓; multi-event WIP)
+      capability='waitEvents'    + events=[{capability, deviceIds, state, andStays?}, ...]
       capability='ifThen'        + expression={conditions:[...], operator?:..., operators?:[...]}    (opens IF block; close with 'endIf')
       capability='elseIf'        + expression={...}                                                  (continues IF block; needs preceding 'ifThen')
       capability='else'          (no fields; needs preceding 'ifThen' or 'elseIf')
@@ -2175,7 +2175,6 @@ NOT yet mapped (use rawSettings escape hatch with @N placeholder):
   - HSM Arm/Disarm/Cancel All Alerts (separate actSubType not in lockActs dropdown — only appears when HSM is installed and may need a different actType)
   - Garage door open/close (different lockActs subtype, only visible with garage device)
   - Valve open/close (similar)
-  - Wait for Events MULTI-EVENT (single event via capability='waitEvents' works; the anotherWait click pattern for adding event 2/3/N is still being probed)
 
 Optional fields on every spec:
   - delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>='hrs:min:sec' plus duration sub-fields
@@ -10217,14 +10216,18 @@ private void _rmWriteSubPageField(Integer appId, String page, String parentPage,
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
     body.formAction = "update"
     body.currentPage = page
-    body.pageBreadcrumbs = parentPage ?
-        groovy.json.JsonOutput.toJson(["mainPage", parentPage]) :
-        '["mainPage"]'
-    def marker = "_action_href_${hrefName}|${page}|${hrefIndex}".toString()
-    body[marker] = ""
-    if (hrefParams != null && !hrefParams.isEmpty()) {
-        body["params_for_action_href_${hrefName}|${page}|${hrefIndex}".toString()] = groovy.json.JsonOutput.toJson(hrefParams)
-    }
+    // Live-UI capture (Chrome 2026-04-26, rule 1380 STPage cond=b probe):
+    // when writing a setting on a sub-page that's already navigated to,
+    // pageBreadcrumbs is `[]` (empty) and the body carries NO action_href
+    // markers — those are exclusively for the navigation POST. Including
+    // `_action_href_*` in the write re-fires the navigation handler, which
+    // resets in-flight wizard state (state.<paramKey>, condition-builder
+    // accumulators) and corrupts subsequent renders. The "Broken Condition"
+    // render on STPage cond=b (T404) was caused by this re-init wiping the
+    // open-paren state mid-wizard. Periodic schedule writes keep state.n
+    // alive via paramsForPage on the Done back-nav (see _rmSubmitSubPageDone),
+    // not via re-firing the action_href on every write.
+    body.pageBreadcrumbs = '[]'
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     hubInternalPostForm("/installedapp/update/json", body)
 }
@@ -11205,9 +11208,17 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             // and the wizard loop continues. The last event leaves the
             // wizard in the 'doneWaits' state — the existing actionDone
             // click below handles the final commit.
+            //
+            // anotherWait MUST carry stateAttribute=anotherWait — Chrome XHR
+            // capture 2026-04-26 (rule 1381 doActPage probe) showed the
+            // live UI POSTs `stateAttribute=anotherWait` alongside
+            // `settings[anotherWait]=clicked`. Without it the click is
+            // accepted (200 OK) but RM doesn't advance state.actNdx for
+            // the new event row, so the next tCapab-<N+1> never appears
+            // in the schema and event 2/3/N silently drops.
             _rmClickAppButton(appId, "hasAll", null, "doActPage")
             if (evIdx < events.size() - 1) {
-                _rmClickAppButton(appId, "anotherWait", null, "doActPage")
+                _rmClickAppButton(appId, "anotherWait", "anotherWait", "doActPage")
             }
         }
     }
