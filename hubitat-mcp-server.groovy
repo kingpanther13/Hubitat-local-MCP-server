@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+walkstep-done-op-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addtrigger-periodic-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1908,6 +1908,18 @@ Capability families and the spec fields each accepts:
     add andStays={hours, minutes, seconds} to the spec
   - Time / Sunrise / Sunset (Certain Time and optional date):
     capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime (ISO datetime for specific time), offset (minutes for sunrise/sunset)
+  - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
+    capability='Periodic Schedule', periodic={frequency: 'Hourly'|'Daily'|'Cron String'|...,
+      everyN: <int>,           // for "every N <unit>" mode (Hourly/Daily)
+      startingTime: 'HH:mm',   // start-time for everyN modes
+      weekdaysOnly: <bool>,    // Daily-only
+      selectedHours: [9,12],   // Hourly-only, alternative to everyN
+      selectedDaysOfMonth: [1,15], // Daily-only, alternative to everyN/weekdays
+      minutesOffset: <int>,    // Hourly-only, when not using everyN (startingHCX1)
+      cronString: '0 * * * *', // Cron String mode
+      rawSettings: {…}         // escape hatch for periodic-page fields not yet mapped
+    }
+    Without `periodic`, RM commits a phantom row with description="?". The tool walks the periodic sub-page (whichPeriod1 → everyN/select → time → Done) so the trigger description bakes correctly.
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. The condition's own wizard (rCapab_<N>, rDev_<N>, state_<N>) is NOT driven by addTrigger yet — pass conditional=true and then orchestrate the condition fields via separate update_native_app(settings=…) calls.
@@ -3403,7 +3415,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+walkstep-done-op-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addtrigger-periodic-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9585,6 +9597,93 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
     }
 
+    // Periodic Schedule: navigate the dedicated periodic sub-page, write
+    // the frequency-specific fields, and submit Done so the trigger row's
+    // description bakes ("Every 1 hour starting at 1:00 PM" etc.).
+    // Without this dance, hasAll commits a phantom row with description="?"
+    // because the parent's renderer can't reach the sub-page state.
+    //
+    // Verified field-name suffixes per frequency live 2026-04-25:
+    //   Hourly  → everyNHoursC1, everyNHC1, startingHC1, selectHoursC1, startingHCX1
+    //   Daily   → everyNDoMC1, everyNDC1, everyWeekDay1, selectDoMC1, startingDC1
+    // Other frequencies (Seconds/Minutes/Weekly/Monthly/Yearly/Cron String)
+    // share the suffix pattern; caller can pass extra fields via rawSettings
+    // until each is verified.
+    if (capCanonical == "Periodic Schedule" && triggerSpec.periodic instanceof Map) {
+        def per = triggerSpec.periodic as Map
+        def freq = per.frequency?.toString()
+        if (!freq) {
+            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String')")
+        }
+        // Field-name maps. Keys are LLM-friendly aliases; values are the
+        // RM 5.1 setting names. Trigger index is always 1 for the in-flight
+        // trigger row (RM uses idx 1 inside the periodic sub-page regardless
+        // of the parent trigger index — verified live).
+        def freqFieldMap = [
+            "Hourly": [everyNToggle: "everyNHoursC1", everyNCount: "everyNHC1", time: "startingHC1", selectMulti: "selectHoursC1", offset: "startingHCX1"],
+            "Daily":  [everyNToggle: "everyNDoMC1",   everyNCount: "everyNDC1", time: "startingDC1", weekdayToggle: "everyWeekDay1", selectMulti: "selectDoMC1"],
+            "Cron String": [cron: "cronString1"]
+        ]
+        def fields = freqFieldMap[freq] ?: [:]
+        // Navigate forward into periodic sub-page. n=1 is RM's per-trigger
+        // sub-page param.
+        def hrefParams = [n: 1]
+        _rmNavigateToPage(appId, "selectTriggers", "periodic", 1, "periodic1", hrefParams)
+        // Write frequency first — schema-progressive, so subsequent fields
+        // only appear after this lands.
+        _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, "whichPeriod1", freq)
+        applied << "whichPeriod1"
+        // Cron String mode: just one text field.
+        if (freq == "Cron String") {
+            if (per.cronString != null && fields.cron) {
+                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.cron, per.cronString.toString())
+                applied << fields.cron
+            }
+        } else {
+            // everyN toggle + count. Order matters: toggle must land first
+            // because the count field only appears after the toggle is true.
+            if (per.everyN != null && fields.everyNToggle) {
+                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.everyNToggle, true)
+                applied << fields.everyNToggle
+                if (fields.everyNCount) {
+                    _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.everyNCount, per.everyN)
+                    applied << fields.everyNCount
+                }
+            }
+            // Daily-only: weekdaysOnly toggle.
+            if (per.weekdaysOnly == true && fields.weekdayToggle) {
+                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.weekdayToggle, true)
+                applied << fields.weekdayToggle
+            }
+            // Multi-enum selection (selectedHours / selectedDaysOfMonth).
+            def selectVals = per.selectedHours ?: per.selectedDaysOfMonth
+            if (selectVals != null && fields.selectMulti) {
+                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.selectMulti, selectVals)
+                applied << fields.selectMulti
+            }
+            // Time field (startingHC1 / startingDC1 etc.).
+            if (per.startingTime != null && fields.time) {
+                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.time, per.startingTime.toString())
+                applied << fields.time
+            }
+            // Hourly-only: minute offset (when not using everyN).
+            if (per.minutesOffset != null && fields.offset) {
+                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.offset, per.minutesOffset)
+                applied << fields.offset
+            }
+        }
+        // Caller escape hatch for periodic-page fields not yet mapped above
+        // (Weekly/Monthly/Yearly suffix patterns, future fields).
+        if (per.rawSettings instanceof Map) {
+            (per.rawSettings as Map).each { rk, rv ->
+                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, rk.toString(), rv)
+                applied << rk.toString()
+            }
+        }
+        // Submit Done — bakes the description into the trigger row.
+        _rmSubmitSubPageDone(appId, "periodic", "selectTriggers", hrefParams)
+    }
+
     // Click hasAll (with form context) to commit. The shared wizard-Done
     // auto-finalize logic in toolUpdateNativeApp's button branch handles
     // the residual isCondTrig.<N>=false write — but _rmAddTrigger calls
@@ -9822,6 +9921,96 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         }
     } catch (Exception ignored) { /* idempotent */ }
     return null
+}
+
+/**
+ * Submit a sub-page back to its parent via _action_previous=Done, carrying
+ * ALL the page's current setting values + sidecar fields. The form-encoded
+ * Done is what bakes the trigger/action description into the parent's row;
+ * forward-nav markers (_action_href_*) reach the parent visually but leave
+ * the row unrendered ("?").
+ *
+ * Live-captured 2026-04-25 from Hubitat's Periodic Schedule "Done" XHR
+ * (firmware 2.5.0.123): the body carries settings[X] values for every
+ * input on the page + per-type sidecars (X.type, X.multiple,
+ * checkbox[X]=on for bools, hours/minutes/amPm[X] for times) +
+ * paramsForPage:{n:1} + pageBreadcrumbs:[mainPage,parent].
+ *
+ * Used by both walkStep's "done" op and the high-level addTrigger flow
+ * for sub-page-driven capabilities (Periodic Schedule, Cron String,
+ * etc.). Caller passes the current page name + parent page + the href
+ * params (so paramsForPage routes correctly).
+ */
+private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, Map hrefParams) {
+    def cfg = _rmFetchConfigJson(appId, page)
+    def schema = _rmCollectInputSchema(cfg?.configPage)
+    def status = _rmFetchStatusJson(appId)
+    def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    def settingsMap = [:]
+    schema.each { name, meta ->
+        def v = liveSettings[name]
+        if (v == null) v = ""
+        settingsMap[name] = v
+    }
+    def body = _rmBuildSettingsBody(appId, settingsMap, schema)
+    body.formAction = "update"
+    body.currentPage = page
+    body._action_previous = "Done"
+    if (hrefParams != null && !hrefParams.isEmpty()) {
+        body.paramsForPage = groovy.json.JsonOutput.toJson(hrefParams)
+    }
+    body.pageBreadcrumbs = parentPage ?
+        groovy.json.JsonOutput.toJson(["mainPage", parentPage]) :
+        '["mainPage"]'
+    // Per-type sidecars the form-encoded UI emits. _rmBuildSettingsBody
+    // already handles settings[X], X.type, and X.multiple (only when
+    // multi=true). For Done we also need:
+    //   - X.multiple=false for non-multi fields
+    //   - bool: checkbox[X] = "on" (HTML checkbox marker, always sent)
+    //   - time: hours[X], minutes[X], amPm[X] (empty defaults; the time
+    //     value rides in settings[X] as "HH:mm")
+    schema.each { name, meta ->
+        def t = meta?.type?.toString()
+        if (meta?.multiple != true) {
+            body["${name}.multiple".toString()] = "false"
+        }
+        if (t == "bool") {
+            body["checkbox[${name}]".toString()] = "on"
+        } else if (t == "time") {
+            body["hours[${name}]".toString()] = ""
+            body["minutes[${name}]".toString()] = ""
+            body["amPm[${name}]".toString()] = "AM"
+        }
+    }
+    if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+    hubInternalPostForm("/installedapp/update/json", body)
+}
+
+/**
+ * Write a single field on a sub-page that requires hrefContext markers to
+ * keep state.<paramKey> alive (e.g. periodic schedule's state.n). Posts
+ * settings[key]=value + the action marker pair so RM resets state before
+ * applying the write.
+ *
+ * Returns nothing; caller should re-fetch schema if it needs to observe
+ * the post-write shape (e.g. fields appearing/disappearing).
+ */
+private void _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
+    def cfg = _rmFetchConfigJson(appId, page)
+    def schema = _rmCollectInputSchema(cfg?.configPage)
+    def body = _rmBuildSettingsBody(appId, [(key): value], schema)
+    body.formAction = "update"
+    body.currentPage = page
+    body.pageBreadcrumbs = parentPage ?
+        groovy.json.JsonOutput.toJson(["mainPage", parentPage]) :
+        '["mainPage"]'
+    def marker = "_action_href_${hrefName}|${page}|${hrefIndex}".toString()
+    body[marker] = ""
+    if (hrefParams != null && !hrefParams.isEmpty()) {
+        body["params_for_action_href_${hrefName}|${page}|${hrefIndex}".toString()] = groovy.json.JsonOutput.toJson(hrefParams)
+    }
+    if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+    hubInternalPostForm("/installedapp/update/json", body)
 }
 
 /**
@@ -11232,49 +11421,9 @@ private Map _rmWalkStep(Integer appId, Map spec) {
         // param (e.g. {"n":1}) so RM resets state.<paramKey> on the way
         // back. pageBreadcrumbs = ["mainPage", parentPage] tells the hub
         // which page to render in response.
-        def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
-        def allSettingsMap = [:]
-        fullSchemaMap.each { name, meta ->
-            def v = beforeSettings[name]
-            if (v == null) v = ""
-            allSettingsMap[name] = v
-        }
-        def body = _rmBuildSettingsBody(appId, allSettingsMap, fullSchemaMap)
-        body.formAction = "update"
-        body.currentPage = page
-        body._action_previous = "Done"
-        if (hrefContext?.hrefParams) {
-            body.paramsForPage = groovy.json.JsonOutput.toJson(hrefContext.hrefParams)
-        }
         def parentPage = hrefContext?.fromPage?.toString()
-        body.pageBreadcrumbs = parentPage ?
-            groovy.json.JsonOutput.toJson(["mainPage", parentPage]) :
-            '["mainPage"]'
-        // Per-type sidecars the form-encoded UI emits.
-        // _rmBuildSettingsBody handles settings[X], X.type, X.multiple (only
-        // when multi=true). For Done we ALSO need to emit X.multiple=false
-        // for non-multi fields and the type-specific marker fields:
-        //   bool: checkbox[X] = "on" (HTML checkbox marker, always sent)
-        //   time: hours[X], minutes[X], amPm[X] (empty defaults; the time
-        //         value lives in settings[X] as "HH:mm")
-        fullSchemaMap.each { name, meta ->
-            def t = meta?.type?.toString()
-            if (meta?.multiple != true) {
-                body["${name}.multiple".toString()] = "false"
-            }
-            if (t == "bool") {
-                body["checkbox[${name}]".toString()] = "on"
-            } else if (t == "time") {
-                body["hours[${name}]".toString()] = ""
-                body["minutes[${name}]".toString()] = ""
-                body["amPm[${name}]".toString()] = "AM"
-            }
-        }
-        try {
-            def cfg = _rmFetchConfigJson(appId, page)
-            if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-        } catch (Exception ignored) { /* best effort */ }
-        hubInternalPostForm("/installedapp/update/json", body)
+        def hcParams = hrefContext?.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
+        _rmSubmitSubPageDone(appId, page, parentPage, hcParams)
         opResult.done = [from: page, parent: parentPage]
         // After done, schema lives at the parent page.
         page = parentPage ?: page
