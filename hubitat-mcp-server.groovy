@@ -11430,7 +11430,25 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
         schemaForBuild = [:] + schema
         schemaForBuild[key] = ([:] + schema[key]) << [type: typeHintOverride]
     }
-    _rmUpdateAppSettings(appId, settingsMap, schemaForBuild)
+    // For sub-page wizard writes (doActPage's `cond`, STPage's `cond`,
+    // periodic sub-page writes) RM needs `formAction=update`,
+    // `currentPage=<page>`, and `pageBreadcrumbs=["mainPage"]` in the
+    // body — without those, transient wizard fields like `cond` are
+    // silently rejected (verified live 2026-04-26: writing cond=a on
+    // doActPage without page context returned silentRejection=true,
+    // schema unchanged; same write WITH page context committed).
+    // Include the context whenever pageName is non-null and isn't the
+    // default mainPage.
+    if (pageName && pageName != "mainPage") {
+        def body = _rmBuildSettingsBody(appId, settingsMap, schemaForBuild)
+        body.formAction = "update"
+        body.currentPage = pageName
+        body.pageBreadcrumbs = '["mainPage"]'
+        if (config?.app?.version != null) body.version = config.app.version.toString()
+        hubInternalPostForm("/installedapp/update/json", body)
+    } else {
+        _rmUpdateAppSettings(appId, settingsMap, schemaForBuild)
+    }
     applied << key
 }
 
