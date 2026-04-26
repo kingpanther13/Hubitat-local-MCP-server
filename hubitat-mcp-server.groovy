@@ -11130,9 +11130,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     //   repeatActs/getWhile — Repeat While Expression
     //   delayActs/getWaitRule — Wait for Expression
     // Wait for Events: walk each event row using tCapab-<N>/tDev-<N>/
-    // tstate-<N> (dash-separated index). Multi-event rules write
-    // multiple rows. Optional timeout via the existing delay-modifier
-    // path (delayAct.<idx> + delayHor/Min/Sec).
+    // tstate-<N> (dash-separated index). After tstate-<N> is written,
+    // a hasAll button appears ("Done with this Wait Event"). Click it
+    // to commit the event and reveal tCapab-<N+1> for the next event.
+    // Without the hasAll click, multi-event rules fail because tCapab-2
+    // never appears in schema. Verified live 2026-04-26.
+    // Optional timeout via the existing delay-modifier path.
     if (actSubType == "getWaitEvents") {
         def events = actionSpec.events as List
         events.eachWithIndex { evRaw, evIdx ->
@@ -11148,7 +11151,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             def inputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
             def capInput = inputs.find { it?.name?.toString() == "tCapab-${n}".toString() }
             if (!capInput) {
-                throw new IllegalStateException("waitEvents: tCapab-${n} not in doActPage schema for event ${evIdx}; previous event may not have committed")
+                throw new IllegalStateException("waitEvents: tCapab-${n} not in doActPage schema for event ${evIdx}; previous event's hasAll click may have failed")
             }
             def opts = (capInput.options ?: []) as List
             def canon = opts.find { it.toString().equalsIgnoreCase(evCap) }
@@ -11162,6 +11165,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             if (ev.state != null) {
                 _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
             }
+            // Optional 'and stays for' duration.
+            if (ev.andStays == true) {
+                _rmWriteSettingOnPage(appId, "doActPage", "stays-${n}", true, applied, "bool", skipped)
+            }
+            // Click hasAll to commit this event AND reveal tCapab-<N+1>
+            // for the next iteration. The button is named 'hasAll' (same
+            // as triggers' commit button); RM's wizard shares the
+            // mechanism. Even on the LAST event, clicking hasAll is fine
+            // — it just keeps the wizard ready for actionDone.
+            _rmClickAppButton(appId, "hasAll", null, "doActPage")
         }
     }
 
@@ -12431,7 +12444,24 @@ def toolCreateNativeApp(args) {
     if (!name) throw new IllegalArgumentException("name is required")
 
     def parentId = _discoverParentAppId(appType)
-    def newId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
+    def newId
+    try {
+        newId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
+    } catch (Exception createExc) {
+        // Hub returned an error from /installedapp/createchild — most
+        // common cause is that the registry's namespace/appName combo
+        // doesn't match an installed app on this hub. Surface a clear
+        // hint instead of the generic "unexpected error".
+        mcpLog("error", "rm-native", "createchild failed for appType='${appType}' (ns=${reg.namespace}, appName=${reg.appName}, parent=${parentId}): ${createExc.message}")
+        throw new IllegalArgumentException(
+            "create_native_app failed at the createchild step for appType='${appType}'. " +
+            "The hub rejected namespace='${reg.namespace}' + appName='${reg.appName}' " +
+            "(parent app id ${parentId}). Most likely the _appTypeRegistry entry has the " +
+            "wrong child appName for this hub's installed parent. To verify the actual " +
+            "child appName, call list_installed_apps and inspect the children of " +
+            "parentTypeName='${reg.parentTypeName}' — the children's `type` field is the " +
+            "child appName the hub expects. Underlying error: ${createExc.message}")
+    }
 
     try {
         // First page of a fresh classic SmartApp is the label page. The
