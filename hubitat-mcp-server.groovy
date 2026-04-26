@@ -12488,6 +12488,41 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // even though it appears in the schema).
     _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams)
 
+    // Step 5. Post-commit validation. RM 5.1's STPage silently accepts
+    // many invalid inputs at the field-write level (e.g. unknown device
+    // IDs, unmatched state values) — the hub stores the values but
+    // doesn't bake the expression. Detect this by inspecting the
+    // mainPage paragraph: if it still shows the bare "Define Required
+    // Expression" placeholder, the wizard didn't commit. Reporting this
+    // as success would leave the LLM thinking the rule is good when
+    // it's not — surface it as a hub-render-style failure with hints.
+    // Verified 2026-04-26 via T429: deviceIds=[99999] (nonexistent)
+    // wrote rDev_<N>={99999: null} but paragraph stayed placeholder.
+    def mainCfg = null
+    try { mainCfg = _rmFetchConfigJson(appId, "mainPage") } catch (Exception ignored) { /* best effort */ }
+    def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
+        (sect?.body ?: []).findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
+                          .collect { it.description?.toString() ?: "" }
+    }
+    def joinedParagraphs = mainParagraphs.join("\n")
+    def expressionRendered = !joinedParagraphs.contains("Define Required Expression")
+    if (!expressionRendered) {
+        return [
+            success: false,
+            partial: true,
+            hubRenderError: true,
+            conditionIndices: conditionIndices,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            error: "Required Expression did not bake — mainPage still shows 'Define Required Expression' placeholder. Common causes: unknown deviceIds (verify via list_devices), state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), or capability/state mismatch.",
+            repairHints: [
+                "Verify every deviceIds entry exists via list_devices.",
+                "Verify the 'state' value matches the capability's domain (Switch: 'on'/'off', Motion: 'active'/'inactive', Contact: 'open'/'closed', Lock: 'locked'/'unlocked', etc.).",
+                "Inspect the rule's actual state via get_app_config(appId, includeSettings=true) — settings.rDev_<N> = {<id>: null} indicates the device wasn't resolved, settings.cond='a' (instead of cond=['<idx>']) indicates the condition wasn't committed."
+            ]
+        ]
+    }
+
     return [
         success: true,
         conditionIndices: conditionIndices,
