@@ -825,4 +825,334 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the user-visible result.success is also false"
         result.success == false
     }
+
+    // ---------- structured-shortcut coverage (issue #141 part A) ----------
+
+    def "addLocalVariable golden path: walks moreVar, writes hbVar/varType/varValue, retries verify"() {
+        given:
+        enableHubAdminWrite()
+        // selectActions schema progresses through the moreVar wizard. Initially
+        // moreVar button visible; after click, hbVar+varType+varValue inputs.
+        def selActsAfter = [
+            [name: "hbVar", type: "text"],
+            [name: "varType", type: "enum", options: ["Number", "Decimal", "String", "Boolean", "DateTime"]],
+            [name: "varValue", type: "text"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [],
+                eventSubscriptions: [],
+                scheduledJobs: [],
+                appState: [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]],
+                state: [:]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addLocalVariable: [name: "counter", type: "Number", value: 42],
+            confirm: true
+        ])
+
+        then: "the wizard moreVar button is clicked, then hbVar/varType/varValue are written"
+        posts.any { it.path == "/installedapp/btn" && it.body.name == "moreVar" }
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[hbVar]"] == "counter" }
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[varType]"]?.toString() == "Number" }
+
+        and: "result reflects the committed variable name + type + value"
+        result.success == true
+        result.variable?.name == "counter"
+        result.variable?.type == "Number"
+    }
+
+    def "addLocalVariable Boolean coercion writes 'true'/'false' STRING (not Groovy primitive)"() {
+        given:
+        enableHubAdminWrite()
+        def selActsAfter = [
+            [name: "hbVar", type: "text"],
+            [name: "varType", type: "enum"],
+            [name: "varValue", type: "text"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: [[name: "allLocalVars", value: [flag: [type: "boolean", value: true]]]], state: [:]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addLocalVariable: [name: "flag", type: "Boolean", value: true],
+            confirm: true
+        ])
+
+        then: "the varValue write carries the literal string 'true' — RM 5.1 silently rejects the Groovy primitive"
+        def varValueWrite = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varValue]") }
+        varValueWrite != null
+        varValueWrite.body["settings[varValue]"] == "true"
+    }
+
+    def "removeAction throws when delAct click is silently no-oped (action still present)"() {
+        given:
+        enableHubAdminWrite()
+        // statusJson always returns the same indices => RM no-oped the delete
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "the silent no-op is surfaced as success: false with a clear error pointing at the still-present index"
+        result.success == false
+        result.error?.contains("still in rule")
+    }
+
+    def "clearActions throws when trashActs never enters schema after trashAll click"() {
+        given:
+        enableHubAdminWrite()
+        // selectActions schema never gains trashActs even after the trashAll click
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "delayActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "result surfaces the failure to enter trash mode rather than silently returning empty"
+        result.success == false
+        result.error?.toLowerCase()?.contains("trashacts")
+    }
+
+    def "replaceActions atomically clears then bulk-adds, rolling per-item failures into addedResults"() {
+        given:
+        enableHubAdminWrite()
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        def doActPageSchema = [
+            [name: "actType.1", type: "enum"],
+            [name: "actSubType.1", type: "enum"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActPageSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/99999') { params -> "" }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            replaceActions: [
+                [capability: "switch", action: "off", deviceIds: [8]],
+                [capability: "switch", action: "off", deviceIds: [99999]]
+            ],
+            confirm: true
+        ])
+
+        then: "the result carries a removedIndices list (the cleared indices) AND addedResults for every replaceActions[i]"
+        result.removed != null || result.removedIndices != null
+        result.addedResults?.size() == 2
+
+        and: "the bogus-id sub-spec fails inline rather than aborting the batch"
+        def failedItem = result.addedResults.find { it.success == false }
+        failedItem != null
+        failedItem.error?.contains("99999")
+    }
+
+    def "moveAction rejects unknown direction at the dispatcher"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 1, direction: "sideways"], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("up") || result.error?.toLowerCase()?.contains("direction")
+    }
+
+    def "walkStep introspect returns schema for a page without mutating"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch", "Motion"]],
+                [name: "moreCond", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [page: "selectTriggers", operation: "introspect"],
+            confirm: true
+        ])
+
+        then: "introspect is a pure read — no /installedapp/update/json or /installedapp/btn POST fires"
+        result.success == true
+        !posts.any { it.path == "/installedapp/update/json" }
+        // The dispatcher's auto-mainPage Done click after walkStep is allowed; the
+        // assertion is specifically that introspect itself doesn't write or click.
+
+        and: "the response carries the page name + introspected schema"
+        result.page == "selectTriggers"
+        (result.schema?.inputs ?: result.schemaInputs ?: result.inputs) != null
+    }
+
+    def "addTriggers bulk shortcut returns partial: true when one inner spec fails"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "tDev1", type: "capability.switch", multiple: true],
+                [name: "tstate1", type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/99999') { params -> "" }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "bulk addTriggers with one valid + one bogus-id spec"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTriggers: [
+                [capability: "Switch", deviceIds: [8], state: "on"],
+                [capability: "Switch", deviceIds: [99999], state: "on"]
+            ],
+            confirm: true
+        ])
+
+        then: "the result aggregates per-spec outcomes"
+        // The bulk shortcut returns triggers[] with per-item results.
+        def triggers = (result.triggers ?: result.triggerResults ?: []) as List
+        triggers.size() == 2
+        triggers.findAll { it?.success != false }.size() >= 1
+        triggers.findAll { it?.success == false }.size() >= 1
+
+        and: "the user-visible success rolls down to false because one inner item failed"
+        result.success == false || result.partial == true
+    }
+
+    def "check_rule_health surfaces ok=true with no broken markers on a clean rule"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Healthy Rule", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.label == "Healthy Rule"
+        result.brokenMarkers == [] || result.brokenMarkers?.isEmpty()
+        result.multipleFlagPoison == [] || result.multipleFlagPoison?.isEmpty()
+    }
+
+    def "check_rule_health flags BROKEN marker in label as ok=false"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Some Rule *BROKEN*", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.issues != null
+        result.issues.any { it.toString().toLowerCase().contains("broken") }
+    }
+
+    def "custom_* gateway dispatch routes each renamed tool to its underlying impl"() {
+        given:
+        settingsMap.enableCustomRuleEngine = true
+
+        // Stub the underlying tool* impls so we can assert dispatch hit the
+        // right method without exercising the full custom-engine code path.
+        def calls = []
+        script.metaClass.toolListRules = { -> calls << "list"; [rules: []] }
+        script.metaClass.toolGetRule = { String id -> calls << "get:${id}"; [id: id] }
+        script.metaClass.toolTestRule = { String id -> calls << "test:${id}"; [success: true] }
+        script.metaClass.toolExportRule = { Map a -> calls << "export"; [json: "{}"] }
+        script.metaClass.toolImportRule = { Map a -> calls << "import"; [success: true] }
+        script.metaClass.toolCloneRule = { Map a -> calls << "clone"; [success: true] }
+
+        when: "each custom_* tool is dispatched through handleGateway"
+        script.handleGateway("manage_rules_admin", "custom_list_rules", [:])
+        script.handleGateway("manage_rules_admin", "custom_get_rule", [ruleId: "42"])
+        script.handleGateway("manage_rules_admin", "custom_test_rule", [ruleId: "42"])
+        script.handleGateway("manage_rules_admin", "custom_export_rule", [ruleId: "42"])
+        script.handleGateway("manage_rules_admin", "custom_import_rule", [data: "{}"])
+        script.handleGateway("manage_rules_admin", "custom_clone_rule", [ruleId: "42"])
+
+        then: "every renamed tool routes to its underlying tool* method"
+        calls.size() == 6
+        calls.contains("list")
+        calls.find { it.startsWith("get:") }
+        calls.find { it.startsWith("test:") }
+        calls.contains("export")
+        calls.contains("import")
+        calls.contains("clone")
+    }
 }
