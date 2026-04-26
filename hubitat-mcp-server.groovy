@@ -4,12 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+partial-success-signaling-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
- *
- * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
- * iteration so we can visually confirm which build is loaded in the Apps
- * Code editor. Strip the suffix from this header AND from the
- * info.mcpServerVersion concat in toolGetHubInfo before merging.
+ * Version: 0.10.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -3462,7 +3457,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+partial-success-signaling-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion()
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -10208,10 +10203,21 @@ private void _rmSubmitMainPageDone(Integer appId) {
  * the post-write shape (e.g. fields appearing/disappearing).
  */
 private void _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
-    // Sub-page schema needs state.<paramKey> in scope or it renders empty.
-    // Get it via the navigate response, not a plain fetch.
-    def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams)
-    def cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
+    // For pages with meaningful state.<paramKey> (e.g. periodic schedule's
+    // state.n), schema requires the navigate response to set state in scope.
+    // For pages with placeholder hrefParams (STPage uses [unUsed: null]),
+    // re-firing the action_href on each write RESETS RM's in-flight wizard
+    // accumulator (cond-builder, etc.) and breaks multi-step flows like
+    // T404's sub-expression. Detect "no real params" via all-null values
+    // and use a plain GET in that case.
+    def hasRealParams = (hrefParams != null) && hrefParams.values().any { it != null }
+    def cfg
+    if (hasRealParams) {
+        def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams)
+        cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
+    } else {
+        cfg = _rmFetchConfigJson(appId, page)
+    }
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
     body.formAction = "update"
@@ -11177,11 +11183,23 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             if (!evCap) throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability is required")
             def n = evIdx + 1
             // Validate + canonicalize capability against the live enum.
-            def cfg = _rmFetchConfigJson(appId, "doActPage")
-            def inputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-            def capInput = inputs.find { it?.name?.toString() == "tCapab-${n}".toString() }
+            // Retry briefly: after the prior anotherWait click, RM's state.actNdx
+            // advance is observable via plain GET but occasionally the first
+            // fetch races with the click's commit (server processes the click
+            // before persisting the new schema). Retrying once after a short
+            // pause gives the hub a tick to catch up.
+            def cfg = null
+            def inputs = null
+            def capInput = null
+            for (int attempt = 0; attempt < 4; attempt++) {
+                cfg = _rmFetchConfigJson(appId, "doActPage")
+                inputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+                capInput = inputs.find { it?.name?.toString() == "tCapab-${n}".toString() }
+                if (capInput) break
+                if (attempt < 3) pauseExecution(250)
+            }
             if (!capInput) {
-                throw new IllegalStateException("waitEvents: tCapab-${n} not in doActPage schema for event ${evIdx}; previous event's hasAll click may have failed")
+                throw new IllegalStateException("waitEvents: tCapab-${n} not in doActPage schema for event ${evIdx} after retry; previous event's hasAll click may have failed. Schema seen: ${inputs.collect { it?.name }.findAll { it }.join(', ')}")
             }
             def opts = (capInput.options ?: []) as List
             def canon = opts.find { it.toString().equalsIgnoreCase(evCap) }
@@ -12914,12 +12932,11 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // (parens). Each condition can be:
     //   {capability, deviceIds, state, ...}   — plain
     //   {subExpression: {conditions: [...], operator/operators}}  — paren
-    // RM's STPage uses the LITERAL OPTION LABEL as the form value for
-    // cond/oper enums (verified 2026-04-26 via T404 probe: writing
-    // cond="b" silently rejected; cond="--> ( sub-expression" accepted).
-    // For "a" (new condition) RM accepts the bare key for legacy
-    // reasons, so we use that for backwards compat, but for "b"/"c"
-    // we MUST send the label.
+    // STPage's `cond` enum uses option VALUES "a" (New Condition) and "b"
+    // (sub-expression); send the value, not the label (live-UI capture
+    // 2026-04-26 confirmed). The `oper` enum's "end-sub-expression )"
+    // option is itself the value (no short key), so we send the literal
+    // string for close-paren only.
     def walkConds
     walkConds = { List condList, String outerOp, List outerOpsList ->
         condList.eachWithIndex { condRaw, i ->
@@ -12944,21 +12961,31 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 if (subConds.size() > 1 && !subOp && !subOpsList) {
                     throw new IllegalArgumentException("conditions[${i}].subExpression with ${subConds.size()} conds requires operator or operators")
                 }
-                // Open paren — RM expects the LITERAL LABEL string here.
-                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "--> ( sub-expression")
+                // Open paren. Verified live (Chrome probe rule 1383,
+                // 2026-04-26):
+                //   1. cond=b              ← opens paren (use VALUE "b",
+                //                            NOT label "--> ( sub-expression")
+                //   2. cond=a + walk + hasAll  ← FIRST inner cond
+                //   3. oper=<innerOp>          ← gap op between inner conds
+                //   4. cond=a + walk + hasAll  ← LAST inner cond
+                //   5. oper=end-sub-expression ← closes paren
+                // walkConds itself writes the gap-oper at step 3 (when i<
+                // condList.size()-1), so do NOT pre-write an oper before
+                // recursing — RM has no inner condition to operate on yet
+                // and that pre-write corrupts state, leaving the open-paren
+                // rendered as "**Broken Condition**" (T404 prior-self
+                // misdiagnosis). Likewise sending the label "--> ( sub-
+                // expression" instead of the value "b" stores the literal
+                // label in settings.cond and breaks downstream schema
+                // fetches (next GET returns oper-enum, walkConds aborts).
+                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "b")
                 applied << "cond(open-paren)"
-                // Inside the sub-expression, the wizard exposes oper enum
-                // including 'end-sub-expression )' as a 4th option. Pick the
-                // operator for the FIRST inner pair (RM uses this as the
-                // join between inner conditions).
-                def initialInnerOp = subOpsList ? subOpsList[0] : subOp
-                if (initialInnerOp) {
-                    _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", initialInnerOp)
-                    applied << "oper(inner-init)"
-                }
-                // Recurse into inner conditions.
+                // Recurse into inner conditions. walkConds itself writes
+                // the gap-oper between inner conds at index i<size-1.
                 walkConds.call(subConds, subOp, subOpsList)
-                // Close paren.
+                // Close paren — live UI uses literal label "end-sub-expression )"
+                // for this oper option (it's not encoded as a single-letter
+                // value, so the label IS the value here).
                 _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", "end-sub-expression )")
                 applied << "oper(close-paren)"
             } else {
@@ -12970,7 +12997,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "a")
                 applied << "cond"
                 try {
-                    def navResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+                    def navResp = _rmFetchConfigJson(appId, "STPage")
                     def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                     def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
                     if (!rCapabInput) {
@@ -12994,7 +13021,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                         applied << "rDev_${cIdx}".toString()
                     }
                     if (cond.state != null) {
-                        def stateNavResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+                        def stateNavResp = _rmFetchConfigJson(appId, "STPage")
                         def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                         def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
                         if (stateInput?.options) {
@@ -13054,7 +13081,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // present in the schema. RM exposes hasRule on multi-condition
     // expressions and on the post-operator decision view; for some
     // single-condition shapes it's auto-promoted on hasAll. Probe first.
-    def finalNavResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+    def finalNavResp = _rmFetchConfigJson(appId, "STPage")
     def finalInputs = (finalNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
     if (finalInputs.find { it?.name == "hasRule" }) {
         _rmClickAppButton(appId, "hasRule", null, "STPage")
