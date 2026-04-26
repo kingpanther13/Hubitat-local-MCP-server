@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+walkstep-primitive-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+walkstep-subpage-capecho-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3395,7 +3395,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+walkstep-primitive-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+walkstep-subpage-capecho-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9765,20 +9765,41 @@ private void _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
  * navigation marker to perform the transition. We don't need to mirror
  * every hidden button input on the source page.
  */
-private void _rmNavigateToPage(Integer appId, String fromPage, String targetPage) {
+private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0) {
+    // hrefIndex defaults to 0 for plain navigation. When a sub-page
+    // <href> has params={n: <N>}, the action marker key uses N as the
+    // suffix: `_action_href_name|<page>|<N>=`. Verified live 2026-04-25
+    // that the periodic schedule sub-page requires `_action_href_name|
+    // periodic|1` (matching the trigger's index from params.n) — using
+    // |0 navigates without setting state.n and the page renders empty
+    // with 'Cannot get property n on null object'.
+    //
+    // Returns the parsed nav response. The response body is the schema
+    // of the target page rendered with the param state in scope — the
+    // ONLY place that schema lives, since a follow-up GET on the target
+    // page won't carry the state. Callers that need the target schema
+    // should consume the returned configPage rather than re-fetch.
     def body = [
         id: appId.toString(),
         formAction: "update",
         currentPage: fromPage,
         pageBreadcrumbs: '["mainPage"]',
-        ("_action_href_name|${targetPage}|0".toString()): ""
+        ("_action_href_name|${targetPage}|${hrefIndex}".toString()): ""
     ]
     try {
         def cfg = _rmFetchConfigJson(appId, fromPage)
         def v = cfg?.app?.version
         if (v != null) body.version = v.toString()
     } catch (Exception ignored) { /* best effort */ }
-    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception ignored) { /* idempotent */ }
+    try {
+        def resp = hubInternalPostForm("/installedapp/update/json", body)
+        if (resp?.data) {
+            try {
+                return new groovy.json.JsonSlurper().parseText(resp.data) as Map
+            } catch (Exception ignored) { /* fall through */ }
+        }
+    } catch (Exception ignored) { /* idempotent */ }
+    return null
 }
 
 /**
@@ -11112,16 +11133,40 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     } else if (operation == "navigate") {
         def target = spec?.navigate?.targetPage?.toString()
         if (!target) throw new IllegalArgumentException("walkStep operation='navigate' requires navigate={targetPage}")
-        _rmNavigateToPage(appId, page, target)
-        opResult.navigated = [from: page, to: target]
+        // Sub-page hrefs carry params (e.g. {n: 1}) that get encoded as
+        // the index suffix in the action marker: `_action_href_name|
+        // <page>|<n>`. Pull the matching href from the BEFORE schema
+        // and use its params.n; fall back to 0 for plain pages.
+        def hrefIndex = 0
+        def hrefMatch = beforeSchema.hrefs.find { it.targetPage == target }
+        if (hrefMatch?.params?.n != null) {
+            hrefIndex = hrefMatch.params.n as Integer
+        } else if (spec.navigate.hrefIndex != null) {
+            hrefIndex = spec.navigate.hrefIndex as Integer
+        }
+        // _rmNavigateToPage returns the nav response — the target page's
+        // schema rendered WITH the href params in scope. Stash it as
+        // `navResponseConfigPage` so the AFTER block can use it instead
+        // of doing a separate GET that would lose the param state.
+        opResult.navResponseConfigPage = _rmNavigateToPage(appId, page, target, hrefIndex)?.configPage
+        opResult.navigated = [from: page, to: target, hrefIndex: hrefIndex]
         // After navigation the schema lives at the target page, not the source.
         page = target
     } else {
         throw new IllegalArgumentException("walkStep.operation must be 'introspect', 'write', 'click', or 'navigate'; got '${operation}'")
     }
 
-    // Capture AFTER state.
-    def afterCfg = _rmFetchConfigJson(appId, page)
+    // Capture AFTER state. For navigate ops, prefer the schema returned
+    // by the nav response itself — sub-pages with href params (e.g.
+    // periodic schedule) lose state.<n> on a follow-up GET, so the only
+    // place to read the target schema is the nav POST's response body.
+    def afterCfg
+    if (operation == "navigate" && opResult.navResponseConfigPage) {
+        afterCfg = [configPage: opResult.navResponseConfigPage]
+        opResult.remove("navResponseConfigPage")  // keep it out of the user-facing result
+    } else {
+        afterCfg = _rmFetchConfigJson(appId, page)
+    }
     def afterStatus = _rmFetchStatusJson(appId)
     def afterSettings = (afterStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
     def afterSchema = _rmCollectWalkSchema(afterCfg?.configPage, afterSettings)
@@ -11137,16 +11182,33 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     // Value-echo: did the write survive the round-trip with the same value?
     // Catches enum case normalization, multiple-flag coercion, anything
     // hub does silently between accepting and storing the write.
+    //
+    // For capability.* fields the storage shape is unusual: appSettings'
+    // .value comes back as null while the device list lives elsewhere
+    // (deviceIdsForDeviceList on the appSettings entry). Pull from that
+    // sibling field when comparing — otherwise valueEcho is noise for
+    // every device picker write.
     def valueEcho = null
     if (writtenKey != null) {
         def storedValue = afterSettings[writtenKey]
+        def schemaInputForKey = beforeSchema.inputs.find { it.name == writtenKey }
+        def isCapabilityType = (schemaInputForKey?.type?.toString()?.startsWith("capability.")) == true
+        if (isCapabilityType) {
+            // Read deviceIdsForDeviceList from the raw appSettings entry —
+            // afterSettings only carries .value (null for capability.*).
+            def rawEntry = (afterStatus?.appSettings ?: []).find { it?.name?.toString() == writtenKey }
+            def storedIds = rawEntry?.deviceIdsForDeviceList
+            if (storedIds != null) {
+                storedValue = storedIds
+            }
+        }
         // Normalize comparison — both serialized to strings.
         def writtenStr = writtenValue instanceof List
-            ? writtenValue.collect { it?.toString() }.join(",")
+            ? writtenValue.collect { it?.toString() }.sort().join(",")
             : (writtenValue?.toString() ?: "")
         def storedStr = storedValue instanceof Map
-            ? storedValue.keySet().toList().join(",")
-            : (storedValue instanceof List ? storedValue.join(",") : (storedValue?.toString() ?: ""))
+            ? storedValue.keySet().toList().sort().join(",")
+            : (storedValue instanceof List ? storedValue.collect { it?.toString() }.sort().join(",") : (storedValue?.toString() ?: ""))
         valueEcho = [
             key: writtenKey,
             written: writtenValue,
