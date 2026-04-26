@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+walkstep-hrefcontext-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+walkstep-done-op-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1949,20 +1949,28 @@ Trigger index is auto-assigned (next available). The wizard's auto-finalize via 
 Spec shape:
   {
     page: <page name>,           // e.g. "selectTriggers", "selectActions", "doActPage", "mainPage", "periodic"
-    operation: "introspect" | "write" | "click" | "navigate",
+    operation: "introspect" | "write" | "click" | "navigate" | "done",
     write?: {<schemaFieldName>: <value>},          // exactly one key per call
-    click?: {name: <btnName>, stateAttribute?},    // for buttons / hrefs
-    navigate?: {targetPage: <page>},               // form-submit page transition
-    validateEnum?: <bool>                          // when true, reject writes whose value isn't in the input's options list
+    click?: {name: <btnName>, stateAttribute?},    // for buttons
+    navigate?: {targetPage: <page>},               // forward sub-page entry via href
+    validateEnum?: <bool>,                         // when true, reject writes whose value isn't in the input's options list
+    hrefContext?: {fromPage, hrefName, hrefParams?, hrefIndex?}  // sub-page state + back-nav target
   }
+
+Operations:
+  - introspect: fetch schema; no mutation
+  - write: write one field's value (with hrefContext for sub-pages)
+  - click: click a regular button (cancelCapab, hasAll, moreCond, etc.)
+  - navigate: forward into a sub-page via its href
+  - done: BACK-NAVIGATE from a sub-page to its parent via _action_previous=Done. Carries ALL the sub-page's current settings in the form. REQUIRED for sub-pages (Periodic Schedule, etc.) whose parent's row description otherwise renders as "?". Pass hrefContext={fromPage: <parent>, hrefParams: {n: <idx>}} so RM routes correctly.
 
 Recommended driving loop for an LLM:
   1. operation:"introspect" to see what fields the page exposes
-  2. Pick the next required field; for enums echo back an option you actually saw
-  3. operation:"write" with that one field
-  4. Inspect diff.appeared / valueEcho.match / silentRejection in the response
-  5. Repeat until schema exposes a commit button (actionDone / hasAll), then operation:"click" it
-  6. operation:"navigate" if a sub-page href is exposed and you need to enter it
+  2. operation:"navigate" to enter a sub-page if one is exposed
+  3. operation:"write" each required field (with hrefContext on sub-pages)
+  4. Inspect diff.appeared / valueEcho.match / silentRejection between writes
+  5. operation:"done" to back out of a sub-page (this is what bakes the trigger/action description)
+  6. operation:"click" hasAll/actionDone on the parent to finalize the row
 
 Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response — these are the fail-loud signals."""
                     ],
@@ -3395,7 +3403,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+walkstep-hrefcontext-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+walkstep-done-op-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -11077,13 +11085,22 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
  *
  * Spec shape:
  *   { page: <pageName>,
- *     operation: "introspect" | "write" | "click" | "navigate",
+ *     operation: "introspect" | "write" | "click" | "navigate" | "done",
  *     write?: {<key>: <value>},
  *     click?: {name, stateAttribute?},
  *     navigate?: {targetPage},
- *     validateEnum?: bool   // if true, reject writes whose value
+ *     validateEnum?: bool,  // if true, reject writes whose value
  *                           // isn't in the input's options list
+ *     hrefContext?: {fromPage, hrefName, hrefParams?, hrefIndex?}
+ *                           // for sub-page ops + back-nav (done)
  *   }
+ *
+ * "done" submits the current sub-page back to its parent via
+ * _action_previous=Done, carrying ALL current setting values. Required
+ * for sub-pages whose parent's row description only renders after a
+ * full Done submit (e.g. Periodic Schedule renders "?" without it).
+ * Pass hrefContext={fromPage: <parent>, hrefParams: {n: <idx>}} so RM
+ * routes the back-nav with the correct paramsForPage.
  *
  * For "introspect" the call only fetches the schema — no mutation. The
  * `before` snapshot is the same as `after` and `diff` is empty.
@@ -11198,6 +11215,69 @@ private Map _rmWalkStep(Integer appId, Map spec) {
         def stateAttr = spec.click.stateAttribute?.toString()
         _rmClickAppButton(appId, btnName, stateAttr, page)
         opResult.clicked = [name: btnName, stateAttribute: stateAttr]
+    } else if (operation == "done") {
+        // Submit current page back to its parent via _action_previous=Done,
+        // carrying ALL current setting values + sidecar fields. This is the
+        // back-nav analog of "navigate" — required for sub-pages whose
+        // parent expects the trigger/action to commit fully.
+        //
+        // Live-captured 2026-04-25: Periodic Schedule's trigger description
+        // only renders when the periodic page submits via Done with a
+        // valid schedule (e.g. everyNHoursC1=true + everyNHC1=1). The
+        // forward-nav `_action_href_*` markers reach the parent page but
+        // don't bake the trigger row — RM keeps the row's description as
+        // "?" until the form-style Done with full settings arrives.
+        //
+        // For sub-pages with hrefContext, paramsForPage carries the route
+        // param (e.g. {"n":1}) so RM resets state.<paramKey> on the way
+        // back. pageBreadcrumbs = ["mainPage", parentPage] tells the hub
+        // which page to render in response.
+        def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
+        def allSettingsMap = [:]
+        fullSchemaMap.each { name, meta ->
+            def v = beforeSettings[name]
+            if (v == null) v = ""
+            allSettingsMap[name] = v
+        }
+        def body = _rmBuildSettingsBody(appId, allSettingsMap, fullSchemaMap)
+        body.formAction = "update"
+        body.currentPage = page
+        body._action_previous = "Done"
+        if (hrefContext?.hrefParams) {
+            body.paramsForPage = groovy.json.JsonOutput.toJson(hrefContext.hrefParams)
+        }
+        def parentPage = hrefContext?.fromPage?.toString()
+        body.pageBreadcrumbs = parentPage ?
+            groovy.json.JsonOutput.toJson(["mainPage", parentPage]) :
+            '["mainPage"]'
+        // Per-type sidecars the form-encoded UI emits.
+        // _rmBuildSettingsBody handles settings[X], X.type, X.multiple (only
+        // when multi=true). For Done we ALSO need to emit X.multiple=false
+        // for non-multi fields and the type-specific marker fields:
+        //   bool: checkbox[X] = "on" (HTML checkbox marker, always sent)
+        //   time: hours[X], minutes[X], amPm[X] (empty defaults; the time
+        //         value lives in settings[X] as "HH:mm")
+        fullSchemaMap.each { name, meta ->
+            def t = meta?.type?.toString()
+            if (meta?.multiple != true) {
+                body["${name}.multiple".toString()] = "false"
+            }
+            if (t == "bool") {
+                body["checkbox[${name}]".toString()] = "on"
+            } else if (t == "time") {
+                body["hours[${name}]".toString()] = ""
+                body["minutes[${name}]".toString()] = ""
+                body["amPm[${name}]".toString()] = "AM"
+            }
+        }
+        try {
+            def cfg = _rmFetchConfigJson(appId, page)
+            if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+        } catch (Exception ignored) { /* best effort */ }
+        hubInternalPostForm("/installedapp/update/json", body)
+        opResult.done = [from: page, parent: parentPage]
+        // After done, schema lives at the parent page.
+        page = parentPage ?: page
     } else if (operation == "navigate") {
         def target = spec?.navigate?.targetPage?.toString()
         if (!target) throw new IllegalArgumentException("walkStep operation='navigate' requires navigate={targetPage}")
@@ -11232,7 +11312,7 @@ private Map _rmWalkStep(Integer appId, Map spec) {
         // After navigation the schema lives at the target page, not the source.
         page = target
     } else {
-        throw new IllegalArgumentException("walkStep.operation must be 'introspect', 'write', 'click', or 'navigate'; got '${operation}'")
+        throw new IllegalArgumentException("walkStep.operation must be 'introspect', 'write', 'click', 'navigate', or 'done'; got '${operation}'")
     }
 
     // Capture AFTER state. For navigate ops, prefer the schema returned
@@ -11245,6 +11325,12 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     if (operation == "navigate" && opResult.navResponseConfigPage) {
         afterCfg = [configPage: opResult.navResponseConfigPage]
         opResult.remove("navResponseConfigPage")  // keep it out of the user-facing result
+    } else if (operation == "done") {
+        // After done, page already switched to parent. Plain fetch is fine —
+        // parent pages don't carry the sub-page's paramsForPage state, so
+        // routing through _rmNavigateToPage would re-enter the sub-page
+        // and undo the done.
+        afterCfg = _rmFetchConfigJson(appId, page)
     } else if (hrefContext) {
         def hcName = hrefContext.hrefName?.toString() ?: "name"
         def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
