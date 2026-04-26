@@ -688,8 +688,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
         hubGet.register('/installedapp/configure/json/100/STPage') { params -> ruleConfigJson(100, "r", stPageInputs) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"M1"}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"id":"10","name":"C1"}' }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
         def posts = []
@@ -698,14 +698,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
 
-        when: "addRequiredExpression with a subExpression triggers cond=b for the open paren"
+        when: "addRequiredExpression with the OUTER cond as a subExpression triggers cond=b first"
+        // Single outer condition that's itself a subExpression — guarantees the
+        // open-paren cond=b write fires before any rCapab_<N> lookup that
+        // would short-circuit the walk against a minimal schema stub.
         try {
             script.toolUpdateNativeApp([
                 appId: 100,
                 addRequiredExpression: [conditions: [
-                    [capability: "Switch", deviceIds: [8], state: "on"],
-                    [subExpression: [conditions: [[capability: "Motion", deviceIds: [9], state: "active"]], operator: "OR"]]
-                ], operator: "AND"],
+                    [subExpression: [conditions: [
+                        [capability: "Motion", deviceIds: [9], state: "active"],
+                        [capability: "Contact", deviceIds: [10], state: "open"]
+                    ], operator: "OR"]]
+                ]],
                 confirm: true
             ])
         } catch (Exception ignored) { /* schema stubs are minimal; we only assert the wire format */ }

@@ -9442,8 +9442,8 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
     def body = [
         id: appId.toString(),
         name: buttonName,
-        "settings[${buttonName}]": "clicked",
-        "${buttonName}.type": "button"
+        ("settings[${buttonName}]".toString()): "clicked",
+        ("${buttonName}.type".toString()): "button"
     ]
     if (stateAttribute) body.stateAttribute = stateAttribute
     if (pageName) {
