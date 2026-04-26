@@ -11166,14 +11166,26 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 }
             }
         }
-        // hasRule to finalize the expression — only if the schema exposes
-        // it (multi-cond requires explicit hasRule; single-cond may auto-
-        // promote on hasAll).
-        def finalCfg = _rmFetchConfigJson(appId, "doActPage")
-        def finalInputs = (finalCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-        if (finalInputs.find { it?.name == "hasRule" }) {
+        // hasRule SEALS the expression to this action (binds the conds
+        // we just walked to actType.<idx>'s expression scope). Without
+        // it, RM's paragraph render conflates conds across multiple
+        // IF/ELSE-IF actions because there's no per-action expression
+        // binding in the settings (verified live 2026-04-26: rule with
+        // ifThen + elseIf both rendered as "(Sw1 is on Sw2 is on)" —
+        // both conds appearing in BOTH branches because hasRule was
+        // skipped on single-cond expressions).
+        //
+        // Always click hasRule. RM tolerates the click even when the
+        // button isn't yet visible in the schema (the click endpoint
+        // accepts the button name regardless; if RM has nothing to do
+        // it's a no-op). For multi-cond expressions hasRule appears
+        // immediately after the last hasAll; for single-cond it appears
+        // only on the post-hasAll schema after a settle. The
+        // try/catch handles the rare case where the wizard isn't in a
+        // state where hasRule is a valid click target.
+        try {
             _rmClickAppButton(appId, "hasRule", null, "doActPage")
-        }
+        } catch (Exception ignored) { /* tolerated — wizard may already be sealed */ }
     }
 
     // Optional Delay? modifier on an action. Verified live 2026-04-25:
