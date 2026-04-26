@@ -661,7 +661,7 @@ def getGatewayConfig() {
                 resume_rm_rule: "Resume a paused RM rule (RMUtils). Args: ruleId",
                 set_rm_rule_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
                 create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use update_native_app next to populate.",
-                update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic) or click a page-transition button. Auto-backs-up first. Args: appId, settings|button, pageName (opt), stateAttribute (opt), confirm",
+                update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic), click a page-transition button, or use a high-level structured shortcut (addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / walkStep). Auto-backs-up first. Args: appId, settings|button|<shortcut>, pageName (opt), stateAttribute (opt), confirm",
                 delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 check_rule_health: "Inspect a rule for broken state (label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption). Args: appId. Returns {ok, issues, ...}. Auto-attached to update_native_app responses too."
             ],
@@ -1939,6 +1939,33 @@ PARTIAL-SUCCESS HANDLING: If the result has `partial: true`, the trigger row was
                         type: "array",
                         description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.",
                         items: [type: "object"]
+                    ],
+                    addRequiredExpression: [
+                        type: "object",
+                        description: """Add a Rule Machine 5.1 Required Expression (RM's pre-trigger gate that conditions whether the rule is allowed to fire) via the high-level structured API. The tool orchestrates STPage's full wizard internally — sets useST=true, navigates the sub-page, walks each condition's reveal sequence (cond=a → rCapab_<N> → rDev_<N> → state_<N> / numeric comparator → optional NOT), commits via hasAll for each, writes the joining operator between conditions, finalizes via hasRule, and submits the back-nav Done. Returns the assigned condition indices in result.conditionIndices.
+
+Spec shape:
+  {
+    conditions: [
+      {capability: 'Switch', deviceIds: [<id>], state: 'on'},
+      {capability: 'Motion', deviceIds: [<id>], state: 'active'}
+    ],
+    operator: 'AND' | 'OR' | 'XOR'  // required when conditions.size() > 1
+  }
+
+Per-condition spec fields:
+  - capability — required. RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.
+  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, time-based).
+  - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
+  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!=').
+  - value — numeric threshold paired with comparator.
+  - attribute — for capability='Custom Attribute', the attribute name (e.g., 'humidity', 'energy', any attribute exposed by the device).
+  - not — boolean (default false). Set true to invert this condition.
+  - rawSettings — escape hatch dict {fieldName: value} for fields not yet mapped above.
+
+The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the parent (Rule Machine, app id 21) atomicState level — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
+
+PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, the expression was constructed but some condition fields didn't land. The result includes settingsSkipped with the available-options list at the time of the failed write. Common repair: pass the missing field via rawSettings on the affected condition spec, or rebuild the expression."""
                     ],
                     addActions: [
                         type: "array",
@@ -9453,9 +9480,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def cap = triggerSpec.capability?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addTrigger.capability is required")
 
-    // Discover next trigger index by scanning existing tCapab<N> settings.
+    // Snapshot committed trigger indices (settings) BEFORE clicking moreCond.
+    // The actual in-flight trigger idx is discovered from the schema after
+    // the click — see "schema-aware index discovery" block below. We do not
+    // trust existing+1 because state.moreCond can drift (e.g. if a prior
+    // STPage walk or aborted wizard left the counter advanced).
     def existing = _rmCollectTriggerIndices(appId)
-    def idx = (existing ? existing.max() + 1 : 1)
 
     // Open the trigger editor (state.moreCond=true).
     _rmClickAppButton(appId, "true", "moreCond", "selectTriggers")
@@ -9473,7 +9503,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def conditionId = null
     def applied = []
     def skipped = []
+    def idx = null
     if (conditionSpec) {
+        // Conditional path: pre-compute idx via existing+1 because
+        // _rmBuildCondition needs an explicit slot to write its setup
+        // state into. We tolerate drift only in the non-conditional path.
+        idx = (existing ? existing.max() + 1 : 1)
         conditionId = _rmBuildCondition(appId, idx, conditionSpec, applied)
         // The condition wizard advanced the trigger index by one, so the
         // actual conditional trigger now lives at idx+1. The isCondTrig
@@ -9497,7 +9532,34 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // Chrome 2026-04-25: tCapab2='switch' rejected, tCapab2='Switch'
     // exposes tDev2 of type capability.switch.
     def capPageConfig = _rmFetchConfigJson(appId, "selectTriggers")
-    def capInput = (capPageConfig?.configPage?.sections ?: []).collectMany { it?.input ?: [] }.find { it?.name == "tCapab${idx}".toString() }
+    def allCapInputs = (capPageConfig?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+    if (idx == null) {
+        // SCHEMA-AWARE INDEX DISCOVERY (non-conditional path). Find the
+        // in-flight tCapab<N> for an uncommitted wizard — any N not in the
+        // already-committed `existing` set. state.moreCond can be at any
+        // value if a prior STPage walk or aborted wizard left the counter
+        // advanced; trust the schema, not existing+1. Pick the largest
+        // unmatched N (the most-recent moreCond click). Verified live
+        // 2026-04-26: STPage walks left state.moreCond at 3+ on rule 1319,
+        // and addTrigger using existing+1=1 errored with "tCapab1 not
+        // present" until the schema-aware fix landed.
+        def candidateIdxs = []
+        allCapInputs.each { inp ->
+            def n = inp?.name?.toString()
+            if (n) {
+                def m = (n =~ /^tCapab(\d+)$/)
+                if (m.matches()) {
+                    def cn = (m[0][1] as Integer)
+                    if (!existing.contains(cn)) candidateIdxs << cn
+                }
+            }
+        }
+        if (!candidateIdxs) {
+            throw new IllegalStateException("addTrigger: no in-flight tCapab<N> in selectTriggers schema after moreCond click. Existing committed: ${existing}; schema names: ${allCapInputs.collect { it?.name }.findAll { it }.join(', ')}")
+        }
+        idx = candidateIdxs.max()
+    }
+    def capInput = allCapInputs.find { it?.name == "tCapab${idx}".toString() }
     if (!capInput) throw new IllegalStateException("addTrigger: tCapab${idx} not present in selectTriggers schema — wizard didn't open. Was the moreCond click consumed?")
     def capOptions = (capInput.options ?: []) as List
     def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
@@ -12170,6 +12232,218 @@ def toolCreateNativeApp(args) {
 }
 
 /**
+ * High-level structured Required Expression creation for Rule Machine 5.1.
+ *
+ * Replaces the 7+ wizard calls (useST=true on mainPage → navigate STPage →
+ * cond=a → rCapab_<N> → rDev_<N> → state_<N> → hasAll → optional oper for
+ * multi-cond → hasRule → done) with one orchestrated call. Lets callers
+ * (LLMs) build a Required Expression without knowing any of the STPage
+ * internals.
+ *
+ * Spec shape (LLM-friendly):
+ *   {
+ *     conditions: [
+ *       {capability: "Switch", deviceIds: [282], state: "on"},
+ *       {capability: "Motion", deviceIds: [284], state: "active", not: false}
+ *     ],
+ *     operator: "AND" | "OR" | "XOR"  // required when conditions.size() > 1
+ *   }
+ *
+ * Per-condition fields:
+ *   capability   — "Switch" / "Motion" / "Contact" / "Lock" / "Presence" /
+ *                  "Temperature" / "Humidity" / "Custom Attribute" / "Mode" /
+ *                  "Private Boolean" / etc. (RM's STPage capability list).
+ *   deviceIds    — required for capability.* device types. Omit for Mode /
+ *                  Private Boolean / time-based capabilities.
+ *   state        — enum value ("on", "active", "open", "locked", "present",
+ *                  "true"/"false" for Private Boolean). Omit for numeric
+ *                  comparator path.
+ *   comparator   — for numeric capabilities ("<=", "=", ">", "<", ">=", etc.)
+ *   value        — numeric threshold (paired with comparator)
+ *   attribute    — for Custom Attribute capability, the attribute name
+ *   not          — true to invert this condition (NOT)
+ *   rawSettings  — escape hatch {fieldName: value} for fields not yet mapped
+ *
+ * After commit, settings show:
+ *   useST=true
+ *   cond=["<idx1>", "<idx2>", ...]   (string-typed list of cond indices)
+ *   rCapab_<idxN>, rDev_<idxN>, state_<idxN> per condition
+ *   oper=<operator> if multi-condition
+ *
+ * mainPage paragraph renders e.g. "Switch1 is on" or "Switch1 is on AND
+ * Motion1 is active" — verified live 2026-04-26 via T400.
+ *
+ * STPage internals discovered live (firmware 2.5.0.123):
+ *   1. mainPage.useST=true exposes the "Define Required Expression" href
+ *   2. STPage's hrefParams is {unUsed: null} — placeholder only
+ *   3. STPage shows enum `cond` with options a (new condition) / b (sub-
+ *      expression) / c (NOT) — write "a" to start a new condition
+ *   4. After cond=a, schema reveals rCapab_<N> where N is the live cond
+ *      counter (NOT 1 — RM increments globally; 2nd rule on the parent
+ *      may start at _2)
+ *   5. After rCapab_<N>=Switch, rDev_<N> appears (capability.switch)
+ *   6. After rDev_<N>=[id], state_<N> appears (on/off enum)
+ *   7. After state_<N>=on, hasAll button appears — click to commit
+ *   8. After hasAll, oper enum appears (AND/OR/XOR). For single-condition
+ *      expressions, no operator is needed and the next click is hasRule.
+ *      hasRule may not be present immediately after a single-condition
+ *      hasAll — the schema-aware probe below handles either shape.
+ *   9. hasRule click reveals expression-final-options (cancelST, editST,
+ *      stopOnST, evalOnBoot) plus a "Manage Conditions" href. The doneST
+ *      button at this stage is a no-op (verified 2026-04-26: clicking it
+ *      returns identical schema). The proper exit is via the back-nav
+ *      _action_previous=Done — same as walkStep operation='done'.
+ *
+ * Returns: [success, conditionIndices, settingsApplied, settingsSkipped]
+ */
+private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
+    if (!(exprSpec instanceof Map)) {
+        throw new IllegalArgumentException("addRequiredExpression requires a Map spec")
+    }
+    def conditions = exprSpec.conditions
+    if (!(conditions instanceof List) || conditions.isEmpty()) {
+        throw new IllegalArgumentException("addRequiredExpression.conditions is required (non-empty List of {capability, deviceIds?, state?, ...})")
+    }
+    def operator = exprSpec.operator?.toString()?.toUpperCase()
+    if (operator && !(operator in ["AND", "OR", "XOR"])) {
+        throw new IllegalArgumentException("addRequiredExpression.operator must be 'AND', 'OR', or 'XOR' (got '${operator}')")
+    }
+    if (conditions.size() > 1 && !operator) {
+        throw new IllegalArgumentException("addRequiredExpression with ${conditions.size()} conditions requires operator (AND/OR/XOR)")
+    }
+
+    def applied = []
+    def skipped = []
+
+    // Step 1. Set useST=true on mainPage. Idempotent — safe to write even
+    // if a prior expression already exists. The toggle exposes the
+    // "Define Required Expression" href on mainPage so the navigate that
+    // follows can resolve it.
+    _rmWriteSettingOnPage(appId, "mainPage", "useST", true, applied, "bool", skipped)
+
+    // Step 2. Walk each condition through STPage's wizard.
+    def hrefParams = [unUsed: null]
+    def conditionIndices = []
+    conditions.eachWithIndex { condRaw, i ->
+        if (!(condRaw instanceof Map)) {
+            throw new IllegalArgumentException("addRequiredExpression.conditions[${i}] is not a Map")
+        }
+        def cond = condRaw as Map
+        def cap = cond.capability?.toString()?.trim()
+        if (!cap) {
+            throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].capability is required")
+        }
+
+        // Open new condition wizard. cond=a triggers reveal of rCapab_<N>.
+        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "a")
+        applied << "cond"
+
+        // Discover the live condition index by reading STPage's schema.
+        // The cond counter is shared at the parent (Rule Machine, app id 21)
+        // atomicState level, so it can start anywhere — don't assume _1.
+        def navResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+        def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+        if (!rCapabInput) {
+            throw new IllegalStateException("addRequiredExpression: rCapab_<N> not in STPage schema after writing cond=a; got ${stInputs.collect { it?.name }.findAll { it }.join(', ')}")
+        }
+        def m = rCapabInput.name.toString() =~ /rCapab_(\d+)/
+        def cIdx = m ? ((m[0] as List)[1] as Integer) : null
+        if (cIdx == null) {
+            throw new IllegalStateException("addRequiredExpression: couldn't parse condition index from '${rCapabInput.name}'")
+        }
+        conditionIndices << cIdx
+
+        // Validate + canonicalize capability against STPage's enum options
+        // (case-insensitive match → canonical case the hub expects).
+        def capOptions = (rCapabInput.options ?: []) as List
+        def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
+        if (!capCanonical) {
+            throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].capability '${cap}' not in STPage's option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+        }
+        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCapab_${cIdx}", capCanonical)
+        applied << "rCapab_${cIdx}".toString()
+
+        // Device picker (capability.* types). Omit for non-device caps
+        // (Mode, Private Boolean, time-based) — caller handles via
+        // rawSettings or cap-specific fields.
+        if (cond.deviceIds != null) {
+            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rDev_${cIdx}", cond.deviceIds)
+            applied << "rDev_${cIdx}".toString()
+        }
+
+        // State enum (on/off, active/inactive, open/closed, locked/unlocked,
+        // present/not_present, true/false for Private Boolean, etc.)
+        if (cond.state != null) {
+            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "state_${cIdx}", cond.state)
+            applied << "state_${cIdx}".toString()
+        }
+
+        // Numeric comparator path (Temperature/Humidity/Battery/etc.)
+        if (cond.comparator != null) {
+            if (cond.attribute != null) {
+                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCustomAttr_${cIdx}", cond.attribute)
+                applied << "rCustomAttr_${cIdx}".toString()
+            }
+            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "ReltDev_${cIdx}", cond.comparator)
+            applied << "ReltDev_${cIdx}".toString()
+        }
+
+        if (cond.value != null) {
+            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "value_${cIdx}", cond.value)
+            applied << "value_${cIdx}".toString()
+        }
+
+        // NOT this condition?
+        if (cond.not == true) {
+            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "not${cIdx}", true)
+            applied << "not${cIdx}".toString()
+        }
+
+        // Caller escape hatch for fields not yet mapped above.
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv ->
+                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, rk.toString(), rv)
+                applied << rk.toString()
+            }
+        }
+
+        // Click hasAll to commit this condition.
+        _rmClickAppButton(appId, "hasAll", null, "STPage")
+
+        // For non-last conditions, write the joining operator (revealed
+        // post-hasAll for multi-cond expressions).
+        if (i < conditions.size() - 1 && operator) {
+            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", operator)
+            applied << "oper"
+        }
+    }
+
+    // Step 3. Click hasRule to finalize the expression — but only if
+    // present in the schema. RM exposes hasRule on multi-condition
+    // expressions and on the post-operator decision view; for some
+    // single-condition shapes it's auto-promoted on hasAll. Probe first.
+    def finalNavResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+    def finalInputs = (finalNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+    if (finalInputs.find { it?.name == "hasRule" }) {
+        _rmClickAppButton(appId, "hasRule", null, "STPage")
+    }
+
+    // Step 4. Submit sub-page Done to return to mainPage. This is the
+    // _action_previous=Done back-nav with full settings — the proper exit
+    // (verified 2026-04-26 that clicking the doneST button is a no-op,
+    // even though it appears in the schema).
+    _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams)
+
+    return [
+        success: true,
+        conditionIndices: conditionIndices,
+        settingsApplied: applied,
+        settingsSkipped: skipped
+    ]
+}
+
+/**
  * update_native_app — two modes, caller picks one (settings OR button):
  *
  *   settings: apply a settings map with the multi-device 3-field contract
@@ -12199,14 +12473,15 @@ def toolUpdateNativeApp(args) {
     def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
     def addActionsList = args?.addActions instanceof List ? (args.addActions as List) : null
     def addTriggersList = args?.addTriggers instanceof List ? (args.addTriggers as List) : null
+    def addRequiredExpressionSpec = args?.addRequiredExpression instanceof Map ? args.addRequiredExpression : null
     def removeActionSpec = args?.removeAction instanceof Map ? args.removeAction : null
     def clearActionsFlag = args?.clearActions == true
     def replaceActionsList = args?.replaceActions instanceof List ? (args.replaceActions as List) : null
     def moveActionSpec = args?.moveAction instanceof Map ? args.moveAction : null
     def walkStepSpec = args?.walkStep instanceof Map ? args.walkStep : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
-            && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
+            && !addRequiredExpressionSpec && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -12216,11 +12491,12 @@ def toolUpdateNativeApp(args) {
         (addActionSpec ? "pre-addAction" :
         (addActionsList ? "pre-addActions-bulk" :
         (addTriggersList ? "pre-addTriggers-bulk" :
+        (addRequiredExpressionSpec ? "pre-addRequiredExpression" :
         (removeActionSpec ? "pre-removeAction" :
         (clearActionsFlag ? "pre-clearActions" :
         (replaceActionsList != null ? "pre-replaceActions" :
         (moveActionSpec ? "pre-moveAction" :
-        (walkStepSpec ? "pre-walkStep" : "pre-update")))))))))
+        (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
@@ -12389,6 +12665,47 @@ def toolUpdateNativeApp(args) {
             configPageError: actResult?.configPageError,
             health: actResult?.health,
             note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake — no manual updateRule needed."
+        ]
+    }
+
+    if (addRequiredExpressionSpec) {
+        // High-level structured Required Expression creation. Replaces
+        // the 7+ walkStep wizard calls of the manual flow with one
+        // orchestrated call. Caller specifies a list of conditions and
+        // (optional) joining operator; the helper navigates STPage,
+        // walks each condition's reveal sequence, commits via hasAll +
+        // hasRule, and submits the sub-page Done back-nav. After return
+        // the rule's mainPage paragraph renders the expression text and
+        // settings show useST=true + cond=["<idx>", ...] + per-cond
+        // rCapab_<idx>/rDev_<idx>/state_<idx>.
+        def reResult
+        try {
+            reResult = _rmAddRequiredExpression(appId, addRequiredExpressionSpec)
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "addRequiredExpression failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
+        // Fire updateRule so the expression takes effect on the running
+        // rule instance. Mirrors addTrigger's "caller fires updateRule"
+        // contract — for addRequiredExpression we do it here since the
+        // expression is a leaf operation (no expected follow-on).
+        try { _rmClickAppButton(appId, "updateRule") } catch (Exception ignored) { }
+        def health = _rmCheckRuleHealth(appId)
+        return [
+            success: (reResult?.success != false) && health.ok,
+            appId: appId,
+            backup: backup,
+            conditionIndices: reResult?.conditionIndices,
+            settingsApplied: reResult?.settingsApplied,
+            settingsSkipped: reResult?.settingsSkipped,
+            health: health,
+            note: "Required Expression added with ${reResult?.conditionIndices?.size() ?: 0} condition(s); updateRule fired."
         ]
     }
 

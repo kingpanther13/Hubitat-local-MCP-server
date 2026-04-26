@@ -1131,6 +1131,8 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Calls `manage_rule_machine.create_rm_rule` with one required-expression condition, then `get_rm_rule` round-trips it. [INV-1] `configPage.error == null`. AI reports 1 condition, 1 trigger, and confirms the expression text matches.
 
+**LLM-discoverable path**: Use `update_native_app(addRequiredExpression={conditions: [{capability: 'Switch', deviceIds: [<id>], state: 'on'}]})`. The shortcut handles the full STPage walk (useST=true → navigate → cond=a → rCapab/rDev/state writes → hasAll → hasRule → done). Single-condition expressions don't need an `operator`. After commit, mainPage's paragraph renders the expression text and `cond=["<idx>"]` shows in settings (the cond counter is shared at the RM parent app, so idx may not start at 1 — that's expected, not a bug). Verified live 2026-04-26 — see `_rmAddRequiredExpression` in hubitat-mcp-server.groovy.
+
 ### T401 — Create rule with AND of two conditions in Required Expression
 
 ```json
