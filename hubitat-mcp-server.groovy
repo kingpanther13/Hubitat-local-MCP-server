@@ -12041,6 +12041,20 @@ def toolCreateNativeApp(args) {
                     mcpLog("warn", "rm-native", "create_native_app: action ${i} (${spec.capability}/${spec.action}) failed — ${ae.message}")
                 }
             }
+            // After bulk-add, navigate selectActions → mainPage via
+            // _action_previous=Done — mirrors the live UI's "Done with
+            // Actions" click. _rmAddAction leaves us on selectActions; the
+            // updateRule button lives on mainPage. Verified live 2026-04-26
+            // by capturing the working UI flow's XHR sequence: every action
+            // commit ends with a Done navigation up to mainPage before
+            // updateRule fires. Without this, state.editAct can linger
+            // and updateRule may fire from the wrong page state.
+            try {
+                _rmSubmitSubPageDone(newId, "selectActions", "mainPage", "name", null)
+            } catch (Exception ignored) {
+                // Best-effort; even if Done fails, updateRule below usually
+                // still works because the actions are already in actions[].
+            }
             _rmClickAppButton(newId, "updateRule")
         }
 
