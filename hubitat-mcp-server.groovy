@@ -1923,7 +1923,8 @@ Capability families and the spec fields each accepts:
     Without `periodic`, RM commits a phantom row with description="?". The tool walks the periodic sub-page (whichPeriod1 → everyN/select → time → Done) so the trigger description bakes correctly.
 
 Optional fields on every spec:
-  - conditional (default false) — sets isCondTrig.<N>=true. The condition's own wizard (rCapab_<N>, rDev_<N>, state_<N>) is NOT driven by addTrigger yet — pass conditional=true and then orchestrate the condition fields via separate update_native_app(settings=…) calls.
+  - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
+  - condition — Map matching the addRequiredExpression per-condition shape: {capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}. When provided, addTrigger drives the conditional-trigger sub-wizard (rCapab_<N> / rDev_<N> / state_<N> / hasAll) inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set.
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.)
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
@@ -1966,7 +1967,7 @@ Sub-expressions (parens) — for nested expressions like "P1 AND (P2 OR P3)", a 
   {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
 The walker recursively handles nested sub-expressions of arbitrary depth.
 
-The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the parent (Rule Machine, app id 21) atomicState level — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
+The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
 PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, the expression was constructed but some condition fields didn't land. The result includes settingsSkipped with the available-options list at the time of the failed write. Common repair: pass the missing field via rawSettings on the affected condition spec, or rebuild the expression."""
                     ],
@@ -2052,10 +2053,8 @@ Capability families and the spec fields each accepts:
       support .flash() (Hue groups, many Z-Wave/Zigbee dimmer modules).
       RM 5.1 has NO native "stop flash" action subtype — calling
       switch.on/.off afterward does NOT cancel the flash schedule. To
-      stop a running flash from within a rule, use Run Custom Action
-      (capability='runCommand', not yet mapped — see TODO in helper).
-      For now, the only way to stop flash is to call .flashOff() on the
-      device externally (e.g. via send_command).
+      stop a running flash from within a rule, use capability='runCommand'
+      (documented below) with command='flashOff' on the same device list.
 
   - Dimmer (capability='dimmer'):
       action='setLevel'   + deviceIds + level (0-100) [required] + optional fadeSeconds
@@ -9507,10 +9506,45 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
  *
  * Returns: [success, triggerIndex, settingsApplied, configPageError]
  */
+
+/**
+ * Validate that every device ID in `ids` resolves on the hub. RM 5.1
+ * silently stores `{<bogusId>: null}` for unknown IDs in any device
+ * setting (rDev_<N>, tDev_<N>, switch.<N>, etc.) — the write returns
+ * 200 but the rule renders with placeholder text and never fires.
+ * Catch this before writing so callers see a clear error instead of a
+ * phantom in-flight rule. Throws IllegalArgumentException on the
+ * first missing id with a message keyed by `label` (e.g.
+ * "addTrigger.deviceIds[2]"). Idempotent for List<null>/empty.
+ */
+private void _rmValidateDeviceIdsExist(String label, Object ids) {
+    if (!(ids instanceof List)) return
+    ids.each { id ->
+        def idStr = id?.toString()
+        if (!idStr) return
+        def exists = false
+        try {
+            def resp = hubInternalGet("/device/fullJson/${idStr}")
+            exists = (resp != null && resp.toString().length() > 0)
+        } catch (Exception ignored) { exists = false }
+        if (!exists) {
+            throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via list_devices.")
+        }
+    }
+}
+
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec")
     def cap = triggerSpec.capability?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addTrigger.capability is required")
+
+    // Pre-validate device IDs exist — RM 5.1 silently stores
+    // {<bogusId>: null} in tDev_<N> if the ID doesn't resolve, and the
+    // trigger renders as "Broken Trigger" with no event subscriptions.
+    _rmValidateDeviceIdsExist("addTrigger.deviceIds", triggerSpec.deviceIds)
+    if (triggerSpec.condition instanceof Map) {
+        _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", (triggerSpec.condition as Map).deviceIds)
+    }
 
     // Snapshot committed trigger indices (settings) BEFORE clicking moreCond.
     // The actual in-flight trigger idx is discovered from the schema after
@@ -10387,6 +10421,30 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
     // action — each capability's branch validates as needed.
 
+    // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
+    // {<bogusId>: null} for unknown IDs in any device-bearing setting and
+    // the action renders as broken with no execution. Validate the top-
+    // level deviceIds list (used by switch / dimmer / lock / shade /
+    // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
+    _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
+    if (actionSpec.events instanceof List) {
+        (actionSpec.events as List).eachWithIndex { ev, evIdx ->
+            if (ev instanceof Map) {
+                _rmValidateDeviceIdsExist("addAction.events[${evIdx}].deviceIds", (ev as Map).deviceIds)
+            }
+        }
+    }
+    if (actionSpec.expression instanceof Map) {
+        def exprConds = (actionSpec.expression as Map).conditions
+        if (exprConds instanceof List) {
+            exprConds.eachWithIndex { c, cIdx ->
+                if (c instanceof Map) {
+                    _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
+                }
+            }
+        }
+    }
+
     // Initialize state.actNdx if this is the first action on the rule
     // — avoids the doActPage 'startsWith on null' error on empty rules.
     _rmInitSelectActionsPage(appId)
@@ -10429,17 +10487,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 // completed, until I sent .flashOff() directly via
                 // send_command).
                 //
-                // To cancel a running flash from within a rule, the LLM
-                // currently needs to use modeActs/getDefinedAction (Run
-                // Custom Action) to call .flashOff() on the device — but
-                // that subtype is not yet mapped in this helper (multi-step
-                // wizard for capability/command/parameter selection).
-                //
-                // TODO: add capability='switch' + action='stopFlash' that
-                // wires up getDefinedAction with cCmd=flashOff. Or expose
-                // getDefinedAction directly as capability='runCommand' so
-                // arbitrary device commands (flashOff, refresh, etc.) can
-                // be called from rules.
+                // To cancel a running flash from within a rule, use
+                // capability='runCommand' (mapped below) with command=
+                // 'flashOff' on the same device list — that drives
+                // modeActs/getDefinedAction internally.
                 break
             case "setPerMode":
                 // switchActs/getModeSwitch — same device list, per-mode on/off.
@@ -12739,6 +12790,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     // the read up to 3 times with brief settling between attempts.
     def committed = false
     def attempts = 0
+    def lastFetchErr = null
     while (attempts < 3 && !committed) {
         try {
             def status = _rmFetchStatusJson(appId)
@@ -12746,12 +12798,22 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             if (allLocalVars instanceof Map && allLocalVars.containsKey(name)) {
                 committed = true
             }
-        } catch (Exception ignored) { /* best effort */ }
+        } catch (Exception fetchExc) {
+            lastFetchErr = fetchExc.message
+        }
         attempts++
         if (!committed && attempts < 3) {
             // Tickle the page once to nudge RM's persistence cycle.
-            try { _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { }
+            try { _rmFetchConfigJson(appId, "selectActions") }
+            catch (Exception tickleExc) {
+                lastFetchErr = lastFetchErr ?: tickleExc.message
+            }
         }
+    }
+    if (!committed && lastFetchErr) {
+        // The verification channel itself failed every attempt — surface
+        // that as the root cause rather than silently blaming type mismatch.
+        mcpLog("warn", "rm-native", "addLocalVariable: post-write verification fetch failed for app ${appId} (var '${name}'): ${lastFetchErr}. Treating as not-committed; the actual write may still have landed.")
     }
     if (!committed) {
         return [
@@ -12893,20 +12955,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // expression didn't commit.
     conditions.eachWithIndex { condRaw, i ->
         if (!(condRaw instanceof Map)) return  // shape errors caught later
-        def ids = (condRaw as Map).deviceIds
-        if (!(ids instanceof List)) return
-        ids.each { id ->
-            def idStr = id?.toString()
-            if (!idStr) return
-            def exists = false
-            try {
-                def resp = hubInternalGet("/device/fullJson/${idStr}")
-                exists = (resp != null && resp.toString().length() > 0)
-            } catch (Exception ignored) { exists = false }
-            if (!exists) {
-                throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].deviceIds contains '${idStr}' which does not exist on the hub. Verify the device ID via list_devices.")
-            }
-        }
+        _rmValidateDeviceIdsExist("addRequiredExpression.conditions[${i}].deviceIds", (condRaw as Map).deviceIds)
     }
 
     // Step 1. Set useST=true on mainPage. Idempotent — safe to write even
@@ -13406,7 +13455,12 @@ def toolUpdateNativeApp(args) {
                             try { innerResults << _rmAddTrigger(appId, tspec as Map) }
                             catch (Exception e) { innerResults << [success: false, error: e.message] }
                         }
-                        patchResults << [success: true, op: "addTriggers", results: innerResults]
+                        // Outer success rolls up inner success — mark the
+                        // outer entry as failed if ANY inner item failed,
+                        // so opsOk count + the user-visible success flag
+                        // accurately reflect partial-batch failures.
+                        def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
+                        patchResults << [success: innerOk, op: "addTriggers", results: innerResults]
                     } else if (pm.containsKey("addAction")) {
                         patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map))
                     } else if (pm.containsKey("addActions")) {
@@ -13415,7 +13469,8 @@ def toolUpdateNativeApp(args) {
                             try { innerResults << _rmAddAction(appId, aspec as Map) }
                             catch (Exception e) { innerResults << [success: false, error: e.message] }
                         }
-                        patchResults << [success: true, op: "addActions", results: innerResults]
+                        def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
+                        patchResults << [success: innerOk, op: "addActions", results: innerResults]
                     } else if (pm.containsKey("addRequiredExpression")) {
                         patchResults << ([op: "addRequiredExpression"] + _rmAddRequiredExpression(appId, pm.addRequiredExpression as Map))
                     } else if (pm.containsKey("addLocalVariable")) {
@@ -13434,7 +13489,8 @@ def toolUpdateNativeApp(args) {
                             try { innerResults << _rmAddAction(appId, aspec as Map) }
                             catch (Exception e) { innerResults << [success: false, error: e.message] }
                         }
-                        patchResults << [success: true, op: "replaceActions", removedIndices: cleared, addedResults: innerResults]
+                        def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
+                        patchResults << [success: innerOk, op: "replaceActions", removedIndices: cleared, addedResults: innerResults]
                     } else if (pm.containsKey("moveAction")) {
                         if (pm.moveAction.index == null) throw new IllegalArgumentException("moveAction.index required")
                         def dir = pm.moveAction.direction?.toString()
@@ -13451,8 +13507,13 @@ def toolUpdateNativeApp(args) {
             }
             // Fire updateRule once at the end so the rule's actions[]
             // map and event subscriptions bake from the fully-loaded
-            // post-patch state.
-            try { _rmClickAppButton(appId, "updateRule") } catch (Exception ignored) { }
+            // post-patch state. Log on failure — this is a commit, not
+            // an idempotent tickle, and silent failure here means the
+            // patches landed but never bake into the running rule.
+            try { _rmClickAppButton(appId, "updateRule") }
+            catch (Exception updateExc) {
+                mcpLog("warn", "rm-native", "patches: trailing updateRule click failed for app ${appId} — patches may not be live: ${updateExc.message}")
+            }
         } catch (Exception e) {
             patchErr = e.message
             mcpLog("error", "rm-native", "patches application failed: ${e.message}")
@@ -13487,7 +13548,10 @@ def toolUpdateNativeApp(args) {
                 restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
             ]
         }
-        try { _rmClickAppButton(appId, "updateRule") } catch (Exception ignored) { }
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            mcpLog("warn", "rm-native", "addLocalVariable: trailing updateRule click failed for app ${appId} — variable may not be live: ${updateExc.message}")
+        }
         def health = _rmCheckRuleHealth(appId)
         return [
             success: (varResult?.success != false) && health.ok,
@@ -13528,7 +13592,10 @@ def toolUpdateNativeApp(args) {
         // rule instance. Mirrors addTrigger's "caller fires updateRule"
         // contract — for addRequiredExpression we do it here since the
         // expression is a leaf operation (no expected follow-on).
-        try { _rmClickAppButton(appId, "updateRule") } catch (Exception ignored) { }
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            mcpLog("warn", "rm-native", "addRequiredExpression: trailing updateRule click failed for app ${appId} — expression may not be live: ${updateExc.message}")
+        }
         def health = _rmCheckRuleHealth(appId)
         return [
             success: (reResult?.success != false) && health.ok,
@@ -14472,9 +14539,10 @@ RMUtils-based control surface (Built-in App Tools gate only):
 - **set_rm_rule_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
-- **create_native_app** — create a new empty RM 5.1 rule. Args: name, confirm. Returns ruleId. Call update_native_app afterward to add body.
-- **update_native_app** — write settings with the multiple=true capability contract enforced automatically, OR click a page-transition button. Args: ruleId, settings (Map) OR button (String), pageName, stateAttribute, confirm. Auto-backs-up before writing.
-- **delete_native_app** — soft delete (default) or force=true. Args: ruleId, force, confirm. Auto-backs-up before deleting.
+- **create_native_app** — create a new empty classic SmartApp (RM 5.1 by default; appType enum covers rule_machine / button_controller / groups_scenes / notifier / visual_rule). Args: appType (default rule_machine), name, confirm. Returns appId. Call update_native_app afterward to populate; or pass triggers=[...] / actions=[...] arrays to populate in one call.
+- **update_native_app** — modify any classic SmartApp. Two raw modes (settings (Map) OR button (String)) plus 12 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically.
+- **delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
+- **check_rule_health** — read-only health check on any installed app. Args: appId. Returns ok / configPageError / brokenMarkers / multipleFlagPoison / issues.
 
 For READING an RM rule's current state, use **get_app_config** in the manage_installed_apps gateway — it works on any installed app including RM rules and returns the same configPage shape that update_native_app expects to see.
 
@@ -14487,10 +14555,11 @@ For BACKUP enumeration and restore, use the unified **list_item_backups** + **re
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
 
 **CRUD workflow example:**
-  create_native_app(name="BAT-RM-demo", confirm=true) → {ruleId: 974}
+  create_native_app(name="BAT-RM-demo", confirm=true) → {appId: 974, ...}
   get_app_config(appId=974, includeSettings=true) → input schema + current settings
-  update_native_app(ruleId=974, settings={tDev0: [8, 9], tCapab0: "switch"}, confirm=true)
-  get_app_config(appId=974) → verify configPage.error is null
-  delete_native_app(ruleId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}'''
+  update_native_app(appId=974, addTrigger={capability: "Switch", deviceIds: [8, 9], state: "on"}, confirm=true)
+  update_native_app(appId=974, addAction={capability: "switch", action: "off", deviceIds: [10]}, confirm=true)
+  check_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
+  delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}'''
     ]
 }
