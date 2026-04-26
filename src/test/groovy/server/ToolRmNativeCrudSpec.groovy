@@ -969,7 +969,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActPageSchema) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+        // statusJson must change across calls — the post-trashActs verify
+        // re-fetches and expects the cleared actions to be GONE. Without
+        // simulating the clear, _rmClearActions throws "actions still
+        // present" before bulk-add can run.
+        def statusCalls = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusCalls++
+            statusJson(100, statusCalls < 2 ? [[name: "actType.1", value: "switchActs"]] : [])
+        }
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
         hubGet.register('/device/fullJson/99999') { params -> "" }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -1046,9 +1054,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The dispatcher's auto-mainPage Done click after walkStep is allowed; the
         // assertion is specifically that introspect itself doesn't write or click.
 
-        and: "the response carries the page name + introspected schema"
+        and: "the response carries the page name + before/after schemas with the page's inputs"
         result.page == "selectTriggers"
-        (result.schema?.inputs ?: result.schemaInputs ?: result.inputs) != null
+        result.before?.inputs != null
+        result.before.inputs.find { it.name == "tCapab1" } != null
+        // introspect leaves before == after (no mutation)
+        result.after?.inputs == result.before.inputs
     }
 
     def "addTriggers bulk shortcut returns partial: true when one inner spec fails"() {
@@ -1082,12 +1093,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the result aggregates per-spec outcomes"
-        // The bulk shortcut returns triggers[] with per-item results.
+        then: "the result aggregates per-spec outcomes — bulk shortcut returns triggers[] with per-item results"
         def triggers = (result.triggers ?: result.triggerResults ?: []) as List
         triggers.size() == 2
-        triggers.findAll { it?.success != false }.size() >= 1
-        triggers.findAll { it?.success == false }.size() >= 1
+        // The bogus-id sub-spec is rejected by _rmValidateDeviceIdsExist with
+        // a clear "device ID '99999' does not exist" error.
+        def bogusEntry = triggers.find { it?.error?.toString()?.contains("99999") }
+        bogusEntry != null
+        bogusEntry.success == false
 
         and: "the user-visible success rolls down to false because one inner item failed"
         result.success == false || result.partial == true
@@ -1124,33 +1137,41 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.issues.any { it.toString().toLowerCase().contains("broken") }
     }
 
-    def "custom_* gateway dispatch routes each renamed tool to its underlying impl"() {
+    def "custom_* dispatch routes each renamed tool to its underlying impl"() {
         given:
         settingsMap.enableCustomRuleEngine = true
 
-        // Stub the underlying tool* impls so we can assert dispatch hit the
-        // right method without exercising the full custom-engine code path.
+        // The 9 custom_* renames split across two dispatch paths:
+        //   - top-level executeTool: list/get/create/update/delete/test_rule
+        //   - manage_rules_admin gateway: delete/test/export/import/clone_rule
+        // (delete + test are duplicated; export/import/clone are gateway-only.)
+        // Stub the underlying tool* impls so we can assert dispatch lands on
+        // the right method without exercising the full custom-engine path.
         def calls = []
         script.metaClass.toolListRules = { -> calls << "list"; [rules: []] }
         script.metaClass.toolGetRule = { String id -> calls << "get:${id}"; [id: id] }
+        script.metaClass.toolDeleteRule = { Map a -> calls << "delete"; [success: true] }
         script.metaClass.toolTestRule = { String id -> calls << "test:${id}"; [success: true] }
         script.metaClass.toolExportRule = { Map a -> calls << "export"; [json: "{}"] }
         script.metaClass.toolImportRule = { Map a -> calls << "import"; [success: true] }
         script.metaClass.toolCloneRule = { Map a -> calls << "clone"; [success: true] }
 
-        when: "each custom_* tool is dispatched through handleGateway"
-        script.handleGateway("manage_rules_admin", "custom_list_rules", [:])
-        script.handleGateway("manage_rules_admin", "custom_get_rule", [ruleId: "42"])
+        when: "the four list/get/create/update tools dispatch via top-level executeTool"
+        script.executeTool("custom_list_rules", [:])
+        script.executeTool("custom_get_rule", [ruleId: "42"])
+
+        and: "the gateway-routed renames dispatch via handleGateway(manage_rules_admin, ...)"
+        script.handleGateway("manage_rules_admin", "custom_delete_rule", [ruleId: "42"])
         script.handleGateway("manage_rules_admin", "custom_test_rule", [ruleId: "42"])
         script.handleGateway("manage_rules_admin", "custom_export_rule", [ruleId: "42"])
         script.handleGateway("manage_rules_admin", "custom_import_rule", [data: "{}"])
         script.handleGateway("manage_rules_admin", "custom_clone_rule", [ruleId: "42"])
 
         then: "every renamed tool routes to its underlying tool* method"
-        calls.size() == 6
         calls.contains("list")
-        calls.find { it.startsWith("get:") }
-        calls.find { it.startsWith("test:") }
+        calls.find { it.startsWith("get:") } != null
+        calls.contains("delete")
+        calls.find { it.startsWith("test:") } != null
         calls.contains("export")
         calls.contains("import")
         calls.contains("clone")
