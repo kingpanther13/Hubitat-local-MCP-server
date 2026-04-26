@@ -11708,7 +11708,13 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         def typeHint = meta?.type
         def isCapability = typeHint?.startsWith("capability.")
         def isEnum = typeHint == "enum"
-        def isMulti = meta?.multiple == true || (isCapability && rawVal instanceof List)
+        // ALWAYS trust the schema's multiple flag. The earlier code coerced
+        // isMulti=true whenever value was a List for capability.* fields,
+        // which broke single-device pickers (e.g. pushButton.1 schema says
+        // multiple=false; passing deviceIds=["288"] flipped it to true and
+        // mismatch crashed RM's render with the opaque "Command 'hasCapability'
+        // is not supported" error). Verified live 2026-04-26.
+        def isMulti = meta?.multiple == true
 
         // Serialize value: branch by input type for multi-value writes.
         // Capability multi: CSV ("8,9"). Enum multi: JSON-array ('["X","Y"]').
