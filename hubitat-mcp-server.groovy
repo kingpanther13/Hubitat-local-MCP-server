@@ -1842,7 +1842,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appType: [type: "string", enum: ["rule_machine"], description: "Which native app class to create. Default: rule_machine. Add more types by populating _appTypeRegistry."],
+                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "visual_rule"], description: "Which native app class to create. Default: rule_machine. Add more types by populating _appTypeRegistry."],
                     name: [type: "string", description: "Human-readable label for the new app (shown in the hub's app list). Required."],
                     triggers: [
                         type: "array",
@@ -9128,8 +9128,13 @@ private Integer normalizeRuleId(def ruleId) {
  */
 private Map _appTypeRegistry() {
     return [
-        rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"]
-        // Add more entries as they're verified on the live hub.
+        rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"],
+        button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers"],
+        groups_scenes: [namespace: "hubitat", appName: "Groups and Scenes", parentTypeName: "Groups and Scenes"],
+        notifier: [namespace: "hubitat", appName: "Notifications", parentTypeName: "Notifications"],
+        visual_rule: [namespace: "hubitat", appName: "Visual Rules Builder", parentTypeName: "Visual Rules Builder"]
+        // Basic Rule and Room Lighting parent apps not installed on this hub —
+        // add when needed.
     ]
 }
 
