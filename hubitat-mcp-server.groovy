@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addtrigger-periodic-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+addtrigger-periodic-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3415,7 +3415,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addtrigger-periodic-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+addtrigger-periodic-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9681,7 +9681,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             }
         }
         // Submit Done — bakes the description into the trigger row.
-        _rmSubmitSubPageDone(appId, "periodic", "selectTriggers", hrefParams)
+        _rmSubmitSubPageDone(appId, "periodic", "selectTriggers", "periodic1", hrefParams)
     }
 
     // Click hasAll (with form context) to commit. The shared wizard-Done
@@ -9941,8 +9941,15 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
  * etc.). Caller passes the current page name + parent page + the href
  * params (so paramsForPage routes correctly).
  */
-private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, Map hrefParams) {
-    def cfg = _rmFetchConfigJson(appId, page)
+private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, String hrefName, Map hrefParams) {
+    // Sub-pages with route params (periodic.n, etc.) lose state.<paramKey>
+    // on a plain GET — `_rmFetchConfigJson(appId, page)` returns the page
+    // rendered with state=null, which means the schema is empty/wrong and
+    // the version field is unreadable. Round-trip via _rmNavigateToPage to
+    // get a fresh response that has the param state in scope.
+    def hrefIndex = hrefParams?.n != null ? (hrefParams.n as Integer) : 0
+    def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName ?: "name", hrefParams)
+    def cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status = _rmFetchStatusJson(appId)
     def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
@@ -9996,7 +10003,10 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
  * the post-write shape (e.g. fields appearing/disappearing).
  */
 private void _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
-    def cfg = _rmFetchConfigJson(appId, page)
+    // Sub-page schema needs state.<paramKey> in scope or it renders empty.
+    // Get it via the navigate response, not a plain fetch.
+    def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams)
+    def cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
     body.formAction = "update"
@@ -11423,7 +11433,8 @@ private Map _rmWalkStep(Integer appId, Map spec) {
         // which page to render in response.
         def parentPage = hrefContext?.fromPage?.toString()
         def hcParams = hrefContext?.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
-        _rmSubmitSubPageDone(appId, page, parentPage, hcParams)
+        def hcHrefName = hrefContext?.hrefName?.toString() ?: "name"
+        _rmSubmitSubPageDone(appId, page, parentPage, hcHrefName, hcParams)
         opResult.done = [from: page, parent: parentPage]
         // After done, schema lives at the parent page.
         page = parentPage ?: page
