@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+addtrigger-periodic-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+clone-native-app-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3415,7 +3415,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+addtrigger-periodic-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+clone-native-app-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -12509,21 +12509,26 @@ def toolCheckRuleHealth(args) {
 /**
  * clone_native_app — wraps Hubitat's first-party appCloner system app.
  *
- * Wire format verified live 2026-04-25 by inspecting the live UI:
+ * Wire format verified live 2026-04-26 by hooking the cloner UI's XHRs:
  *
  *   1. GET /installedapp/sysAppApi/appCloner/app/<sourceAppId> → 302
- *      Location: /installedapp/configure/<clonerAppId> (a transient
- *      cloner instance is created on the fly, with sourceAppId loaded
- *      into its state).
- *   2. The cloner's mainPage exposes inputs to rename the clone, remap
- *      device/app references, and a 'Done' button that commits the
- *      clone as a new sibling of the source under the same parent.
- *   3. After Done, /installedapp/configure/<clonerAppId> redirects to
- *      the parent's mainPage with a banner indicating the new app's id.
+ *      Location: /apps/api/<clonerInstanceId>/app/<sourceAppId>?access_token=…
+ *      A transient cloner instance is created with the source rule loaded
+ *      into its state. We only need the instance ID from the Location.
+ *   2. POST /installedapp/btn  with form fields:
+ *        id=<clonerInstanceId>
+ *        name=cloneRuleButton
+ *        settings[cloneRuleButton]=clicked
+ *        cloneRuleButton.type=button
+ *      Hub clones the source as a new sibling under the same parent,
+ *      naming it "Clone of <sourceLabel>". The POST blocks until the
+ *      clone is fully committed (can take >30s for large rules).
+ *   3. Optional rename: update_native_app(newAppId, settings={origLabel:…})
  *
- * For now this implementation drives the simplest path: clone with no
- * device/app remapping, optionally rename, commit. Callers that need
- * device-replacement can pass remap maps via rawSettings (TODO).
+ * The button name `cloneRuleButton` is NOT discoverable via
+ * /installedapp/configure/json/<clonerId>/main — that endpoint returns
+ * a stripped page object missing the dynamic Export/Clone buttons. The
+ * names are hardcoded since they're stable for this system app.
  */
 def toolCloneNativeApp(args) {
     requireBuiltinApp()
@@ -12531,6 +12536,19 @@ def toolCloneNativeApp(args) {
     if (args?.sourceAppId == null) throw new IllegalArgumentException("sourceAppId is required")
     def sourceAppId = normalizeRuleId(args.sourceAppId)
     def newName = args?.newName?.toString()?.trim()
+
+    // Snapshot pre-clone children so we can identify the new app afterward.
+    def sourceCfg
+    try { sourceCfg = _rmFetchConfigJson(sourceAppId) } catch (Exception ignored) { sourceCfg = null }
+    if (!sourceCfg?.app) {
+        throw new IllegalArgumentException("Source app ${sourceAppId} not found")
+    }
+    def parentAppId = sourceCfg.app.parentAppId as Integer
+    def preCloneChildIds = [] as Set
+    if (parentAppId) {
+        def parentCfg = _rmFetchConfigJson(parentAppId)
+        preCloneChildIds = ((parentCfg?.childApps ?: []) as List).collect { (it.id as Integer) } as Set
+    }
 
     // Step 1: hit appCloner's entry point. Hub responds with a 302 whose
     // Location header carries the cloner instance ID.
@@ -12544,80 +12562,64 @@ def toolCloneNativeApp(args) {
     if (!clonerLocation) {
         throw new IllegalStateException("appCloner entry returned no Location header for source ${sourceAppId} (status=${entryResp?.status})")
     }
-    // Hubitat appCloner returns Location pointing at the cloner instance.
-    // Two observed shapes (firmware 2.5.0.123):
-    //   /installedapp/configure/<clonerId>          (UI-config path)
-    //   /apps/api/<clonerId>/app/<sourceId>?...     (API path with access token)
-    // Both carry the new cloner instance's app id as the digits right after
-    // the path's known prefix.
+    // Two observed Location shapes (firmware 2.5.0.123):
+    //   /apps/api/<clonerId>/app/<sourceId>?access_token=…    (current — preferred)
+    //   /installedapp/configure/<clonerId>                     (legacy)
     def clonerAppId = null
-    def m1 = (clonerLocation =~ /\/installedapp\/configure\/(\d+)/)
+    def m1 = (clonerLocation =~ /\/apps\/api\/(\d+)\//)
     if (m1.find()) {
         clonerAppId = m1[0][1] as Integer
     } else {
-        def m2 = (clonerLocation =~ /\/apps\/api\/(\d+)\//)
+        def m2 = (clonerLocation =~ /\/installedapp\/configure\/(\d+)/)
         if (m2.find()) clonerAppId = m2[0][1] as Integer
     }
     if (clonerAppId == null) {
         throw new IllegalStateException("Unexpected appCloner Location: ${clonerLocation}")
     }
 
-    // Step 2: optionally rename. The cloner's first input is `appLabel`
-    // (or similar). We'll fetch the schema to pick the right field name
-    // dynamically — appCloner's input names may differ across firmware.
-    def clonerCfg = _rmFetchConfigJson(clonerAppId)
-    def schema = _rmCollectInputSchema(clonerCfg?.configPage)
-    if (newName) {
-        // Try common label-input names in order. Most likely 'appLabel' or 'newLabel'.
-        def labelKey = ["appLabel", "newLabel", "newName", "origLabel"].find { schema?.containsKey(it) }
-        if (labelKey) {
-            _rmUpdateAppSettings(clonerAppId, [(labelKey): newName], schema)
-        } else {
-            mcpLog("warn", "rm-native", "clone_native_app: no label field found in cloner schema; available inputs: ${schema?.keySet()}")
-        }
-    }
+    // Step 2: click cloneRuleButton. Hardcoded button name — see header
+    // comment for why introspection doesn't work for this system app.
+    // _rmClickAppButton POSTs to /installedapp/btn with the right shape;
+    // the call blocks until the clone is committed server-side.
+    _rmClickAppButton(clonerAppId, "cloneRuleButton")
 
-    // Step 3: click Done / commit. The cloner uses a button to finalize.
-    // Common names: 'Done', 'doClone', 'commit'. Fall back to scanning.
-    def doneBtn = (clonerCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-        .find { it?.type == "button" && (it.title?.toString()?.toLowerCase()?.contains("done") || it.title?.toString()?.toLowerCase()?.contains("clone") || it.name?.toString()?.toLowerCase()?.contains("clone")) }
-    if (!doneBtn) {
-        return [
-            success: false,
-            sourceAppId: sourceAppId,
-            clonerAppId: clonerAppId,
-            error: "appCloner schema didn't expose a recognizable 'Done'/'Clone' button. Inspect /installedapp/configure/json/${clonerAppId} manually and use update_native_app(button=...) to commit.",
-            schemaInputs: schema?.keySet()?.toList()
-        ]
-    }
-    _rmClickAppButton(clonerAppId, doneBtn.name?.toString())
-
-    // After Done, the new app id is referenced in the post-commit response.
-    // Fall back: scan parent's children to find the most recent app whose
-    // label matches newName (or the source's label + " (Clone)").
-    def sourceCfg
-    try { sourceCfg = _rmFetchConfigJson(sourceAppId) } catch (Exception ignored) { sourceCfg = null }
-    def parentAppId = sourceCfg?.app?.parentAppId as Integer
+    // Step 3: discover the new app id. The clone appears as a new child of
+    // the source's parent. Diff against the pre-clone snapshot to find it.
     def newAppId = null
     if (parentAppId) {
         def parentCfg = _rmFetchConfigJson(parentAppId)
-        def candidates = (parentCfg?.childApps ?: []).findAll { c ->
-            def label = c?.label?.toString() ?: ""
-            (newName && label == newName) || label.endsWith("(Clone)") || label.contains("Clone")
+        def afterIds = ((parentCfg?.childApps ?: []) as List).collect { (it.id as Integer) }
+        def added = afterIds.findAll { !preCloneChildIds.contains(it) }
+        if (added.size() == 1) {
+            newAppId = added[0]
+        } else if (added.size() > 1) {
+            // Multiple new apps somehow; pick the one whose label looks like a clone of the source.
+            def srcLabel = sourceCfg?.app?.label?.toString() ?: ""
+            def candidates = (parentCfg.childApps as List).findAll { added.contains(it.id as Integer) }
+            def match = candidates.find { (it.label?.toString() ?: "").contains(srcLabel) || (it.label?.toString() ?: "").startsWith("Clone of") }
+            newAppId = (match?.id ?: candidates*.id.max()) as Integer
         }
-        if (candidates) {
-            newAppId = candidates*.id*.toInteger().max()
+    }
+
+    // Step 4: optional rename via update_native_app on the new clone.
+    if (newAppId && newName) {
+        try {
+            def newSchema = _rmCollectInputSchema(_rmFetchConfigJson(newAppId)?.configPage)
+            _rmUpdateAppSettings(newAppId, [origLabel: newName], newSchema)
+            _rmClickAppButton(newAppId, "updateRule")
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "clone_native_app: rename failed for new app ${newAppId}: ${e.message}")
         }
     }
 
     return [
-        success: true,
+        success: newAppId != null,
         sourceAppId: sourceAppId,
         clonerAppId: clonerAppId,
         newAppId: newAppId,
         note: newAppId
-            ? "Cloned source ${sourceAppId} → new app ${newAppId}. Use update_native_app to surgically edit the clone."
-            : "Clone committed but couldn't auto-discover the new app ID. Inspect parent ${parentAppId} children to find it."
+            ? "Cloned source ${sourceAppId} → new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
+            : "Clone button clicked but no new child app appeared under parent ${parentAppId}. The clone may have failed silently — check Hubitat logs."
     ]
 }
 
