@@ -10623,12 +10623,26 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actType = "switchActs"
         switch (action) {
             case "push":
-                // switchActs/getPushButton — push a specific button number on a button device.
-                //   pushButton.<N>      = devices (capability.pushableButton)
-                //   ButtontDev<N>       = button number
+                // switchActs/getPushButton — push a specific button on a button device.
+                // Verified live 2026-04-26 by capturing the working UI's
+                // settings after a manual walkthrough:
+                //   pushButton.<N>  = devices (capability.pushableButton, multiple=false)
+                //   pushButNo.<N>   = button number (e.g. "1")
+                //   pushButOp.<N>   = button operation: "push" (default),
+                //                     "hold", "doubleTap", "release"
+                //   varButNo.<N>    = (optional) toggle to use a hub variable
+                //                     for the button number; left empty/false here
+                //
+                // Earlier code used a guessed "ButtonpushButton<N>" (no dot)
+                // that doesn't exist; RM silently dropped it and the page
+                // render fell into a broken code path. Don't blame RM.
                 actSubType = "getPushButton"
                 if (actionSpec.buttonNumber == null) throw new IllegalArgumentException("button.push requires 'buttonNumber' (Integer)")
-                fields = ["pushButton.@N": deviceIds, "ButtonpushButton@N": actionSpec.buttonNumber]
+                fields = [
+                    "pushButton.@N": deviceIds,
+                    "pushButNo.@N": actionSpec.buttonNumber,
+                    "pushButOp.@N": (actionSpec.operation ?: "push")
+                ]
                 break
             case "pushPerMode":
                 // switchActs/getPushButtonPerMode — push different buttons per mode.
