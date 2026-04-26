@@ -11118,10 +11118,38 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // rDev_<X> → state_<X> → hasAll) with optional joining operators
     // (oper between conditions), then hasRule to commit. Subtypes:
     //   condActs/getIfThen, condActs/getElseIf — full IF/ELSE-IF
-    //   repeatActs/getWhile, repeatActs/getUntil — Repeat While/Until Expression
+    //   repeatActs/getWhile — Repeat While Expression
     //   delayActs/getWaitRule — Wait for Expression
-    def expressionSubtypes = ["getIfThen", "getElseIf", "getWhile", "getUntil", "getWaitRule"]
+    def expressionSubtypes = ["getIfThen", "getElseIf", "getWhile", "getWaitRule"]
     if (expressionSubtypes.contains(actSubType)) {
+        // Pre-expression timeout/duration writes for getWaitRule. The
+        // wizard's schema shows cond + durChoice + delayAct together
+        // BEFORE hasRule, but hasRule advances past them. So write
+        // timeout fields here (while they're still in schema) — for
+        // delayAct/delayHor/Min/Sec the existing actionSpec.delay
+        // path runs AFTER the expression block, which is too late.
+        // Workaround: peek at actionSpec.delay here and write the
+        // delay-modifier fields up-front for getWaitRule.
+        if (actSubType == "getWaitRule") {
+            if (actionSpec.useDuration != null) {
+                _rmWriteSettingOnPage(appId, "doActPage", "durChoice.${idx}", actionSpec.useDuration, applied, "bool", skipped)
+            }
+            if (actionSpec.delay instanceof Map) {
+                def d = actionSpec.delay as Map
+                if (d.variable != null) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "variable", applied, null, skipped)
+                    _rmWriteSettingOnPage(appId, "doActPage", "xVarD.${idx}", d.variable, applied, null, skipped)
+                } else if (d.hours != null || d.minutes != null || d.seconds != null) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied, null, skipped)
+                    if (d.hours != null)   _rmWriteSettingOnPage(appId, "doActPage", "delayHor.${idx}", d.hours, applied, null, skipped)
+                    if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMin.${idx}", d.minutes, applied, null, skipped)
+                    if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySec.${idx}", d.seconds, applied, null, skipped)
+                }
+                // Mark the delay-modifier as already-handled so the
+                // generic delay-modifier path below skips it.
+                actionSpec.__delayHandledForWaitRule = true
+            }
+        }
         def exprSpec = actionSpec.expression as Map
         def conditions = exprSpec.conditions
         if (!(conditions instanceof List) || conditions.isEmpty()) {
@@ -11236,19 +11264,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             _rmClickAppButton(appId, "hasRule", null, "doActPage")
         } catch (Exception ignored) { /* tolerated — wizard may already be sealed */ }
 
-        // For waitExpression / waitEvents (delayActs/getWaitRule and
-        // /getWaitEvents subtypes), an optional timeout uses the SAME
-        // wire fields as the regular delay-on-action modifier:
-        //   delayAct.<idx> = 'hrs:min:sec' | 'variable'
-        //   delayHor/Min/Sec.<idx>
-        // Plus durChoice.<idx> for Use Duration mode. Caller can pass
-        // delay: {hours, minutes, seconds} via the existing Delay-modifier
-        // path (handled below); for useDuration we write durChoice.<idx>.
-        // (Verified live 2026-04-26 — RM 5.1 reuses the delay modifier
-        // schema for the wait-action timeout.)
-        if (actionSpec.useDuration != null) {
-            _rmWriteSettingOnPage(appId, "doActPage", "durChoice.${idx}", actionSpec.useDuration, applied, "bool", skipped)
-        }
+        // (Timeout/durChoice for getWaitRule are written BEFORE the
+        // expression walk above — see pre-expression block.)
     }
 
     // Optional Delay? modifier on an action. Verified live 2026-04-25:
@@ -11262,7 +11279,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     //   After delayAct=variable the schema exposes:
     //     xVarD.<N>     (enum)    Select variable (hub variable name)
     //     randomAct.<N>, cancelAct.<N>
-    if (actionSpec.delay instanceof Map) {
+    if (actionSpec.delay instanceof Map && !actionSpec.__delayHandledForWaitRule) {
         def d = actionSpec.delay as Map
         if (d.variable != null) {
             _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "variable", applied, null, skipped)
