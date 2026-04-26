@@ -12498,15 +12498,42 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
 
     // Step 4. Write varValue. RM auto-commits the variable when this lands.
-    _rmWriteSettingOnPage(appId, "selectActions", "varValue", value, applied, null, skipped)
+    // Boolean type expects the literal strings "true"/"false" — Groovy's
+    // toString() on Boolean produces those, but ensure we don't pass a
+    // bare Boolean primitive that gets serialized as something else.
+    def serializedValue = value
+    if (typeCanonical == "Boolean") {
+        // Coerce any boolean-ish input to "true"/"false" string.
+        if (value instanceof Boolean) serializedValue = value ? "true" : "false"
+        else {
+            def s = value.toString().toLowerCase()
+            if (s in ["true", "false", "1", "0", "yes", "no"]) {
+                serializedValue = (s in ["true", "1", "yes"]) ? "true" : "false"
+            } else {
+                throw new IllegalArgumentException("addLocalVariable.value for Boolean type must be true/false (got '${value}')")
+            }
+        }
+    }
+    _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
 
-    // Verify via appState.allLocalVars that the variable committed.
-    def status = null
-    try { status = _rmFetchStatusJson(appId) } catch (Exception ignored) { /* best effort */ }
-    def allLocalVars = (status?.appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
+    // Verify via appState.allLocalVars that the variable committed. RM
+    // may take a moment to persist after varValue is written, so retry
+    // the read up to 3 times with brief settling between attempts.
     def committed = false
-    if (allLocalVars instanceof Map) {
-        committed = allLocalVars.containsKey(name)
+    def attempts = 0
+    while (attempts < 3 && !committed) {
+        try {
+            def status = _rmFetchStatusJson(appId)
+            def allLocalVars = (status?.appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
+            if (allLocalVars instanceof Map && allLocalVars.containsKey(name)) {
+                committed = true
+            }
+        } catch (Exception ignored) { /* best effort */ }
+        attempts++
+        if (!committed && attempts < 3) {
+            // Tickle the page once to nudge RM's persistence cycle.
+            try { _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { }
+        }
     }
     if (!committed) {
         return [
