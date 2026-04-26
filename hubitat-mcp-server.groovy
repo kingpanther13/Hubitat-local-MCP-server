@@ -12470,7 +12470,28 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
 
         // State enum (on/off, active/inactive, open/closed, locked/unlocked,
         // present/not_present, true/false for Private Boolean, etc.)
+        // Validate against the schema's enum options BEFORE writing — RM
+        // 5.1 silently accepts any string at the field-write level and
+        // even renders garbage values into the expression paragraph
+        // (verified live 2026-04-26: state_1='bogusValue' produced a rule
+        // with paragraph 'Sw1 is bogusValue' that can never evaluate
+        // true). The bake-check catches placeholder-only failures but not
+        // valid-shape-with-garbage-value failures, so we have to validate
+        // at the source.
         if (cond.state != null) {
+            def stateNavResp = _rmNavigateToPage(appId, "mainPage", "STPage", 0, "name", hrefParams)
+            def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+            def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
+            if (stateInput?.options) {
+                def stateOptions = (stateInput.options ?: []).collect { o ->
+                    (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
+                }.findAll { it }
+                def matched = stateOptions.find { it.equalsIgnoreCase(cond.state.toString()) }
+                if (!matched && stateOptions) {
+                    throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].state '${cond.state}' is not in capability '${cap}' domain. Valid options: ${stateOptions.sort().join(', ')}")
+                }
+                if (matched) cond.state = matched  // canonical case
+            }
             _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "state_${cIdx}", cond.state)
             applied << "state_${cIdx}".toString()
         }
