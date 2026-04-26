@@ -10994,8 +10994,29 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actType = "repeatActs"
         actSubType = "getStopRepeat"
         fields = [:]
+    } else if (cap == "ifThen" || cap == "elseIf") {
+        // IF Expression THEN / ELSE-IF Expression THEN — embeds an
+        // expression (same shape as Required Expression) inside the
+        // action. After actType=condActs + actSubType=getIfThen/getElseIf,
+        // the wizard exposes the cond enum and we walk the expression
+        // identically to STPage. The expression spec lives on the
+        // actionSpec as `expression: {conditions: [...], operator/operators}`.
+        actType = "condActs"
+        actSubType = (cap == "ifThen") ? "getIfThen" : "getElseIf"
+        fields = [:]  // expression-walking happens AFTER actSubType write
+        if (!(actionSpec.expression instanceof Map)) {
+            throw new IllegalArgumentException("${cap} action requires expression={conditions:[...], operator?:..., operators?:[...]}")
+        }
+    } else if (cap == "else") {
+        actType = "condActs"
+        actSubType = "getElse"
+        fields = [:]
+    } else if (cap == "endIf") {
+        actType = "condActs"
+        actSubType = "getEndIf"
+        fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, ifThen, elseIf, else, endIf. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
     }
 
     // Open the new-action editor.
@@ -11041,6 +11062,117 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (value != null) {
             def fieldName = rawKey.toString().replace("@N", idx.toString())
             _rmWriteSettingOnPage(appId, "doActPage", fieldName, value, applied, null, skipped)
+        }
+    }
+
+    // Conditional Actions (ifThen/elseIf): after actType=condActs +
+    // actSubType=getIfThen/getElseIf, the wizard exposes the cond enum —
+    // same expression-builder as STPage's Required Expression. Walk
+    // each condition (cond=a → rCapab_<X> → rDev_<X> → state_<X> → hasAll)
+    // with optional joining operators (oper between conditions), then
+    // hasRule to commit the expression. After that, the wizard returns
+    // to the action-edit form with actionDone available.
+    if (actType == "condActs" && (actSubType == "getIfThen" || actSubType == "getElseIf")) {
+        def exprSpec = actionSpec.expression as Map
+        def conditions = exprSpec.conditions
+        if (!(conditions instanceof List) || conditions.isEmpty()) {
+            throw new IllegalArgumentException("${cap} action's expression.conditions must be a non-empty List")
+        }
+        def operator = exprSpec.operator?.toString()?.toUpperCase()
+        def opsList = null
+        if (exprSpec.operators instanceof List) {
+            opsList = (exprSpec.operators as List).collect { it?.toString()?.toUpperCase() }
+            if (opsList.size() != conditions.size() - 1) {
+                throw new IllegalArgumentException("${cap}.expression.operators must have length conditions.size()-1")
+            }
+        }
+        if (conditions.size() > 1 && !operator && !opsList) {
+            throw new IllegalArgumentException("${cap}.expression with ${conditions.size()} conditions requires operator (AND/OR/XOR) or operators list")
+        }
+        // Pre-validate device existence per condition (same as STPage).
+        conditions.eachWithIndex { c, i ->
+            if (!(c instanceof Map)) return
+            def ids = (c as Map).deviceIds
+            if (!(ids instanceof List)) return
+            ids.each { id ->
+                def idStr = id?.toString()
+                if (!idStr) return
+                def exists = false
+                try {
+                    def resp = hubInternalGet("/device/fullJson/${idStr}")
+                    exists = (resp != null && resp.toString().length() > 0)
+                } catch (Exception ignored) { exists = false }
+                if (!exists) {
+                    throw new IllegalArgumentException("${cap}.expression.conditions[${i}].deviceIds contains '${idStr}' which does not exist on the hub.")
+                }
+            }
+        }
+        conditions.eachWithIndex { condRaw, i ->
+            if (!(condRaw instanceof Map)) {
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}] is not a Map")
+            }
+            def cond = condRaw as Map
+            def ccap = cond.capability?.toString()?.trim()
+            if (!ccap) throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability is required")
+            _rmWriteSettingOnPage(appId, "doActPage", "cond", "a", applied, null, skipped)
+            // Discover the live condition index from the schema.
+            def cfg = _rmFetchConfigJson(appId, "doActPage")
+            def cInputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+            def rCapabInput = cInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+            if (!rCapabInput) {
+                throw new IllegalStateException("${cap}: rCapab_<N> not in doActPage schema after writing cond=a; got ${cInputs.collect{it?.name}.findAll{it}.join(', ')}")
+            }
+            def m = rCapabInput.name.toString() =~ /rCapab_(\d+)/
+            def cIdx = m ? ((m[0] as List)[1] as Integer) : null
+            if (cIdx == null) throw new IllegalStateException("${cap}: couldn't parse condition index from '${rCapabInput.name}'")
+            def capOptions = (rCapabInput.options ?: []) as List
+            def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(ccap) }
+            if (!capCanonical) {
+                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { }
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+            }
+            _rmWriteSettingOnPage(appId, "doActPage", "rCapab_${cIdx}", capCanonical, applied, null, skipped)
+            if (cond.deviceIds != null) {
+                _rmWriteSettingOnPage(appId, "doActPage", "rDev_${cIdx}", cond.deviceIds, applied, null, skipped)
+            }
+            if (cond.state != null) {
+                // Validate against the schema's enum options.
+                def stateCfg = _rmFetchConfigJson(appId, "doActPage")
+                def stateInputs = (stateCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+                def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
+                if (stateInput?.options) {
+                    def opts = (stateInput.options ?: []).collect { o ->
+                        (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
+                    }.findAll { it }
+                    def matched = opts.find { it.equalsIgnoreCase(cond.state.toString()) }
+                    if (!matched && opts) {
+                        try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { }
+                        throw new IllegalArgumentException("${cap}.expression.conditions[${i}].state '${cond.state}' is not in capability '${ccap}' domain. Valid: ${opts.sort().join(', ')}")
+                    }
+                    if (matched) cond.state = matched
+                }
+                _rmWriteSettingOnPage(appId, "doActPage", "state_${cIdx}", cond.state, applied, null, skipped)
+            }
+            if (cond.not == true) {
+                _rmWriteSettingOnPage(appId, "doActPage", "not${cIdx}", true, applied, "bool", skipped)
+            }
+            // Click hasAll to commit this condition.
+            _rmClickAppButton(appId, "hasAll", null, "doActPage")
+            // Joining operator for non-last conditions.
+            if (i < conditions.size() - 1) {
+                def gapOp = opsList ? opsList[i] : operator
+                if (gapOp) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "oper", gapOp, applied, null, skipped)
+                }
+            }
+        }
+        // hasRule to finalize the expression — only if the schema exposes
+        // it (multi-cond requires explicit hasRule; single-cond may auto-
+        // promote on hasAll).
+        def finalCfg = _rmFetchConfigJson(appId, "doActPage")
+        def finalInputs = (finalCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        if (finalInputs.find { it?.name == "hasRule" }) {
+            _rmClickAppButton(appId, "hasRule", null, "doActPage")
         }
     }
 
