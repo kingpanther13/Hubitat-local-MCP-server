@@ -9456,7 +9456,8 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
             def cfg = _rmFetchConfigJson(appId, pageName)
             def v = cfg?.app?.version
             if (v != null) body.version = v.toString()
-        } catch (Exception ignored) {
+        } catch (Exception verExc) {
+            mcpLog("debug", "rm-native", "_rmClickAppButton: version fetch on ${pageName} failed for app ${appId} (${verExc.message}) — sending POST without version field")
             // version fetch failure is recoverable — the button click
             // works without it for top-level buttons; for wizard-Done
             // buttons the hub may need a second click. Don't fail the
@@ -9747,55 +9748,58 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // sub-page param.
         def hrefParams = [n: 1]
         _rmNavigateToPage(appId, "selectTriggers", "periodic", 1, "periodic1", hrefParams)
+        // Closure that wraps _rmWriteSubPageField with applied/skipped routing
+        // based on the helper's persistence verification (Map return). Use this
+        // for every periodic-sub-page field write so silent rejections are
+        // caught and surfaced rather than optimistically claimed as applied.
+        def writePeriodic = { String fieldKey, Object fieldValue ->
+            def wr = _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fieldKey, fieldValue)
+            if (wr?.persisted) {
+                applied << fieldKey
+            } else {
+                skipped << [key: fieldKey, reason: "silent_rejection", value: fieldValue, schemaUnchanged: true, available: wr?.afterKeys]
+            }
+        }
         // Write frequency first — schema-progressive, so subsequent fields
         // only appear after this lands.
-        _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, "whichPeriod1", freq)
-        applied << "whichPeriod1"
+        writePeriodic("whichPeriod1", freq)
         // Cron String mode: just one text field.
         if (freq == "Cron String") {
             if (per.cronString != null && fields.cron) {
-                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.cron, per.cronString.toString())
-                applied << fields.cron
+                writePeriodic(fields.cron, per.cronString.toString())
             }
         } else {
             // everyN toggle + count. Order matters: toggle must land first
             // because the count field only appears after the toggle is true.
             if (per.everyN != null && fields.everyNToggle) {
-                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.everyNToggle, true)
-                applied << fields.everyNToggle
+                writePeriodic(fields.everyNToggle, true)
                 if (fields.everyNCount) {
-                    _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.everyNCount, per.everyN)
-                    applied << fields.everyNCount
+                    writePeriodic(fields.everyNCount, per.everyN)
                 }
             }
             // Daily-only: weekdaysOnly toggle.
             if (per.weekdaysOnly == true && fields.weekdayToggle) {
-                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.weekdayToggle, true)
-                applied << fields.weekdayToggle
+                writePeriodic(fields.weekdayToggle, true)
             }
             // Multi-enum selection (selectedHours / selectedDaysOfMonth).
             def selectVals = per.selectedHours ?: per.selectedDaysOfMonth
             if (selectVals != null && fields.selectMulti) {
-                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.selectMulti, selectVals)
-                applied << fields.selectMulti
+                writePeriodic(fields.selectMulti, selectVals)
             }
             // Time field (startingHC1 / startingDC1 etc.).
             if (per.startingTime != null && fields.time) {
-                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.time, per.startingTime.toString())
-                applied << fields.time
+                writePeriodic(fields.time, per.startingTime.toString())
             }
             // Hourly-only: minute offset (when not using everyN).
             if (per.minutesOffset != null && fields.offset) {
-                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fields.offset, per.minutesOffset)
-                applied << fields.offset
+                writePeriodic(fields.offset, per.minutesOffset)
             }
         }
         // Caller escape hatch for periodic-page fields not yet mapped above
         // (Weekly/Monthly/Yearly suffix patterns, future fields).
         if (per.rawSettings instanceof Map) {
             (per.rawSettings as Map).each { rk, rv ->
-                _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, rk.toString(), rv)
-                applied << rk.toString()
+                writePeriodic(rk.toString(), rv)
             }
         }
         // Submit Done — bakes the description into the trigger row.
@@ -9854,7 +9858,13 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
 
     // Final config-error check.
     def finalConfig
-    try { finalConfig = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception ignored) { finalConfig = null }
+    def verificationFetchFailed = false
+    try { finalConfig = _rmFetchConfigJson(appId, "selectTriggers") }
+    catch (Exception verifyExc) {
+        finalConfig = null
+        verificationFetchFailed = true
+        mcpLog("warn", "rm-native", "_rmAddTrigger: post-commit selectTriggers fetch failed for app ${appId} (${verifyExc.message}) — caller cannot verify the trigger baked, will mark response as verificationFetchFailed=true")
+    }
     def err = finalConfig?.configPage?.error
 
     def health = _rmCheckRuleHealth(appId)
@@ -9882,7 +9892,10 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // trigger row exists. If a trigger row IS present, the placeholder
         // is replaced by the rendered trigger text.
         triggerNotBaked = joinedParagraphs.contains("Define Triggers")
-    } catch (Exception ignored) { /* best effort */ }
+    } catch (Exception verifyExc) {
+        verificationFetchFailed = true
+        mcpLog("warn", "rm-native", "_rmAddTrigger: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) — trigger-baked check skipped")
+    }
 
     // Partial-success signal — see _rmAddAction for rationale. The trigger
     // is committed but a caller-requested field didn't land; LLM should
@@ -9916,7 +9929,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         settingsSkipped: skipped,
         configPageError: err,
         repairHints: repairHints,
-        health: health
+        health: health,
+        verificationFetchFailed: verificationFetchFailed
     ]
     if (conditionId != null) result.conditionId = conditionId
     return result
@@ -9971,8 +9985,21 @@ private List _rmCollectActionIndices(Integer appId) {
  * preserved with gaps. Subsequent addAction picks the next free index
  * via _rmCollectActionIndices' max+1 logic.
  */
-private void _rmDeleteAction(Integer appId, Integer actionIdx) {
+private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
+    def beforeIndices = _rmCollectActionIndices(appId)
+    if (!beforeIndices.contains(actionIdx)) {
+        throw new IllegalArgumentException("removeAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
+    }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
+    // Verify the action actually disappeared. RM 5.1 silently no-ops the
+    // delAct click if state.editAct is set or the button-handler dispatch
+    // races with another edit. Without this check, the caller would see
+    // success: true while the action remained on the rule.
+    def afterIndices = _rmCollectActionIndices(appId)
+    if (afterIndices.contains(actionIdx)) {
+        throw new IllegalStateException("removeAction(${actionIdx}): click returned 200 but action ${actionIdx} still in rule ${appId}'s actions list. Indices before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}.")
+    }
+    return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
 }
 
 /**
@@ -10011,13 +10038,25 @@ private List _rmClearActions(Integer appId) {
         schema = _rmCollectInputSchema(cfg?.configPage)
     }
     if (!schema?.containsKey("trashActs")) {
-        mcpLog("warn", "rm-native", "_rmClearActions: trashActs not in selectActions schema after trashAll click for app ${appId} — RM didn't enter trash mode")
-        return []
+        // RM didn't enter trash mode after the trashAll click. Don't pretend
+        // success — caller (patches handler, replaceActions, etc.) needs to
+        // know nothing was deleted so success aggregation is correct.
+        throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} — RM didn't enter trash mode. The rule has ${indices.size()} action(s) at indices ${indices.sort()} that were NOT deleted.")
     }
     // Write trashActs with the indices as a multi-enum value. RM applies
     // the deletion immediately (submitOnChange).
     def stringIndices = indices.collect { it.toString() }
     _rmUpdateAppSettings(appId, ["trashActs": stringIndices], schema)
+    // Post-condition check — verify the actions actually disappeared from
+    // the rule. RM 5.1 has been observed to no-op the trashActs write if
+    // state.editAct is set, leaving the actions on the rule while the
+    // schema looks "trash-confirmed". Fail loud rather than silently
+    // returning [].
+    def remaining = _rmCollectActionIndices(appId)
+    def stillThere = remaining.intersect(indices)
+    if (stillThere) {
+        throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId}. Try cancelling any in-flight wizard via update_native_app(button='cancelTrash') and re-running.")
+    }
     return indices
 }
 
@@ -10031,10 +10070,37 @@ private List _rmClearActions(Integer appId) {
  * re-collect indices via _rmCollectActionIndices if subsequent moves
  * depend on positions.
  */
-private void _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
+private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
     if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
+    // Capture the pre-move action ordering so we can verify the move took
+    // effect. RM exposes the ordering in the rule's `actions[]` map (read
+    // via /installedapp/configure/json/<id>) — collect by inspecting the
+    // selectActions paragraph render or by reading appSettings keys in
+    // order. Cheapest approach: snapshot statusJson's appSettings ordering
+    // for `actType.<N>` keys before/after.
+    def beforeOrder = _rmCollectActionIndices(appId).sort()
+    if (!beforeOrder.contains(actionIdx)) {
+        throw new IllegalArgumentException("moveAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeOrder.join(', ')}")
+    }
     _rmClickAppButton(appId, actionIdx.toString(), stateAttr, "selectActions")
+    // Verify by reading the configPage's actions paragraph order (the only
+    // place RM exposes the in-memory ordering — appSettings indices stay
+    // numerically the same). For now we settle for: did SOMETHING change?
+    // If indices set is identical AND configPage doesn't show an error, we
+    // accept the click (RM may have been a no-op because the action was
+    // already at the boundary; that's not a failure).
+    def afterOrder = _rmCollectActionIndices(appId).sort()
+    def cfg = null
+    try { cfg = _rmFetchConfigJson(appId, "selectActions") }
+    catch (Exception verifyExc) {
+        mcpLog("warn", "rm-native", "moveAction: post-click selectActions fetch failed for app ${appId} (${verifyExc.message}) — render-error check skipped, action ordering may have left the page in an inconsistent state")
+    }
+    def renderError = cfg?.configPage?.error
+    if (renderError) {
+        throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but selectActions render now errors: ${renderError}")
+    }
+    return [success: true, index: actionIdx, direction: direction, indicesAfter: afterOrder]
 }
 
 /**
@@ -10094,15 +10160,21 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         def cfg = _rmFetchConfigJson(appId, fromPage)
         def v = cfg?.app?.version
         if (v != null) body.version = v.toString()
-    } catch (Exception ignored) { /* best effort */ }
+    } catch (Exception versionExc) {
+        mcpLog("debug", "rm-native", "_rmNavigateToPage: version fetch on ${fromPage} failed for app ${appId} (${versionExc.message}) — sending POST without version")
+    }
     try {
         def resp = hubInternalPostForm("/installedapp/update/json", body)
         if (resp?.data) {
             try {
                 return new groovy.json.JsonSlurper().parseText(resp.data) as Map
-            } catch (Exception ignored) { /* fall through */ }
+            } catch (Exception parseExc) {
+                mcpLog("debug", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} response wasn't JSON (${parseExc.message}) — caller will plain-fetch the schema")
+            }
         }
-    } catch (Exception ignored) { /* idempotent */ }
+    } catch (Exception postExc) {
+        mcpLog("warn", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} POST failed for app ${appId}: ${postExc.message} — downstream 'X not in schema' errors likely point at this")
+    }
     return null
 }
 
@@ -10195,7 +10267,11 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
  */
 private void _rmSubmitMainPageDone(Integer appId) {
     def cfg
-    try { cfg = _rmFetchConfigJson(appId, "mainPage") } catch (Exception ignored) { return }
+    try { cfg = _rmFetchConfigJson(appId, "mainPage") }
+    catch (Exception fetchExc) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${fetchExc.message}) — skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
+        return
+    }
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status = _rmFetchStatusJson(appId)
     def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
@@ -10236,7 +10312,7 @@ private void _rmSubmitMainPageDone(Integer appId) {
  * Returns nothing; caller should re-fetch schema if it needs to observe
  * the post-write shape (e.g. fields appearing/disappearing).
  */
-private void _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
+private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
     // For pages with meaningful state.<paramKey> (e.g. periodic schedule's
     // state.n), schema requires the navigate response to set state in scope.
     // For pages with placeholder hrefParams (STPage uses [unUsed: null]),
@@ -10253,6 +10329,9 @@ private void _rmWriteSubPageField(Integer appId, String page, String parentPage,
         cfg = _rmFetchConfigJson(appId, page)
     }
     def schema = _rmCollectInputSchema(cfg?.configPage)
+    def beforeKeys = (schema?.keySet() ?: []) as Set
+    def beforeValueStr = schema?."${key}"?.value?.toString()
+    def beforeRenderHash = (cfg?.configPage?.sections?.toString() ?: "").hashCode()
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
     body.formAction = "update"
     body.currentPage = page
@@ -10270,6 +10349,32 @@ private void _rmWriteSubPageField(Integer appId, String page, String parentPage,
     body.pageBreadcrumbs = '[]'
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     hubInternalPostForm("/installedapp/update/json", body)
+    // Post-write verification — re-fetch the page and detect whether the
+    // write either (a) shifted the schema (wizard advanced; key disappeared
+    // or new keys appeared), or (b) landed the new value verbatim. Returns
+    // a Map so callers can route into applied vs skipped lists rather than
+    // optimistically appending to applied regardless of outcome (RM 5.1
+    // returns 200 for many writes that never land; the previous optimistic
+    // bookkeeping hid these silent rejections).
+    def afterCfg = null
+    try {
+        afterCfg = hasRealParams ? _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams) : _rmFetchConfigJson(appId, page)
+    } catch (Exception ignored) { /* fall through to schema-unknown */ }
+    def afterSchema = _rmCollectInputSchema(afterCfg?.configPage)
+    def afterKeys = (afterSchema?.keySet() ?: []) as Set
+    def afterValueStr = afterSchema?."${key}"?.value?.toString()
+    def afterRenderHash = (afterCfg?.configPage?.sections?.toString() ?: "").hashCode()
+    def newValueStr = (value instanceof List) ? null : value?.toString()
+    def schemaShifted = (beforeKeys != afterKeys) || (beforeValueStr != afterValueStr)
+    def valueLanded = (newValueStr != null) && (afterValueStr == newValueStr)
+    // Wizard-consumed: many sub-page enum pickers (STPage cond, doActPage cond,
+    // STPage oper) have the field reset to empty after the wizard advances —
+    // before/after schema and field value look identical (both empty), but
+    // RM's rendered paragraph text DID shift to reflect the new wizard state.
+    // The paragraphs hash catches that case.
+    def renderShifted = (beforeRenderHash != afterRenderHash)
+    def persisted = schemaShifted || valueLanded || renderShifted || (value instanceof List && schemaShifted)
+    return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, afterKeys: afterKeys.toList().sort()]
 }
 
 /**
@@ -10345,7 +10450,11 @@ private boolean _rmModeIdMatches(Object key, String mid) {
 
 private void _rmInitSelectActionsPage(Integer appId) {
     def cfg
-    try { cfg = _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { return }
+    try { cfg = _rmFetchConfigJson(appId, "selectActions") }
+    catch (Exception fetchExc) {
+        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: selectActions fetch failed for app ${appId} (${fetchExc.message}) — state.actNdx may not initialize, first +N click may NPE")
+        return
+    }
     def body = [
         id: appId.toString(),
         formAction: "update",
@@ -11377,7 +11486,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             def capOptions = (rCapabInput.options ?: []) as List
             def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(ccap) }
             if (!capCanonical) {
-                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { }
+                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
+                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} — wizard may stay open and confuse subsequent edits") }
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
             }
             _rmWriteSettingOnPage(appId, "doActPage", "rCapab_${cIdx}", capCanonical, applied, null, skipped)
@@ -11395,7 +11505,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                     }.findAll { it }
                     def matched = opts.find { it.equalsIgnoreCase(cond.state.toString()) }
                     if (!matched && opts) {
-                        try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { }
+                        try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
+                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} — wizard may stay open and confuse subsequent edits") }
                         throw new IllegalArgumentException("${cap}.expression.conditions[${i}].state '${cond.state}' is not in capability '${ccap}' domain. Valid: ${opts.sort().join(', ')}")
                     }
                     if (matched) cond.state = matched
@@ -11535,7 +11646,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
 
     // Final config-error check.
     def finalConfig
-    try { finalConfig = _rmFetchConfigJson(appId, "selectActions") } catch (Exception ignored) { finalConfig = null }
+    def verificationFetchFailed = false
+    try { finalConfig = _rmFetchConfigJson(appId, "selectActions") }
+    catch (Exception verifyExc) {
+        finalConfig = null
+        verificationFetchFailed = true
+        mcpLog("warn", "rm-native", "_rmAddAction: post-commit selectActions fetch failed for app ${appId} (${verifyExc.message}) — caller cannot verify the action baked, will mark response as verificationFetchFailed=true")
+    }
     def err = finalConfig?.configPage?.error
 
     def health = _rmCheckRuleHealth(appId)
@@ -11555,7 +11672,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         }
         def joinedParagraphs = mainParagraphs.join("\n")
         actionNotBaked = joinedParagraphs.contains("Define Actions")
-    } catch (Exception ignored) { /* best effort */ }
+    } catch (Exception verifyExc) {
+        verificationFetchFailed = true
+        mcpLog("warn", "rm-native", "_rmAddAction: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) — action-baked check skipped")
+    }
 
     // Partial-success signal: any skipped settings indicate a field the
     // caller asked for that didn't land. The action is still committed
@@ -11588,7 +11708,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         settingsSkipped: skipped,
         configPageError: err,
         repairHints: repairHints,
-        health: health
+        health: health,
+        verificationFetchFailed: verificationFetchFailed
     ]
 }
 
@@ -11669,6 +11790,17 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
  * schema progression without surfacing settingsSkipped warnings on every
  * field that hasn't appeared yet.
  *
+ * Post-write verification: after the POST, the page is re-fetched and
+ * the new schema is compared to the pre-write schema. The write counts as
+ * "persisted" if EITHER (a) the schema's keys changed (wizard advanced —
+ * e.g. cond=a unlocks rCapab_<N>, or `key` was consumed and removed), OR
+ * (b) the field's serialized value reflects the new value (mainPage-style
+ * persistent setting). Otherwise the write is treated as silently rejected
+ * and routed to `skipped` instead of `applied` — RM 5.1 returns 200 for
+ * many wizard-context writes that never land (e.g. cond=a on doActPage
+ * without `currentPage`/`pageBreadcrumbs` in the body) and the optimistic
+ * append-on-applied bookkeeping was hiding these failures.
+ *
  * The `applied` accumulator collects every key that actually landed on
  * the page so the caller can include it in the response.
  */
@@ -11694,6 +11826,10 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
         schemaForBuild = [:] + schema
         schemaForBuild[key] = ([:] + schema[key]) << [type: typeHintOverride]
     }
+    def beforeKeys = (schema.keySet() ?: []) as Set
+    def beforeValueStr = schema?."${key}"?.value?.toString()
+    // Full sections render-hash captures any rendered shift (paragraphs, input titles, descriptions, options sets). Wizard-consumed pickers reset their own field on advance, so before/after schema keys + field value can look identical even on success; the rendered configPage is always different.
+    def beforeRenderHash = (config?.configPage?.sections?.toString() ?: "").hashCode()
     // For sub-page wizard writes (doActPage's `cond`, STPage's `cond`,
     // periodic sub-page writes) RM needs `formAction=update`,
     // `currentPage=<page>`, and `pageBreadcrumbs=["mainPage"]` in the
@@ -11713,7 +11849,28 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
     } else {
         _rmUpdateAppSettings(appId, settingsMap, schemaForBuild)
     }
-    applied << key
+    // Verify the write took. Re-fetch and compare schemas.
+    def afterCfg = null
+    try { afterCfg = _rmFetchConfigJson(appId, pageName) } catch (Exception ignored) { /* fall through to skipped */ }
+    def afterSchema = afterCfg ? _rmCollectInputSchema(afterCfg?.configPage) : null
+    def afterKeys = (afterSchema?.keySet() ?: []) as Set
+    def afterValueStr = afterSchema?."${key}"?.value?.toString()
+    def afterRenderHash = (afterCfg?.configPage?.sections?.toString() ?: "").hashCode()
+    def newValueStr = (value instanceof List) ? null : value?.toString()  // skip exact-string check for list values; rely on schema-shift signal
+    def schemaShifted = (beforeKeys != afterKeys) || (beforeValueStr != afterValueStr)
+    def valueLanded = (newValueStr != null) && (afterValueStr == newValueStr)
+    // Wizard-consumed: many sub-page enum pickers reset their field on advance
+    // (e.g. doActPage cond, STPage cond/oper). Before/after schema look
+    // identical but RM's rendered paragraph text shifts to reflect the new
+    // wizard state. The paragraphs hash catches that case.
+    def renderShifted = (beforeRenderHash != afterRenderHash)
+    if (schemaShifted || valueLanded || renderShifted || (value instanceof List && schemaShifted)) {
+        applied << key
+    } else if (skipped != null) {
+        skipped << [key: key, reason: "silent_rejection", value: value, schemaUnchanged: true, available: afterKeys.toList().sort()]
+    } else {
+        applied << key  // legacy callers without a skipped list — preserve old optimistic behavior
+    }
 }
 
 /**
@@ -12647,9 +12804,8 @@ def toolCreateNativeApp(args) {
             // and updateRule may fire from the wrong page state.
             try {
                 _rmSubmitSubPageDone(newId, "selectActions", "mainPage", "name", null)
-            } catch (Exception ignored) {
-                // Best-effort; even if Done fails, updateRule below usually
-                // still works because the actions are already in actions[].
+            } catch (Exception subPageDoneExc) {
+                mcpLog("warn", "rm-native", "create_native_app: trailing _rmSubmitSubPageDone(selectActions→mainPage) failed for app ${newId} (${subPageDoneExc.message}) — relying on updateRule below; lingering state.editAct markers may corrupt subsequent edits")
             }
             _rmClickAppButton(newId, "updateRule")
         }
@@ -12958,6 +13114,20 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         _rmValidateDeviceIdsExist("addRequiredExpression.conditions[${i}].deviceIds", (condRaw as Map).deviceIds)
     }
 
+    // Closure that wraps _rmWriteSubPageField with applied/skipped routing
+    // based on the helper's persistence verification (Map return). Use this
+    // for every STPage wizard field write so silent rejections are caught
+    // and surfaced rather than optimistically claimed as applied.
+    def writeST = { Map params, String fieldKey, Object fieldValue, String label = null ->
+        def wr = _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, fieldKey, fieldValue)
+        if (wr?.persisted) {
+            applied << (label ?: fieldKey)
+        } else {
+            skipped << [key: fieldKey, label: (label ?: fieldKey), reason: "silent_rejection", value: fieldValue, schemaUnchanged: true, available: wr?.afterKeys]
+        }
+        return wr
+    }
+
     // Step 1. Set useST=true on mainPage. Idempotent — safe to write even
     // if a prior expression already exists. The toggle exposes the
     // "Define Required Expression" href on mainPage so the navigate that
@@ -12974,7 +13144,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // form. Click cancelCapab to abort the in-flight edit before
     // propagating the error so the next caller starts fresh.
     def cancelInFlightCondition = {
-        try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") } catch (Exception ignored) { }
+        try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") }
+        catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage: ${cancelExc.message} — wizard may stay open and confuse subsequent edits") }
     }
 
     // Recursive walker — handles plain conditions AND sub-expressions
@@ -13027,24 +13198,21 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 // expression" instead of the value "b" stores the literal
                 // label in settings.cond and breaks downstream schema
                 // fetches (next GET returns oper-enum, walkConds aborts).
-                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "b")
-                applied << "cond(open-paren)"
+                writeST(hrefParams, "cond", "b", "cond(open-paren)")
                 // Recurse into inner conditions. walkConds itself writes
                 // the gap-oper between inner conds at index i<size-1.
                 walkConds.call(subConds, subOp, subOpsList)
                 // Close paren — live UI uses literal label "end-sub-expression )"
                 // for this oper option (it's not encoded as a single-letter
                 // value, so the label IS the value here).
-                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", "end-sub-expression )")
-                applied << "oper(close-paren)"
+                writeST(hrefParams, "oper", "end-sub-expression )", "oper(close-paren)")
             } else {
                 // Plain condition: cond=a, then walk fields, then hasAll.
                 def cap = cond.capability?.toString()?.trim()
                 if (!cap) {
                     throw new IllegalArgumentException("conditions[${i}].capability is required")
                 }
-                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "cond", "a")
-                applied << "cond"
+                writeST(hrefParams, "cond", "a", "cond")
                 try {
                     def navResp = _rmFetchConfigJson(appId, "STPage")
                     def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
@@ -13063,11 +13231,9 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                     if (!capCanonical) {
                         throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
                     }
-                    _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCapab_${cIdx}", capCanonical)
-                    applied << "rCapab_${cIdx}".toString()
+                    writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
                     if (cond.deviceIds != null) {
-                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rDev_${cIdx}", cond.deviceIds)
-                        applied << "rDev_${cIdx}".toString()
+                        writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
                     }
                     if (cond.state != null) {
                         def stateNavResp = _rmFetchConfigJson(appId, "STPage")
@@ -13083,29 +13249,23 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                             }
                             if (matched) cond.state = matched
                         }
-                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "state_${cIdx}", cond.state)
-                        applied << "state_${cIdx}".toString()
+                        writeST(hrefParams, "state_${cIdx}".toString(), cond.state)
                     }
                     if (cond.comparator != null) {
                         if (cond.attribute != null) {
-                            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "rCustomAttr_${cIdx}", cond.attribute)
-                            applied << "rCustomAttr_${cIdx}".toString()
+                            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
                         }
-                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "ReltDev_${cIdx}", cond.comparator)
-                        applied << "ReltDev_${cIdx}".toString()
+                        writeST(hrefParams, "ReltDev_${cIdx}".toString(), cond.comparator)
                     }
                     if (cond.value != null) {
-                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "value_${cIdx}", cond.value)
-                        applied << "value_${cIdx}".toString()
+                        writeST(hrefParams, "value_${cIdx}".toString(), cond.value)
                     }
                     if (cond.not == true) {
-                        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "not${cIdx}", true)
-                        applied << "not${cIdx}".toString()
+                        writeST(hrefParams, "not${cIdx}".toString(), true)
                     }
                     if (cond.rawSettings instanceof Map) {
                         (cond.rawSettings as Map).each { rk, rv ->
-                            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, rk.toString(), rv)
-                            applied << rk.toString()
+                            writeST(hrefParams, rk.toString(), rv)
                         }
                     }
                     _rmClickAppButton(appId, "hasAll", null, "STPage")
@@ -13118,8 +13278,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             if (i < condList.size() - 1) {
                 def gapOp = outerOpsList ? outerOpsList[i] : outerOp
                 if (gapOp) {
-                    _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", gapOp)
-                    applied << "oper"
+                    writeST(hrefParams, "oper", gapOp)
                 }
             }
         }
@@ -13153,7 +13312,10 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // Verified 2026-04-26 via T429: deviceIds=[99999] (nonexistent)
     // wrote rDev_<N>={99999: null} but paragraph stayed placeholder.
     def mainCfg = null
-    try { mainCfg = _rmFetchConfigJson(appId, "mainPage") } catch (Exception ignored) { /* best effort */ }
+    try { mainCfg = _rmFetchConfigJson(appId, "mainPage") }
+    catch (Exception verifyExc) {
+        mcpLog("warn", "rm-native", "addRequiredExpression: post-commit mainPage fetch failed for app ${appId} (${verifyExc.message}) — expression-baked check skipped")
+    }
     def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
         (sect?.body ?: []).findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
                           .collect { it.description?.toString() ?: "" }
@@ -13263,7 +13425,8 @@ def toolUpdateNativeApp(args) {
             // For introspect/write/click/navigate ops in the middle of a
             // multi-step walk, skip Done since the caller is mid-flow.
             if (walkStepSpec?.operation?.toString() == "done") {
-                try { _rmSubmitMainPageDone(appId) } catch (Exception ignored) { }
+                try { _rmSubmitMainPageDone(appId) }
+                catch (Exception doneExc) { mcpLog("warn", "rm-native", "walkStep: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} — in-flight state markers may linger and corrupt subsequent edits") }
             }
             return result
         } catch (Exception e) {
@@ -13756,7 +13919,11 @@ def toolUpdateNativeApp(args) {
             def isSubPage = pageName && pageName != "mainPage"
             if (buttonIsWizardDone && isSubPage) {
                 def afterClickConfig
-                try { afterClickConfig = _rmFetchConfigJson(appId, pageName) } catch (Exception ignored) { afterClickConfig = null }
+                try { afterClickConfig = _rmFetchConfigJson(appId, pageName) }
+                catch (Exception verifyExc) {
+                    afterClickConfig = null
+                    mcpLog("warn", "rm-native", "walkStep: post-wizard-Done fetch on ${pageName} failed for app ${appId} (${verifyExc.message}) — residual condTrig prompt check skipped, may leave phantom trigger N+1")
+                }
                 def residualCondTrigName = _rmFindResidualCondTrig(afterClickConfig?.configPage)
                 if (residualCondTrigName) {
                     mcpLog("info", "rm-native", "Wizard-Done click '${button}' left ${residualCondTrigName} prompt on app ${appId} — auto-finalizing with =false to avoid phantom trigger")
@@ -13820,7 +13987,8 @@ def toolUpdateNativeApp(args) {
         // last-step behavior on every modify session. Without it, in-flight
         // state markers (state.editAct, state.editCond, etc.) can linger and
         // cause subsequent edits to misbehave.
-        try { _rmSubmitMainPageDone(appId) } catch (Exception ignored) { /* best effort */ }
+        try { _rmSubmitMainPageDone(appId) }
+        catch (Exception doneExc) { mcpLog("warn", "rm-native", "update_native_app: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} — in-flight state markers may linger and corrupt subsequent edits") }
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
