@@ -11714,13 +11714,26 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         body["settings[${key}]".toString()] = serialized
 
         // Sidecar fields. `.type` always needed for non-bool inputs so the
-        // hub knows how to marshal the update; `.multiple=true` MUST ride
-        // with every multi-capability write or the DB flag poisons.
+        // hub knows how to marshal the update; `.multiple` MUST always be
+        // explicit (true OR false) — verified live 2026-04-26 from the UI's
+        // capture of a button-push action: omitting `.multiple=false` on
+        // non-multi capability writes triggered RM's "Command 'hasCapability'
+        // is not supported" render error on doActPage. The render path RM
+        // takes for capability fields differs based on whether .multiple is
+        // present, and the path it falls into without it is buggy for some
+        // capabilities (button.pushableButton among them).
         if (typeHint) {
             body["${key}.type".toString()] = typeHint
         }
-        if (isMulti) {
-            body["${key}.multiple".toString()] = "true"
+        body["${key}.multiple".toString()] = isMulti ? "true" : "false"
+
+        // For capability.* writes the UI also emits `deviceList=<keyname>`
+        // — a marker telling RM which form field is the device list being
+        // modified. Without it, certain capabilities (notably
+        // capability.pushableButton on button.push actions) fall into a
+        // render path that errors with hasCapability not supported.
+        if (isCapability) {
+            body["deviceList".toString()] = key
         }
     }
     return body
