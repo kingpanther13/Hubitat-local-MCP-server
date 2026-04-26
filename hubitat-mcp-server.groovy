@@ -11169,12 +11169,19 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             if (ev.andStays == true) {
                 _rmWriteSettingOnPage(appId, "doActPage", "stays-${n}", true, applied, "bool", skipped)
             }
-            // Click hasAll to commit this event AND reveal tCapab-<N+1>
-            // for the next iteration. The button is named 'hasAll' (same
-            // as triggers' commit button); RM's wizard shares the
-            // mechanism. Even on the LAST event, clicking hasAll is fine
-            // — it just keeps the wizard ready for actionDone.
+            // Click hasAll to commit this event. Verified live 2026-04-26:
+            // after hasAll, the schema replaces tCapab-<N>/tDev/tstate
+            // with two new buttons:
+            //   - anotherWait  ("Add another Wait Event")
+            //   - doneWaits    ("Done with Wait Events")
+            // For non-last events, clicking anotherWait reveals tCapab-<N+1>
+            // and the wizard loop continues. The last event leaves the
+            // wizard in the 'doneWaits' state — the existing actionDone
+            // click below handles the final commit.
             _rmClickAppButton(appId, "hasAll", null, "doActPage")
+            if (evIdx < events.size() - 1) {
+                _rmClickAppButton(appId, "anotherWait", null, "doActPage")
+            }
         }
     }
 
