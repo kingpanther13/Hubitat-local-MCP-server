@@ -12446,6 +12446,97 @@ def toolCreateNativeApp(args) {
 }
 
 /**
+ * Add a local variable to a Rule Machine 5.1 rule.
+ *
+ * RM 5.1's variable wizard lives on selectActions. The flow:
+ *   1. Click `moreVar` button (state=moreVar) → opens wizard, exposes
+ *      `hbVar` text input ("Name the local variable")
+ *   2. Write hbVar=<name> → exposes `varType` enum
+ *   3. Write varType=<Number|Decimal|String|Boolean|DateTime> → exposes
+ *      `varValue` input (typed per varType)
+ *   4. Write varValue=<initial> → AUTO-COMMITS; the variable is added to
+ *      state.allLocalVars and the wizard fields disappear, ready for
+ *      the next variable. No explicit commit button.
+ *
+ * Verified live 2026-04-26 via probe on rule 1348:
+ *   state.allLocalVars = {myCounter: {type:'integer', value:42}}
+ *
+ * Spec:
+ *   {name: <varName>, type: 'Number'|'Decimal'|'String'|'Boolean'|'DateTime',
+ *    value: <initial>}
+ *
+ * Returns [success, name, type, value, settingsApplied, settingsSkipped].
+ */
+private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
+    if (!(varSpec instanceof Map)) {
+        throw new IllegalArgumentException("addLocalVariable requires a Map spec")
+    }
+    def name = varSpec.name?.toString()?.trim()
+    def type = varSpec.type?.toString()?.trim()
+    def value = varSpec.value
+    if (!name) throw new IllegalArgumentException("addLocalVariable.name is required")
+    if (!type) throw new IllegalArgumentException("addLocalVariable.type is required")
+    def validTypes = ["Number", "Decimal", "String", "Boolean", "DateTime"]
+    def typeCanonical = validTypes.find { it.equalsIgnoreCase(type) }
+    if (!typeCanonical) {
+        throw new IllegalArgumentException("addLocalVariable.type '${type}' must be one of: ${validTypes.join(', ')}")
+    }
+    if (value == null) {
+        throw new IllegalArgumentException("addLocalVariable.value is required (RM auto-commits the variable when varValue is written)")
+    }
+
+    def applied = []
+    def skipped = []
+
+    // Step 1. Click moreVar to open the wizard.
+    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
+
+    // Step 2. Write hbVar (name).
+    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
+
+    // Step 3. Write varType. Schema reveal: after this, varValue appears.
+    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
+
+    // Step 4. Write varValue. RM auto-commits the variable when this lands.
+    _rmWriteSettingOnPage(appId, "selectActions", "varValue", value, applied, null, skipped)
+
+    // Verify via appState.allLocalVars that the variable committed.
+    def status = null
+    try { status = _rmFetchStatusJson(appId) } catch (Exception ignored) { /* best effort */ }
+    def allLocalVars = (status?.appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
+    def committed = false
+    if (allLocalVars instanceof Map) {
+        committed = allLocalVars.containsKey(name)
+    }
+    if (!committed) {
+        return [
+            success: false,
+            partial: true,
+            hubRenderError: true,
+            name: name,
+            type: typeCanonical,
+            value: value,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            error: "Variable '${name}' did not commit — state.allLocalVars does not contain it. Common cause: value type mismatch (e.g. writing a string for a Number-type variable). Verify the value matches the declared type.",
+            repairHints: [
+                "Check the value's type against varType — Number/Decimal want numeric, String wants text, Boolean wants true/false, DateTime wants an ISO-style timestamp.",
+                "Inspect via /installedapp/statusJson/<appId> appState.allLocalVars to see what's currently there."
+            ]
+        ]
+    }
+
+    return [
+        success: true,
+        name: name,
+        type: typeCanonical,
+        value: value,
+        settingsApplied: applied,
+        settingsSkipped: skipped
+    ]
+}
+
+/**
  * High-level structured Required Expression creation for Rule Machine 5.1.
  *
  * Replaces the 7+ wizard calls (useST=true on mainPage → navigate STPage →
@@ -12822,14 +12913,15 @@ def toolUpdateNativeApp(args) {
     def addActionsList = args?.addActions instanceof List ? (args.addActions as List) : null
     def addTriggersList = args?.addTriggers instanceof List ? (args.addTriggers as List) : null
     def addRequiredExpressionSpec = args?.addRequiredExpression instanceof Map ? args.addRequiredExpression : null
+    def addLocalVariableSpec = args?.addLocalVariable instanceof Map ? args.addLocalVariable : null
     def removeActionSpec = args?.removeAction instanceof Map ? args.removeAction : null
     def clearActionsFlag = args?.clearActions == true
     def replaceActionsList = args?.replaceActions instanceof List ? (args.replaceActions as List) : null
     def moveActionSpec = args?.moveAction instanceof Map ? args.moveAction : null
     def walkStepSpec = args?.walkStep instanceof Map ? args.walkStep : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
-            && !addRequiredExpressionSpec && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
+            && !addRequiredExpressionSpec && !addLocalVariableSpec && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -12840,11 +12932,12 @@ def toolUpdateNativeApp(args) {
         (addActionsList ? "pre-addActions-bulk" :
         (addTriggersList ? "pre-addTriggers-bulk" :
         (addRequiredExpressionSpec ? "pre-addRequiredExpression" :
+        (addLocalVariableSpec ? "pre-addLocalVariable" :
         (removeActionSpec ? "pre-removeAction" :
         (clearActionsFlag ? "pre-clearActions" :
         (replaceActionsList != null ? "pre-replaceActions" :
         (moveActionSpec ? "pre-moveAction" :
-        (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))
+        (walkStepSpec ? "pre-walkStep" : "pre-update")))))))))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
@@ -13013,6 +13106,37 @@ def toolUpdateNativeApp(args) {
             configPageError: actResult?.configPageError,
             health: actResult?.health,
             note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake — no manual updateRule needed."
+        ]
+    }
+
+    if (addLocalVariableSpec) {
+        // Local variable creation. Walks selectActions' moreVar wizard:
+        // click moreVar → write hbVar (name) → write varType → write
+        // varValue (auto-commits). Verified live 2026-04-26.
+        def varResult
+        try {
+            varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "addLocalVariable failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
+        try { _rmClickAppButton(appId, "updateRule") } catch (Exception ignored) { }
+        def health = _rmCheckRuleHealth(appId)
+        return [
+            success: (varResult?.success != false) && health.ok,
+            appId: appId,
+            backup: backup,
+            variable: [name: varResult?.name, type: varResult?.type, value: varResult?.value],
+            settingsApplied: varResult?.settingsApplied,
+            settingsSkipped: varResult?.settingsSkipped,
+            health: health,
+            note: "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule fired."
         ]
     }
 
