@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+href-params-marker-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+walkstep-hrefcontext-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3395,7 +3395,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+href-params-marker-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+walkstep-hrefcontext-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -11095,8 +11095,45 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     def operation = spec?.operation?.toString()?.trim() ?: "introspect"
     def validateEnum = spec?.validateEnum == true
 
-    // Capture BEFORE state.
-    def beforeCfg = _rmFetchConfigJson(appId, page)
+    // hrefContext lets the LLM keep state alive across multiple walkStep
+    // calls on a sub-page that needs `state.<paramKey>` set every request.
+    // Verified live 2026-04-25: periodic schedule's `state.n` only exists
+    // for the duration of a request that carries the action marker, so
+    // every fetch/write to the periodic page must re-send it.
+    //
+    // Spec shape: { fromPage, hrefName, hrefIndex?, hrefParams: {n: 1} }
+    // When provided, the BEFORE schema fetch goes through _rmNavigateToPage
+    // (which sets state) and writes/clicks include the same marker.
+    def hrefContext = spec?.hrefContext instanceof Map ? spec.hrefContext as Map : null
+    def hrefContextMarkers = null
+    if (hrefContext) {
+        def hcName = hrefContext.hrefName?.toString() ?: "name"
+        def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
+        def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
+            (hcParams?.n != null ? (hcParams.n as Integer) : 0)
+        hrefContextMarkers = [
+            ("_action_href_${hcName}|${page}|${hcIndex}".toString()): ""
+        ]
+        if (hcParams) {
+            hrefContextMarkers["params_for_action_href_${hcName}|${page}|${hcIndex}".toString()] = groovy.json.JsonOutput.toJson(hcParams)
+        }
+    }
+
+    // Capture BEFORE state. For sub-pages with hrefContext, route the
+    // fetch through _rmNavigateToPage so state.<paramKey> is set; that
+    // call's response IS the page rendered with state in scope.
+    def beforeCfg
+    if (hrefContext) {
+        def hcName = hrefContext.hrefName?.toString() ?: "name"
+        def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
+        def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
+            (hcParams?.n != null ? (hcParams.n as Integer) : 0)
+        def fromPage = hrefContext.fromPage?.toString() ?: page
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams)
+        beforeCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
+    } else {
+        beforeCfg = _rmFetchConfigJson(appId, page)
+    }
     def beforeStatus = _rmFetchStatusJson(appId)
     def beforeSettings = (beforeStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
     def beforeSchema = _rmCollectWalkSchema(beforeCfg?.configPage, beforeSettings)
@@ -11134,7 +11171,24 @@ private Map _rmWalkStep(Integer appId, Map spec) {
         }
         // Build the schema map _rmUpdateAppSettings expects.
         def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
-        _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap)
+        if (hrefContextMarkers) {
+            // For sub-pages, include the action marker in the same request
+            // so RM re-sets state.<paramKey> before applying the write.
+            // Without this, the page renders with state.n null and the
+            // setting write lands in the wrong scope.
+            def body = _rmBuildSettingsBody(appId, [(writtenKey): writtenValue], fullSchemaMap)
+            body.formAction = "update"
+            body.currentPage = page
+            body.pageBreadcrumbs = '["mainPage"]'
+            hrefContextMarkers.each { k, v -> body[k] = v }
+            try {
+                def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
+                if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+            } catch (Exception ignored) { /* best effort */ }
+            hubInternalPostForm("/installedapp/update/json", body)
+        } else {
+            _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap)
+        }
         opResult.wrote = [(writtenKey): writtenValue]
     } else if (operation == "click") {
         if (!(spec?.click instanceof Map) || !spec.click.name) {
@@ -11185,10 +11239,20 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     // by the nav response itself — sub-pages with href params (e.g.
     // periodic schedule) lose state.<n> on a follow-up GET, so the only
     // place to read the target schema is the nav POST's response body.
+    // For non-navigate ops on sub-pages with hrefContext, re-fetch via
+    // _rmNavigateToPage so state.<paramKey> is set during render.
     def afterCfg
     if (operation == "navigate" && opResult.navResponseConfigPage) {
         afterCfg = [configPage: opResult.navResponseConfigPage]
         opResult.remove("navResponseConfigPage")  // keep it out of the user-facing result
+    } else if (hrefContext) {
+        def hcName = hrefContext.hrefName?.toString() ?: "name"
+        def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
+        def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
+            (hcParams?.n != null ? (hcParams.n as Integer) : 0)
+        def fromPage = hrefContext.fromPage?.toString() ?: page
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams)
+        afterCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
     } else {
         afterCfg = _rmFetchConfigJson(appId, page)
     }
