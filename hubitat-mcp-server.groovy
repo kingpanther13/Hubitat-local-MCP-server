@@ -9674,31 +9674,46 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         _rmSubmitSubPageDone(appId, "periodic", "selectTriggers", "periodic1", hrefParams)
     }
 
-    // Click hasAll (with form context) to commit. The shared wizard-Done
-    // auto-finalize logic in toolUpdateNativeApp's button branch handles
-    // the residual isCondTrig.<N>=false write — but _rmAddTrigger calls
-    // _rmClickAppButton directly, so do the finalize inline here.
-    _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
-
-    // Auto-finalize the residual Conditional? prompt:
-    //   - If a condition is bound (conditionSpec set OR conditional=true),
-    //     keep isCondTrig.<idx>=true so the trigger stays conditional.
-    //   - Otherwise =false to close the prompt cleanly without allocating
-    //     a phantom trigger.
-    def condValue = (conditionSpec != null) || (triggerSpec.conditional == true)
-    try {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", condValue, applied, null, skipped)
-        // When a condition was built, bind it to this trigger via condTrig.<idx>.
-        // This must come AFTER isCondTrig.<idx>=true exposes condTrig.<idx>.
-        // Verified live 2026-04-25: writing condTrig.<idx> earlier fails
-        // (settingsSkipped: not_in_schema). Putting both writes here in order
-        // is the corrected sequence vs the earlier early-write design.
+    // Conditional-trigger binding MUST be written BEFORE hasAll while the
+    // trigger-edit form is still open. Verified live 2026-04-26 via T323
+    // probe: after hasAll, selectTriggers' schema is empty (the wizard
+    // returned to the trigger-list view, no edit fields exposed), so
+    // condTrig.<idx> writes silently fail with available=[] (a hub-render
+    // error pattern). The earlier comment claiming condTrig.<idx> only
+    // appears AFTER hasAll was wrong.
+    //
+    // For conditional triggers, the live UI flow inside the trigger edit
+    // form is:
+    //   1. Toggle isCondTrig.<idx>=true → reveals condTrig.<idx> dropdown
+    //   2. Set condTrig.<idx>=<conditionId> → picks which condition the
+    //      trigger references (by condition's allocation id)
+    //   3. Click hasAll to commit the trigger
+    if (conditionSpec != null || triggerSpec.conditional == true) {
+        // Pre-hasAll: bind the trigger to its condition while the edit
+        // form is open. _rmWriteSettingOnPage no-ops if isCondTrig.<idx>
+        // isn't yet in the schema, but in practice it's exposed as soon
+        // as tCapab/tDev/tstate are written.
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied, null, skipped)
         if (conditionId != null) {
             _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", conditionId.toString(), applied, null, skipped)
         }
-    } catch (Exception ignored) {
-        // Best-effort: if the prompt isn't there (clean exit), the schema
-        // check inside _rmWriteSettingOnPage skips it.
+    }
+
+    // Click hasAll (with form context) to commit.
+    _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
+
+    // Post-hasAll finalize: for non-conditional triggers we need to write
+    // isCondTrig.<idx>=false to close the residual "Conditional Trigger?"
+    // prompt that RM exposes briefly after hasAll. Skip this for
+    // conditional triggers — they already had isCondTrig.<idx>=true set
+    // pre-hasAll, and writing false here would un-bind the condition.
+    if (conditionSpec == null && triggerSpec.conditional != true) {
+        try {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", false, applied, null, skipped)
+        } catch (Exception ignored) {
+            // Best-effort: if the prompt isn't there (clean exit), the
+            // schema check inside _rmWriteSettingOnPage skips it.
+        }
     }
 
     // Navigate back to mainPage to commit the in-flight trigger.
