@@ -12237,6 +12237,13 @@ def toolUpdateNativeApp(args) {
             def result = _rmWalkStep(appId, walkStepSpec)
             result.appId = appId
             result.backup = backup
+            // Click mainPage Done as the final step — only if walkStep
+            // operation was 'done' (meaning the wizard flow is complete).
+            // For introspect/write/click/navigate ops in the middle of a
+            // multi-step walk, skip Done since the caller is mid-flow.
+            if (walkStepSpec?.operation?.toString() == "done") {
+                try { _rmSubmitMainPageDone(appId) } catch (Exception ignored) { }
+            }
             return result
         } catch (Exception e) {
             mcpLog("error", "rm-native", "walkStep failed for app ${appId}: ${e.message}")
@@ -12592,6 +12599,11 @@ def toolUpdateNativeApp(args) {
         // sees broken state immediately without having to call check_rule_health.
         result.health = _rmCheckRuleHealth(appId)
         if (!result.health.ok) result.success = false
+        // Final commit: click the mainPage Done button. Mirrors the live UI's
+        // last-step behavior on every modify session. Without it, in-flight
+        // state markers (state.editAct, state.editCond, etc.) can linger and
+        // cause subsequent edits to misbehave.
+        try { _rmSubmitMainPageDone(appId) } catch (Exception ignored) { /* best effort */ }
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
