@@ -1967,6 +1967,10 @@ Per-condition spec fields:
   - not — boolean (default false). Set true to invert this condition.
   - rawSettings — escape hatch dict {fieldName: value} for fields not yet mapped above.
 
+Sub-expressions (parens) — for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
+  {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
+The walker recursively handles nested sub-expressions. KNOWN PARTIAL: RM 5.1 currently renders the open-paren marker as "**Broken Condition**" in the mainPage paragraph even though the structure commits correctly to settings. If round-trip rendering matters for your use case, fall back to walkStep until the wire-format quirk is resolved.
+
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the parent (Rule Machine, app id 21) atomicState level — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
 PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, the expression was constructed but some condition fields didn't land. The result includes settingsSkipped with the available-options list at the time of the failed write. Common repair: pass the missing field via rawSettings on the affected condition spec, or rebuild the expression."""
@@ -1974,6 +1978,20 @@ PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, the expression was c
                     addActions: [
                         type: "array",
                         description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so the actions[] map and subscriptions bake atomically. Pairs naturally with addTriggers — pass both to add many triggers + many actions in a single tool call.",
+                        items: [type: "object"]
+                    ],
+                    addLocalVariable: [
+                        type: "object",
+                        description: """Add a local variable to the rule. Spec: {name, type, value} where:
+  - name: variable name (used as %name% in actions/expressions)
+  - type: 'Number' | 'Decimal' | 'String' | 'Boolean' | 'DateTime' (case-insensitive)
+  - value: initial value matching the type (Number/Decimal want numeric; String wants text; Boolean wants true/false; DateTime wants ISO timestamp)
+
+Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/statusJson/<appId>'s appState.allLocalVars to verify. Returns success=false with repair hints if value/type mismatch causes RM to silently reject. Verified live for all 5 types."""
+                    ],
+                    patches: [
+                        type: "array",
+                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Use this for the T425-style "change RE + add action + edit local var" atomic update pattern. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -2127,14 +2145,25 @@ Capability families and the spec fields each accepts:
       capability='poll'           + deviceIds
       capability='disableDevice'  + action='disable'/'enable' + deviceIds
 
-  - Flow control (capability='delay'/'cancelDelay'/'exitRule'/'comment'/'repeat'/'stopRepeat'/'delayPerMode'):
-      capability='delay'        + hours/minutes/seconds + optional cancelable/random   OR  variable=<varName> (variable-sourced seconds)
-      capability='delayPerMode' + perMode={modeIdOrName: {hours, minutes, seconds}, ...}
-      capability='cancelDelay'  (no fields)
-      capability='exitRule'     (no fields)
-      capability='comment'      + text
-      capability='repeat'       + hours/minutes/seconds + optional times + stoppable
-      capability='stopRepeat'   (no fields)
+  - Flow control (delay/wait/repeat/exit/comment/conditional):
+      capability='delay'         + hours/minutes/seconds + optional cancelable/random   OR  variable=<varName> (variable-sourced seconds)
+      capability='delayPerMode'  + perMode={modeIdOrName: {hours, minutes, seconds}, ...}
+      capability='cancelDelay'   (no fields)
+      capability='exitRule'      (no fields)
+      capability='comment'       + text
+      capability='repeat'        + hours/minutes/seconds + optional times + stoppable
+      capability='stopRepeat'    (no fields)
+      capability='repeatWhile'   + expression={conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]} + optional hours/minutes/seconds/times/stoppable
+      capability='waitExpression'+ expression={conditions:[...], operator?:..., operators?:[...]} + optional delay={hours,minutes,seconds} + useDuration=true|false
+      capability='waitEvents'    + events=[{capability, deviceIds, state, andStays?}, ...] (single-event ✓; multi-event WIP)
+      capability='ifThen'        + expression={conditions:[...], operator?:..., operators?:[...]}    (opens IF block; close with 'endIf')
+      capability='elseIf'        + expression={...}                                                  (continues IF block; needs preceding 'ifThen')
+      capability='else'          (no fields; needs preceding 'ifThen' or 'elseIf')
+      capability='endIf'         (no fields; closes the IF block)
+
+  Per-condition shape inside any expression:
+    {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}
+    Capability options match RM 5.1's IF expression list (Switch, Motion, Contact, Lock, Presence, Mode, etc. — Private Boolean is NOT in the IF list, only in Required Expressions).
 
 Variable-sourced values (works on dimmer.setLevel, delay):
   - dimmer.setLevel: pass `levelVariable: '<hubVarName>'` instead of `level`
@@ -2146,9 +2175,7 @@ NOT yet mapped (use rawSettings escape hatch with @N placeholder):
   - HSM Arm/Disarm/Cancel All Alerts (separate actSubType not in lockActs dropdown — only appears when HSM is installed and may need a different actType)
   - Garage door open/close (different lockActs subtype, only visible with garage device)
   - Valve open/close (similar)
-  - Wait for Events / Wait for Expression (getWaitEvents / getWaitRule) — multi-step expression editor
-  - Repeat-While Expression (getWhile)
-  - Conditional IF/THEN flow (condActs/getIfThen / getCondAct) — Section 4 territory
+  - Wait for Events MULTI-EVENT (single event via capability='waitEvents' works; the anotherWait click pattern for adding event 2/3/N is still being probed)
 
 Optional fields on every spec:
   - delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>='hrs:min:sec' plus duration sub-fields
