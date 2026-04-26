@@ -12914,14 +12914,15 @@ def toolUpdateNativeApp(args) {
     def addTriggersList = args?.addTriggers instanceof List ? (args.addTriggers as List) : null
     def addRequiredExpressionSpec = args?.addRequiredExpression instanceof Map ? args.addRequiredExpression : null
     def addLocalVariableSpec = args?.addLocalVariable instanceof Map ? args.addLocalVariable : null
+    def patchesList = args?.patches instanceof List ? (args.patches as List) : null
     def removeActionSpec = args?.removeAction instanceof Map ? args.removeAction : null
     def clearActionsFlag = args?.clearActions == true
     def replaceActionsList = args?.replaceActions instanceof List ? (args.replaceActions as List) : null
     def moveActionSpec = args?.moveAction instanceof Map ? args.moveAction : null
     def walkStepSpec = args?.walkStep instanceof Map ? args.walkStep : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
-            && !addRequiredExpressionSpec && !addLocalVariableSpec && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
+            && !addRequiredExpressionSpec && !addLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -13106,6 +13107,112 @@ def toolUpdateNativeApp(args) {
             configPageError: actResult?.configPageError,
             health: actResult?.health,
             note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake — no manual updateRule needed."
+        ]
+    }
+
+    if (patchesList != null) {
+        // Multi-mutation atomic patch (T425). Each item in the patches
+        // list is a dict with one of the supported sub-operations:
+        //   {addRequiredExpression: {...}}
+        //   {addTrigger: {...}} | {addTriggers: [...]}
+        //   {addAction: {...}} | {addActions: [...]}
+        //   {addLocalVariable: {...}}
+        //   {settings: {...}}
+        //   {removeAction: {index}} | {clearActions: true} | {replaceActions: [...]}
+        //   {moveAction: {index, direction}}
+        //   {button: <name>, stateAttribute?, pageName?}
+        // Operations apply sequentially. updateRule fires ONCE at the end
+        // — not after each sub-op — so the rule's actions[] map and
+        // subscriptions bake from a fully-loaded state. This mirrors
+        // the BAT T425 spec's "atomic patch" expectation.
+        def patchResults = []
+        def patchErr = null
+        try {
+            patchesList.eachWithIndex { p, pi ->
+                if (!(p instanceof Map)) {
+                    patchResults << [success: false, error: "patches[${pi}] is not a Map", spec: p]
+                    return
+                }
+                def pm = p as Map
+                try {
+                    if (pm.containsKey("settings")) {
+                        // Apply settings via _rmUpdateAppSettings (no auto-updateRule).
+                        def cfg = _rmFetchConfigJson(appId, pm.pageName?.toString())
+                        def schema = _rmCollectInputSchema(cfg?.configPage)
+                        _rmUpdateAppSettings(appId, pm.settings as Map, schema)
+                        patchResults << [success: true, op: "settings", keys: (pm.settings as Map).keySet().toList()]
+                    } else if (pm.containsKey("button")) {
+                        _rmClickAppButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), pm.pageName?.toString())
+                        patchResults << [success: true, op: "button", name: pm.button]
+                    } else if (pm.containsKey("addTrigger")) {
+                        patchResults << ([op: "addTrigger"] + _rmAddTrigger(appId, pm.addTrigger as Map))
+                    } else if (pm.containsKey("addTriggers")) {
+                        def innerResults = []
+                        (pm.addTriggers as List).each { tspec ->
+                            try { innerResults << _rmAddTrigger(appId, tspec as Map) }
+                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                        }
+                        patchResults << [success: true, op: "addTriggers", results: innerResults]
+                    } else if (pm.containsKey("addAction")) {
+                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map))
+                    } else if (pm.containsKey("addActions")) {
+                        def innerResults = []
+                        (pm.addActions as List).each { aspec ->
+                            try { innerResults << _rmAddAction(appId, aspec as Map) }
+                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                        }
+                        patchResults << [success: true, op: "addActions", results: innerResults]
+                    } else if (pm.containsKey("addRequiredExpression")) {
+                        patchResults << ([op: "addRequiredExpression"] + _rmAddRequiredExpression(appId, pm.addRequiredExpression as Map))
+                    } else if (pm.containsKey("addLocalVariable")) {
+                        patchResults << ([op: "addLocalVariable"] + _rmAddLocalVariable(appId, pm.addLocalVariable as Map))
+                    } else if (pm.containsKey("removeAction")) {
+                        if (pm.removeAction.index == null) throw new IllegalArgumentException("removeAction.index required")
+                        _rmDeleteAction(appId, pm.removeAction.index as Integer)
+                        patchResults << [success: true, op: "removeAction", index: pm.removeAction.index]
+                    } else if (pm.containsKey("clearActions")) {
+                        def cleared = _rmClearActions(appId) ?: []
+                        patchResults << [success: true, op: "clearActions", removedIndices: cleared]
+                    } else if (pm.containsKey("replaceActions")) {
+                        def cleared = _rmClearActions(appId) ?: []
+                        def innerResults = []
+                        (pm.replaceActions as List).each { aspec ->
+                            try { innerResults << _rmAddAction(appId, aspec as Map) }
+                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                        }
+                        patchResults << [success: true, op: "replaceActions", removedIndices: cleared, addedResults: innerResults]
+                    } else if (pm.containsKey("moveAction")) {
+                        if (pm.moveAction.index == null) throw new IllegalArgumentException("moveAction.index required")
+                        def dir = pm.moveAction.direction?.toString()
+                        if (!(dir in ["up", "down"])) throw new IllegalArgumentException("moveAction.direction must be up|down")
+                        _rmMoveAction(appId, pm.moveAction.index as Integer, dir)
+                        patchResults << [success: true, op: "moveAction", index: pm.moveAction.index, direction: dir]
+                    } else {
+                        patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
+                    }
+                } catch (Exception subExc) {
+                    patchResults << [success: false, op: pm.keySet().first(), error: subExc.message, spec: p]
+                    mcpLog("warn", "rm-native", "patches[${pi}] (${pm.keySet().first()}) failed: ${subExc.message}")
+                }
+            }
+            // Fire updateRule once at the end so the rule's actions[]
+            // map and event subscriptions bake from the fully-loaded
+            // post-patch state.
+            try { _rmClickAppButton(appId, "updateRule") } catch (Exception ignored) { }
+        } catch (Exception e) {
+            patchErr = e.message
+            mcpLog("error", "rm-native", "patches application failed: ${e.message}")
+        }
+        def opsOk = patchResults.count { it?.success != false }
+        def health = _rmCheckRuleHealth(appId)
+        return [
+            success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok,
+            appId: appId,
+            backup: backup,
+            patches: patchResults,
+            health: health,
+            error: patchErr,
+            note: "Applied ${opsOk}/${patchResults.size()} patch ops; updateRule fired once."
         ]
     }
 
