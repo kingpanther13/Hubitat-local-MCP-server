@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+walkstep-subpage-capecho-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+href-params-marker-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -3395,7 +3395,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+walkstep-subpage-capecho-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+href-params-marker-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9765,27 +9765,41 @@ private void _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
  * navigation marker to perform the transition. We don't need to mirror
  * every hidden button input on the source page.
  */
-private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0) {
-    // hrefIndex defaults to 0 for plain navigation. When a sub-page
-    // <href> has params={n: <N>}, the action marker key uses N as the
-    // suffix: `_action_href_name|<page>|<N>=`. Verified live 2026-04-25
-    // that the periodic schedule sub-page requires `_action_href_name|
-    // periodic|1` (matching the trigger's index from params.n) — using
-    // |0 navigates without setting state.n and the page renders empty
-    // with 'Cannot get property n on null object'.
+private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null) {
+    // For plain page navigation use hrefName="name" + hrefIndex=0. The
+    // server treats the marker `_action_href_name|<page>|0` as a generic
+    // navigation request.
+    //
+    // For sub-page hrefs that carry params (e.g. periodic schedule has
+    // params={n: 1}), the LIVE UI sends a TWO-PART marker:
+    //
+    //   _action_href_<linkName>|<page>|<formIndex>=clicked
+    //   params_for_action_href_<linkName>|<page>|<formIndex>=<json-of-params>
+    //
+    // The hub reads `params_for_action_href_*` to set state.<paramKey>
+    // before rendering the target page. Without it, the target page
+    // renders with `Cannot get property '<paramKey>' on null object`.
+    // Verified live 2026-04-25 by capturing the periodic1 button's
+    // XHR body via Chrome devtools (body field count = 20, including
+    // params_for_action_href_periodic1|periodic|4 = {"n":1}).
     //
     // Returns the parsed nav response. The response body is the schema
     // of the target page rendered with the param state in scope — the
     // ONLY place that schema lives, since a follow-up GET on the target
     // page won't carry the state. Callers that need the target schema
     // should consume the returned configPage rather than re-fetch.
+    def actionMarker = "_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
     def body = [
         id: appId.toString(),
         formAction: "update",
         currentPage: fromPage,
         pageBreadcrumbs: '["mainPage"]',
-        ("_action_href_name|${targetPage}|${hrefIndex}".toString()): ""
+        (actionMarker): ""
     ]
+    if (hrefParams != null && !hrefParams.isEmpty()) {
+        def paramsMarker = "params_for_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
+        body[paramsMarker] = groovy.json.JsonOutput.toJson(hrefParams)
+    }
     try {
         def cfg = _rmFetchConfigJson(appId, fromPage)
         def v = cfg?.app?.version
@@ -11133,23 +11147,34 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     } else if (operation == "navigate") {
         def target = spec?.navigate?.targetPage?.toString()
         if (!target) throw new IllegalArgumentException("walkStep operation='navigate' requires navigate={targetPage}")
-        // Sub-page hrefs carry params (e.g. {n: 1}) that get encoded as
-        // the index suffix in the action marker: `_action_href_name|
-        // <page>|<n>`. Pull the matching href from the BEFORE schema
-        // and use its params.n; fall back to 0 for plain pages.
-        def hrefIndex = 0
+        // Pull the matching href from the BEFORE schema; we need its
+        // name AND params to construct the right action marker pair:
+        //   _action_href_<linkName>|<page>|<idx>=clicked
+        //   params_for_action_href_<linkName>|<page>|<idx>=<json-params>
+        // For plain navigation (no href in schema), fall back to
+        // hrefName="name", hrefIndex=0, no params.
         def hrefMatch = beforeSchema.hrefs.find { it.targetPage == target }
-        if (hrefMatch?.params?.n != null) {
-            hrefIndex = hrefMatch.params.n as Integer
-        } else if (spec.navigate.hrefIndex != null) {
+        def hrefName = hrefMatch?.name?.toString() ?: "name"
+        def hrefIndex = 0
+        def hrefParams = null
+        if (hrefMatch?.params != null) {
+            hrefParams = hrefMatch.params as Map
+            // The form-index suffix (the |N at the end of the marker)
+            // looks like a render-time form counter, not the params
+            // value — the live UI captured |4 for params={n:1}.
+            // Don't conflate them. Use the params.n value as fallback
+            // index ONLY when no explicit hrefIndex is given.
+            if (hrefParams.n != null) hrefIndex = hrefParams.n as Integer
+        }
+        if (spec.navigate.hrefIndex != null) {
             hrefIndex = spec.navigate.hrefIndex as Integer
         }
         // _rmNavigateToPage returns the nav response — the target page's
         // schema rendered WITH the href params in scope. Stash it as
         // `navResponseConfigPage` so the AFTER block can use it instead
         // of doing a separate GET that would lose the param state.
-        opResult.navResponseConfigPage = _rmNavigateToPage(appId, page, target, hrefIndex)?.configPage
-        opResult.navigated = [from: page, to: target, hrefIndex: hrefIndex]
+        opResult.navResponseConfigPage = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams)?.configPage
+        opResult.navigated = [from: page, to: target, hrefName: hrefName, hrefIndex: hrefIndex, hrefParams: hrefParams]
         // After navigation the schema lives at the target page, not the source.
         page = target
     } else {
