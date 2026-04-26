@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1+clone-native-app-fix-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.10.1+partial-success-signaling-prdev-build-marker - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * NOTE: the "+<commit>-prdev-build-marker" suffix is TEMPORARY for PR #134
  * iteration so we can visually confirm which build is loaded in the Apps
@@ -1830,6 +1830,14 @@ Workflow: create_native_app(appType=\"rule_machine\", name=\"...\") → get_app_
 
 Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape update_native_app's `addTrigger` parameter accepts (capability + capability-specific fields). Use this when you know all the triggers up-front; for incremental editing use update_native_app(addTrigger=…) instead.
 
+Optional `actions` array: same pattern but for actions (each item shaped like update_native_app's `addAction` parameter).
+
+PARTIAL-SUCCESS HANDLING (important for LLM drivers): the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
+  - `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete
+  - `repairHints: [...]` → concrete next-step instructions
+  - Each per-trigger / per-action result has its own `partial`, `settingsSkipped`, `repairHints`, and `health` block
+The right move when `partial: true` is to follow the repairHints, NOT to delete the rule and retry from scratch. Tool-only repair via update_native_app(walkStep={...}) / replaceActions / removeAction can usually finish the job. Only declare failure after exhausting those repair attempts.
+
 Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
                 type: "object",
@@ -1923,7 +1931,9 @@ Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. The condition's own wizard (rCapab_<N>, rDev_<N>, state_<N>) is NOT driven by addTrigger yet — pass conditional=true and then orchestrate the condition fields via separate update_native_app(settings=…) calls.
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.)
 
-Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow."""
+Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
+
+PARTIAL-SUCCESS HANDLING: If the result has `partial: true`, the trigger row was created but some caller-requested fields didn't land OR the row carries a *BROKEN* marker. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure — exhaust tool-only repair before declaring failure."""
                     ],
                     addTriggers: [
                         type: "array",
@@ -2118,7 +2128,9 @@ Action index is auto-assigned (next available). One addAction call replaces the 
 Wire-format quirks the helper handles for you (so callers don't need to know):
   1. The 'Create New Action' button (name=N) requires stateAttribute='doActN' (concatenated), not 'doAct'. The Hubitat UI's buttonClick() handler concatenates data-stateAttribute='doAct' + button name 'N' → doActN before POSTing; sending stateAttribute='doAct' alone leaves state.doActN null and doActPage NPEs.
   2. doActPage's schema is incremental: actionDone only appears AFTER all required type-specific fields are set. The helper re-fetches the schema before each write.
-  3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST."""
+  3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST.
+
+PARTIAL-SUCCESS HANDLING: If the result has `partial: true`, the action row was created but some caller-requested fields didn't land. The result includes `repairHints` with concrete next steps. Common repair: 1) update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema (settingsSkipped[].available shows what fields ARE present), then write the missing fields one at a time via update_native_app(settings=...). 2) For unrecoverable rows (hubRenderError=true), use removeAction(index:N) to clear the broken action then retry with a different shape. Don't treat `partial: true` as failure — exhaust tool-only repair before declaring failure."""
                     ],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
@@ -3393,7 +3405,7 @@ def toolGetHubInfo() {
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
     // MCP-specific stats (always available)
-    info.mcpServerVersion = currentVersion() + "+clone-native-app-fix-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
+    info.mcpServerVersion = currentVersion() + "+partial-success-signaling-prdev-build-marker"  // TEMPORARY — strip suffix before merging PR #134
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
@@ -9704,13 +9716,35 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
 
     def health = _rmCheckRuleHealth(appId)
 
+    // Partial-success signal — see _rmAddAction for rationale. The trigger
+    // is committed but a caller-requested field didn't land; LLM should
+    // retry via update_native_app(walkStep) or rebuild the trigger row.
+    def partial = skipped != null && !skipped.isEmpty()
+    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean)
+    def repairHints = []
+    def hasBrokenLabel = (health?.brokenMarkers as List)?.contains("BROKEN_LABEL") ||
+                          (health?.label?.toString()?.contains("*BROKEN*"))
+    if (partial || hasBrokenLabel) {
+        if (partial) {
+            repairHints << "Some trigger settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time."
+        }
+        if (hasBrokenLabel) {
+            repairHints << "Trigger row has *BROKEN* marker — capability '${cap}' likely needs a capability-specific field that addTrigger didn't auto-supply (e.g. Mode trigger needs modesX1=[<modeIds>], Periodic needs the periodic={} sub-spec). Pass missing fields via the per-capability spec OR rawSettings={fieldName: value} as an escape hatch, then re-add the trigger."
+        }
+        if (hubRenderError) {
+            repairHints << "WARNING: selectTriggers may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue. Consider deleting the trigger and trying with different deviceIds or trigger shape."
+        }
+    }
     def result = [
-        success: !err && health.ok,
+        success: !err && health.ok && !partial && !hasBrokenLabel,
+        partial: partial || hasBrokenLabel,
+        hubRenderError: hubRenderError,
         triggerIndex: idx,
         capability: cap,
         settingsApplied: applied,
         settingsSkipped: skipped,
         configPageError: err,
+        repairHints: repairHints,
         health: health
     ]
     if (conditionId != null) result.conditionId = conditionId
@@ -10936,8 +10970,25 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
 
     def health = _rmCheckRuleHealth(appId)
 
+    // Partial-success signal: any skipped settings indicate a field the
+    // caller asked for that didn't land. The action is still committed
+    // (actType/actSubType set, row in actions[]), but it's incomplete and
+    // worth retrying via update_native_app(walkStep) or replaceActions.
+    def partial = skipped != null && !skipped.isEmpty()
+    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean)
+    def repairHints = []
+    if (partial) {
+        def firstSkipped = skipped[0]
+        repairHints << "Some settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now."
+        if (hubRenderError) {
+            repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
+        }
+        repairHints << "If retries still fail, removeAction(index:${idx}) to clean up, then call addAction again with corrections."
+    }
     return [
-        success: !err && health.ok,
+        success: !err && health.ok && !partial,
+        partial: partial,
+        hubRenderError: hubRenderError,
         actionIndex: idx,
         capability: cap,
         action: action,
@@ -10946,6 +10997,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         settingsApplied: applied,
         settingsSkipped: skipped,
         configPageError: err,
+        repairHints: repairHints,
         health: health
     ]
 }
@@ -11946,8 +11998,30 @@ def toolCreateNativeApp(args) {
 
         def status = _rmFetchStatusJson(newId)
         def health = _rmCheckRuleHealth(newId)
+
+        // Roll up partial-success indices so an LLM driver doesn't have to
+        // scan each result. Each entry's `partial` flag is set by the
+        // _rm{Add,Trigger}Action helper when caller-requested fields were
+        // dropped or the trigger/action row carries a *BROKEN* marker.
+        def partialTriggers = []
+        triggerResults.eachWithIndex { r, i ->
+            if (r instanceof Map && (r.partial == true || r.success == false)) partialTriggers << (i + 1)
+        }
+        def partialActions = []
+        actionResults.eachWithIndex { r, i ->
+            if (r instanceof Map && (r.partial == true || r.success == false)) partialActions << (i + 1)
+        }
+        def repairHints = []
+        if (partialTriggers || partialActions) {
+            repairHints << "Rule ${newId} was created BUT some pieces are incomplete — see partialTriggers / partialActions arrays for indices. Each partial result has its own repairHints list with concrete next steps."
+            repairHints << "Repair pattern: 1) get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) update_native_app(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) update_native_app(button='updateRule') after fixes to commit. 5) Re-run check_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
+        }
         def result = [
-            success: health.ok,
+            success: health.ok && !partialTriggers && !partialActions,
+            partial: (partialTriggers || partialActions) as Boolean,
+            partialTriggers: partialTriggers,
+            partialActions: partialActions,
+            repairHints: repairHints,
             appId: newId,
             appType: appType,
             name: name,
@@ -11958,7 +12032,7 @@ def toolCreateNativeApp(args) {
             ],
             health: health,
             note: (triggerSpecs || actionSpecs) ?
-                "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success != false }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success != false }}/${actionSpecs.size()} actions committed. updateRule fired once at the end." :
+                "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success == true }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success == true }}/${actionSpecs.size()} actions FULLY committed${partialTriggers || partialActions ? " (some partial — see partialTriggers/partialActions for repair)" : ""}. updateRule fired once at the end." :
                 "Empty ${appType} app created (id=${newId}). Use update_native_app to populate, or get_app_config to inspect."
         ]
         if (triggerSpecs) result.triggers = triggerResults
