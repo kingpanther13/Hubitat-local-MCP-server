@@ -11019,15 +11019,17 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             throw new IllegalArgumentException("repeatWhile action requires expression={conditions:[...], operator?:..., operators?:[...]}")
         }
     } else if (cap == "waitEvents") {
-        // Wait for Events — delayActs/getWaitEvents. Defers full event-
-        // row walking to a future revision; basic wiring lands so the
-        // action commits with actType+actSubType for caller to extend
-        // via rawSettings.
+        // Wait for Events — delayActs/getWaitEvents. Each event row uses
+        // dash-separated index: tCapab-<eventIdx>, tDev-<eventIdx>,
+        // tstate-<eventIdx>. After actSubType=getWaitEvents the wizard
+        // exposes tCapab-1; writing it reveals tDev-1; writing devices
+        // reveals tstate-1; writing state advances to next event slot
+        // OR exposes timeout/done. Verified live 2026-04-26.
         actType = "delayActs"
         actSubType = "getWaitEvents"
         fields = [:]
         if (!(actionSpec.events instanceof List) || (actionSpec.events as List).isEmpty()) {
-            throw new IllegalArgumentException("waitEvents action requires events=[{capability, deviceIds, state}, ...] (non-empty). Currently the event-row walker isn't wired — pass rawSettings={weCapab.<idx>:..., weDev.<idx>:..., weState.<idx>:...} and probe field names live.")
+            throw new IllegalArgumentException("waitEvents action requires events=[{capability, deviceIds, state}, ...] (non-empty)")
         }
     } else if (cap == "waitExpression") {
         // Wait for Expression — delayActs/getWaitRule. Embeds an
@@ -11120,6 +11122,42 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     //   condActs/getIfThen, condActs/getElseIf — full IF/ELSE-IF
     //   repeatActs/getWhile — Repeat While Expression
     //   delayActs/getWaitRule — Wait for Expression
+    // Wait for Events: walk each event row using tCapab-<N>/tDev-<N>/
+    // tstate-<N> (dash-separated index). Multi-event rules write
+    // multiple rows. Optional timeout via the existing delay-modifier
+    // path (delayAct.<idx> + delayHor/Min/Sec).
+    if (actSubType == "getWaitEvents") {
+        def events = actionSpec.events as List
+        events.eachWithIndex { evRaw, evIdx ->
+            if (!(evRaw instanceof Map)) {
+                throw new IllegalArgumentException("waitEvents.events[${evIdx}] is not a Map")
+            }
+            def ev = evRaw as Map
+            def evCap = ev.capability?.toString()?.trim()
+            if (!evCap) throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability is required")
+            def n = evIdx + 1
+            // Validate + canonicalize capability against the live enum.
+            def cfg = _rmFetchConfigJson(appId, "doActPage")
+            def inputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+            def capInput = inputs.find { it?.name?.toString() == "tCapab-${n}".toString() }
+            if (!capInput) {
+                throw new IllegalStateException("waitEvents: tCapab-${n} not in doActPage schema for event ${evIdx}; previous event may not have committed")
+            }
+            def opts = (capInput.options ?: []) as List
+            def canon = opts.find { it.toString().equalsIgnoreCase(evCap) }
+            if (!canon) {
+                throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' not in option list. Valid: ${opts.collect { it.toString() }.sort().join(', ')}")
+            }
+            _rmWriteSettingOnPage(appId, "doActPage", "tCapab-${n}", canon, applied, null, skipped)
+            if (ev.deviceIds != null) {
+                _rmWriteSettingOnPage(appId, "doActPage", "tDev-${n}", ev.deviceIds, applied, null, skipped)
+            }
+            if (ev.state != null) {
+                _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
+            }
+        }
+    }
+
     def expressionSubtypes = ["getIfThen", "getElseIf", "getWhile", "getWaitRule"]
     if (expressionSubtypes.contains(actSubType)) {
         // Pre-expression timeout/duration writes for getWaitRule. The
