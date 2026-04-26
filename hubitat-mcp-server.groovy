@@ -10994,6 +10994,38 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actType = "repeatActs"
         actSubType = "getStopRepeat"
         fields = [:]
+    } else if (cap == "repeatWhile" || cap == "repeatUntil") {
+        // Repeat While Expression / Repeat Until Expression — repeatActs
+        // subtypes that embed the same condition wizard as IF/ELSE-IF.
+        // Verified live 2026-04-26: subtype names are getWhile/getUntil
+        // (common RM 5.1 naming).
+        actType = "repeatActs"
+        actSubType = (cap == "repeatWhile") ? "getWhile" : "getUntil"
+        fields = [:]
+        if (!(actionSpec.expression instanceof Map)) {
+            throw new IllegalArgumentException("${cap} action requires expression={conditions:[...], operator?:..., operators?:[...]}")
+        }
+    } else if (cap == "waitEvents") {
+        // Wait for Events — delayActs/getWaitEvents. Caller passes
+        // events: [{capability, deviceIds, state}, ...] plus optional
+        // timeout (hours/minutes/seconds), 'all' (multi-all wait),
+        // 'andStays' (sticky duration).
+        actType = "delayActs"
+        actSubType = "getWaitEvents"
+        fields = [:]
+        if (!(actionSpec.events instanceof List) || (actionSpec.events as List).isEmpty()) {
+            throw new IllegalArgumentException("waitEvents action requires events=[{capability, deviceIds, state}, ...] (non-empty)")
+        }
+    } else if (cap == "waitExpression") {
+        // Wait for Expression — delayActs/getWaitRule. Caller passes
+        // expression={conditions:[...], operator/operators} + optional
+        // timeout + useDuration.
+        actType = "delayActs"
+        actSubType = "getWaitRule"
+        fields = [:]
+        if (!(actionSpec.expression instanceof Map)) {
+            throw new IllegalArgumentException("waitExpression action requires expression={conditions:[...], operator?:..., operators?:[...]}")
+        }
     } else if (cap == "ifThen" || cap == "elseIf") {
         // IF Expression THEN / ELSE-IF Expression THEN — embeds an
         // expression (same shape as Required Expression) inside the
@@ -11065,14 +11097,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         }
     }
 
-    // Conditional Actions (ifThen/elseIf): after actType=condActs +
-    // actSubType=getIfThen/getElseIf, the wizard exposes the cond enum —
-    // same expression-builder as STPage's Required Expression. Walk
-    // each condition (cond=a → rCapab_<X> → rDev_<X> → state_<X> → hasAll)
-    // with optional joining operators (oper between conditions), then
-    // hasRule to commit the expression. After that, the wizard returns
-    // to the action-edit form with actionDone available.
-    if (actType == "condActs" && (actSubType == "getIfThen" || actSubType == "getElseIf")) {
+    // Action subtypes that embed an expression. The cond enum is exposed
+    // after actType+actSubType writes, identical to STPage's Required
+    // Expression wizard. Walk each condition (cond=a → rCapab_<X> →
+    // rDev_<X> → state_<X> → hasAll) with optional joining operators
+    // (oper between conditions), then hasRule to commit. Subtypes:
+    //   condActs/getIfThen, condActs/getElseIf — full IF/ELSE-IF
+    //   repeatActs/getWhile, repeatActs/getUntil — Repeat While/Until Expression
+    //   delayActs/getWaitRule — Wait for Expression
+    def expressionSubtypes = ["getIfThen", "getElseIf", "getWhile", "getUntil", "getWaitRule"]
+    if (expressionSubtypes.contains(actSubType)) {
         def exprSpec = actionSpec.expression as Map
         def conditions = exprSpec.conditions
         if (!(conditions instanceof List) || conditions.isEmpty()) {
@@ -11186,6 +11220,21 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         try {
             _rmClickAppButton(appId, "hasRule", null, "doActPage")
         } catch (Exception ignored) { /* tolerated — wizard may already be sealed */ }
+
+        // For waitExpression / waitEvents (delayActs subtypes), an
+        // optional timeout duration follows the expression commit:
+        // timeoutH/timeoutM/timeoutS for hour/minute/second components.
+        // The 'useDuration' bool toggles RM's "Use Duration" mode that
+        // tracks elapsed time vs absolute timeout.
+        if (actionSpec.timeout instanceof Map) {
+            def t = actionSpec.timeout as Map
+            if (t.hours != null) _rmWriteSettingOnPage(appId, "doActPage", "timeoutH.${idx}", t.hours, applied, null, skipped)
+            if (t.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "timeoutM.${idx}", t.minutes, applied, null, skipped)
+            if (t.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "timeoutS.${idx}", t.seconds, applied, null, skipped)
+        }
+        if (actionSpec.useDuration != null) {
+            _rmWriteSettingOnPage(appId, "doActPage", "useDuration.${idx}", actionSpec.useDuration, applied, "bool", skipped)
+        }
     }
 
     // Optional Delay? modifier on an action. Verified live 2026-04-25:
