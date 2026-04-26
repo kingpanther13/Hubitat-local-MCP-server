@@ -9797,14 +9797,42 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
 
     def health = _rmCheckRuleHealth(appId)
 
+    // Post-commit silent-failure detection. RM 5.1's selectTriggers
+    // silently accepts many invalid inputs at the field-write level —
+    // bad state values, capability/state mismatches, unknown deviceIds —
+    // without erroring. The trigger row may not bake at all, leaving
+    // mainPage's "Define Triggers" placeholder. Without detection,
+    // addTrigger would return success=true on a rule whose trigger
+    // didn't actually commit. The hub isn't doing anything wrong —
+    // it's permissive by design — but the LLM needs the signal so it
+    // can self-correct. Verified 2026-04-26: this check catches the
+    // "expression silently didn't bake" class of failures that
+    // configPageError + brokenMarkers don't catch.
+    def triggerNotBaked = false
+    try {
+        def mainCfg = _rmFetchConfigJson(appId, "mainPage")
+        def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
+            (sect?.body ?: []).findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
+                              .collect { it.description?.toString() ?: "" }
+        }
+        def joinedParagraphs = mainParagraphs.join("\n")
+        // Placeholder-only state: paragraph says "Define Triggers" but no
+        // trigger row exists. If a trigger row IS present, the placeholder
+        // is replaced by the rendered trigger text.
+        triggerNotBaked = joinedParagraphs.contains("Define Triggers")
+    } catch (Exception ignored) { /* best effort */ }
+
     // Partial-success signal — see _rmAddAction for rationale. The trigger
     // is committed but a caller-requested field didn't land; LLM should
     // retry via update_native_app(walkStep) or rebuild the trigger row.
-    def partial = skipped != null && !skipped.isEmpty()
-    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean)
+    def partial = (skipped != null && !skipped.isEmpty()) || triggerNotBaked
+    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || triggerNotBaked
     def repairHints = []
     def hasBrokenLabel = (health?.brokenMarkers as List)?.contains("BROKEN_LABEL") ||
                           (health?.label?.toString()?.contains("*BROKEN*"))
+    if (triggerNotBaked) {
+        repairHints << "Trigger did not bake — mainPage still shows 'Define Triggers' placeholder. Common causes: state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), capability/state mismatch, or unknown deviceIds. Verify state value matches the capability's domain (Switch: 'on'/'off'/'*changed*', Motion: 'active'/'inactive', Contact: 'open'/'closed', etc.) and run list_devices to verify deviceIds. Then call removeAction or rebuild the rule."
+    }
     if (partial || hasBrokenLabel) {
         if (partial) {
             repairHints << "Some trigger settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time."
@@ -11116,13 +11144,33 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
 
     def health = _rmCheckRuleHealth(appId)
 
+    // Post-commit silent-failure detection. Same class of issue as
+    // addTrigger / addRequiredExpression: RM 5.1's doActPage silently
+    // accepts invalid inputs at the field-write level without erroring,
+    // and the action row may not bake — leaving mainPage's "Define
+    // Actions" placeholder. The hub itself isn't erroring, so the LLM
+    // needs the signal to self-correct. Verified 2026-04-26.
+    def actionNotBaked = false
+    try {
+        def mainCfg = _rmFetchConfigJson(appId, "mainPage")
+        def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
+            (sect?.body ?: []).findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
+                              .collect { it.description?.toString() ?: "" }
+        }
+        def joinedParagraphs = mainParagraphs.join("\n")
+        actionNotBaked = joinedParagraphs.contains("Define Actions")
+    } catch (Exception ignored) { /* best effort */ }
+
     // Partial-success signal: any skipped settings indicate a field the
     // caller asked for that didn't land. The action is still committed
     // (actType/actSubType set, row in actions[]), but it's incomplete and
     // worth retrying via update_native_app(walkStep) or replaceActions.
-    def partial = skipped != null && !skipped.isEmpty()
-    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean)
+    def partial = (skipped != null && !skipped.isEmpty()) || actionNotBaked
+    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
     def repairHints = []
+    if (actionNotBaked) {
+        repairHints << "Action did not bake — mainPage still shows 'Define Actions' placeholder. Common causes: required field for the (capability, action) pair was omitted (e.g. dimmer.setLevel needs 'level'; switch.setPerMode needs 'perMode'; runCommand needs 'command'), invalid deviceIds, or value out of range. Inspect the rule via get_app_config(includeSettings=true) — settings.actType.<idx> set without matching subtype-specific fields means the action was registered but not committed. Use removeAction(${idx}) to clean up, then rebuild."
+    }
     if (partial) {
         def firstSkipped = skipped[0]
         repairHints << "Some settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now."
