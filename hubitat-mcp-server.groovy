@@ -10021,6 +10021,57 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
 }
 
 /**
+ * Submit mainPage with `_action_update: Done` — mirrors clicking the
+ * "Done" button at the bottom of a classic SmartApp's mainPage. This is
+ * the final commit-and-exit step the live UI fires after every rule
+ * create/modify session. Without it the rule's session-end state can
+ * be incomplete (state.<...> markers from in-flight edits not cleaned
+ * up, subscriptions/scheduledJobs may not fully re-init).
+ *
+ * Verified live 2026-04-26 by capturing the working UI's Done click on
+ * a rule's mainPage: body carries _action_update=Done plus all mainPage
+ * input fields echoed with their type + multiple sidecars + (where
+ * applicable) checkbox/hours/minutes/amPm markers. After Done, the
+ * server redirects to /installedapp/list?section=automations.
+ *
+ * Best-effort — even if Done fails the underlying app data is usually
+ * already committed by prior writes; the user just wants belt-and-suspenders.
+ */
+private void _rmSubmitMainPageDone(Integer appId) {
+    def cfg
+    try { cfg = _rmFetchConfigJson(appId, "mainPage") } catch (Exception ignored) { return }
+    def schema = _rmCollectInputSchema(cfg?.configPage)
+    def status = _rmFetchStatusJson(appId)
+    def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    def settingsMap = [:]
+    schema.each { name, meta ->
+        def v = liveSettings[name]
+        if (v == null) v = ""
+        settingsMap[name] = v
+    }
+    def body = _rmBuildSettingsBody(appId, settingsMap, schema)
+    body.formAction = "update"
+    body.currentPage = "mainPage"
+    body._action_update = "Done"
+    body.pageBreadcrumbs = "[]"
+    schema.each { name, meta ->
+        def t = meta?.type?.toString()
+        if (meta?.multiple != true) {
+            body["${name}.multiple".toString()] = "false"
+        }
+        if (t == "bool") {
+            body["checkbox[${name}]".toString()] = "on"
+        } else if (t == "time") {
+            body["hours[${name}]".toString()] = ""
+            body["minutes[${name}]".toString()] = ""
+            body["amPm[${name}]".toString()] = "AM"
+        }
+    }
+    if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception ignored) { /* best effort */ }
+}
+
+/**
  * Write a single field on a sub-page that requires hrefContext markers to
  * keep state.<paramKey> alive (e.g. periodic schedule's state.n). Posts
  * settings[key]=value + the action marker pair so RM resets state before
@@ -12057,6 +12108,12 @@ def toolCreateNativeApp(args) {
             }
             _rmClickAppButton(newId, "updateRule")
         }
+
+        // Final commit: click the Done button on mainPage. The live UI
+        // ALWAYS fires this as the last step of every create/modify session
+        // (verified 2026-04-26). Without it, the rule's session-end state
+        // can be incomplete and subsequent reads/edits may behave oddly.
+        _rmSubmitMainPageDone(newId)
 
         def status = _rmFetchStatusJson(newId)
         def health = _rmCheckRuleHealth(newId)
