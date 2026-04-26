@@ -1950,8 +1950,12 @@ Spec shape:
       {capability: 'Switch', deviceIds: [<id>], state: 'on'},
       {capability: 'Motion', deviceIds: [<id>], state: 'active'}
     ],
-    operator: 'AND' | 'OR' | 'XOR'  // required when conditions.size() > 1
+    operator: 'AND' | 'OR' | 'XOR'  // applied to every gap (single-operator multi-cond)
+    OR
+    operators: ['AND', 'OR', 'XOR', ...]  // one per gap; length = conditions.size()-1
   }
+RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right.
+Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
 
 Per-condition spec fields:
   - capability — required. RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.
@@ -12304,16 +12308,60 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     if (!(conditions instanceof List) || conditions.isEmpty()) {
         throw new IllegalArgumentException("addRequiredExpression.conditions is required (non-empty List of {capability, deviceIds?, state?, ...})")
     }
+    // Accept either:
+    //   - operator: "AND" | "OR" | "XOR"  (single, applied between every pair)
+    //   - operators: ["AND", "OR", "XOR", ...]  (one per gap, length = conditions.size()-1)
+    // Operators-list path supports T427-style mixed expressions like
+    // "P1 AND P2 OR P3 XOR P4" where each gap has a different operator.
+    // RM 5.1's spec: AND/OR/XOR have equal precedence, evaluated
+    // left-to-right.
+    def opsList = null
+    if (exprSpec.operators instanceof List) {
+        opsList = (exprSpec.operators as List).collect { it?.toString()?.toUpperCase() }
+        opsList.eachWithIndex { o, i ->
+            if (!(o in ["AND", "OR", "XOR"])) {
+                throw new IllegalArgumentException("addRequiredExpression.operators[${i}] must be 'AND', 'OR', or 'XOR' (got '${o}')")
+            }
+        }
+        if (opsList.size() != conditions.size() - 1) {
+            throw new IllegalArgumentException("addRequiredExpression.operators must have length conditions.size()-1 (${conditions.size() - 1}); got ${opsList.size()}")
+        }
+    }
     def operator = exprSpec.operator?.toString()?.toUpperCase()
     if (operator && !(operator in ["AND", "OR", "XOR"])) {
         throw new IllegalArgumentException("addRequiredExpression.operator must be 'AND', 'OR', or 'XOR' (got '${operator}')")
     }
-    if (conditions.size() > 1 && !operator) {
-        throw new IllegalArgumentException("addRequiredExpression with ${conditions.size()} conditions requires operator (AND/OR/XOR)")
+    if (conditions.size() > 1 && !operator && !opsList) {
+        throw new IllegalArgumentException("addRequiredExpression with ${conditions.size()} conditions requires operator (AND/OR/XOR) or operators list")
     }
 
     def applied = []
     def skipped = []
+
+    // Pre-validate every condition's deviceIds exist on the hub. RM 5.1
+    // silently accepts unknown device IDs at the field-write level (stores
+    // {<bogusId>: null} in rDev_<N>) but the resulting expression doesn't
+    // bake — paragraph stays placeholder. Catch this before writing so
+    // callers see a clear error instead of a phantom in-flight rule.
+    // Verified live 2026-04-26 via T429: rDev_1={99999: null} written but
+    // expression didn't commit.
+    conditions.eachWithIndex { condRaw, i ->
+        if (!(condRaw instanceof Map)) return  // shape errors caught later
+        def ids = (condRaw as Map).deviceIds
+        if (!(ids instanceof List)) return
+        ids.each { id ->
+            def idStr = id?.toString()
+            if (!idStr) return
+            def exists = false
+            try {
+                def resp = hubInternalGet("/device/fullJson/${idStr}")
+                exists = (resp != null && resp.toString().length() > 0)
+            } catch (Exception ignored) { exists = false }
+            if (!exists) {
+                throw new IllegalArgumentException("addRequiredExpression.conditions[${i}].deviceIds contains '${idStr}' which does not exist on the hub. Verify the device ID via list_devices.")
+            }
+        }
+    }
 
     // Step 1. Set useST=true on mainPage. Idempotent — safe to write even
     // if a prior expression already exists. The toggle exposes the
@@ -12412,10 +12460,15 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         _rmClickAppButton(appId, "hasAll", null, "STPage")
 
         // For non-last conditions, write the joining operator (revealed
-        // post-hasAll for multi-cond expressions).
-        if (i < conditions.size() - 1 && operator) {
-            _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", operator)
-            applied << "oper"
+        // post-hasAll for multi-cond expressions). When operators (list)
+        // is provided, use the per-gap value; otherwise apply the single
+        // `operator` to every gap.
+        if (i < conditions.size() - 1) {
+            def gapOp = opsList ? opsList[i] : operator
+            if (gapOp) {
+                _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, hrefParams, "oper", gapOp)
+                applied << "oper"
+            }
         }
     }
 
