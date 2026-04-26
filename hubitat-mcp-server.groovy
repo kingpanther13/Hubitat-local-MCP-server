@@ -10994,32 +10994,47 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actType = "repeatActs"
         actSubType = "getStopRepeat"
         fields = [:]
-    } else if (cap == "repeatWhile" || cap == "repeatUntil") {
-        // Repeat While Expression / Repeat Until Expression — repeatActs
-        // subtypes that embed the same condition wizard as IF/ELSE-IF.
-        // Verified live 2026-04-26: subtype names are getWhile/getUntil
-        // (common RM 5.1 naming).
+    } else if (cap == "repeatWhile") {
+        // Repeat While Expression — repeatActs/getWhile. Embeds an
+        // expression (same wizard as ifThen) PLUS interval/Stoppable
+        // fields (same as basic repeat). Verified live 2026-04-26 the
+        // doActPage schema after actSubType=getWhile exposes:
+        //   cond (expression builder)
+        //   uVar.<idx> (Variable repeat interval? bool)
+        //   repeatHour/Minute/Second.<idx>
+        //   uVar2.<idx> (Repeat variable n times? bool)
+        //   repeatN.<idx>
+        //   stopRepeat.<idx>
+        // RM 5.1 has no "Repeat Until Expression" — use repeatWhile
+        // with NOT on the expression for the inverse semantic.
         actType = "repeatActs"
-        actSubType = (cap == "repeatWhile") ? "getWhile" : "getUntil"
+        actSubType = "getWhile"
         fields = [:]
+        if (actionSpec.hours != null) fields["repeatHour.@N"] = actionSpec.hours
+        if (actionSpec.minutes != null) fields["repeatMinute.@N"] = actionSpec.minutes
+        if (actionSpec.seconds != null) fields["repeatSecond.@N"] = actionSpec.seconds
+        if (actionSpec.times != null) fields["repeatN.@N"] = actionSpec.times
+        if (actionSpec.stoppable != null) fields["stopRepeat.@N"] = actionSpec.stoppable
         if (!(actionSpec.expression instanceof Map)) {
-            throw new IllegalArgumentException("${cap} action requires expression={conditions:[...], operator?:..., operators?:[...]}")
+            throw new IllegalArgumentException("repeatWhile action requires expression={conditions:[...], operator?:..., operators?:[...]}")
         }
     } else if (cap == "waitEvents") {
-        // Wait for Events — delayActs/getWaitEvents. Caller passes
-        // events: [{capability, deviceIds, state}, ...] plus optional
-        // timeout (hours/minutes/seconds), 'all' (multi-all wait),
-        // 'andStays' (sticky duration).
+        // Wait for Events — delayActs/getWaitEvents. Defers full event-
+        // row walking to a future revision; basic wiring lands so the
+        // action commits with actType+actSubType for caller to extend
+        // via rawSettings.
         actType = "delayActs"
         actSubType = "getWaitEvents"
         fields = [:]
         if (!(actionSpec.events instanceof List) || (actionSpec.events as List).isEmpty()) {
-            throw new IllegalArgumentException("waitEvents action requires events=[{capability, deviceIds, state}, ...] (non-empty)")
+            throw new IllegalArgumentException("waitEvents action requires events=[{capability, deviceIds, state}, ...] (non-empty). Currently the event-row walker isn't wired — pass rawSettings={weCapab.<idx>:..., weDev.<idx>:..., weState.<idx>:...} and probe field names live.")
         }
     } else if (cap == "waitExpression") {
-        // Wait for Expression — delayActs/getWaitRule. Caller passes
-        // expression={conditions:[...], operator/operators} + optional
-        // timeout + useDuration.
+        // Wait for Expression — delayActs/getWaitRule. Embeds an
+        // expression PLUS optional timeout (uses delayAct.<idx> +
+        // delayHor/Min/Sec.<idx> — same fields as the regular Delay
+        // modifier on actions) and durChoice.<idx> for Use Duration mode.
+        // Verified live 2026-04-26.
         actType = "delayActs"
         actSubType = "getWaitRule"
         fields = [:]
@@ -11048,7 +11063,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actSubType = "getEndIf"
         fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, ifThen, elseIf, else, endIf. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
     }
 
     // Open the new-action editor.
@@ -11221,19 +11236,18 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             _rmClickAppButton(appId, "hasRule", null, "doActPage")
         } catch (Exception ignored) { /* tolerated — wizard may already be sealed */ }
 
-        // For waitExpression / waitEvents (delayActs subtypes), an
-        // optional timeout duration follows the expression commit:
-        // timeoutH/timeoutM/timeoutS for hour/minute/second components.
-        // The 'useDuration' bool toggles RM's "Use Duration" mode that
-        // tracks elapsed time vs absolute timeout.
-        if (actionSpec.timeout instanceof Map) {
-            def t = actionSpec.timeout as Map
-            if (t.hours != null) _rmWriteSettingOnPage(appId, "doActPage", "timeoutH.${idx}", t.hours, applied, null, skipped)
-            if (t.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "timeoutM.${idx}", t.minutes, applied, null, skipped)
-            if (t.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "timeoutS.${idx}", t.seconds, applied, null, skipped)
-        }
+        // For waitExpression / waitEvents (delayActs/getWaitRule and
+        // /getWaitEvents subtypes), an optional timeout uses the SAME
+        // wire fields as the regular delay-on-action modifier:
+        //   delayAct.<idx> = 'hrs:min:sec' | 'variable'
+        //   delayHor/Min/Sec.<idx>
+        // Plus durChoice.<idx> for Use Duration mode. Caller can pass
+        // delay: {hours, minutes, seconds} via the existing Delay-modifier
+        // path (handled below); for useDuration we write durChoice.<idx>.
+        // (Verified live 2026-04-26 — RM 5.1 reuses the delay modifier
+        // schema for the wait-action timeout.)
         if (actionSpec.useDuration != null) {
-            _rmWriteSettingOnPage(appId, "doActPage", "useDuration.${idx}", actionSpec.useDuration, applied, "bool", skipped)
+            _rmWriteSettingOnPage(appId, "doActPage", "durChoice.${idx}", actionSpec.useDuration, applied, "bool", skipped)
         }
     }
 
