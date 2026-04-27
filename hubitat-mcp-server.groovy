@@ -13695,6 +13695,7 @@ def toolUpdateNativeApp(args) {
             settingsSkipped: trigResult?.settingsSkipped,
             configPageError: trigResult?.configPageError,
             health: trigResult?.health,
+            verificationFetchFailed: trigResult?.verificationFetchFailed,
             note: "Trigger added. Call update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions."
         ]
     }
@@ -13731,6 +13732,7 @@ def toolUpdateNativeApp(args) {
             settingsSkipped: actResult?.settingsSkipped,
             configPageError: actResult?.configPageError,
             health: actResult?.health,
+            verificationFetchFailed: actResult?.verificationFetchFailed,
             note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake — no manual updateRule needed."
         ]
     }
