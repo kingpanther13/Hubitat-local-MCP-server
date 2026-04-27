@@ -129,6 +129,9 @@ def mainPage() {
 
         section("Settings") {
             input "enableRuleEngine", "bool", title: "Enable Rule Engine", defaultValue: true
+            input "useGateways", "bool", title: "Consolidate tools behind category gateways",
+                  description: "The server has 83 tools total. When ON (default): tools/list shows 33 entries (22 core tools + 11 domain gateways), with the other 61 tools reachable via gateway dispatch. When OFF: tools/list shows 82 entries — every tool individually, except search_tools, which is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client struggles with gateway dispatch or has its own progressive-disclosure layer.",
+                  defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -713,8 +716,22 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     return executeTool(toolName, safeArgs)
 }
 
-// Returns tool definitions visible to the MCP client (base tools + gateway tools)
 def getToolDefinitions() {
+    // Explicit false only — null/unset preserves gateway mode for existing installs on update.
+    if (settings.useGateways == false) {
+        def all = getAllToolDefinitions()
+        def filtered = all.findAll { it.name != 'search_tools' }
+        // Loud guard: if search_tools is ever renamed/removed, the prose ("search_tools is
+        // hidden in flat mode") becomes a lie and the filter silently no-ops. Fail visibly.
+        if (filtered.size() == all.size()) {
+            throw new IllegalStateException(
+                "Flat-mode filter expected to drop 'search_tools' but it was not found in " +
+                "getAllToolDefinitions(). Update getToolDefinitions() if the tool was renamed."
+            )
+        }
+        return filtered
+    }
+
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
 
@@ -1910,6 +1927,18 @@ def executeTool(toolName, args) {
         case "manage_files":
         case "manage_installed_apps":
         case "manage_rule_machine":
+            // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
+            // so a gateway-name call here is almost certainly a stale/cached client. Returning
+            // the gateway catalog would silently contradict the user's intent — fail loud with
+            // a hint pointing at the real sub-tools instead.
+            if (settings.useGateways == false) {
+                def subTools = getGatewayConfig()[toolName]?.tools ?: []
+                return [
+                    isError: true,
+                    error: "Gateway tool '${toolName}' is disabled — useGateways is OFF in this server's preferences.",
+                    hint: "Call the underlying tool directly: ${subTools.join(', ')}. Refresh tools/list to see the flat catalog."
+                ]
+            }
             return handleGateway(toolName, args.tool, args.args)
 
         default:
