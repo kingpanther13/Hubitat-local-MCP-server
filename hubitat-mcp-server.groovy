@@ -9523,11 +9523,25 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
     ids.each { id ->
         def idStr = id?.toString()
         if (!idStr) return
-        def exists = false
+        def exists
         try {
             def resp = hubInternalGet("/device/fullJson/${idStr}")
             exists = (resp != null && resp.toString().length() > 0)
-        } catch (Exception ignored) { exists = false }
+        } catch (Exception fetchExc) {
+            // Distinguish "device truly missing" (404 / empty body) from
+            // "validator unavailable" (network blip, auth-cookie expiry,
+            // transient hub error). For non-404 failures, log and SKIP
+            // validation rather than synthesizing a misleading
+            // "device does not exist" error that steers the user toward
+            // the wrong root cause.
+            def msg = fetchExc.message?.toString() ?: ""
+            if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
+                exists = false
+            } else {
+                mcpLog("warn", "rm-native", "_rmValidateDeviceIdsExist: ${label} validation fetch for id=${idStr} failed transiently (${msg}) — skipping validation; the underlying hub call may have errored independent of whether the device exists")
+                exists = true  // assume valid on transient failure; the actual write will fail loudly if the ID is genuinely bogus
+            }
+        }
         if (!exists) {
             throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via list_devices.")
         }
@@ -9576,7 +9590,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // _rmBuildCondition needs an explicit slot to write its setup
         // state into. We tolerate drift only in the non-conditional path.
         idx = (existing ? existing.max() + 1 : 1)
-        conditionId = _rmBuildCondition(appId, idx, conditionSpec, applied)
+        conditionId = _rmBuildCondition(appId, idx, conditionSpec, applied, skipped)
         // The condition wizard advanced the trigger index by one, so the
         // actual conditional trigger now lives at idx+1. The isCondTrig
         // and condTrig writes are deferred to the post-tCapab finalize
@@ -9756,6 +9770,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             def wr = _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fieldKey, fieldValue)
             if (wr?.persisted) {
                 applied << fieldKey
+            } else if (wr?.verifyFetchFailed) {
+                skipped << [key: fieldKey, reason: "verification_fetch_failed", value: fieldValue, verifyError: wr?.verifyError]
             } else {
                 skipped << [key: fieldKey, reason: "silent_rejection", value: fieldValue, schemaUnchanged: true, available: wr?.afterKeys]
             }
@@ -9842,7 +9858,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (conditionSpec == null && triggerSpec.conditional != true) {
         try {
             _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", false, applied, null, skipped)
-        } catch (Exception ignored) {
+        } catch (Exception finalizeExc) {
+            mcpLog("debug", "rm-native", "_rmAddTrigger: post-hasAll isCondTrig.${idx}=false finalize failed for app ${appId} (${finalizeExc.message}) — residual 'Conditional Trigger?' prompt may linger, can leave a phantom Broken Trigger N+1")
             // Best-effort: if the prompt isn't there (clean exit), the
             // schema check inside _rmWriteSettingOnPage skips it.
         }
@@ -10304,13 +10321,20 @@ private void _rmSubmitMainPageDone(Integer appId) {
 }
 
 /**
- * Write a single field on a sub-page that requires hrefContext markers to
- * keep state.<paramKey> alive (e.g. periodic schedule's state.n). Posts
- * settings[key]=value + the action marker pair so RM resets state before
- * applying the write.
+ * Write a single field on a sub-page. Posts settings[key]=value with
+ * pageBreadcrumbs=[] and NO `_action_href_*` markers — re-firing the
+ * navigation marker on a write resets RM's in-flight wizard state (the
+ * T404 sub-expression bug that surfaces as "**Broken Condition**" on
+ * STPage). When hrefParams carries non-null values (e.g. periodic
+ * schedule's state.n), the helper navigates first to set state in scope,
+ * then writes.
  *
- * Returns nothing; caller should re-fetch schema if it needs to observe
- * the post-write shape (e.g. fields appearing/disappearing).
+ * Returns a Map describing whether the write persisted:
+ *   [persisted, schemaShifted, valueLanded, renderShifted,
+ *    verifyFetchFailed, verifyError, afterKeys]
+ * Callers route into applied vs skipped lists based on persisted; when
+ * verifyFetchFailed is true the post-write fetch errored and persistence
+ * cannot be confirmed (route to skipped with reason="verification_fetch_failed").
  */
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
     // For pages with meaningful state.<paramKey> (e.g. periodic schedule's
@@ -10357,24 +10381,51 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // returns 200 for many writes that never land; the previous optimistic
     // bookkeeping hid these silent rejections).
     def afterCfg = null
+    def verifyFetchErr = null
     try {
         afterCfg = hasRealParams ? _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams) : _rmFetchConfigJson(appId, page)
-    } catch (Exception ignored) { /* fall through to schema-unknown */ }
+    } catch (Exception fetchExc) {
+        verifyFetchErr = fetchExc.message
+        mcpLog("warn", "rm-native", "_rmWriteSubPageField: post-write fetch on ${page} failed for app ${appId} key=${key} (${fetchExc.message}) — write status is unverified")
+    }
+    if (afterCfg == null) {
+        // Verification fetch failed OR returned null. We CANNOT confirm
+        // persistence — return persisted=false with verifyFetchFailed=true
+        // so the caller can route this into a distinct skipped bucket
+        // ("we don't know if the write landed") rather than falsely
+        // declaring it applied (the comparison-against-empty-schema
+        // would otherwise produce schemaShifted=true and route to
+        // applied without verification).
+        return [persisted: false, schemaShifted: false, valueLanded: false, renderShifted: false, verifyFetchFailed: true, verifyError: verifyFetchErr, afterKeys: []]
+    }
     def afterSchema = _rmCollectInputSchema(afterCfg?.configPage)
     def afterKeys = (afterSchema?.keySet() ?: []) as Set
     def afterValueStr = afterSchema?."${key}"?.value?.toString()
     def afterRenderHash = (afterCfg?.configPage?.sections?.toString() ?: "").hashCode()
-    def newValueStr = (value instanceof List) ? null : value?.toString()
+    // Stringify list values deterministically so idempotent List writes
+    // (already-set multi-enum re-applied) match cleanly via valueLanded.
+    // Without this, value instanceof List ⇒ newValueStr=null ⇒ valueLanded=false,
+    // and a no-op re-write of a stable list would wrongly route to skipped.
+    def newValueStr
+    if (value instanceof List) {
+        newValueStr = ((value as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+    } else {
+        newValueStr = value?.toString()
+    }
+    def afterValueNorm = afterValueStr
+    if (afterValueStr && value instanceof List && afterValueStr.contains(",")) {
+        afterValueNorm = afterValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+    }
     def schemaShifted = (beforeKeys != afterKeys) || (beforeValueStr != afterValueStr)
-    def valueLanded = (newValueStr != null) && (afterValueStr == newValueStr)
+    def valueLanded = (newValueStr != null) && (afterValueNorm == newValueStr)
     // Wizard-consumed: many sub-page enum pickers (STPage cond, doActPage cond,
     // STPage oper) have the field reset to empty after the wizard advances —
     // before/after schema and field value look identical (both empty), but
     // RM's rendered paragraph text DID shift to reflect the new wizard state.
-    // The paragraphs hash catches that case.
+    // renderShifted catches that case.
     def renderShifted = (beforeRenderHash != afterRenderHash)
-    def persisted = schemaShifted || valueLanded || renderShifted || (value instanceof List && schemaShifted)
-    return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, afterKeys: afterKeys.toList().sort()]
+    def persisted = schemaShifted || valueLanded || renderShifted
+    return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, verifyFetchFailed: false, afterKeys: afterKeys.toList().sort()]
 }
 
 /**
@@ -10509,12 +10560,13 @@ private void _rmInitSelectActionsPage(Integer appId) {
  *   rawSettings { fieldName: value } — escape hatch (use @N as a literal
  *     placeholder in the field name to substitute the action index)
  *
- * The helper fires updateRule internally at the end so the action is
- * fully baked into actions[] and state.actNdx is advanced before the
- * next addAction can land. Verified live (2026-04-25) that actionDone
- * alone DOES NOT bake — actionList stays stale and the next call's
- * editor opens with empty schema (writes silently skip). One updateRule
- * per action is unavoidable for correctness; the cost is ~100ms each.
+ * The helper navigates doActPage→selectActions at the end so the action
+ * is fully baked into actions[] and state.actNdx is advanced before the
+ * next addAction can land — it does NOT click updateRule (that's the
+ * caller's responsibility, fired ONCE after a batch via addActions /
+ * replaceActions / patches, or the trailing update_native_app dispatch).
+ * Verified live (2026-04-26): the navigation marker drives the action
+ * bake; firing updateRule per-action would 100ms-each-cost a batch.
  *
  * Returns: [success, actionIndex, capability, action, settingsApplied,
  * configPageError]
@@ -11737,41 +11789,41 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
  *   not (bool, default false) — sets not<N>=true to negate the condition
  *   rawSettings (escape hatch for advanced fields)
  */
-private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List applied) {
+private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List applied, List skipped = null) {
     def condCap = condSpec.capability?.toString()?.trim()
     if (!condCap) throw new IllegalArgumentException("condition.capability is required")
 
     // Toggle conditional + open the new-condition picker.
-    _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied)
-    _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", "a", applied)
+    _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied, null, skipped)
+    _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", "a", applied, null, skipped)
 
     // Walk the condition wizard. Field names use rCapab_<N> / rDev_<N> /
     // state_<N> / not<N> with an underscore (vs trigger's tCapab<N> /
     // tDev<N> / tstate<N> without).
-    _rmWriteSettingOnPage(appId, "selectTriggers", "rCapab_${idx}", condCap, applied)
+    _rmWriteSettingOnPage(appId, "selectTriggers", "rCapab_${idx}", condCap, applied, null, skipped)
 
     if (condSpec.deviceIds != null) {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condSpec.deviceIds, applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condSpec.deviceIds, applied, null, skipped)
     }
     if (condSpec.comparator != null) {
         if (condSpec.attribute != null) {
-            _rmWriteSettingOnPage(appId, "selectTriggers", "rCustomAttr_${idx}", condSpec.attribute, applied)
+            _rmWriteSettingOnPage(appId, "selectTriggers", "rCustomAttr_${idx}", condSpec.attribute, applied, null, skipped)
         }
-        _rmWriteSettingOnPage(appId, "selectTriggers", "compareCond_${idx}", condSpec.comparator, applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "compareCond_${idx}", condSpec.comparator, applied, null, skipped)
     }
     if (condSpec.buttonNumber != null) {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "ButtontDev_${idx}", condSpec.buttonNumber, applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "ButtontDev_${idx}", condSpec.buttonNumber, applied, null, skipped)
     }
     def stateValue = condSpec.state != null ? condSpec.state : condSpec.value
     if (stateValue != null) {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "state_${idx}", stateValue, applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "state_${idx}", stateValue, applied, null, skipped)
     }
     if (condSpec.not == true) {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "not${idx}", true, applied)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "not${idx}", true, applied, null, skipped)
     }
     if (condSpec.rawSettings instanceof Map) {
         condSpec.rawSettings.each { k, v ->
-            if (v != null) _rmWriteSettingOnPage(appId, "selectTriggers", k.toString(), v, applied)
+            if (v != null) _rmWriteSettingOnPage(appId, "selectTriggers", k.toString(), v, applied, null, skipped)
         }
     }
 
@@ -11851,20 +11903,48 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
     }
     // Verify the write took. Re-fetch and compare schemas.
     def afterCfg = null
-    try { afterCfg = _rmFetchConfigJson(appId, pageName) } catch (Exception ignored) { /* fall through to skipped */ }
-    def afterSchema = afterCfg ? _rmCollectInputSchema(afterCfg?.configPage) : null
+    def verifyFetchErr = null
+    try { afterCfg = _rmFetchConfigJson(appId, pageName) }
+    catch (Exception fetchExc) {
+        verifyFetchErr = fetchExc.message
+        mcpLog("warn", "rm-native", "_rmWriteSettingOnPage: post-write fetch on ${pageName} failed for app ${appId} key=${key} (${fetchExc.message}) — write status is unverified")
+    }
+    if (afterCfg == null) {
+        // Verification fetch failed — we cannot confirm persistence. Surface
+        // as a distinct skipped reason rather than falsely declaring applied
+        // (the comparison-against-empty-schema would otherwise produce
+        // schemaShifted=true, route to applied, hiding the unverified state).
+        if (skipped != null) {
+            skipped << [key: key, reason: "verification_fetch_failed", value: value, verifyError: verifyFetchErr]
+        } else {
+            applied << key  // legacy callers — preserve old optimistic behaviour
+        }
+        return
+    }
+    def afterSchema = _rmCollectInputSchema(afterCfg?.configPage)
     def afterKeys = (afterSchema?.keySet() ?: []) as Set
     def afterValueStr = afterSchema?."${key}"?.value?.toString()
     def afterRenderHash = (afterCfg?.configPage?.sections?.toString() ?: "").hashCode()
-    def newValueStr = (value instanceof List) ? null : value?.toString()  // skip exact-string check for list values; rely on schema-shift signal
+    // Stringify list values deterministically so idempotent List writes
+    // (already-set multi-enum re-applied) match cleanly via valueLanded.
+    def newValueStr
+    if (value instanceof List) {
+        newValueStr = ((value as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+    } else {
+        newValueStr = value?.toString()
+    }
+    def afterValueNorm = afterValueStr
+    if (afterValueStr && value instanceof List && afterValueStr.contains(",")) {
+        afterValueNorm = afterValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+    }
     def schemaShifted = (beforeKeys != afterKeys) || (beforeValueStr != afterValueStr)
-    def valueLanded = (newValueStr != null) && (afterValueStr == newValueStr)
+    def valueLanded = (newValueStr != null) && (afterValueNorm == newValueStr)
     // Wizard-consumed: many sub-page enum pickers reset their field on advance
     // (e.g. doActPage cond, STPage cond/oper). Before/after schema look
     // identical but RM's rendered paragraph text shifts to reflect the new
-    // wizard state. The paragraphs hash catches that case.
+    // wizard state. The render hash catches that case.
     def renderShifted = (beforeRenderHash != afterRenderHash)
-    if (schemaShifted || valueLanded || renderShifted || (value instanceof List && schemaShifted)) {
+    if (schemaShifted || valueLanded || renderShifted) {
         applied << key
     } else if (skipped != null) {
         skipped << [key: key, reason: "silent_rejection", value: value, schemaUnchanged: true, available: afterKeys.toList().sort()]
@@ -11876,7 +11956,7 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
 /**
  * Fetch /installedapp/configure/json/<appId>[/<pageName>] and parse.
  * Returns the raw map (app, configPage, settings, childApps, ...).
- * Callers (get_rm_rule, update_native_app) use this to discover the input
+ * Callers (get_app_config, update_native_app) use this to discover the input
  * schema (names + types + multiple flags) before issuing a write.
  */
 private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
@@ -13122,6 +13202,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         def wr = _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, fieldKey, fieldValue)
         if (wr?.persisted) {
             applied << (label ?: fieldKey)
+        } else if (wr?.verifyFetchFailed) {
+            skipped << [key: fieldKey, label: (label ?: fieldKey), reason: "verification_fetch_failed", value: fieldValue, verifyError: wr?.verifyError]
         } else {
             skipped << [key: fieldKey, label: (label ?: fieldKey), reason: "silent_rejection", value: fieldValue, schemaUnchanged: true, available: wr?.afterKeys]
         }

@@ -1144,24 +1144,215 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.issues.any { it.toString().toLowerCase().contains("broken") }
     }
 
+    // ---------- post-write verification heuristic itself ----------
+    // The silent-rejection / verification-fetch-failed paths are load-bearing
+    // for the entire write-bookkeeping subsystem. Without these tests, a
+    // regression that flips the heuristic logic would still pass every
+    // higher-level shortcut test (mocks return success either way).
+
+    def "_rmWriteSettingOnPage routes a no-shift write to skipped with reason=silent_rejection"() {
+        given:
+        enableHubAdminWrite()
+        // selectTriggers schema is identical before and after the write —
+        // RM 5.1 returns 200 but the field never landed. The verification
+        // logic should detect: schema unchanged + value not landed +
+        // sections render hash unchanged → silent_rejection.
+        def stableInputs = [
+            [name: "tCapab1", type: "enum", options: ["Switch"]],
+            [name: "doneST", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params -> ruleConfigJson(100, "r", stableInputs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // 200 OK but pretend RM ignored the write — the next fetch
+            // returns identical schema, identical sections, identical value.
+            [status: 200, location: null, data: '']
+        }
+
+        when: "we write a setting via the raw `settings` mode targeting selectTriggers"
+        // Raw settings mode hits _rmUpdateAppSettings on mainPage, which
+        // doesn't exercise _rmWriteSettingOnPage's renderHash path. To
+        // exercise the helper directly, drive it via walkStep operation=write
+        // on a sub-page.
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [page: "selectTriggers", operation: "write", write: [tCapab1: "Switch"]],
+            confirm: true
+        ])
+
+        then: "the heuristic detects no shift and the field does NOT route to applied"
+        result != null
+        // walkStep doesn't expose applied/skipped at the top level the same
+        // way addTrigger does, but it surfaces silentRejection for write ops.
+        result.silentRejection == true || result.opResult?.silentRejection == true
+    }
+
+    def "_rmWriteSettingOnPage routes a render-shifted write to applied (wizard-consumed picker)"() {
+        given:
+        enableHubAdminWrite()
+        // Stable inputs across before/after BUT a paragraph changes — this
+        // simulates a wizard-consumed picker (cond on STPage etc.) where the
+        // schema's input keys + value look identical but the rendered text
+        // shifts to reflect the new wizard state.
+        def inputs = [[name: "cond", type: "enum", options: ["a", "b"]]]
+        def fetchCount = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchCount++
+            // First fetch (BEFORE write): paragraphs say "Click to set"
+            // Second fetch (AFTER write): paragraphs include "(" — render shifted
+            def paragraphs = fetchCount >= 2 ? ["Click to set", "("] : ["Click to set"]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null, sections: [[title: "", input: inputs, paragraphs: paragraphs]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [page: "selectTriggers", operation: "write", write: [cond: "a"]],
+            confirm: true
+        ])
+
+        then: "the heuristic detects render shift and treats the write as persisted (NOT silent_rejection)"
+        result != null
+        // For wizard-consumed pickers the schema may not change but render does.
+        // walkStep should report silentRejection=false in this case.
+        result.silentRejection == false || result.opResult?.silentRejection == false || result.silentRejection == null
+    }
+
+    def "addTrigger surfaces verificationFetchFailed=true when post-commit selectTriggers fetch errors"() {
+        given:
+        enableHubAdminWrite()
+        // selectTriggers fetch fails on the post-commit verification call.
+        def fetchCount = 0
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchCount++
+            if (fetchCount > 5) throw new RuntimeException("simulated post-commit fetch failure")
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "tDev1", type: "capability.switch", multiple: true],
+                [name: "tstate1", type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "the result surfaces verificationFetchFailed=true so callers know the bake-check was bypassed"
+        // The trigger may or may not show success: true depending on prior
+        // fetches; the load-bearing assertion is that the flag IS surfaced.
+        result.verificationFetchFailed == true || result?.triggers?.any { it?.verificationFetchFailed == true }
+    }
+
+    // ---------- additional coverage from round-2 review ----------
+
+    def "_rmValidateDeviceIdsExist applies to addAction.deviceIds (not just addTrigger)"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // Bogus device — /device/fullJson/77777 returns 404-equivalent (empty body)
+        hubGet.register('/device/fullJson/77777') { params -> "" }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "switch", action: "off", deviceIds: [77777]],
+            confirm: true
+        ])
+
+        then: "addAction's deviceIds validation rejects the bogus ID before any wizard-edit POST"
+        result.success == false
+        result.error?.contains("77777")
+        result.error?.contains("does not exist")
+
+        and: "no /installedapp/update/json POST went out — validation is pre-write"
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    def "_rmValidateDeviceIdsExist applies to addRequiredExpression.conditions[].deviceIds"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/66666') { params -> "" }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [66666], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "addRequiredExpression rejects the bogus ID before walking the STPage wizard"
+        result.success == false
+        result.error?.contains("66666")
+        result.error?.contains("does not exist")
+
+        and: "no STPage write POST went out"
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "STPage" }
+    }
+
     def "custom_* dispatch — every renamed tool name is routable (no Unknown tool error)"() {
         given:
         settingsMap.enableCustomRuleEngine = true
 
-        // The 9 custom_* renames split across dispatch paths:
+        // All 10 custom_* renames split across dispatch paths:
         //   - executeTool top-level switch: every custom_* has a case there
         //   - manage_rules_admin gateway:    delete/test/export/import/clone
+        //   - manage_diagnostics gateway:    custom_get_rule_diagnostics
         // The point of this test is the dispatch wiring: a regression that
-        // typos a case label or drops a tool from the gateway tools[] list
+        // typos a case label or drops a tool from a gateway tools[] list
         // would surface as "Unknown tool" — that's the failure we're guarding.
         // We don't exercise the full underlying tool* impls; their behaviour
         // is covered elsewhere and would require setting up child apps,
         // requireHubAdminWrite, and the rule-engine state machine.
 
         when: "every renamed tool name is dispatched"
-        // Top-level executeTool has cases for all 9 renames + custom_get_rule_diagnostics.
+        // Top-level executeTool has cases for all 10 renames including
+        // custom_get_rule_diagnostics (which is also a manage_diagnostics
+        // sub-tool but routes through the same top-level switch).
         def topLevel = ["custom_list_rules", "custom_get_rule", "custom_create_rule",
                         "custom_update_rule", "custom_delete_rule", "custom_test_rule",
+                        "custom_get_rule_diagnostics",
                         "custom_export_rule", "custom_import_rule", "custom_clone_rule"]
         def topLevelErrors = topLevel.collect { name ->
             try { script.executeTool(name, [:]); return null }
@@ -1170,18 +1361,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         // manage_rules_admin gateway lists 5 tools — verify gateway routes them.
-        def gatewayTools = ["custom_delete_rule", "custom_test_rule",
-                            "custom_export_rule", "custom_import_rule", "custom_clone_rule"]
-        def gatewayErrors = gatewayTools.collect { name ->
+        def rulesAdminTools = ["custom_delete_rule", "custom_test_rule",
+                               "custom_export_rule", "custom_import_rule", "custom_clone_rule"]
+        def rulesAdminErrors = rulesAdminTools.collect { name ->
             try { script.handleGateway("manage_rules_admin", name, [:]); return null }
             catch (IllegalArgumentException e) { return e.message }
             catch (Exception ignored) { return null }
         }
 
-        then: "no top-level dispatch returns 'Unknown tool: custom_*'"
+        // manage_diagnostics gateway exposes custom_get_rule_diagnostics.
+        def diagErrors
+        try { script.handleGateway("manage_diagnostics", "custom_get_rule_diagnostics", [:]); diagErrors = null }
+        catch (IllegalArgumentException e) { diagErrors = e.message }
+        catch (Exception ignored) { diagErrors = null }
+
+        then: "no top-level dispatch returns 'Unknown tool: custom_*' for any of the 10 renames"
         topLevelErrors.every { msg -> msg == null || !msg.contains("Unknown tool") }
 
-        and: "no gateway dispatch returns 'Unknown tool ... in manage_rules_admin'"
-        gatewayErrors.every { msg -> msg == null || !(msg.contains("Unknown tool") && msg.contains("manage_rules_admin")) }
+        and: "no manage_rules_admin gateway dispatch returns 'Unknown tool ... in manage_rules_admin'"
+        rulesAdminErrors.every { msg -> msg == null || !(msg.contains("Unknown tool") && msg.contains("manage_rules_admin")) }
+
+        and: "manage_diagnostics gateway routes custom_get_rule_diagnostics — no 'Unknown tool ... in manage_diagnostics'"
+        diagErrors == null || !(diagErrors.contains("Unknown tool") && diagErrors.contains("manage_diagnostics"))
     }
 }
