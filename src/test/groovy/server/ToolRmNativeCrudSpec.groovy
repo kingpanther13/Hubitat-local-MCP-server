@@ -1189,56 +1189,86 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.silentRejection == true || result.opResult?.silentRejection == true
     }
 
-    def "_rmWriteSettingOnPage routes a render-shifted write to applied (wizard-consumed picker)"() {
+    def "addRequiredExpression cond=b open-paren write lands in applied (renderShift detection on wizard-consumed picker)"() {
         given:
         enableHubAdminWrite()
-        // Stable inputs across before/after BUT a paragraph changes — this
-        // simulates a wizard-consumed picker (cond on STPage etc.) where the
-        // schema's input keys + value look identical but the rendered text
-        // shifts to reflect the new wizard state.
-        def inputs = [[name: "cond", type: "enum", options: ["a", "b"]]]
-        def fetchCount = 0
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchCount++
-            // First fetch (BEFORE write): paragraphs say "Click to set"
-            // Second fetch (AFTER write): paragraphs include "(" — render shifted
-            def paragraphs = fetchCount >= 2 ? ["Click to set", "("] : ["Click to set"]
+        // STPage schema stays identical across writes (cond + doneST) BUT the
+        // rendered paragraphs shift when cond=b is set — RM's "(" marker
+        // appears in the expression paragraph. Without renderShift detection,
+        // the heuristic would falsely route cond=b to silent_rejection
+        // (schema unchanged + value consumed by wizard = looks like no-op).
+        // This test guards the renderShift path: paragraph shift → applied.
+        def stPageInputs = [
+            [name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition", "b": "--> ( sub-expression"]],
+            [name: "doneST", type: "button"]
+        ]
+        // Track whether the cond=b POST has fired. Pre-write fetches return
+        // empty paragraphs; post-write fetches return paragraphs with "(".
+        def condBPosted = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["settings[cond]"] == "b") {
+                condBPosted = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Same schema both pre- and post-write, but paragraphs SHIFT after
+            // cond=b posts so renderHash detects the wizard advance.
+            def paragraphs = condBPosted ? ["Expression:", "(", "Click to set"] : ["Expression:", "Click to set"]
             JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "selectTriggers", title: "T", install: false, error: null, sections: [[title: "", input: inputs, paragraphs: paragraphs]]],
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: stPageInputs, paragraphs: paragraphs]]],
                 settings: [:],
                 childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"M1"}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"id":"10","name":"C1"}' }
 
-        when:
+        when: "addRequiredExpression with a single outer subExpression triggers cond=b first"
         def result = script.toolUpdateNativeApp([
             appId: 100,
-            walkStep: [page: "selectTriggers", operation: "write", write: [cond: "a"]],
+            addRequiredExpression: [conditions: [
+                [subExpression: [conditions: [
+                    [capability: "Motion", deviceIds: [9], state: "active"],
+                    [capability: "Contact", deviceIds: [10], state: "open"]
+                ], operator: "OR"]]
+            ]],
             confirm: true
         ])
 
-        then: "the heuristic detects render shift and treats the write as persisted (NOT silent_rejection)"
-        result != null
-        // For wizard-consumed pickers the schema may not change but render does.
-        // walkStep should report silentRejection=false in this case.
-        result.silentRejection == false || result.opResult?.silentRejection == false || result.silentRejection == null
+        then: "cond(open-paren) lands in settingsApplied — renderHash detected the paragraph shift even though schema-keys + cond field value were identical"
+        result?.settingsApplied?.contains("cond(open-paren)")
+
+        and: "cond(open-paren) is NOT routed to settingsSkipped with silent_rejection"
+        !result?.settingsSkipped?.any { it?.label == "cond(open-paren)" && it?.reason == "silent_rejection" }
     }
 
     def "addTrigger surfaces verificationFetchFailed=true when post-commit selectTriggers fetch errors"() {
         given:
         enableHubAdminWrite()
-        // selectTriggers fetch fails on the post-commit verification call.
-        def fetchCount = 0
+        // Fail ONLY the post-commit selectTriggers fetch (the one that runs
+        // AFTER the hasAll button click). Pre-hasAll writes need the schema
+        // to succeed, so we gate the failure on whether hasAll has fired.
+        def hasAllFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "hasAll") {
+                hasAllFired = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchCount++
-            if (fetchCount > 5) throw new RuntimeException("simulated post-commit fetch failure")
+            if (hasAllFired) {
+                throw new RuntimeException("simulated post-commit selectTriggers fetch failure")
+            }
             ruleConfigJson(100, "r", [
                 [name: "tCapab1", type: "enum", options: ["Switch"]],
                 [name: "tDev1", type: "capability.switch", multiple: true],
@@ -1247,14 +1277,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "hasAll", type: "button"]
             ])
         }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
 
         when:
         def result = script.toolUpdateNativeApp([
@@ -1263,10 +1288,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the result surfaces verificationFetchFailed=true so callers know the bake-check was bypassed"
-        // The trigger may or may not show success: true depending on prior
-        // fetches; the load-bearing assertion is that the flag IS surfaced.
-        result.verificationFetchFailed == true || result?.triggers?.any { it?.verificationFetchFailed == true }
+        then: "the verificationFetchFailed flag is surfaced (caller can detect the bake-check was bypassed)"
+        // Either it's directly on the result (single addTrigger path) or on
+        // an inner trigger entry (bulk path). Both shapes are valid.
+        result.verificationFetchFailed == true ||
+            result?.triggers?.any { it?.verificationFetchFailed == true }
     }
 
     // ---------- additional coverage from round-2 review ----------

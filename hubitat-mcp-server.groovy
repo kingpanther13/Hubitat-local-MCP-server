@@ -10090,24 +10090,23 @@ private List _rmClearActions(Integer appId) {
 private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
     if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
-    // Capture the pre-move action ordering so we can verify the move took
-    // effect. RM exposes the ordering in the rule's `actions[]` map (read
-    // via /installedapp/configure/json/<id>) — collect by inspecting the
-    // selectActions paragraph render or by reading appSettings keys in
-    // order. Cheapest approach: snapshot statusJson's appSettings ordering
-    // for `actType.<N>` keys before/after.
-    def beforeOrder = _rmCollectActionIndices(appId).sort()
-    if (!beforeOrder.contains(actionIdx)) {
-        throw new IllegalArgumentException("moveAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeOrder.join(', ')}")
+    // Capture pre-move ORDERING (insertion order from appSettings, which RM
+    // updates on every shuffle to reflect display order). The unsorted list
+    // lets us verify the action's POSITION moved, not just that the index
+    // set is unchanged — a mid-list silent no-op (RM rejected the click
+    // because state.editAct was set) leaves both before- and after-sets
+    // identical AND positions identical, but a real move shifts position
+    // by exactly one slot.
+    def beforeOrderRaw = _rmCollectActionIndices(appId)
+    if (!beforeOrderRaw.contains(actionIdx)) {
+        throw new IllegalArgumentException("moveAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeOrderRaw.sort().join(', ')}")
     }
+    def beforePosition = beforeOrderRaw.indexOf(actionIdx)
+    def isBoundary = (direction == "up" && beforePosition == 0) ||
+                     (direction == "down" && beforePosition == beforeOrderRaw.size() - 1)
     _rmClickAppButton(appId, actionIdx.toString(), stateAttr, "selectActions")
-    // Verify by reading the configPage's actions paragraph order (the only
-    // place RM exposes the in-memory ordering — appSettings indices stay
-    // numerically the same). For now we settle for: did SOMETHING change?
-    // If indices set is identical AND configPage doesn't show an error, we
-    // accept the click (RM may have been a no-op because the action was
-    // already at the boundary; that's not a failure).
-    def afterOrder = _rmCollectActionIndices(appId).sort()
+    def afterOrderRaw = _rmCollectActionIndices(appId)
+    def afterPosition = afterOrderRaw.indexOf(actionIdx)
     def cfg = null
     try { cfg = _rmFetchConfigJson(appId, "selectActions") }
     catch (Exception verifyExc) {
@@ -10117,7 +10116,16 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     if (renderError) {
         throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but selectActions render now errors: ${renderError}")
     }
-    return [success: true, index: actionIdx, direction: direction, indicesAfter: afterOrder]
+    // Verify position actually shifted, except at boundaries (RM correctly
+    // no-ops a move-up at position 0 or move-down at the last slot).
+    if (!isBoundary) {
+        def expectedShift = direction == "up" ? -1 : 1
+        def actualShift = afterPosition - beforePosition
+        if (actualShift != expectedShift) {
+            throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but action position did NOT shift — RM may have rejected the click silently (state.editAct set, race with another edit, etc.). Before position: ${beforePosition}, after position: ${afterPosition}, expected shift: ${expectedShift}.")
+        }
+    }
+    return [success: true, index: actionIdx, direction: direction, beforePosition: beforePosition, afterPosition: afterPosition, indicesAfter: afterOrderRaw.sort()]
 }
 
 /**
@@ -10336,6 +10344,31 @@ private void _rmSubmitMainPageDone(Integer appId) {
  * verifyFetchFailed is true the post-write fetch errored and persistence
  * cannot be confirmed (route to skipped with reason="verification_fetch_failed").
  */
+/**
+ * Strip dynamic substrings from a configPage's serialized sections so the
+ * render-shift hash compares only the structural content. RM 5.1 renders
+ * "Last activity: <timestamp>", "fired N times", and ISO timestamps in
+ * mainPage / selectTriggers paragraphs that change on every fetch
+ * regardless of whether a write landed — without sanitization, those
+ * dynamic values would cause renderShifted=true on EVERY write and the
+ * silent-rejection detector would never fire (false negatives).
+ *
+ * Patterns stripped:
+ *   - ISO 8601 / "yyyy-MM-dd HH:mm:ss[.SSS]" timestamps
+ *   - "fired <N> time(s)" counters
+ *   - "last activity:", "last run:", "last fired:" prefixes + their value
+ *   - Bare epoch-ms numbers (13+ digits)
+ */
+private String _rmSanitizeRenderForHash(Object sections) {
+    def raw = sections?.toString() ?: ""
+    if (!raw) return ""
+    return raw
+        .replaceAll(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,3})?/, "<TS>")
+        .replaceAll(/fired\s+\d+\s+time/, "fired <N> time")
+        .replaceAll(/(?i)last\s+(activity|run|fired)\s*:?\s*[^,\]]+/, "last \$1: <TS>")
+        .replaceAll(/\b\d{13,}\b/, "<EPOCH>")
+}
+
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
     // For pages with meaningful state.<paramKey> (e.g. periodic schedule's
     // state.n), schema requires the navigate response to set state in scope.
@@ -10355,7 +10388,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def beforeKeys = (schema?.keySet() ?: []) as Set
     def beforeValueStr = schema?."${key}"?.value?.toString()
-    def beforeRenderHash = (cfg?.configPage?.sections?.toString() ?: "").hashCode()
+    def beforeRenderHash = _rmSanitizeRenderForHash(cfg?.configPage?.sections).hashCode()
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
     body.formAction = "update"
     body.currentPage = page
@@ -10401,7 +10434,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def afterSchema = _rmCollectInputSchema(afterCfg?.configPage)
     def afterKeys = (afterSchema?.keySet() ?: []) as Set
     def afterValueStr = afterSchema?."${key}"?.value?.toString()
-    def afterRenderHash = (afterCfg?.configPage?.sections?.toString() ?: "").hashCode()
+    def afterRenderHash = _rmSanitizeRenderForHash(afterCfg?.configPage?.sections).hashCode()
     // Stringify list values deterministically so idempotent List writes
     // (already-set multi-enum re-applied) match cleanly via valueLanded.
     // Without this, value instanceof List ⇒ newValueStr=null ⇒ valueLanded=false,
@@ -11924,7 +11957,7 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
     def afterSchema = _rmCollectInputSchema(afterCfg?.configPage)
     def afterKeys = (afterSchema?.keySet() ?: []) as Set
     def afterValueStr = afterSchema?."${key}"?.value?.toString()
-    def afterRenderHash = (afterCfg?.configPage?.sections?.toString() ?: "").hashCode()
+    def afterRenderHash = _rmSanitizeRenderForHash(afterCfg?.configPage?.sections).hashCode()
     // Stringify list values deterministically so idempotent List writes
     // (already-set multi-enum re-applied) match cleanly via valueLanded.
     def newValueStr
@@ -13225,9 +13258,19 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // because the wizard is still showing the half-edited condition's
     // form. Click cancelCapab to abort the in-flight edit before
     // propagating the error so the next caller starts fresh.
+    // Track whether the cancel cleanup itself failed — propagated to the
+    // caller's error result via the wizardStuck flag so they know to call
+    // restore_item_backup OR update_native_app(button='cancelCapab',
+    // pageName='STPage') before issuing the next write.
+    def wizardCleanupFailed = false
+    def wizardCleanupErr = null
     def cancelInFlightCondition = {
         try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") }
-        catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage: ${cancelExc.message} — wizard may stay open and confuse subsequent edits") }
+        catch (Exception cancelExc) {
+            wizardCleanupFailed = true
+            wizardCleanupErr = cancelExc.message
+            mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage: ${cancelExc.message} — wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
+        }
     }
 
     // Recursive walker — handles plain conditions AND sub-expressions
@@ -13353,6 +13396,13 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                     _rmClickAppButton(appId, "hasAll", null, "STPage")
                 } catch (Exception perCondExc) {
                     cancelInFlightCondition()
+                    if (wizardCleanupFailed) {
+                        // Both the per-condition write AND the cancel cleanup
+                        // failed — the wizard is still open. Embed the marker
+                        // so the dispatcher's catch can surface wizardStuck=true
+                        // alongside the original error.
+                        throw new IllegalStateException("${perCondExc.message} [wizardStuck — cancelCapab cleanup also failed: ${wizardCleanupErr}]")
+                    }
                     throw perCondExc
                 }
             }
@@ -13454,6 +13504,19 @@ def toolUpdateNativeApp(args) {
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
     def settingsMap = args?.settings instanceof Map ? args.settings : null
+    // Raw `settings` mode is the unstructured escape hatch; it doesn't go
+    // through addTrigger/addAction's deviceId pre-validator. Scan settings
+    // keys for known device-list field-name patterns and validate any
+    // List values against the hub. Same RM 5.1 `{<bogusId>: null}` silent-
+    // storage bug applies here as in the structured paths.
+    if (settingsMap) {
+        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
+        settingsMap.each { k, v ->
+            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
+                _rmValidateDeviceIdsExist("update_native_app.settings.${k}", v)
+            }
+        }
+    }
     def button = args?.button?.toString()?.trim() ?: null
     def addTriggerSpec = args?.addTrigger instanceof Map ? args.addTrigger : null
     def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
@@ -13546,8 +13609,22 @@ def toolUpdateNativeApp(args) {
                 _rmMoveAction(appId, moveActionSpec.index as Integer, dir)
             }
             if (clearActionsFlag || replaceActionsList != null) {
-                def cleared = _rmClearActions(appId) ?: []
-                removed = (removed + cleared).unique()
+                try {
+                    def cleared = _rmClearActions(appId) ?: []
+                    removed = (removed + cleared).unique()
+                } catch (Exception clearExc) {
+                    // _rmClearActions threw mid-flow (trashAll click landed
+                    // but trashActs write didn't take, OR the post-condition
+                    // check found actions still present). The rule is now
+                    // stuck in trash-confirmation mode. Auto-fire cancelTrash
+                    // so the next edit doesn't open into a broken state.
+                    mcpLog("warn", "rm-native", "clearActions threw mid-flow for app ${appId} (${clearExc.message}) — auto-firing cancelTrash to recover the page")
+                    try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
+                    catch (Exception cancelExc) {
+                        mcpLog("warn", "rm-native", "cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} — rule may need restore_item_backup")
+                    }
+                    throw clearExc
+                }
             }
             if (replaceActionsList != null) {
                 replaceActionsList.eachWithIndex { spec, i ->
@@ -13725,10 +13802,22 @@ def toolUpdateNativeApp(args) {
                         _rmDeleteAction(appId, pm.removeAction.index as Integer)
                         patchResults << [success: true, op: "removeAction", index: pm.removeAction.index]
                     } else if (pm.containsKey("clearActions")) {
-                        def cleared = _rmClearActions(appId) ?: []
+                        def cleared
+                        try { cleared = _rmClearActions(appId) ?: [] }
+                        catch (Exception clearExc) {
+                            // Auto-recover: cancel trash mode so the next
+                            // patch doesn't open into a broken page.
+                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") } catch (Exception ignored2) { }
+                            throw clearExc
+                        }
                         patchResults << [success: true, op: "clearActions", removedIndices: cleared]
                     } else if (pm.containsKey("replaceActions")) {
-                        def cleared = _rmClearActions(appId) ?: []
+                        def cleared
+                        try { cleared = _rmClearActions(appId) ?: [] }
+                        catch (Exception clearExc) {
+                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") } catch (Exception ignored2) { }
+                            throw clearExc
+                        }
                         def innerResults = []
                         (pm.replaceActions as List).each { aspec ->
                             try { innerResults << _rmAddAction(appId, aspec as Map) }
@@ -13825,12 +13914,22 @@ def toolUpdateNativeApp(args) {
             reResult = _rmAddRequiredExpression(appId, addRequiredExpressionSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addRequiredExpression failed for app ${appId}: ${e.message}")
+            // The exception may carry a wizardStuck signal if the in-flight
+            // cancelCapab cleanup also failed. Detect that pattern in the
+            // message so callers know to manually fire cancelCapab before
+            // their next write OR restore from backup.
+            def msg = e.message?.toString() ?: ""
+            def wizardStuck = msg.contains("wizardStuck") ||
+                              msg.contains("cancelCapab cleanup failed")
             return [
                 success: false,
                 appId: appId,
                 error: e.message,
+                wizardStuck: wizardStuck,
                 backup: backup,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+                restoreHint: wizardStuck ?
+                    "Backup saved before write — restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) to manually close the in-flight wizard." :
+                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
             ]
         }
         // Fire updateRule so the expression takes effect on the running
