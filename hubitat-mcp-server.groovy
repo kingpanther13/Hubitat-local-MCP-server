@@ -1908,7 +1908,7 @@ Capability families and the spec fields each accepts:
   - And-stays sticky modifier (works on any device-state or numeric trigger):
     add andStays={hours, minutes, seconds} to the spec
   - Time / Sunrise / Sunset (Certain Time and optional date):
-    capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime (ISO datetime for specific time), offset (minutes for sunrise/sunset)
+    capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime (ISO 8601 datetime for specific time -- 'YYYY-MM-DDTHH:mm:ss[.SSS][Z|+HHMM]'; forms without timezone or millis are auto-normalized to the hub's local timezone, so simple forms like '2026-04-28T03:00:00' are accepted), offset (minutes for sunrise/sunset)
   - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
     capability='Periodic Schedule', periodic={frequency: 'Hourly'|'Daily'|'Cron String'|...,
       everyN: <int>,           // for "every N <unit>" mode (Hourly/Daily)
@@ -9492,7 +9492,9 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
  *   - Custom Attribute: capability='Custom Attribute' + deviceIds +
  *       attribute + comparator + value
  *   - Time: capability='Certain Time (and optional date)' + time
- *       (specific/Sunrise/Sunset) + atTime (ISO) + offset (mins)
+ *       (specific/Sunrise/Sunset) + atTime (ISO 8601; auto-normalized
+ *       to 'YYYY-MM-DDTHH:mm:ss.SSS+HHMM' -- see _rmNormalizeAtTime)
+ *       + offset (mins)
  *
  * Optional modifiers on any spec:
  *   allOfThese (multi-device "all of these")
@@ -9509,9 +9511,87 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
  */
 
 /**
+ * Normalize an atTime string to the form RM 5.1 expects:
+ * {@code YYYY-MM-DDTHH:mm:ss.SSS+HHMM} (millis + numeric zone offset,
+ * no colon in the offset, e.g. {@code 2026-04-28T03:00:00.000-0500}).
+ *
+ * <p>RM 5.1's {@code selectTriggers} page render throws
+ * {@code java.text.ParseException: Unparseable date: ...} and enters a
+ * broken state if the stored {@code atTime<N>} value lacks the millis
+ * fraction or the timezone offset. Any subsequent trigger-add then also
+ * fails because the page can't render. Normalizing here prevents the
+ * cascade.
+ *
+ * <p>Accepted input forms (all normalized to the single canonical output):
+ * <ol>
+ *   <li>{@code 2026-04-28T03:00:00.000-0500} -- explicit numeric offset; normalized
+ *       to UTC equivalent (same instant: {@code 2026-04-28T08:00:00.000+0000})</li>
+ *   <li>{@code 2026-04-28T03:00:00} -- no millis, no tz; hub local tz applied</li>
+ *   <li>{@code 2026-04-28T03:00:00.000} -- millis present, no tz; hub local tz applied</li>
+ *   <li>{@code 2026-04-28T03:00:00-0500} -- no millis, explicit offset; normalized to UTC</li>
+ *   <li>{@code 2026-04-28T03:00:00Z} -- Zulu shorthand; normalized to +0000</li>
+ *   <li>{@code 2026-04-28T03:00:00.000Z} -- Zulu with millis; normalized to +0000</li>
+ * </ol>
+ *
+ * <p>Throws {@code IllegalArgumentException} for input that does not
+ * match any of the above forms (ASCII-only message, echoes the bad value).
+ */
+/* package-private for testability -- the _rm prefix is the convention for internal helpers */
+String _rmNormalizeAtTime(String raw) {
+    if (!raw) throw new IllegalArgumentException("addTrigger.atTime is required when time='A specific time'")
+
+    // Canonical RM form: yyyy-MM-dd'T'HH:mm:ss.SSSZ (Z = numeric offset like -0500)
+    def canonicalFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+
+    // Attempt each known input form. The output format is always canonical.
+    // Order: most-specific first so the correct parser wins without ambiguity.
+    def UTC = TimeZone.getTimeZone("UTC")
+    def hubTz = location.timeZone ?: TimeZone.default
+    def parsers = [
+        // Millis + explicit numeric offset (e.g. -0500 / +0000) -- normalize to UTC
+        [fmt: "yyyy-MM-dd'T'HH:mm:ss.SSSZ",    tz: UTC],
+        // Millis + Z suffix
+        [fmt: "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",   tz: UTC],
+        // No millis + explicit numeric offset -- normalize to UTC
+        [fmt: "yyyy-MM-dd'T'HH:mm:ssZ",          tz: UTC],
+        // No millis + Z suffix
+        [fmt: "yyyy-MM-dd'T'HH:mm:ss'Z'",        tz: UTC],
+        // Millis, no timezone -- use hub local tz
+        [fmt: "yyyy-MM-dd'T'HH:mm:ss.SSS",       tz: hubTz],
+        // No millis, no timezone -- use hub local tz
+        [fmt: "yyyy-MM-dd'T'HH:mm:ss",           tz: hubTz],
+    ]
+
+    for (parser in parsers) {
+        try {
+            def sdf = new java.text.SimpleDateFormat(parser.fmt)
+            sdf.setLenient(false)
+            sdf.timeZone = parser.tz
+            def parsed = sdf.parse(raw)
+            // Reformat to canonical form in the same timezone used for parsing.
+            // Explicit-offset inputs are normalized to UTC (same instant, +0000
+            // representation). Hub-local inputs preserve the wall-clock time
+            // with the hub's configured offset.
+            def outSdf = new java.text.SimpleDateFormat(canonicalFormat)
+            outSdf.timeZone = parser.tz
+            return outSdf.format(parsed)
+        } catch (java.text.ParseException ignored) {
+            // try next parser
+        }
+    }
+
+    throw new IllegalArgumentException(
+        "addTrigger.atTime '${raw}' is not a recognized ISO 8601 datetime. " +
+        "Accepted forms: 'YYYY-MM-DDTHH:mm:ss' (hub tz assumed), " +
+        "'YYYY-MM-DDTHH:mm:ss.SSS' (hub tz assumed), " +
+        "'YYYY-MM-DDTHH:mm:ssZ', 'YYYY-MM-DDTHH:mm:ss.SSSZ' (Zulu), " +
+        "'YYYY-MM-DDTHH:mm:ss+HHMM' or 'YYYY-MM-DDTHH:mm:ss.SSS+HHMM' (explicit offset).")
+}
+
+/**
  * Validate that every device ID in `ids` resolves on the hub. RM 5.1
  * silently stores `{<bogusId>: null}` for unknown IDs in any device
- * setting (rDev_<N>, tDev_<N>, switch.<N>, etc.) — the write returns
+ * setting (rDev_<N>, tDev_<N>, switch.<N>, etc.) -- the write returns
  * 200 but the rule renders with placeholder text and never fires.
  * Catch this before writing so callers see a clear error instead of a
  * phantom in-flight rule. Throws IllegalArgumentException on the
@@ -9694,11 +9774,19 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // Time-based capability uses time1, atTime1, atSunriseOffset1 etc.
     // The wizard uses index 1 for the time fields regardless of trigger
     // index because RM models time triggers as singletons within the
-    // trigger row — the index is on the wrapper trigger, not the inner
+    // trigger row -- the index is on the wrapper trigger, not the inner
     // time picker. (Verified live on firmware 2.5.0.123.)
     if (triggerSpec.time != null) {
         writeIfPresent("time${idx}", triggerSpec.time)
-        if (triggerSpec.atTime != null) writeIfPresent("atTime${idx}", triggerSpec.atTime)
+        if (triggerSpec.atTime != null) {
+            // RM 5.1's selectTriggers page parser requires the full
+            // 'YYYY-MM-DDTHH:mm:ss.SSS+HHMM' form. Short ISO forms
+            // (no millis, no tz, or Zulu 'Z' suffix) cause
+            // ParseException on every page render, blocking all
+            // subsequent trigger additions with no recovery path short
+            // of deleting the rule. Normalize before writing.
+            writeIfPresent("atTime${idx}", _rmNormalizeAtTime(triggerSpec.atTime.toString()))
+        }
         if (triggerSpec.offset != null) {
             def t = triggerSpec.time?.toString()
             if (t == "Sunrise") writeIfPresent("atSunriseOffset${idx}", triggerSpec.offset)
