@@ -10160,7 +10160,7 @@ private List _rmClearActions(Integer appId) {
     def remaining = _rmCollectActionIndices(appId)
     def stillThere = remaining.intersect(indices)
     if (stillThere) {
-        throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId}. Try cancelling any in-flight wizard via update_native_app(button='cancelTrash') and re-running.")
+        throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId}. Roll back via restore_item_backup using the backup key in this response. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
     }
     return indices
 }
