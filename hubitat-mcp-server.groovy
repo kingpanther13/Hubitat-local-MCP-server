@@ -1908,7 +1908,8 @@ Capability families and the spec fields each accepts:
   - And-stays sticky modifier (works on any device-state or numeric trigger):
     add andStays={hours, minutes, seconds} to the spec
   - Time / Sunrise / Sunset (Certain Time and optional date):
-    capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime (ISO 8601 datetime for specific time -- 'YYYY-MM-DDTHH:mm:ss[.SSS][Z|+HHMM]'; forms without timezone or millis are auto-normalized to the hub's local timezone, so simple forms like '2026-04-28T03:00:00' are accepted), offset (minutes for sunrise/sunset)
+    capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime — see SEMANTIC choice below; offset (minutes for sunrise/sunset)
+       atTime SEMANTIC: 'HH:mm' form (e.g. '17:00') = DAILY-recurring trigger that fires every day at that wall-clock time; full ISO datetime (e.g. '2026-04-29T17:00:00' or '2026-04-29T17:00:00.000-0500') = ONE-SHOT dated trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
   - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
     capability='Periodic Schedule', periodic={frequency: 'Hourly'|'Daily'|'Cron String'|...,
       everyN: <int>,           // for "every N <unit>" mode (Hourly/Daily)
@@ -9522,15 +9523,26 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
  * fails because the page can't render. Normalizing here prevents the
  * cascade.
  *
- * <p>Accepted input forms (all normalized to the single canonical output):
+ * <p><b>Format choice has SEMANTIC consequences for trigger recurrence:</b>
+ * <ul>
+ *   <li>HH:mm form -- trigger fires DAILY at that wall-clock time (every day).</li>
+ *   <li>Any ISO datetime form -- trigger fires ONCE on the specific date.</li>
+ * </ul>
+ *
+ * <p>Accepted input forms:
  * <ol>
+ *   <li>{@code 17:00} or {@code 5:00} -- HH:mm form; passes through unchanged.
+ *       RM 5.1 stores this verbatim and renders the trigger as
+ *       "When time is HH:MM AM/PM" with daily recurrence. Verified live on
+ *       firmware 2.4.4.156: rule with {@code atTime1="22:00"} fires every day
+ *       at 10 PM (existing rule id 825 used as reference).</li>
  *   <li>{@code 2026-04-28T03:00:00.000-0500} -- explicit numeric offset; normalized
- *       to UTC equivalent (same instant: {@code 2026-04-28T08:00:00.000+0000})</li>
- *   <li>{@code 2026-04-28T03:00:00} -- no millis, no tz; hub local tz applied</li>
- *   <li>{@code 2026-04-28T03:00:00.000} -- millis present, no tz; hub local tz applied</li>
- *   <li>{@code 2026-04-28T03:00:00-0500} -- no millis, explicit offset; normalized to UTC</li>
- *   <li>{@code 2026-04-28T03:00:00Z} -- Zulu shorthand; normalized to +0000</li>
- *   <li>{@code 2026-04-28T03:00:00.000Z} -- Zulu with millis; normalized to +0000</li>
+ *       to UTC equivalent (same instant: {@code 2026-04-28T08:00:00.000+0000}). One-shot dated.</li>
+ *   <li>{@code 2026-04-28T03:00:00} -- no millis, no tz; hub local tz applied. One-shot dated.</li>
+ *   <li>{@code 2026-04-28T03:00:00.000} -- millis present, no tz; hub local tz applied. One-shot dated.</li>
+ *   <li>{@code 2026-04-28T03:00:00-0500} -- no millis, explicit offset; normalized to UTC. One-shot dated.</li>
+ *   <li>{@code 2026-04-28T03:00:00Z} -- Zulu shorthand; normalized to +0000. One-shot dated.</li>
+ *   <li>{@code 2026-04-28T03:00:00.000Z} -- Zulu with millis; normalized to +0000. One-shot dated.</li>
  * </ol>
  *
  * <p>Throws {@code IllegalArgumentException} for input that does not
@@ -9539,6 +9551,17 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
 /* package-private for testability -- the _rm prefix is the convention for internal helpers */
 String _rmNormalizeAtTime(String raw) {
     if (!raw) throw new IllegalArgumentException("addTrigger.atTime is required when time='A specific time'")
+
+    // HH:mm form (no date, no seconds) -- RM 5.1 accepts this directly and treats
+    // it as a DAILY-RECURRING trigger that fires every day at this wall-clock time.
+    // Pass through unchanged so callers can opt into daily-recurring behavior.
+    // Without this branch the daily-recurring path is unreachable: the parser
+    // chain below requires a YYYY-MM-DD prefix, which forces all callers into
+    // ONE-SHOT dated-trigger mode. Verified live on firmware 2.4.4.156: existing
+    // rule id 825 stores atTime3="22:00" and fires daily at 10 PM.
+    if (raw.matches(/\d{1,2}:\d{2}/)) {
+        return raw
+    }
 
     // Canonical RM form: yyyy-MM-dd'T'HH:mm:ss.SSSZ (Z = numeric offset like -0500)
     def canonicalFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
@@ -9581,8 +9604,9 @@ String _rmNormalizeAtTime(String raw) {
     }
 
     throw new IllegalArgumentException(
-        "addTrigger.atTime '${raw}' is not a recognized ISO 8601 datetime. " +
-        "Accepted forms: 'YYYY-MM-DDTHH:mm:ss' (hub tz assumed), " +
+        "addTrigger.atTime '${raw}' is not a recognized format. " +
+        "Accepted forms: 'HH:mm' (e.g. '17:00' -- creates a DAILY-recurring trigger), " +
+        "'YYYY-MM-DDTHH:mm:ss' (hub tz assumed -- creates a ONE-SHOT dated trigger), " +
         "'YYYY-MM-DDTHH:mm:ss.SSS' (hub tz assumed), " +
         "'YYYY-MM-DDTHH:mm:ssZ', 'YYYY-MM-DDTHH:mm:ss.SSSZ' (Zulu), " +
         "'YYYY-MM-DDTHH:mm:ss+HHMM' or 'YYYY-MM-DDTHH:mm:ss.SSS+HHMM' (explicit offset).")

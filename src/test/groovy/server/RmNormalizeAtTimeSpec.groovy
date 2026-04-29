@@ -61,6 +61,42 @@ class RmNormalizeAtTimeSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------
+    // HH:mm form -- passes through unchanged (DAILY-recurring trigger)
+    // ---------------------------------------------------------
+
+    def "HH:mm form passes through unchanged for daily-recurring trigger semantics"() {
+        // RM 5.1 stores the bare HH:mm value verbatim and renders the trigger
+        // as a daily-recurring "When time is HH:MM AM/PM". Verified live on
+        // firmware 2.4.4.156 -- existing rule id 825 stores atTime3="22:00"
+        // and fires every day at 10 PM. The normalizer must NOT convert this
+        // form to a full ISO datetime, because doing so flips the trigger
+        // semantics from daily-recurring to one-shot dated.
+        when:
+        def result = script._rmNormalizeAtTime("17:00")
+
+        then:
+        result == "17:00"
+    }
+
+    def "HH:mm form passes through unchanged for single-digit hour"() {
+        // Boundary check: H:mm with single-digit hour should still match the
+        // HH:mm pattern and pass through. RM accepts both forms.
+        when:
+        def result = script._rmNormalizeAtTime("5:00")
+
+        then:
+        result == "5:00"
+    }
+
+    def "HH:mm form passes through with two-digit hour and minutes"() {
+        when:
+        def result = script._rmNormalizeAtTime("22:30")
+
+        then:
+        result == "22:30"
+    }
+
+    // ---------------------------------------------------------
     // Explicit-offset inputs -- normalized to UTC equivalent
     // ---------------------------------------------------------
 
