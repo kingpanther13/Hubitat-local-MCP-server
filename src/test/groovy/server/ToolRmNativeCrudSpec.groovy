@@ -1512,4 +1512,119 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "manage_diagnostics gateway routes custom_get_rule_diagnostics — no 'Unknown tool ... in manage_diagnostics'"
         diagErrors == null || !(diagErrors.contains("Unknown tool") && diagErrors.contains("manage_diagnostics"))
     }
+
+    // ---------- addTrigger/addAction discover mode ----------
+
+    def "addTrigger discover=true returns schema with discriminator and capabilities list"() {
+        given: "only Built-in App tools enabled -- Hub Admin Write NOT required"
+        enableReadOnly()
+
+        when:
+        def result = script.toolUpdateNativeApp([addTrigger: [discover: true]])
+
+        then: "discriminator field is 'capability'"
+        result.discriminator == "capability"
+
+        and: "capabilities is a non-empty List"
+        result.capabilities instanceof List
+        !result.capabilities.isEmpty()
+
+        and: "each capability entry has a name field"
+        result.capabilities.every { it.name != null }
+
+        and: "known capabilities are present"
+        result.capabilities.any { it.name == "Switch" }
+        result.capabilities.any { it.name == "Motion" }
+        result.capabilities.any { it.name == "Periodic Schedule" }
+        result.capabilities.any { it.name == "Mode" }
+    }
+
+    def "addAction discover=true returns schema with discriminator and capabilities list"() {
+        given: "only Built-in App tools enabled -- Hub Admin Write NOT required"
+        enableReadOnly()
+
+        when:
+        def result = script.toolUpdateNativeApp([addAction: [discover: true]])
+
+        then: "discriminator field is 'capability'"
+        result.discriminator == "capability"
+
+        and: "capabilities is a non-empty List"
+        result.capabilities instanceof List
+        !result.capabilities.isEmpty()
+
+        and: "each capability entry has a name field"
+        result.capabilities.every { it.name != null }
+
+        and: "known capabilities are present"
+        result.capabilities.any { it.name == "switch" }
+        result.capabilities.any { it.name == "dimmer" }
+        result.capabilities.any { it.name == "ifThen" }
+        result.capabilities.any { it.name == "log" }
+    }
+
+    def "addTrigger discover=true does not require Hub Admin Write"() {
+        given: "enableHubAdminWrite is NOT set -- only Built-in App enabled"
+        enableReadOnly()
+        // Confirm that enableHubAdminWrite is absent/false
+        settingsMap.remove("enableHubAdminWrite")
+
+        when:
+        def result = script.toolUpdateNativeApp([addTrigger: [discover: true]])
+
+        then: "no exception -- discover bypasses the Hub Admin Write gate"
+        notThrown(IllegalArgumentException)
+        result.discriminator == "capability"
+    }
+
+    def "addAction discover=true does not require Hub Admin Write"() {
+        given: "enableHubAdminWrite is NOT set -- only Built-in App enabled"
+        enableReadOnly()
+        settingsMap.remove("enableHubAdminWrite")
+
+        when:
+        def result = script.toolUpdateNativeApp([addAction: [discover: true]])
+
+        then: "no exception -- discover bypasses the Hub Admin Write gate"
+        notThrown(IllegalArgumentException)
+        result.discriminator == "capability"
+    }
+
+    def "addTrigger discover=true does not call _rmBackupRuleSnapshot"() {
+        given: "discover bypasses backup -- no enableBuiltinApp needed either"
+        def backupCalls = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
+
+        when:
+        script.toolUpdateNativeApp([addTrigger: [discover: true]])
+
+        then: "no file upload -- no backup taken"
+        backupCalls.isEmpty()
+    }
+
+    def "addAction discover=true does not call _rmBackupRuleSnapshot"() {
+        given: "discover bypasses backup -- no enableBuiltinApp needed either"
+        def backupCalls = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
+
+        when:
+        script.toolUpdateNativeApp([addAction: [discover: true]])
+
+        then: "no file upload -- no backup taken"
+        backupCalls.isEmpty()
+    }
+
+    def "addTrigger discover=true works with enableBuiltinApp=false"() {
+        given: "all feature gates disabled -- discover is gate-free"
+        settingsMap.remove("enableBuiltinApp")
+        settingsMap.remove("enableHubAdminWrite")
+        settingsMap.remove("enableHubAdminRead")
+
+        when:
+        def result = script.toolUpdateNativeApp([addTrigger: [discover: true]])
+
+        then: "returns schema regardless of feature-flag state"
+        result.discriminator == "capability"
+        result.capabilities instanceof List
+    }
 }

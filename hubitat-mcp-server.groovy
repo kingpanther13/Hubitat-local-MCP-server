@@ -1893,7 +1893,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine trigger to the rule via the high-level structured API. The tool orchestrates the full RM 5.1 wizard internally — discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions.
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: Switch, Motion, Contact, Lock, Presence, Certain Time (and optional date), Periodic Schedule, Mode, Custom Attribute, Battery, Temperature, Button -- full list below. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions.
 
 Capability families and the spec fields each accepts:
   - Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source):
@@ -2041,7 +2041,7 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally — initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
+                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md. Pass `addAction: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: switch, dimmer, color, colorTemp, lock, thermostat, log, notification, httpGet, httpPost, mode, runCommand, delay, repeat, ifThen -- full list below. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
 
 Capability families and the spec fields each accepts:
 
@@ -9630,8 +9630,13 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
 
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec")
+    // Discover mode -- return static schema without touching the hub.
+    // No capability field required; no Hub Admin Write gate; no backup.
+    if (triggerSpec.discover == true) {
+        return _rmTriggerSchemaForDiscover()
+    }
     def cap = triggerSpec.capability?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required")
+    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.")
 
     // Pre-validate device IDs exist — RM 5.1 silently stores
     // {<bogusId>: null} in tDev_<N> if the ID doesn't resolve, and the
@@ -9725,7 +9730,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def capOptions = (capInput.options ?: []) as List
     def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
     if (!capCanonical) {
-        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list. Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list. Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}. Pass {discover: true} to get the per-capability field schema for each of these.")
     }
     _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", capCanonical, applied, null, skipped)
 
@@ -10039,6 +10044,824 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     ]
     if (conditionId != null) result.conditionId = conditionId
     return result
+}
+
+/**
+ * Return a structured schema Map describing every supported addTrigger capability.
+ * Called when addTrigger: {discover: true} is passed -- no hub mutation, no
+ * confirm/backup required. Content is sourced from the inline capability-family
+ * reference in the update_native_app tool description.
+ */
+private Map _rmTriggerSchemaForDiscover() {
+    return [
+        discriminator: "capability",
+        note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
+        capabilities: [
+            [
+                name: "Switch",
+                family: "device-state",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Switch device IDs"],
+                    [name: "state", type: "enum", values: ["on", "off"], description: "Trigger condition"]
+                ],
+                optionalFields: [
+                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match (vs. any one)"],
+                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?} -- only fire after state has held this long"],
+                    [name: "conditional", type: "Boolean", description: "Make this a conditional trigger (sets isCondTrig)"],
+                    [name: "condition", type: "Map", description: "Inline conditional-trigger gate -- same per-condition shape as addRequiredExpression conditions[]"],
+                    [name: "rawSettings", type: "Map", description: "Escape hatch for fields not yet mapped"]
+                ]
+            ],
+            [
+                name: "Motion",
+                family: "device-state",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Motion sensor device IDs"],
+                    [name: "state", type: "enum", values: ["active", "inactive"], description: "Trigger condition"]
+                ],
+                optionalFields: [
+                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match"],
+                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
+                    [name: "conditional", type: "Boolean"],
+                    [name: "condition", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Contact",
+                family: "device-state",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Contact sensor device IDs"],
+                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
+                ],
+                optionalFields: [
+                    [name: "allOfThese", type: "Boolean"],
+                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
+                    [name: "conditional", type: "Boolean"],
+                    [name: "condition", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Lock",
+                family: "device-state",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Lock device IDs"],
+                    [name: "state", type: "enum", values: ["locked", "unlocked"], description: "Trigger condition"]
+                ],
+                optionalFields: [
+                    [name: "allOfThese", type: "Boolean"],
+                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
+                    [name: "conditional", type: "Boolean"],
+                    [name: "condition", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Presence",
+                family: "device-state",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Presence sensor device IDs"],
+                    [name: "state", type: "enum", values: ["present", "not present"], description: "Trigger condition"]
+                ],
+                optionalFields: [
+                    [name: "allOfThese", type: "Boolean"],
+                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
+                    [name: "conditional", type: "Boolean"],
+                    [name: "condition", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Garage",
+                family: "device-state",
+                aliases: ["Door", "Valve", "Window Shade"],
+                notes: "Also covers Door, Valve, Window Shade -- pass any of these names as capability; use appropriate state values for each device type.",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
+                ],
+                optionalFields: [
+                    [name: "allOfThese", type: "Boolean"],
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Power source",
+                family: "device-state",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "state", type: "enum", values: ["battery", "dc", "mains", "unknown"], description: "Trigger condition"]
+                ],
+                optionalFields: [
+                    [name: "allOfThese", type: "Boolean"],
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Temperature",
+                family: "numeric",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
+                    [name: "value", type: "Number", description: "Temperature threshold (omit for *changed*)"]
+                ],
+                optionalFields: [
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Humidity",
+                family: "numeric",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
+                    [name: "value", type: "Number"]
+                ],
+                optionalFields: [
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Battery",
+                family: "numeric",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
+                    [name: "value", type: "Number"]
+                ],
+                optionalFields: [
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Illuminance",
+                family: "numeric",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
+                    [name: "value", type: "Number"]
+                ],
+                optionalFields: [
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Power",
+                family: "numeric",
+                notes: "Also covers Energy, CO2, Dimmer level, Thermostat setpoints.",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
+                    [name: "value", type: "Number"]
+                ],
+                optionalFields: [
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Button",
+                family: "button",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Button-capable device IDs"],
+                    [name: "buttonNumber", type: "Integer"],
+                    [name: "state", type: "enum", values: ["pushed", "held", "doubleTapped", "released"]]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Custom Attribute",
+                family: "custom-attribute",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "attribute", type: "String", description: "The attribute name on the device"],
+                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
+                    [name: "value", type: "String or Number"]
+                ],
+                optionalFields: [
+                    [name: "andStays", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "Certain Time (and optional date)",
+                family: "time",
+                requiredFields: [
+                    [name: "time", type: "enum", values: ["A specific time", "Sunrise", "Sunset"]]
+                ],
+                optionalFields: [
+                    [name: "atTime", type: "String", description: "ISO 8601 datetime (e.g. '2026-04-28T08:00:00') -- required when time='A specific time'; omit for Sunrise/Sunset. Simple forms without timezone use hub local tz."],
+                    [name: "offset", type: "Integer", description: "Minutes offset for Sunrise/Sunset -- omit when time='A specific time'"]
+                ],
+                notes: "atTime is conditionally required: only when time='A specific time'. offset is only applicable for Sunrise/Sunset."
+            ],
+            [
+                name: "Periodic Schedule",
+                family: "time",
+                requiredFields: [
+                    [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedDaysOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
+                ],
+                notes: "frequency values: 'Hourly', 'Daily', 'Cron String'. Without periodic the trigger renders as description='?'. The helper walks the periodic sub-page automatically.",
+                periodicShape: [
+                    frequency: "Hourly | Daily | Cron String",
+                    everyN: "Integer -- for 'every N <unit>' mode",
+                    startingTime: "HH:mm -- start time for everyN modes",
+                    weekdaysOnly: "Boolean -- Daily only",
+                    selectedHours: "List<Integer> -- Hourly only, alternative to everyN",
+                    selectedDaysOfMonth: "List<Integer> -- Daily only",
+                    minutesOffset: "Integer -- Hourly only, when not using everyN",
+                    cronString: "String -- Cron String mode (e.g. '0 * * * *')",
+                    rawSettings: "Map -- escape hatch for periodic-page fields not yet mapped"
+                ]
+            ],
+            [
+                name: "Mode",
+                family: "hub-state",
+                requiredFields: [
+                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Away' or ['Away', 'Night'])"]
+                ],
+                notes: "No deviceIds required. Triggers when hub mode changes to any of the listed values."
+            ]
+        ]
+    ]
+}
+
+/**
+ * Return a structured schema Map describing every supported addAction capability.
+ * Called when addAction: {discover: true} is passed -- no hub mutation, no
+ * confirm/backup required. Content is sourced from the inline capability-family
+ * reference in the update_native_app tool description.
+ */
+private Map _rmActionSchemaForDiscover() {
+    return [
+        discriminator: "capability",
+        note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
+        capabilities: [
+            [
+                name: "switch",
+                family: "device",
+                actions: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"]],
+                    [name: "deviceIds", type: "List<Integer>", description: "Required for on/off/toggle/flash/setPerMode/choosePerMode"]
+                ],
+                optionalFields: [
+                    [name: "perMode", type: "Map", description: "For setPerMode: {modeIdOrName: 'on'|'off', ...}. For choosePerMode: {modeIdOrName: {on: [devIds], off: [devIds]}, ...}"],
+                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?, cancelable?}"],
+                    [name: "rawSettings", type: "Map"]
+                ],
+                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it."
+            ],
+            [
+                name: "dimmer",
+                family: "device",
+                actions: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "level", type: "Integer", description: "0-100, required for setLevel/toggle"],
+                    [name: "adjustBy", type: "Integer", description: "-100..100, required for adjust"],
+                    [name: "fadeSeconds", type: "Integer", description: "Optional for setLevel/toggle/adjust"],
+                    [name: "targetLevel", type: "Integer", description: "Required for fade"],
+                    [name: "minutes", type: "Integer", description: "Required for fade"],
+                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Required for fade and startRaiseLower"],
+                    [name: "intervalSeconds", type: "Integer", description: "Optional for fade"],
+                    [name: "perMode", type: "Map", description: "For setLevelPerMode: {modeIdOrName: level, ...}"],
+                    [name: "levelVariable", type: "String", description: "Hub variable name -- use instead of level for variable-sourced setLevel"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "color",
+                family: "device",
+                notes: "RGBW bulbs.",
+                actions: ["setColor", "toggleColor", "setColorPerMode"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["setColor", "toggleColor", "setColorPerMode"]],
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "colorName", type: "String", description: "Required for setColor/toggleColor"]
+                ],
+                optionalFields: [
+                    [name: "level", type: "Integer", description: "0-100"],
+                    [name: "perMode", type: "Map", description: "For setColorPerMode: {modeIdOrName: {color: 'Red', level: 70}, ...}"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "colorTemp",
+                family: "device",
+                actions: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "kelvin", type: "Integer", description: "Color temperature in Kelvin -- required for setColorTemp and toggleColorTemp"],
+                    [name: "targetKelvin", type: "Integer", description: "Target color temperature in Kelvin -- required for fadeColorTemp (NOT 'kelvin')"],
+                    [name: "level", type: "Integer"],
+                    [name: "minutes", type: "Integer", description: "Required for fadeColorTemp"],
+                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Required for fadeColorTemp"],
+                    [name: "perMode", type: "Map", description: "For setColorTempPerMode: {modeIdOrName: {kelvin: 2700, level: 70}, ...}"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "lock",
+                family: "device",
+                actions: ["lock", "unlock"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["lock", "unlock"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "thermostat",
+                family: "device",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "action", type: "String"],
+                    [name: "mode", type: "String"],
+                    [name: "fanMode", type: "String"],
+                    [name: "heatingSetpoint", type: "Number"],
+                    [name: "coolingSetpoint", type: "Number"],
+                    [name: "adjustHeating", type: "Number"],
+                    [name: "adjustCooling", type: "Number"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "shade",
+                family: "device",
+                actions: ["open", "close", "stop", "setPosition"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["open", "close", "stop", "setPosition"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "position", type: "Integer", description: "0-100, required for setPosition"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "fan",
+                family: "device",
+                actions: ["setSpeed", "cycle"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["setSpeed", "cycle"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "speed", type: "String", description: "low/med/high/auto/etc., required for setSpeed"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "button",
+                family: "device",
+                actions: ["push", "pushPerMode", "choosePerMode"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["push", "pushPerMode", "choosePerMode"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "buttonNumber", type: "Integer", description: "Required for push/pushPerMode/choosePerMode"],
+                    [name: "perMode", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "runCommand",
+                family: "device",
+                notes: "Calls any device-driver command not exposed by higher-level capability mappings (e.g. flashOff, custom verbs).",
+                requiredFields: [
+                    [name: "command", type: "String", description: "Driver command name (e.g. 'flashOff', 'refresh', 'setLevel')"],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "capabilityFilter", type: "String", description: "Default 'Switch'"],
+                    [name: "parameters", type: "List", description: "e.g. [{type: 'NUMBER', value: 75}]"],
+                    [name: "useLastEventDevice", type: "Boolean"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "mode",
+                family: "hub",
+                requiredFields: [],
+                optionalFields: [
+                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both)"],
+                    [name: "modeName", type: "String", description: "Mode name -- provide this OR modeId (not both)"]
+                ],
+                notes: "Exactly one of modeId or modeName is required at call time."
+            ],
+            [
+                name: "log",
+                family: "messaging",
+                requiredFields: [
+                    [name: "message", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "notification",
+                family: "messaging",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Notification device IDs"],
+                    [name: "message", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "httpGet",
+                family: "messaging",
+                requiredFields: [
+                    [name: "url", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "httpPost",
+                family: "messaging",
+                requiredFields: [
+                    [name: "url", type: "String"],
+                    [name: "body", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "contentType", type: "String"],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "ping",
+                family: "messaging",
+                requiredFields: [
+                    [name: "ip", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "volume",
+                family: "media",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"],
+                    [name: "level", type: "Integer", description: "Volume level 0-100"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "mute",
+                family: "media",
+                actions: ["mute", "unmute"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["mute", "unmute"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "chime",
+                family: "media",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "playStop", type: "String"],
+                    [name: "soundNumber", type: "Integer"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "siren",
+                family: "media",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "sirenAction", type: "String"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "privateBoolean",
+                family: "rules",
+                requiredFields: [
+                    [name: "ruleIds", type: "List<Integer>"],
+                    [name: "value", type: "Boolean"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "runRule",
+                family: "rules",
+                requiredFields: [
+                    [name: "ruleIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "cancelTimers",
+                family: "rules",
+                requiredFields: [
+                    [name: "ruleIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "pauseRule",
+                family: "rules",
+                actions: ["pause", "resume"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["pause", "resume"]],
+                    [name: "ruleIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "capture",
+                family: "device-control",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "restore",
+                family: "device-control",
+                notes: "No fields required -- restores previously captured device state.",
+                requiredFields: [],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "refresh",
+                family: "device-control",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "poll",
+                family: "device-control",
+                requiredFields: [
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "disableDevice",
+                family: "device-control",
+                actions: ["disable", "enable"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["disable", "enable"]],
+                    [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "delay",
+                family: "flow",
+                notes: "Pause execution for a fixed or variable duration.",
+                requiredFields: [],
+                optionalFields: [
+                    [name: "hours", type: "Integer"],
+                    [name: "minutes", type: "Integer"],
+                    [name: "seconds", type: "Integer"],
+                    [name: "cancelable", type: "Boolean"],
+                    [name: "random", type: "Boolean"],
+                    [name: "variable", type: "String", description: "Hub variable name -- use instead of hours/minutes/seconds for variable-sourced delay"]
+                ]
+            ],
+            [
+                name: "delayPerMode",
+                family: "flow",
+                requiredFields: [
+                    [name: "perMode", type: "Map", description: "{modeIdOrName: {hours?, minutes?, seconds?}, ...}"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "cancelDelay",
+                family: "flow",
+                notes: "No fields required.",
+                requiredFields: [],
+                optionalFields: []
+            ],
+            [
+                name: "exitRule",
+                family: "flow",
+                notes: "No fields required.",
+                requiredFields: [],
+                optionalFields: []
+            ],
+            [
+                name: "comment",
+                family: "flow",
+                requiredFields: [
+                    [name: "text", type: "String"]
+                ],
+                optionalFields: []
+            ],
+            [
+                name: "repeat",
+                family: "flow",
+                requiredFields: [
+                    [name: "hours", type: "Integer", description: "At least one of hours/minutes/seconds required"],
+                    [name: "minutes", type: "Integer"],
+                    [name: "seconds", type: "Integer"]
+                ],
+                optionalFields: [
+                    [name: "times", type: "Integer"],
+                    [name: "stoppable", type: "Boolean"]
+                ]
+            ],
+            [
+                name: "stopRepeat",
+                family: "flow",
+                notes: "No fields required.",
+                requiredFields: [],
+                optionalFields: []
+            ],
+            [
+                name: "repeatWhile",
+                family: "flow",
+                requiredFields: [
+                    [name: "expression", type: "Map", description: "{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}"]
+                ],
+                optionalFields: [
+                    [name: "hours", type: "Integer"],
+                    [name: "minutes", type: "Integer"],
+                    [name: "seconds", type: "Integer"],
+                    [name: "times", type: "Integer"],
+                    [name: "stoppable", type: "Boolean"]
+                ]
+            ],
+            [
+                name: "waitExpression",
+                family: "flow",
+                requiredFields: [
+                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?}"],
+                    [name: "useDuration", type: "Boolean"]
+                ]
+            ],
+            [
+                name: "waitEvents",
+                family: "flow",
+                requiredFields: [
+                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "ifThen",
+                family: "flow",
+                notes: "Opens an IF block. Close with capability='endIf'. Use 'elseIf'/'else' for branches.",
+                requiredFields: [
+                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "elseIf",
+                family: "flow",
+                notes: "Continues an IF block. Needs a preceding ifThen.",
+                requiredFields: [
+                    [name: "expression", type: "Map"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "else",
+                family: "flow",
+                notes: "No fields required. Needs a preceding ifThen or elseIf.",
+                requiredFields: [],
+                optionalFields: []
+            ],
+            [
+                name: "endIf",
+                family: "flow",
+                notes: "No fields required. Closes the IF block.",
+                requiredFields: [],
+                optionalFields: []
+            ],
+            [
+                name: "fileWrite",
+                family: "file",
+                requiredFields: [
+                    [name: "fileName", type: "String"],
+                    [name: "content", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "fileAppend",
+                family: "file",
+                notes: "File must already exist.",
+                requiredFields: [
+                    [name: "fileName", type: "String"],
+                    [name: "content", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "fileDelete",
+                family: "file",
+                requiredFields: [
+                    [name: "fileName", type: "String"]
+                ],
+                optionalFields: [
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "zwavePoll",
+                family: "device-control",
+                actions: ["start", "stop"],
+                requiredFields: [
+                    [name: "action", type: "enum", values: ["start", "stop"]]
+                ],
+                optionalFields: [
+                    [name: "deviceIds", type: "List<Integer>", description: "Z-Wave switches/dimmers to poll -- omit to poll all eligible devices"],
+                    [name: "target", type: "enum", values: ["switches", "dimmers"], description: "Defaults to 'switches' when omitted"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ]
+        ]
+    ]
 }
 
 /**
@@ -10722,9 +11545,14 @@ private void _rmInitSelectActionsPage(Integer appId) {
  */
 private Map _rmAddAction(Integer appId, Map actionSpec) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
+    // Discover mode -- return static schema without touching the hub.
+    // No capability field required; no Hub Admin Write gate; no backup.
+    if (actionSpec.discover == true) {
+        return _rmActionSchemaForDiscover()
+    }
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch')")
+    if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
     // 'action' is required only for capabilities that have multiple action
     // variants (e.g. switch needs on/off/toggle/flash). Single-action
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
@@ -13615,6 +14443,16 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
  * that page so settings named on that page get correct marshaling.
  */
 def toolUpdateNativeApp(args) {
+    // Discover mode short-circuit: {addTrigger: {discover: true}} or
+    // {addAction: {discover: true}} returns static schema with no hub
+    // interaction -- bypass ALL gates (Built-in App, Hub Admin Write,
+    // backup snapshot). Pure static data; no hub dependency whatsoever.
+    if (args?.addTrigger instanceof Map && args.addTrigger.discover == true) {
+        return _rmAddTrigger(0, args.addTrigger as Map)
+    }
+    if (args?.addAction instanceof Map && args.addAction.discover == true) {
+        return _rmAddAction(0, args.addAction as Map)
+    }
     requireBuiltinApp()
     requireHubAdminWrite(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
