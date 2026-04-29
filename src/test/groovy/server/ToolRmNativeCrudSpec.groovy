@@ -912,10 +912,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         varValueWrite.body["settings[varValue]"] == "true"
     }
 
-    def "removeAction throws when delAct click is silently no-oped (action still present)"() {
+    def "removeAction throws when delAct click is silently no-oped (action still present after all retries)"() {
         given:
         enableHubAdminWrite()
-        // statusJson always returns the same indices => RM no-oped the delete
+        // statusJson ALWAYS returns the same indices across all 4 retry attempts =>
+        // the deletion never propagates => all retries exhaust => IllegalStateException.
+        // pauseExecution is a no-op on the AppExecutor mock so the test runs at full speed.
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
@@ -928,9 +930,146 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
 
-        then: "the silent no-op is surfaced as success: false with a clear error pointing at the still-present index"
+        then: "the silent no-op is surfaced as success: false with the verify-via-get_app_config recovery hint"
         result.success == false
-        result.error?.contains("still in rule")
+        result.error?.contains("still present in rule")
+        result.error?.contains("Verify via get_app_config")
+    }
+
+    def "removeAction succeeds immediately when deletion propagates on the first post-click fetch"() {
+        given:
+        enableHubAdminWrite()
+        // After the delAct POST fires, the first post-click statusJson fetch
+        // sees action 1 gone => _rmDeleteAction returns success on attempt 0
+        // without any pauseExecution retry. pauseExecution is a no-op on the
+        // AppExecutor mock so there is no actual sleep even if a retry fires.
+        // verificationFetches counts only the fetches that _rmDeleteAction's
+        // retry loop makes (stops counting once action 1 disappears from the
+        // response so post-success health-check fetches don't inflate the count).
+        def delActFired = false
+        def verificationFetches = 0
+        def deletionConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired && !deletionConfirmed) {
+                verificationFetches++
+                // action 1 gone — deletion propagated immediately
+                deletionConfirmed = true
+                statusJson(100, [[name: "actType.2", value: "switchActs"]])
+            } else if (!delActFired) {
+                // pre-click (backup + beforeIndices): both actions present
+                statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+            } else {
+                // post-success health check and any subsequent fetches
+                statusJson(100, [[name: "actType.2", value: "switchActs"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "success on the first check — no retries needed"
+        result.success == true
+        result.removedIndices?.contains(1) || result.note?.contains("Removed action 1")
+
+        and: "only 1 verification fetch: attempt 0 sees action gone immediately (no retry fired)"
+        verificationFetches == 1
+    }
+
+    def "removeAction succeeds on second check when deletion propagates after first retry (race recovery)"() {
+        given:
+        enableHubAdminWrite()
+        // After the delAct POST fires, the first post-click statusJson fetch
+        // still shows action 1 (async dispatch race). The second post-click
+        // fetch (after 100ms pauseExecution no-op) sees it gone => success on
+        // attempt 1. verificationFetches counts only the retry-loop fetches;
+        // it stops once action 1 disappears so the health-check fetch after
+        // _rmDeleteAction returns does not inflate the count.
+        // pauseExecution is a no-op on the AppExecutor mock.
+        def delActFired = false
+        def verificationFetches = 0
+        def deletionConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired && !deletionConfirmed) {
+                verificationFetches++
+                if (verificationFetches == 1) {
+                    // first post-click check: action still present (race)
+                    statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+                } else {
+                    // second post-click check: action 1 gone (deletion propagated)
+                    deletionConfirmed = true
+                    statusJson(100, [[name: "actType.2", value: "switchActs"]])
+                }
+            } else if (!delActFired) {
+                // pre-click (backup + beforeIndices): both actions present
+                statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+            } else {
+                // post-success health check and any subsequent fetches
+                statusJson(100, [[name: "actType.2", value: "switchActs"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "success after one retry — race-recovery path"
+        result.success == true
+        result.removedIndices?.contains(1) || result.note?.contains("Removed action 1")
+
+        and: "2 verification fetches: attempt 0 (still present, race) + attempt 1 (gone, recovered)"
+        verificationFetches == 2
+    }
+
+    def "removeAction succeeds on third check when deletion propagates after second retry (last-chance recovery)"() {
+        given:
+        enableHubAdminWrite()
+        def delActFired = false
+        def verificationFetches = 0
+        def deletionConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired && !deletionConfirmed) {
+                verificationFetches++
+                if (verificationFetches < 3) {
+                    // attempts 0 and 1: action still present
+                    statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+                } else {
+                    // attempt 2: action gone (last-chance recovery)
+                    deletionConfirmed = true
+                    statusJson(100, [[name: "actType.2", value: "switchActs"]])
+                }
+            } else if (!delActFired) {
+                statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+            } else {
+                statusJson(100, [[name: "actType.2", value: "switchActs"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "success on the third check -- last-chance recovery"
+        result.success == true
+        result.removedIndices?.contains(1) || result.note?.contains("Removed action 1")
+
+        and: "3 verification fetches: attempts 0 and 1 (still present) + attempt 2 (gone)"
+        verificationFetches == 3
     }
 
     def "clearActions throws when trashActs never enters schema after trashAll click"() {

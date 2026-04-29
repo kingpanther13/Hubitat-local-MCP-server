@@ -647,7 +647,7 @@ def getGatewayConfig() {
             ]
         ],
         manage_native_rules_and_apps: [
-            description: "Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules — any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean — RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write.",
+            description: "Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules — any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean — RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates failure or partial state (success: false, partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported failure — verify via get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "check_rule_health"],
             summaries: [
                 list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -10089,6 +10089,18 @@ private List _rmCollectActionIndices(Integer appId) {
  * After delete, RM does NOT renumber remaining actions — indices are
  * preserved with gaps. Subsequent addAction picks the next free index
  * via _rmCollectActionIndices' max+1 logic.
+ *
+ * Post-click verification uses a retry loop to absorb RM 5.1's
+ * asynchronous button-handler dispatch. The click returns HTTP 200 before
+ * the deletion has propagated to appSettings, so a single immediate fetch
+ * can falsely report the action still present. Up to 4 attempts are made
+ * with increasing delays (1s, 3s, 6s) for a max sleep budget of 10s
+ * (wall-clock ~10.5s on the failure path including four HTTP fetches) and
+ * near-zero extra latency on the common success path (first check passes
+ * immediately). The 10s budget covers typical and slow hub propagation
+ * observed in live-hub runs; on retry exhaustion the throw directs the
+ * caller to verify via get_app_config since the deletion may complete
+ * post-response. See source comment below for the original race description.
  */
 private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     def beforeIndices = _rmCollectActionIndices(appId)
@@ -10100,11 +10112,27 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // delAct click if state.editAct is set or the button-handler dispatch
     // races with another edit. Without this check, the caller would see
     // success: true while the action remained on the rule.
-    def afterIndices = _rmCollectActionIndices(appId)
-    if (afterIndices.contains(actionIdx)) {
-        throw new IllegalStateException("removeAction(${actionIdx}): click returned 200 but action ${actionIdx} still in rule ${appId}'s actions list. Indices before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}.")
+    //
+    // The retry loop below absorbs the async dispatch race: the click can
+    // return 200 OK before the deletion propagates to appSettings. Each
+    // attempt re-fetches the live index list; if the index is gone, we
+    // return immediately. Delays: 1s before attempt 2, 3s before attempt 3,
+    // 6s before attempt 4. Max additional wait ~10s on total failure.
+    // Four attempts (10s budget) cover typical and slow hub propagation
+    // observed in live-hub runs (two agents hit the race independently;
+    // observed propagation lag exceeded several seconds in one repro).
+    // Faster hubs return on the first or second attempt with no perceived
+    // delay since the immediate-success path skips all sleeps.
+    def afterIndices = null
+    def retryDelaysMs = [1000, 3000, 6000]
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
+        afterIndices = _rmCollectActionIndices(appId)
+        if (!afterIndices.contains(actionIdx)) {
+            return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+        }
     }
-    return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+    throw new IllegalStateException("removeAction(${actionIdx}) waited 10 seconds and action ${actionIdx} is still present in rule ${appId}'s actions list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This may be a definitive RM 5.1 no-op (e.g. state.editAct conflict) OR an extreme propagation lag that completes after this response. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response.")
 }
 
 /**
