@@ -12547,8 +12547,26 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             if (cond.deviceIds != null) {
                 _rmWriteSettingOnPage(appId, "doActPage", "rDev_${cIdx}", cond.deviceIds, applied, null, skipped)
             }
-            if (cond.state != null) {
-                // Validate against the schema's enum options.
+            // Custom Attribute path (mirror of _rmBuildCondition for triggers):
+            // when comparator is set, write the attribute (Custom Attribute only)
+            // and the comparator BEFORE the state/value field. Without these the
+            // condition renders as "(Broken Condition)" and the rule label gets
+            // a *BROKEN* marker -- the wizard advanced past rCapab but the
+            // attribute/comparator/value triplet wasn't completed.
+            if (cond.comparator != null) {
+                if (cond.attribute != null) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "rCustomAttr_${cIdx}", cond.attribute, applied, null, skipped)
+                }
+                _rmWriteSettingOnPage(appId, "doActPage", "compareCond_${cIdx}", cond.comparator, applied, null, skipped)
+            }
+            // state_<N> holds either the enum state value (Switch on/off, Motion
+            // active/inactive) or the numeric threshold (Custom Attribute,
+            // numeric capabilities). Accept `state` (preferred) or `value`
+            // (numeric-comparison alias) -- mirrors the trigger-side
+            // _rmBuildCondition fallback.
+            def condStateOrValue = cond.state != null ? cond.state : cond.value
+            if (condStateOrValue != null) {
+                // Validate against the schema's enum options if present.
                 def stateCfg = _rmFetchConfigJson(appId, "doActPage")
                 def stateInputs = (stateCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                 def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
@@ -12556,15 +12574,15 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                     def opts = (stateInput.options ?: []).collect { o ->
                         (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
                     }.findAll { it }
-                    def matched = opts.find { it.equalsIgnoreCase(cond.state.toString()) }
+                    def matched = opts.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
                     if (!matched && opts) {
                         try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} — wizard may stay open and confuse subsequent edits") }
-                        throw new IllegalArgumentException("${cap}.expression.conditions[${i}].state '${cond.state}' is not in capability '${ccap}' domain. Valid: ${opts.sort().join(', ')}")
+                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
+                        throw new IllegalArgumentException("${cap}.expression.conditions[${i}].state '${condStateOrValue}' is not in capability '${ccap}' domain. Valid: ${opts.sort().join(', ')}")
                     }
-                    if (matched) cond.state = matched
+                    if (matched) condStateOrValue = matched
                 }
-                _rmWriteSettingOnPage(appId, "doActPage", "state_${cIdx}", cond.state, applied, null, skipped)
+                _rmWriteSettingOnPage(appId, "doActPage", "state_${cIdx}", condStateOrValue, applied, null, skipped)
             }
             if (cond.not == true) {
                 _rmWriteSettingOnPage(appId, "doActPage", "not${cIdx}", true, applied, "bool", skipped)
