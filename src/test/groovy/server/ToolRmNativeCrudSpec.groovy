@@ -1929,6 +1929,214 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
     }
 
+    // ---------- Finding #10: addTrigger auto-updateRule parity with addAction ----------
+
+    def "addTrigger single-trigger path auto-fires updateRule after successful commit"() {
+        // Finding #10: single addTrigger call should fire updateRule automatically
+        // so subscriptions populate without a separate tool call. Mirrors the
+        // addAction pattern where the wrapper fires updateRule after the commit.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "updateRule fired automatically after successful commit"
+        result.success == true
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+
+        and: "response note mentions auto-fire (no manual updateRule instruction)"
+        result.note?.toString()?.contains("updateRule fired")
+    }
+
+    def "addTrigger single-trigger path skips updateRule on hard failure (success=false)"() {
+        // Finding #10: when _rmAddTrigger returns success=false (hard failure --
+        // API error or nothing written), the wrapper should NOT fire updateRule.
+        // Nothing committed, so the extra hub round-trip is wasteful.
+        // Uses a static (non-shifting) schema so applied stays empty -> success=false.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // STATIC schema -- no render shift, all writes go to skipped, applied stays empty.
+        def staticInputs = [
+            [name: "tCapab1", type: "enum", options: ["Mode"]],
+            [name: "tstate1", type: "enum", options: ["Day", "Night"]],
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: staticInputs, paragraphs: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", false) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Mode", state: "Day"],
+            confirm: true
+        ])
+
+        then: "hard failure -- nothing committed, success=false"
+        result.success == false
+
+        and: "updateRule NOT fired on failure path"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
+    def "addTrigger auto-fires updateRule even on partial success"() {
+        // Finding #10: when success=true but partial=true (trigger row exists
+        // but not all fields landed), the wrapper SHOULD still fire updateRule.
+        // The trigger IS in the rule and subscriptions should bake from whatever
+        // committed -- matching the addAction ergonomics. Uses triggerNotBaked
+        // scenario (mainPage shows "Define Triggers") to produce partial=true.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        // mainPage still shows "Define Triggers" placeholder -- trigger did not bake.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", false) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "partial success -- trigger row exists (success=true) but needs repair (partial=true)"
+        result.success == true
+        result.partial == true
+
+        and: "updateRule still fires even on partial -- subscriptions bake from whatever committed"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
+    def "addTriggers bulk path fires updateRule exactly once (not per-trigger)"() {
+        // Finding #10: addTriggers[] (bulk path) must NOT fire updateRule per
+        // item -- that would cause N reinits. The bulk wrapper fires one
+        // updateRule after all triggers commit. The single-trigger auto-fire
+        // must NOT activate on the bulk path (it lives only in the addTrigger
+        // wrapper, which the bulk path bypasses). Two-trigger bulk: updateRule
+        // count should be exactly 1.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def updateRuleCount = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "updateRule") updateRuleCount++
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTriggers: [
+                [capability: "Switch", deviceIds: [8], state: "on"],
+                [capability: "Switch", deviceIds: [9], state: "off"]
+            ],
+            confirm: true
+        ])
+
+        then: "bulk path fires updateRule exactly once -- not once per trigger"
+        updateRuleCount == 1
+
+        and: "both triggers registered (non-empty results)"
+        (result.triggers as List)?.size() == 2
+    }
+
+    def "addTrigger conditional=true auto-fires updateRule after successful commit"() {
+        // Finding #10 coverage: conditional=true sets isCondTrig.<N>=true on the
+        // trigger row and _rmBuildCondition drives the condition sub-wizard
+        // internally, but _rmAddTrigger still commits and returns success=true
+        // before handing back. The auto-updateRule guard (`trigResult?.success != false`)
+        // does NOT inspect `conditional` -- so updateRule fires for conditional
+        // triggers just as it does for plain ones. This test pins that behavior.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on", conditional: true],
+            confirm: true
+        ])
+
+        then: "conditional trigger commits successfully"
+        result.success == true
+
+        and: "updateRule fires even for conditional=true triggers"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
     // ---------- Finding #4: success/partial semantic matrix for _rmAddAction ----------
 
     /**

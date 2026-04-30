@@ -1874,13 +1874,15 @@ Auto-updateRule: main-page settings writes are followed by an implicit updateRul
 
 Wizard-Done auto-finalize: clicking hasAll on selectTriggers commits the trigger to the rule's summary row but RM 5.1 leaves a single residual `isCondTrig.<N>` ("Conditional Trigger?") prompt on the page. This tool auto-writes `isCondTrig.<N>=false` after the click to clear the prompt without consuming an extra trigger index. Reported in the response as wizardDoneAutoRetry: 'OK' / 'OK after finalize ...' / 'WARN: ...'. (Earlier versions clicked hasAll twice instead, which inadvertently allocated phantom "**Broken Trigger**" rows; the finalize-via-isCondTrig path keeps trigger indices contiguous: 1, 2, 3 instead of 1, 3, 5.)
 
-RM 5.1 trigger flow (example — adding a multi-device switch trigger):
+RM 5.1 trigger flow (example — adding a multi-device switch trigger via raw settings/button mode):
   1. update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers') — opens the trigger editor.
   2. update_native_app(appId, settings={tCapab1: 'Switch'}, pageName='selectTriggers') — picks the capability; page re-renders with the device picker.
   3. update_native_app(appId, settings={tDev1: [<deviceId>, ...]}, pageName='selectTriggers') — writes devices (multi-device 3-field contract is automatic).
   4. update_native_app(appId, settings={tstate1: 'on'}, pageName='selectTriggers') — sets the attribute/value.
   5. update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger; the residual Conditional? prompt is auto-finalized.
   6. update_native_app(appId, button='updateRule') — re-initialize so subscriptions populate.
+
+NOTE: the addTrigger={...} shortcut handles steps 1-6 automatically (including the updateRule at the end). Only the raw settings/button flow above requires the explicit step 6 call.
 
 Adding a second trigger uses the SAME flow with index 2 (tCapab2, tDev2, tstate2), then a third uses index 3, etc. After the auto-finalize fix the indices are sequential.
 
@@ -1895,7 +1897,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: Switch, Motion, Contact, Lock, Presence, Certain Time (and optional date), Periodic Schedule, Mode, Custom Attribute, Battery, Temperature, Button -- full list below. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions.
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: Switch, Motion, Contact, Lock, Presence, Certain Time (and optional date), Periodic Schedule, Mode, Custom Attribute, Battery, Temperature, Button -- full list below. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed. (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
 Capability families and the spec fields each accepts:
   - Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source):
@@ -9505,10 +9507,14 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
  *   conditional (sets isCondTrig.<N>=true; condition wizard not driven)
  *   rawSettings { fieldName: value, ... } — escape hatch
  *
- * The caller is expected to issue update_native_app(button='updateRule')
- * after adding all triggers to fire initialize() and populate
- * subscriptions. _rmAddTrigger does NOT fire updateRule itself, so
- * multi-trigger rules avoid N redundant re-inits.
+ * Single-trigger path (update_native_app addTrigger={}): the wrapper
+ * auto-fires updateRule after a successful commit so subscriptions
+ * populate immediately. No manual updateRule needed for single calls.
+ *
+ * Bulk/batch paths (addTriggers[], patches, create_native_app triggers[]):
+ * the wrapper fires updateRule ONCE at the end of the batch, not per
+ * item. _rmAddTrigger itself does NOT fire updateRule, so callers that
+ * issue multiple sequential _rmAddTrigger calls avoid N redundant inits.
  *
  * Returns: [success, triggerIndex, settingsApplied, configPageError]
  */
@@ -14730,8 +14736,10 @@ def toolUpdateNativeApp(args) {
     if (addTriggerSpec) {
         // High-level structured trigger creation. Replaces the 6-8 wizard
         // calls of the manual flow with one orchestrated call. After the
-        // helper commits, the caller still issues update_native_app(button=
-        // 'updateRule') to re-init and populate subscriptions.
+        // helper commits, updateRule fires automatically so subscriptions
+        // populate immediately -- no manual button call needed.
+        // Bulk/patch paths fire their own updateRule at the end of the
+        // batch; only this single-spec wrapper adds the auto-fire here.
         def trigResult
         try {
             trigResult = _rmAddTrigger(appId, addTriggerSpec)
@@ -14744,6 +14752,19 @@ def toolUpdateNativeApp(args) {
                 backup: backup,
                 restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
             ]
+        }
+        // Auto-fire updateRule after a successful commit so eventSubscriptions
+        // populate without a separate tool call. Skip on hard failure
+        // (success==false): nothing committed, so updateRule would be a no-op
+        // and the extra hub round-trip isn't worthwhile. On partial success
+        // (trigger row exists but some fields didn't land) fire updateRule
+        // anyway -- the trigger IS in the rule and subscriptions should bake
+        // from whatever committed, matching the addAction pattern.
+        if (trigResult?.success != false) {
+            try { _rmClickAppButton(appId, "updateRule") }
+            catch (Exception updateExc) {
+                mcpLog("warn", "rm-native", "addTrigger: trailing updateRule click failed for app ${appId} -- trigger committed but subscriptions may not populate until the next updateRule: ${updateExc.message}")
+            }
         }
         return [
             success: trigResult?.success != false,
@@ -14758,7 +14779,7 @@ def toolUpdateNativeApp(args) {
             repairHints: trigResult?.repairHints,
             health: trigResult?.health,
             verificationFetchFailed: trigResult?.verificationFetchFailed,
-            note: "Trigger added. Call update_native_app(button='updateRule') after adding all triggers to fire initialize() and populate subscriptions."
+            note: "Trigger added + updateRule fired (subscriptions populated). Successive addTrigger calls now self-contain their re-init -- no manual updateRule needed."
         ]
     }
 
@@ -14798,7 +14819,7 @@ def toolUpdateNativeApp(args) {
             repairHints: actResult?.repairHints,
             health: actResult?.health,
             verificationFetchFailed: actResult?.verificationFetchFailed,
-            note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake — no manual updateRule needed."
+            note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake -- no manual updateRule needed."
         ]
     }
 
