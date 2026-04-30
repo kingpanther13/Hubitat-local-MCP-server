@@ -2831,4 +2831,153 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "RelrDev_1 was NOT written -- no comparator means no comparator write"
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("RelrDev") } }
     }
+
+    // ---------- Custom Engine toggle visibility + source marker + read-only gate ----------
+
+    def "custom_* visibility: full mode (engine ON) shows all 10 custom_* tools"() {
+        // When enableCustomRuleEngine=true, all 10 custom_* tools must be present
+        // in getToolDefinitions() regardless of enableBuiltinApp state.
+        given:
+        settingsMap.enableCustomRuleEngine = true
+        settingsMap.enableBuiltinApp = false
+        settingsMap.useGateways = false     // flat mode -- all tools visible by individual name
+
+        when:
+        def tools = script.getToolDefinitions()
+        def names = tools*.name as Set
+
+        then: "all 10 custom_* tools are visible"
+        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
+         "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
+         "custom_export_rule", "custom_import_rule", "custom_clone_rule"].every { names.contains(it) }
+    }
+
+    def "custom_* visibility: read-only mode (engine OFF + builtinApp ON) shows read subset only"() {
+        // When enableCustomRuleEngine=false AND enableBuiltinApp=true, only the 5 read
+        // tools should be visible; the 5 write/structural tools must be hidden.
+        given:
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = true
+        settingsMap.useGateways = false
+
+        when:
+        def tools = script.getToolDefinitions()
+        def names = tools*.name as Set
+
+        then: "read subset is visible"
+        ["custom_list_rules", "custom_get_rule", "custom_update_rule",
+         "custom_test_rule", "custom_get_rule_diagnostics"].every { names.contains(it) }
+
+        and: "write/structural subset is hidden"
+        ["custom_create_rule", "custom_delete_rule", "custom_export_rule",
+         "custom_import_rule", "custom_clone_rule"].every { !names.contains(it) }
+    }
+
+    def "custom_* visibility: full-hide mode (engine OFF + builtinApp OFF) hides all 10 custom_* tools"() {
+        // When both toggles are off, no custom_* tools should appear.
+        given:
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = false
+        settingsMap.useGateways = false
+
+        when:
+        def tools = script.getToolDefinitions()
+        def names = tools*.name as Set
+
+        then: "all 10 custom_* tools are hidden"
+        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
+         "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
+         "custom_export_rule", "custom_import_rule", "custom_clone_rule"].every { !names.contains(it) }
+    }
+
+    def "custom_list_rules includes source: mcp_custom_engine on every rule"() {
+        // The source marker lets LLMs distinguish MCP-managed rules from
+        // native RM rules (list_rm_rules / manage_native_rules_and_apps).
+        given:
+        settingsMap.enableCustomRuleEngine = true
+        def app1 = new support.TestChildApp(id: 11L, label: "Rule One")
+        app1.ruleData = [id: "11", name: "Rule One", enabled: true, triggers: [], conditions: [], actions: []]
+        def app2 = new support.TestChildApp(id: 22L, label: "Rule Two")
+        app2.ruleData = [id: "22", name: "Rule Two", enabled: false, triggers: [], conditions: [], actions: []]
+        childAppsList << app1 << app2
+
+        when:
+        def result = script.toolListRules()
+
+        then: "source marker present on every rule entry"
+        result.rules?.size() == 2
+        result.rules.every { it.source == "mcp_custom_engine" }
+    }
+
+    def "custom_get_rule includes source: mcp_custom_engine in response"() {
+        // get_rule must also carry the source marker so callers can identify
+        // the rule type from a single-rule fetch.
+        given:
+        settingsMap.enableCustomRuleEngine = true
+        def app = new support.TestChildApp(id: 42L, label: "My Rule")
+        app.ruleData = [id: "42", name: "My Rule", enabled: true, triggers: [], conditions: [], actions: []]
+        childAppsList << app
+
+        when:
+        def result = script.toolGetRule("42")
+
+        then: "source marker injected into the response"
+        result.source == "mcp_custom_engine"
+        result.name == "My Rule"
+    }
+
+    def "custom_update_rule read-only mode: enabled field allowed"() {
+        // In read-only mode, updating only the 'enabled' field must succeed.
+        // The gate allows 'enabled' (and nothing else structural).
+        given:
+        def app = new support.TestChildApp(id: 55L, label: "Toggle Me")
+        app.ruleData = [id: "55", name: "Toggle Me", enabled: true, triggers: [], conditions: [], actions: []]
+        childAppsList << app
+
+        when:
+        def result = script.toolUpdateRule("55", [enabled: false], "readonly")
+
+        then: "update succeeds with only the enabled field"
+        result.success == true
+        result.ruleId == "55"
+    }
+
+    def "custom_update_rule read-only mode: structural field rejected with legacy hint"() {
+        // In read-only mode, passing triggers (or any non-enabled structural field)
+        // must throw IllegalArgumentException that names the offending fields
+        // and includes the legacy/redirect hint.
+        given:
+        def app = new support.TestChildApp(id: 55L, label: "Toggle Me")
+        app.ruleData = [id: "55", name: "Toggle Me", enabled: true, triggers: [], conditions: [], actions: []]
+        childAppsList << app
+
+        when:
+        script.toolUpdateRule("55", [triggers: [[type: "device_event"]]], "readonly")
+
+        then: "structural change rejected in read-only mode"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("read-only mode")
+        ex.message.contains("triggers")
+        ex.message.contains("manage_native_rules_and_apps")
+    }
+
+    def "executeTool rejects write tool custom_create_rule when customEngineMode is readonly"() {
+        // Engine OFF + builtinApp ON => readonly mode. Write tools (create/delete/
+        // export/import/clone) must be blocked at the executeTool dispatch gate,
+        // not just inside toolCreateRule. This ensures the gate fires even when
+        // the tool is reached via the top-level switch directly.
+        given:
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        script.executeTool("custom_create_rule", [name: "x",
+            triggers: [[type: "time", time: "00:00"]],
+            actions: [[type: "log", message: "y"]]])
+
+        then: "write tool blocked with read-only mode message"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("read-only mode")
+        ex.message.contains("manage_native_rules_and_apps")
+    }
 }

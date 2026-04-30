@@ -77,10 +77,10 @@ def mainPage() {
         }
 
         section("Built-in App Integration") {
-            paragraph "<b>Built-in App Tools</b> expose read AND write access to Hubitat's built-in apps (Rule Machine, Room Lighting, Scenes, Mode Manager, etc.). Enables: (a) listing all installed apps and finding which apps use a device, (b) listing/triggering/pausing/resuming/setting-private-boolean on Rule Machine rules via <code>hubitat.helper.RMUtils</code>, and (c) creating, updating, and deleting native classic SmartApp instances (RM rules + others) via the hub's admin-layer endpoints — including full CRUD on Rule Machine rules with structured trigger/action APIs."
-            paragraph "<i>The CRUD operations (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write — both toggles must be on. The toggle is gated to opt-in because admin-layer writes touch the same endpoints as the native UI and can modify or delete rules.</i>"
+            paragraph "<b>Built-in App Tools</b> let Claude list, run, pause, resume, create, update, and delete Hubitat's built-in apps including Rule Machine rules. Required for native Rule Machine CRUD via Claude."
+            paragraph "<i>Creating, updating, and deleting rules (create_native_app / update_native_app / delete_native_app) ALSO requires Hub Admin Write -- both toggles must be on. Note: the separate Custom Rule Engine toggle below controls a legacy MCP-managed rule surface -- bug fixes only, no new features.</i>"
             input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write)",
-                  description: "Allows MCP to list all installed apps (built-in + user), find apps using a device, list/trigger/pause/resume/private-boolean Rule Machine rules, AND create/update/delete native classic SmartApp instances. CRUD ops additionally require Hub Admin Write.",
+                  description: "Allows MCP to list all installed apps, find apps using a device, list/trigger/pause/resume Rule Machine rules, and create/update/delete native Rule Machine rules and other classic apps. Create/update/delete additionally requires Hub Admin Write.",
                   defaultValue: false, submitOnChange: true
         }
 
@@ -136,13 +136,16 @@ def mainPage() {
             // mismatch (child apps exist but the new toggle is off/null).
             def existingRuleCount = getChildApps()?.size() ?: 0
             def customEngineExplicitlyOn = settings.enableCustomRuleEngine == true
+            def builtinAppEnabled = settings.enableBuiltinApp == true
             if (existingRuleCount > 0 && !customEngineExplicitlyOn) {
-                paragraph "<b style='color: red;'>⚠ MIGRATION NOTICE: ${existingRuleCount} custom MCP rule(s) exist on this hub but the <b>Enable Custom Rule Engine</b> toggle is OFF.</b><br>" +
-                          "The toggle was renamed from 'Enable Rule Engine' (defaulted ON) to 'Enable Custom Rule Engine' (defaults OFF) — your existing rules continue to fire as installed apps, but the <code>custom_*</code> MCP tools (list/create/update/delete/test rules via Claude) are hidden from <code>tools/list</code> until you re-enable the toggle below.<br>" +
-                          "If you actively use the MCP custom rule tools, turn the toggle ON. If you've migrated to native Rule Machine via Built-in App Tools and don't need the custom engine, leave it off."
+                def readonlyNote = builtinAppEnabled ? " Claude can still SEE these rules (<code>custom_list_rules</code>, <code>custom_get_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from Claude."
+                paragraph "<b>NOTICE: ${existingRuleCount} existing custom MCP rule(s)</b><br>" +
+                          "Your ${existingRuleCount} custom MCP rule(s) still fire and work normally. The Custom Rule Engine setting used to be ON by default; it now defaults OFF because the custom MCP rule engine is legacy -- it will continue to receive bug fixes but new feature work goes to native Rule Machine.<br>" +
+                          "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use Claude to fully manage these rules.<br>" +
+                          "For new rule creation, prefer <code>manage_native_rules_and_apps</code> create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
-            input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine",
-                  description: "Exposes the custom_* tools (custom_list_rules, custom_create_rule, custom_update_rule, custom_delete_rule, custom_test_rule, custom_get_rule, custom_export_rule, custom_import_rule, custom_clone_rule, custom_get_rule_diagnostics) for the MCP-managed rule engine. When off, these tools disappear from tools/list. The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this.",
+            input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
+                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_list_rules, custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this.",
                   defaultValue: false, submitOnChange: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -745,10 +748,21 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 //   enableBuiltinApp=false  → hides list_installed_apps, get_device_in_use_by, list_rm_rules,
 //                              run_rm_rule, pause_rm_rule, resume_rm_rule, set_rm_rule_boolean,
 //                              create_native_app, update_native_app, delete_native_app
-//   enableCustomRuleEngine=false (legacy default true) → hides all 10 custom_* tools
+//   enableCustomRuleEngine=false AND enableBuiltinApp=false → hides all 10 custom_* tools
+//   enableCustomRuleEngine=false AND enableBuiltinApp=true  → read-only subset shown:
+//     visible: custom_list_rules, custom_get_rule, custom_update_rule (enabled only),
+//              custom_test_rule, custom_get_rule_diagnostics
+//     hidden:  custom_create_rule, custom_delete_rule, custom_export_rule,
+//              custom_import_rule, custom_clone_rule
+//   enableCustomRuleEngine=true → all 10 custom_* tools shown (full mode)
 def getToolDefinitions() {
     def builtinAppOn = settings.enableBuiltinApp == true
     def customEngineOn = settings.enableCustomRuleEngine == true
+    // customEngineMode: "full" | "readonly" | "off"
+    // "full"     -- engine ON; all custom_* shown
+    // "readonly" -- engine OFF + builtinApp ON; read subset shown, write subset hidden
+    // "off"      -- engine OFF + builtinApp OFF; all custom_* hidden
+    def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
     def hideByName = [] as Set
     def hideGatewaySubTools = [:].withDefault { [] as Set }
 
@@ -761,11 +775,23 @@ def getToolDefinitions() {
         hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "check_rule_health"] as Set
         hideGatewaySubTools["manage_installed_apps"] = ["list_installed_apps", "get_device_in_use_by"] as Set
     }
-    if (!customEngineOn) {
+    if (customEngineMode == "off") {
+        // Both toggles off: hide all custom_* tools (base tools + gateway sub-tools)
         ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule", "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
             hideByName << it
         }
+        // custom_get_rule_diagnostics lives in manage_diagnostics gateway; remove it
+        // from that gateway's visible sub-tool list so the catalog entry disappears.
+        hideGatewaySubTools["manage_diagnostics"] << "custom_get_rule_diagnostics"
+    } else if (customEngineMode == "readonly") {
+        // Engine OFF but builtinApp ON: hide write/structural tools, keep read tools
+        ["custom_create_rule", "custom_delete_rule", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
+            hideByName << it
+        }
+        // custom_get_rule_diagnostics lives in manage_diagnostics gateway and stays
+        // visible in readonly mode -- no gateway sub-tool removal needed for it.
     }
+    // customEngineMode == "full": nothing added to hideByName for custom_* tools
 
     // Flat mode: every tool advertised individually under its real name; search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
@@ -888,7 +914,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
         // Rule Management
         [
             name: "custom_list_rules",
-            description: "List all MCP automation rules. Returns summary; use custom_get_rule for details.",
+            description: "List all MCP automation rules. Returns summary; use custom_get_rule for details. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -896,7 +922,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "custom_get_rule",
-            description: "Get detailed information about a specific rule",
+            description: "Get detailed information about a specific rule. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -907,7 +933,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "custom_create_rule",
-            description: """*** REDIRECT FIRST: if the user said "rule machine rule," "Hubitat rule," or wants the rule visible in Hubitat's Rule Machine app list / web UI -- DO NOT USE THIS TOOL. Use manage_native_rules_and_apps -> create_native_app + update_native_app(addTrigger=...) + update_native_app(addAction=...) instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when the user explicitly asked for that or for backward compatibility with existing custom_* rules. ***
+            description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use manage_native_rules_and_apps create_native_app instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
 
 Create a new automation rule (MCP sandbox engine). Use get_tool_guide section=rules for structure, syntax, and examples.
 
@@ -933,7 +959,7 @@ Verify rule after creation.""",
         ],
         [
             name: "custom_update_rule",
-            description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after.",
+            description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after. NOTE: when the Custom Rule Engine toggle is OFF (read-only mode), only the 'enabled' field is accepted -- structural changes (triggers/conditions/actions/name) require the toggle to be ON.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2262,13 +2288,24 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
 }
 
 def executeTool(toolName, args) {
-    // Custom Rule Engine gate: when 'Enable Custom Rule Engine' is off,
-    // refuse any custom_* tool call before dispatch. The tools also
-    // disappear from tools/list (see getToolDefinitions), but a stale
-    // client cache could still try to call one — fail clearly here.
+    // Custom Rule Engine gate. The tools also disappear from tools/list
+    // (see getToolDefinitions), but a stale client cache could still call
+    // them -- fail clearly here. Three modes:
+    //   "full"     -- engine ON; all custom_* allowed
+    //   "readonly" -- engine OFF + builtinApp ON; read tools + update(enabled) allowed
+    //   "off"      -- engine OFF + builtinApp OFF; all custom_* blocked
     def customEngineOn = settings.enableCustomRuleEngine == true
-    if (toolName?.startsWith("custom_") && !customEngineOn) {
-        throw new IllegalArgumentException("Custom Rule Engine is disabled. Enable 'Enable Custom Rule Engine' in MCP Rule Server app settings to use ${toolName}.")
+    def builtinAppOn   = settings.enableBuiltinApp == true
+    def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
+    def customReadonlyTools = ["custom_list_rules", "custom_get_rule", "custom_test_rule",
+                               "custom_get_rule_diagnostics", "custom_update_rule"] as Set
+    if (toolName?.startsWith("custom_")) {
+        if (customEngineMode == "off") {
+            throw new IllegalArgumentException("Custom Rule Engine is disabled. Enable 'Enable Custom Rule Engine' in MCP Rule Server app settings to use ${toolName}.")
+        }
+        if (customEngineMode == "readonly" && !customReadonlyTools.contains(toolName)) {
+            throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer manage_native_rules_and_apps.")
+        }
     }
     switch (toolName) {
         // Device Tools
@@ -2282,7 +2319,7 @@ def executeTool(toolName, args) {
         case "custom_list_rules": return toolListRules()
         case "custom_get_rule": return toolGetRule(args.ruleId)
         case "custom_create_rule": return toolCreateRule(args)
-        case "custom_update_rule": return toolUpdateRule(args.ruleId, args)
+        case "custom_update_rule": return toolUpdateRule(args.ruleId, args, customEngineMode)
         case "custom_delete_rule": return toolDeleteRule(args)
         // enable_rule/disable_rule merged into custom_update_rule
         case "custom_test_rule": return toolTestRule(args.ruleId)
@@ -2843,7 +2880,8 @@ def toolListRules() {
             conditionCount: ruleData.conditions?.size() ?: 0,
             actionCount: ruleData.actions?.size() ?: 0,
             lastTriggered: ruleData.lastTriggered,
-            executionCount: ruleData.executionCount ?: 0
+            executionCount: ruleData.executionCount ?: 0,
+            source: "mcp_custom_engine"
         ]
     }?.findAll { it != null } ?: []
 
@@ -2856,7 +2894,13 @@ def toolGetRule(ruleId) {
         throw new IllegalArgumentException("Rule not found: ${ruleId}")
     }
 
-    return childApp.getRuleData()
+    def ruleData = childApp.getRuleData()
+    // Inject source marker so callers can distinguish MCP-managed rules from
+    // native RM rules returned by list_rm_rules / manage_native_rules_and_apps.
+    if (ruleData instanceof Map) {
+        ruleData = ruleData + [source: "mcp_custom_engine"]
+    }
+    return ruleData
 }
 
 def toolCreateRule(args) {
@@ -2959,10 +3003,22 @@ def toolCreateRule(args) {
     ]
 }
 
-def toolUpdateRule(ruleId, args) {
+def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
     def childApp = getChildAppById(ruleId)
     if (!childApp) {
         throw new IllegalArgumentException("Rule not found: ${ruleId}")
+    }
+
+    // Read-only mode gate: only the 'enabled' field may be updated when the
+    // Custom Rule Engine toggle is OFF (engine in read-only mode). Any
+    // structural field (triggers, conditions, actions, name, etc.) requires
+    // the engine to be fully enabled.
+    if (customEngineMode == "readonly") {
+        // Fields in args besides 'enabled' (ruleId is passed as a separate param, not in args)
+        def structuralKeys = (args?.keySet() ?: []).findAll { it != "enabled" && it != "ruleId" }
+        if (!structuralKeys.isEmpty()) {
+            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use manage_native_rules_and_apps create_native_app/update_native_app instead.")
+        }
     }
 
     // Normalize and validate any provided triggers
@@ -4651,7 +4707,7 @@ def backupItemSource(String type, String id) {
         uploadHubFile(fileName, parsed.source.getBytes("UTF-8"))
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Failed to save backup file '${fileName}': ${e.message}")
-        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: file upload failed — ${e.message}")
+        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: file upload failed -- ${e.message}")
     }
 
     def manifest = [
@@ -4753,7 +4809,7 @@ def toolGetItemBackup(args) {
         def availableKeys = manifest.keySet().sort()
         return [
             error: "No backup found for key '${args.backupKey}'",
-            availableBackups: availableKeys.isEmpty() ? "None — no backups exist yet" : availableKeys.join(", "),
+            availableBackups: availableKeys.isEmpty() ? "None -- no backups exist yet" : availableKeys.join(", "),
             hint: "Use 'list_item_backups' to see all available backups with details"
         ]
     }
@@ -4855,7 +4911,7 @@ def toolRestoreItemBackup(args) {
     }
 
     if (!source) {
-        mcpLog("warn", "hub-admin", "Backup file '${entry.fileName}' is empty — cannot restore")
+        mcpLog("warn", "hub-admin", "Backup file '${entry.fileName}' is empty -- cannot restore")
         return [
             success: false,
             error: "Backup file exists but is empty",
@@ -4888,7 +4944,7 @@ def toolRestoreItemBackup(args) {
             }
         }
     } catch (Exception preBackupErr) {
-        mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} — proceeding with restore anyway")
+        mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} -- proceeding with restore anyway")
     }
 
     // Now push the backup source directly via the hub internal API (bypass toolUpdateAppCode to avoid
@@ -4946,7 +5002,7 @@ def toolRestoreItemBackup(args) {
                 success: false,
                 error: "Restore failed: ${errorMsg ?: 'unknown error'}",
                 backupKey: args.backupKey,
-                message: "The backup has been preserved — you can try again or restore manually.",
+                message: "The backup has been preserved -- you can try again or restore manually.",
                 directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
             ]
         }
@@ -4956,7 +5012,7 @@ def toolRestoreItemBackup(args) {
             success: false,
             error: "Restore failed: ${e.message}",
             backupKey: args.backupKey,
-            message: "The backup has been preserved — you can try again or restore manually.",
+            message: "The backup has been preserved -- you can try again or restore manually.",
             directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
         ]
     }
@@ -5223,7 +5279,7 @@ def toolDeleteFile(args) {
             mcpLog("warn", "file-manager", "Could not back up '${args.fileName}' before deletion: ${e.message}")
         }
     } else {
-        mcpLog("debug", "file-manager", "Skipping auto-backup for '${args.fileName}' — file is itself a backup")
+        mcpLog("debug", "file-manager", "Skipping auto-backup for '${args.fileName}' -- file is itself a backup")
     }
 
     // Delete the file
@@ -5461,6 +5517,7 @@ def toolGetRuleDiagnostics(args) {
     def errorLogs = ruleLogs.findAll { it.level == "error" }
 
     return [
+        source: "mcp_custom_engine",
         rule: [
             id: ruleData.id,
             name: ruleData.name,
@@ -6683,7 +6740,7 @@ def toolRebootHub(args) {
 def toolShutdownHub(args) {
     requireHubAdminWrite(args.confirm)
 
-    mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP — hub will NOT restart automatically")
+    mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP -- hub will NOT restart automatically")
 
     try {
         def responseText = hubInternalPost("/hub/shutdown")
@@ -7441,7 +7498,7 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
         backupItemSource(type, itemId.toString())
     } catch (Exception backupErr) {
         backupSucceeded = false
-        mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${itemId}: ${backupErr.message} — proceeding with delete")
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${itemId}: ${backupErr.message} -- proceeding with delete")
     }
 
     mcpLog("warn", "hub-admin", "Deleting ${type} ID: ${itemId}")
@@ -7465,7 +7522,7 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
             def installTool = (type == "app") ? "install_app" : "install_driver"
             def result = [
                 success: true,
-                message: backupSucceeded ? "${type.capitalize()} deleted successfully. Source code backed up to File Manager." : "${type.capitalize()} deleted successfully. WARNING: Pre-delete backup failed — source code may not be recoverable.",
+                message: backupSucceeded ? "${type.capitalize()} deleted successfully. Source code backed up to File Manager." : "${type.capitalize()} deleted successfully. WARNING: Pre-delete backup failed -- source code may not be recoverable.",
                 (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
@@ -8951,7 +9008,7 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
             success: true,
             ruleId: ruleId,
             rmAction: "noop",
-            note: "Rule was already ${action == 'stop' ? 'stopped' : 'running (not stopped)'} — stopRule button not clicked."
+            note: "Rule was already ${action == 'stop' ? 'stopped' : 'running (not stopped)'} -- stopRule button not clicked."
         ]
     }
     try {
@@ -9365,7 +9422,7 @@ private Integer _discoverParentAppId(String appType) {
     def cached = state.parentAppIds[appType]
     if (cached != null) {
         try { return cached.toString().toInteger() } catch (NumberFormatException e) {
-            mcpLog("warn", "rm-native", "Invalid cached parentAppId for '${appType}' ('${cached}') — rediscovering")
+            mcpLog("warn", "rm-native", "Invalid cached parentAppId for '${appType}' ('${cached}') -- rediscovering")
             state.parentAppIds.remove(appType)
         }
     }
@@ -9483,7 +9540,7 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
             def v = cfg?.app?.version
             if (v != null) body.version = v.toString()
         } catch (Exception verExc) {
-            mcpLog("debug", "rm-native", "_rmClickAppButton: version fetch on ${pageName} failed for app ${appId} (${verExc.message}) — sending POST without version field")
+            mcpLog("debug", "rm-native", "_rmClickAppButton: version fetch on ${pageName} failed for app ${appId} (${verExc.message}) -- sending POST without version field")
             // version fetch failure is recoverable — the button click
             // works without it for top-level buttons; for wizard-Done
             // buttons the hub may need a second click. Don't fail the
@@ -9671,7 +9728,7 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
             if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
                 exists = false
             } else {
-                mcpLog("warn", "rm-native", "_rmValidateDeviceIdsExist: ${label} validation fetch for id=${idStr} failed transiently (${msg}) — skipping validation; the underlying hub call may have errored independent of whether the device exists")
+                mcpLog("warn", "rm-native", "_rmValidateDeviceIdsExist: ${label} validation fetch for id=${idStr} failed transiently (${msg}) -- skipping validation; the underlying hub call may have errored independent of whether the device exists")
                 exists = true  // assume valid on transient failure; the actual write will fail loudly if the ID is genuinely bogus
             }
         }
@@ -9779,7 +9836,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         idx = candidateIdxs.max()
     }
     def capInput = allCapInputs.find { it?.name == "tCapab${idx}".toString() }
-    if (!capInput) throw new IllegalStateException("addTrigger: tCapab${idx} not present in selectTriggers schema — wizard didn't open. Was the moreCond click consumed?")
+    if (!capInput) throw new IllegalStateException("addTrigger: tCapab${idx} not present in selectTriggers schema -- wizard didn't open. Was the moreCond click consumed?")
     def capOptions = (capInput.options ?: []) as List
     def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
     if (!capCanonical) {
@@ -10026,7 +10083,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     catch (Exception verifyExc) {
         finalConfig = null
         verificationFetchFailed = true
-        mcpLog("warn", "rm-native", "_rmAddTrigger: post-commit selectTriggers fetch failed for app ${appId} (${verifyExc.message}) — caller cannot verify the trigger baked, will mark response as verificationFetchFailed=true")
+        mcpLog("warn", "rm-native", "_rmAddTrigger: post-commit selectTriggers fetch failed for app ${appId} (${verifyExc.message}) -- caller cannot verify the trigger baked, will mark response as verificationFetchFailed=true")
     }
     def err = finalConfig?.configPage?.error
 
@@ -10064,7 +10121,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         triggerNotBaked = joinedParagraphs.contains("Define Triggers")
     } catch (Exception verifyExc) {
         verificationFetchFailed = true
-        mcpLog("warn", "rm-native", "_rmAddTrigger: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) — trigger-baked check skipped")
+        mcpLog("warn", "rm-native", "_rmAddTrigger: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) -- trigger-baked check skipped")
     }
 
     // Partial-success signal — see _rmAddAction for rationale. The trigger
@@ -11077,7 +11134,7 @@ private List _rmClearActions(Integer appId) {
         // RM didn't enter trash mode after the trashAll click. Don't pretend
         // success — caller (patches handler, replaceActions, etc.) needs to
         // know nothing was deleted so success aggregation is correct.
-        throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} — RM didn't enter trash mode. The rule has ${indices.size()} action(s) at indices ${indices.sort()} that were NOT deleted.")
+        throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} -- RM didn't enter trash mode. The rule has ${indices.size()} action(s) at indices ${indices.sort()} that were NOT deleted.")
     }
     // Write trashActs with the indices as a multi-enum value. RM applies
     // the deletion immediately (submitOnChange).
@@ -11213,7 +11270,7 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         def v = cfg?.app?.version
         if (v != null) body.version = v.toString()
     } catch (Exception versionExc) {
-        mcpLog("debug", "rm-native", "_rmNavigateToPage: version fetch on ${fromPage} failed for app ${appId} (${versionExc.message}) — sending POST without version")
+        mcpLog("debug", "rm-native", "_rmNavigateToPage: version fetch on ${fromPage} failed for app ${appId} (${versionExc.message}) -- sending POST without version")
     }
     try {
         def resp = hubInternalPostForm("/installedapp/update/json", body)
@@ -11221,11 +11278,11 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
             try {
                 return new groovy.json.JsonSlurper().parseText(resp.data) as Map
             } catch (Exception parseExc) {
-                mcpLog("debug", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} response wasn't JSON (${parseExc.message}) — caller will plain-fetch the schema")
+                mcpLog("debug", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} response wasn't JSON (${parseExc.message}) -- caller will plain-fetch the schema")
             }
         }
     } catch (Exception postExc) {
-        mcpLog("warn", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} POST failed for app ${appId}: ${postExc.message} — downstream 'X not in schema' errors likely point at this")
+        mcpLog("warn", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} POST failed for app ${appId}: ${postExc.message} -- downstream 'X not in schema' errors likely point at this")
     }
     return null
 }
@@ -11321,7 +11378,7 @@ private void _rmSubmitMainPageDone(Integer appId) {
     def cfg
     try { cfg = _rmFetchConfigJson(appId, "mainPage") }
     catch (Exception fetchExc) {
-        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${fetchExc.message}) — skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${fetchExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
         return
     }
     def schema = _rmCollectInputSchema(cfg?.configPage)
@@ -11446,7 +11503,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
         afterCfg = hasRealParams ? _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams) : _rmFetchConfigJson(appId, page)
     } catch (Exception fetchExc) {
         verifyFetchErr = fetchExc.message
-        mcpLog("warn", "rm-native", "_rmWriteSubPageField: post-write fetch on ${page} failed for app ${appId} key=${key} (${fetchExc.message}) — write status is unverified")
+        mcpLog("warn", "rm-native", "_rmWriteSubPageField: post-write fetch on ${page} failed for app ${appId} key=${key} (${fetchExc.message}) -- write status is unverified")
     }
     if (afterCfg == null) {
         // Verification fetch failed OR returned null. We CANNOT confirm
@@ -11513,7 +11570,7 @@ private List _rmResolveModeIds(Collection keys) {
         if (s.isInteger()) { out << s; return }
         def mapped = nameToId[s]
         if (mapped) { out << mapped; return }
-        throw new IllegalArgumentException("Unknown mode '${s}' — must be an integer mode ID or one of: ${nameToId.keySet().sort().join(', ')}")
+        throw new IllegalArgumentException("Unknown mode '${s}' -- must be an integer mode ID or one of: ${nameToId.keySet().sort().join(', ')}")
     }
     return out
 }
@@ -11541,7 +11598,7 @@ private List _rmResolveModeNames(Collection keys) {
         if (!s) return
         if (s.isInteger() && idToName[s]) { out << idToName[s]; return }
         if (nameSet.contains(s)) { out << s; return }
-        throw new IllegalArgumentException("Unknown mode '${s}' — must be an integer mode ID or one of: ${nameSet.sort().join(', ')}")
+        throw new IllegalArgumentException("Unknown mode '${s}' -- must be an integer mode ID or one of: ${nameSet.sort().join(', ')}")
     }
     return out
 }
@@ -11563,7 +11620,7 @@ private void _rmInitSelectActionsPage(Integer appId) {
     def cfg
     try { cfg = _rmFetchConfigJson(appId, "selectActions") }
     catch (Exception fetchExc) {
-        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: selectActions fetch failed for app ${appId} (${fetchExc.message}) — state.actNdx may not initialize, first +N click may NPE")
+        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: selectActions fetch failed for app ${appId} (${fetchExc.message}) -- state.actNdx may not initialize, first +N click may NPE")
         return
     }
     def body = [
@@ -11756,7 +11813,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 }
                 break
             default:
-                throw new IllegalArgumentException("Unknown switch action '${action}' — supported: on, off, toggle, flash, setPerMode, choosePerMode")
+                throw new IllegalArgumentException("Unknown switch action '${action}' -- supported: on, off, toggle, flash, setPerMode, choosePerMode")
         }
     } else if (cap == "dimmer") {
         actType = "dimmerActs"
@@ -11835,7 +11892,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 if (actionSpec.fadeSeconds != null) fields["dimMR.@N"] = actionSpec.fadeSeconds
                 break
             default:
-                throw new IllegalArgumentException("Unknown dimmer action '${action}' — supported: setLevel, toggle, adjust, fade, stopFade, startRaiseLower, stopChanging, setLevelPerMode")
+                throw new IllegalArgumentException("Unknown dimmer action '${action}' -- supported: setLevel, toggle, adjust, fade, stopFade, startRaiseLower, stopChanging, setLevelPerMode")
         }
     } else if (cap == "color") {
         // Color (RGBW) family — capability.colorControl.
@@ -11881,7 +11938,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 }
                 break
             default:
-                throw new IllegalArgumentException("Unknown color action '${action}' — supported: setColor, toggleColor, setColorPerMode")
+                throw new IllegalArgumentException("Unknown color action '${action}' -- supported: setColor, toggleColor, setColorPerMode")
         }
     } else if (cap == "colorTemp") {
         // Color temperature family — capability.colorTemperature.
@@ -11934,7 +11991,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 }
                 break
             default:
-                throw new IllegalArgumentException("Unknown colorTemp action '${action}' — supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade, setColorTempPerMode")
+                throw new IllegalArgumentException("Unknown colorTemp action '${action}' -- supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade, setColorTempPerMode")
         }
     } else if (cap == "lock") {
         // lockRL.<N>: true=UNLOCK, false=Lock (verified live 2026-04-25 via
@@ -11944,7 +12001,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         switch (action) {
             case "lock":   fields = ["lockRL.@N": false, "lockLockUnlock.@N": deviceIds]; break
             case "unlock": fields = ["lockRL.@N": true,  "lockLockUnlock.@N": deviceIds]; break
-            default: throw new IllegalArgumentException("Unknown lock action '${action}' — supported: lock, unlock")
+            default: throw new IllegalArgumentException("Unknown lock action '${action}' -- supported: lock, unlock")
         }
     } else if (cap == "thermostat") {
         // Thermostat with optional mode, fan, heating/cooling setpoints.
@@ -11970,7 +12027,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 if (actionSpec.position != null) fields["shadeLevel.@N"] = actionSpec.position
                 break
             case "stop": actSubType = "getStopShade"; fields = ["shadeStop.@N": deviceIds]; break
-            default: throw new IllegalArgumentException("Unknown shade action '${action}' — supported: open, close, setPosition, stop")
+            default: throw new IllegalArgumentException("Unknown shade action '${action}' -- supported: open, close, setPosition, stop")
         }
     } else if (cap == "fan") {
         actType = "sceneActs"
@@ -11984,7 +12041,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 actSubType = "getAdjustFan"
                 fields = ["fanAdjust.@N": deviceIds]
                 break
-            default: throw new IllegalArgumentException("Unknown fan action '${action}' — supported: setSpeed, cycle")
+            default: throw new IllegalArgumentException("Unknown fan action '${action}' -- supported: setSpeed, cycle")
         }
     } else if (cap == "mode") {
         actType = "modeActs"
@@ -12051,7 +12108,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 if (pType != null) {
                     def t = pType.toString().toLowerCase()
                     if (!(t in ["string", "number", "decimal"])) {
-                        throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid — must be 'string', 'number', or 'decimal'")
+                        throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid -- must be 'string', 'number', or 'decimal'")
                     }
                 }
             }
@@ -12143,7 +12200,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 }
                 break
             default:
-                throw new IllegalArgumentException("Unknown button action '${action}' — supported: push, pushPerMode, choosePerMode")
+                throw new IllegalArgumentException("Unknown button action '${action}' -- supported: push, pushPerMode, choosePerMode")
         }
     } else if (cap == "log") {
         actType = "messageActs"
@@ -12180,7 +12237,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         switch (action) {
             case "mute":   fields = ["mU.@N": true, "muteUnmute.@N": deviceIds]; break
             case "unmute": fields = ["mU.@N": false, "muteUnmute.@N": deviceIds]; break
-            default: throw new IllegalArgumentException("Unknown mute action '${action}' — supported: mute, unmute")
+            default: throw new IllegalArgumentException("Unknown mute action '${action}' -- supported: mute, unmute")
         }
     } else if (cap == "chime") {
         actType = "soundActs"
@@ -12225,7 +12282,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         switch (action) {
             case "pause":  fields = ["pR.@N": false, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
             case "resume": fields = ["pR.@N": true,  "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
-            default: throw new IllegalArgumentException("Unknown pauseRule action '${action}' — supported: pause, resume")
+            default: throw new IllegalArgumentException("Unknown pauseRule action '${action}' -- supported: pause, resume")
         }
     } else if (cap == "capture") {
         actType = "deviceActs"
@@ -12385,7 +12442,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actSubType = "getEndIf"
         fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' — supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
     }
 
     // Open the new-action editor.
@@ -12411,7 +12468,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (m.matches()) {
             def actualIdx = m[0][1] as Integer
             if (actualIdx != idx) {
-                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) — using ${actualIdx}")
+                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) -- using ${actualIdx}")
                 idx = actualIdx
             }
         }
@@ -12604,7 +12661,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(ccap) }
             if (!capCanonical) {
                 try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} — wizard may stay open and confuse subsequent edits") }
+                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
             }
             _rmWriteSettingOnPage(appId, "doActPage", "rCapab_${cIdx}", capCanonical, applied, null, skipped)
@@ -12731,7 +12788,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             if (pType != null) {
                 def t = pType.toString().toLowerCase()
                 if (!(t in ["string", "number", "decimal"])) {
-                    throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid — must be 'string', 'number', or 'decimal'")
+                    throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid -- must be 'string', 'number', or 'decimal'")
                 }
                 pType = t
             } else {
@@ -13073,7 +13130,7 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
     if (pageName) path += "/${pageName}"
     def responseText = hubInternalGet(path)
     if (!responseText) {
-        throw new IllegalArgumentException("Empty response from ${path} — app ${appId} may not exist")
+        throw new IllegalArgumentException("Empty response from ${path} -- app ${appId} may not exist")
     }
     def parsed = new groovy.json.JsonSlurper().parseText(responseText)
     if (!(parsed instanceof Map) || !parsed.app) {
@@ -13352,7 +13409,7 @@ private Map _rmWalkStep(Integer appId, Map spec) {
             throw new IllegalArgumentException("walkStep operation='write' requires write={<key>: <value>}")
         }
         def writeMap = spec.write as Map
-        if (writeMap.size() != 1) throw new IllegalArgumentException("walkStep.write should contain exactly one key — call once per field for clean schema-diff signals")
+        if (writeMap.size() != 1) throw new IllegalArgumentException("walkStep.write should contain exactly one key -- call once per field for clean schema-diff signals")
         writtenKey = writeMap.keySet().iterator().next().toString()
         writtenValue = writeMap[writtenKey]
         // Validate against schema if asked.
@@ -13739,7 +13796,7 @@ private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = nu
         // Verified live to un-poison on the second attempt. The schema
         // already carries the .multiple=true sidecar intent from the
         // initial build, so the same body is correct to resend.
-        mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} — retrying: ${divergence.message}")
+        mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} -- retrying: ${divergence.message}")
         hubInternalPostForm("/installedapp/update/json", body)
         _rmVerifyMultipleFlags(appId, schema, touched)
     }
@@ -13761,7 +13818,7 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     try {
         config = _rmFetchConfigJson(ruleId)
     } catch (Exception e) {
-        throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed — ${e.message}")
+        throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
     }
     try {
         status = _rmFetchStatusJson(ruleId)
@@ -13769,7 +13826,7 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         // Status failure is tolerable for a pre-write snapshot — the
         // config JSON alone is enough to restore. Record the failure in
         // the snapshot so post-mortem sees why status was absent.
-        mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed — ${e.message}")
+        mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed -- ${e.message}")
         status = [error: e.message]
     }
 
@@ -14170,7 +14227,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             value: value,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Variable '${name}' did not commit — state.allLocalVars does not contain it. Common cause: value type mismatch (e.g. writing a string for a Number-type variable). Verify the value matches the declared type.",
+            error: "Variable '${name}' did not commit -- state.allLocalVars does not contain it. Common cause: value type mismatch (e.g. writing a string for a Number-type variable). Verify the value matches the declared type.",
             repairHints: [
                 "Check the value's type against varType — Number/Decimal want numeric, String wants text, Boolean wants true/false, DateTime wants an ISO-style timestamp.",
                 "Inspect via /installedapp/statusJson/<appId> appState.allLocalVars to see what's currently there."
@@ -14345,7 +14402,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         catch (Exception cancelExc) {
             wizardCleanupFailed = true
             wizardCleanupErr = cancelExc.message
-            mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage: ${cancelExc.message} — wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
+            mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
         }
     }
 
@@ -14492,7 +14549,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                         // failed — the wizard is still open. Embed the marker
                         // so the dispatcher's catch can surface wizardStuck=true
                         // alongside the original error.
-                        throw new IllegalStateException("${perCondExc.message} [wizardStuck — cancelCapab cleanup also failed: ${wizardCleanupErr}]")
+                        throw new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${wizardCleanupErr}]")
                     }
                     throw perCondExc
                 }
@@ -14553,7 +14610,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             conditionIndices: conditionIndices,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Required Expression did not bake — mainPage still shows 'Define Required Expression' placeholder. Common causes: unknown deviceIds (verify via list_devices), state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), or capability/state mismatch.",
+            error: "Required Expression did not bake -- mainPage still shows 'Define Required Expression' placeholder. Common causes: unknown deviceIds (verify via list_devices), state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), or capability/state mismatch.",
             repairHints: [
                 "Verify every deviceIds entry exists via list_devices.",
                 "Verify the 'state' value matches the capability's domain (Switch: 'on'/'off', Motion: 'active'/'inactive', Contact: 'open'/'closed', Lock: 'locked'/'unlocked', etc.).",
@@ -14672,7 +14729,7 @@ def toolUpdateNativeApp(args) {
             // multi-step walk, skip Done since the caller is mid-flow.
             if (walkStepSpec?.operation?.toString() == "done") {
                 try { _rmSubmitMainPageDone(appId) }
-                catch (Exception doneExc) { mcpLog("warn", "rm-native", "walkStep: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} — in-flight state markers may linger and corrupt subsequent edits") }
+                catch (Exception doneExc) { mcpLog("warn", "rm-native", "walkStep: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
             }
             return result
         } catch (Exception e) {
@@ -14719,10 +14776,10 @@ def toolUpdateNativeApp(args) {
                     // check found actions still present). The rule is now
                     // stuck in trash-confirmation mode. Auto-fire cancelTrash
                     // so the next edit doesn't open into a broken state.
-                    mcpLog("warn", "rm-native", "clearActions threw mid-flow for app ${appId} (${clearExc.message}) — auto-firing cancelTrash to recover the page")
+                    mcpLog("warn", "rm-native", "clearActions threw mid-flow for app ${appId} (${clearExc.message}) -- auto-firing cancelTrash to recover the page")
                     try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
                     catch (Exception cancelExc) {
-                        mcpLog("warn", "rm-native", "cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} — rule may need restore_item_backup")
+                        mcpLog("warn", "rm-native", "cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
                     }
                     throw clearExc
                 }
@@ -14970,7 +15027,7 @@ def toolUpdateNativeApp(args) {
             // patches landed but never bake into the running rule.
             try { _rmClickAppButton(appId, "updateRule") }
             catch (Exception updateExc) {
-                mcpLog("warn", "rm-native", "patches: trailing updateRule click failed for app ${appId} — patches may not be live: ${updateExc.message}")
+                mcpLog("warn", "rm-native", "patches: trailing updateRule click failed for app ${appId} -- patches may not be live: ${updateExc.message}")
             }
         } catch (Exception e) {
             patchErr = e.message
@@ -15008,7 +15065,7 @@ def toolUpdateNativeApp(args) {
         }
         try { _rmClickAppButton(appId, "updateRule") }
         catch (Exception updateExc) {
-            mcpLog("warn", "rm-native", "addLocalVariable: trailing updateRule click failed for app ${appId} — variable may not be live: ${updateExc.message}")
+            mcpLog("warn", "rm-native", "addLocalVariable: trailing updateRule click failed for app ${appId} -- variable may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
         return [
@@ -15062,7 +15119,7 @@ def toolUpdateNativeApp(args) {
         // expression is a leaf operation (no expected follow-on).
         try { _rmClickAppButton(appId, "updateRule") }
         catch (Exception updateExc) {
-            mcpLog("warn", "rm-native", "addRequiredExpression: trailing updateRule click failed for app ${appId} — expression may not be live: ${updateExc.message}")
+            mcpLog("warn", "rm-native", "addRequiredExpression: trailing updateRule click failed for app ${appId} -- expression may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
         return [
@@ -15231,7 +15288,7 @@ def toolUpdateNativeApp(args) {
                 }
                 def residualCondTrigName = _rmFindResidualCondTrig(afterClickConfig?.configPage)
                 if (residualCondTrigName) {
-                    mcpLog("info", "rm-native", "Wizard-Done click '${button}' left ${residualCondTrigName} prompt on app ${appId} — auto-finalizing with =false to avoid phantom trigger")
+                    mcpLog("info", "rm-native", "Wizard-Done click '${button}' left ${residualCondTrigName} prompt on app ${appId} -- auto-finalizing with =false to avoid phantom trigger")
                     try {
                         def finalizeSchema = _rmCollectInputSchema(afterClickConfig?.configPage)
                         _rmUpdateAppSettings(appId, [(residualCondTrigName): false], finalizeSchema)
@@ -15274,7 +15331,7 @@ def toolUpdateNativeApp(args) {
         if (clickedUpdateRule) {
             def settleStatus = _rmCheckSubscriptionSettle(appId)
             if (settleStatus?.unsettled) {
-                mcpLog("info", "rm-native", "updateRule subscription settle lag on app ${appId} — retrying")
+                mcpLog("info", "rm-native", "updateRule subscription settle lag on app ${appId} -- retrying")
                 _rmClickAppButton(appId, "updateRule")
                 settleStatus = _rmCheckSubscriptionSettle(appId)
                 result.subscriptionSettle = settleStatus?.unsettled ?
@@ -15293,7 +15350,7 @@ def toolUpdateNativeApp(args) {
         // state markers (state.editAct, state.editCond, etc.) can linger and
         // cause subsequent edits to misbehave.
         try { _rmSubmitMainPageDone(appId) }
-        catch (Exception doneExc) { mcpLog("warn", "rm-native", "update_native_app: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} — in-flight state markers may linger and corrupt subsequent edits") }
+        catch (Exception doneExc) { mcpLog("warn", "rm-native", "update_native_app: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
@@ -15500,11 +15557,11 @@ def isNewerVersion(String remote, String local) {
     // means users stop getting update prompts without knowing why.
     def semverPattern = ~/^\d+\.\d+\.\d+$/
     if (!(remote ==~ semverPattern)) {
-        mcpLog("warn", "server", "Remote version not strict semver: '${remote}' — skipping comparison")
+        mcpLog("warn", "server", "Remote version not strict semver: '${remote}' -- skipping comparison")
         return false
     }
     if (!(local ==~ semverPattern)) {
-        mcpLog("warn", "server", "Local version not strict semver: '${local}' — skipping comparison")
+        mcpLog("warn", "server", "Local version not strict semver: '${local}' -- skipping comparison")
         return false
     }
     try {
