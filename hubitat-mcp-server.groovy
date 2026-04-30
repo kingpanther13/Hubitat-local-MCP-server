@@ -77,7 +77,7 @@ def mainPage() {
         }
 
         section("Built-in App Integration") {
-            paragraph "<b>Built-in App Tools</b> let Claude list, run, pause, resume, create, update, and delete Hubitat's built-in apps including Rule Machine rules. Required for native Rule Machine CRUD via Claude."
+            paragraph "<b>Built-in App Tools</b> let your AI list, run, pause, resume, create, update, and delete Hubitat's built-in apps including Rule Machine rules. Required for native Rule Machine CRUD via your AI."
             paragraph "<i>Creating, updating, and deleting rules (create_native_app / update_native_app / delete_native_app) ALSO requires Hub Admin Write -- both toggles must be on. Note: the separate Custom Rule Engine toggle below controls a legacy MCP-managed rule surface -- bug fixes only, no new features.</i>"
             input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write)",
                   description: "Allows MCP to list all installed apps, find apps using a device, list/trigger/pause/resume Rule Machine rules, and create/update/delete native Rule Machine rules and other classic apps. Create/update/delete additionally requires Hub Admin Write.",
@@ -138,10 +138,10 @@ def mainPage() {
             def customEngineExplicitlyOn = settings.enableCustomRuleEngine == true
             def builtinAppEnabled = settings.enableBuiltinApp == true
             if (existingRuleCount > 0 && !customEngineExplicitlyOn) {
-                def readonlyNote = builtinAppEnabled ? " Claude can still SEE these rules (<code>custom_list_rules</code>, <code>custom_get_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from Claude."
+                def readonlyNote = builtinAppEnabled ? " your AI can still SEE these rules (<code>custom_list_rules</code>, <code>custom_get_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from your AI."
                 paragraph "<b>NOTICE: ${existingRuleCount} existing custom MCP rule(s)</b><br>" +
                           "Your ${existingRuleCount} custom MCP rule(s) still fire and work normally. The Custom Rule Engine setting used to be ON by default; it now defaults OFF because the custom MCP rule engine is legacy -- it will continue to receive bug fixes but new feature work goes to native Rule Machine.<br>" +
-                          "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use Claude to fully manage these rules.<br>" +
+                          "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use your AI to fully manage these rules.<br>" +
                           "For new rule creation, prefer <code>manage_native_rules_and_apps</code> create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
