@@ -1627,4 +1627,534 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.discriminator == "capability"
         result.capabilities instanceof List
     }
+
+    // ---------- Finding #4: success/partial semantic matrix for _rmAddTrigger ----------
+
+    /**
+     * Helper: builds a selectTriggers schema JSON with an incrementing paragraph
+     * so every _rmWriteSettingOnPage call sees a render-hash shift and routes the
+     * key to `applied` rather than `skipped`.
+     */
+    private String selectTriggersSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "tCapab1", type: "enum", options: ["Switch"]],
+                             [name: "tDev1", type: "capability.switch", multiple: true],
+                             [name: "tstate1", type: "enum", options: ["on", "off"]],
+                             [name: "isCondTrig.1", type: "bool"],
+                             [name: "hasAll", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    /**
+     * Helper: builds a mainPage JSON whose paragraph content controls whether
+     * _rmAddTrigger detects the trigger as baked (no "Define Triggers" placeholder)
+     * or not-baked (placeholder still present).
+     */
+    private String mainPageJson(int ruleId, String label = "r", boolean triggerBaked = true) {
+        def paragraph = triggerBaked ? "Switch1 is on" : "Define Triggers"
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                         sections: [[title: "", input: [], paragraphs: [paragraph]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addTrigger returns success=true partial=false on full success"() {
+        // Finding #4 matrix case 1: all settings land, trigger bakes,
+        // no broken label. The prior code returned success=false here
+        // because health.ok was gated on !partial; after the fix,
+        // success decouples from partial and reflects only "did API write happen."
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        // mainPage says trigger IS baked (no "Define Triggers" placeholder).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "full success -- API wrote at least one setting AND trigger row exists"
+        result.success == true
+        result.partial == false
+    }
+
+    def "addTrigger returns success=true partial=true when trigger does not bake (triggerNotBaked)"() {
+        // Finding #4 matrix case 2 (variant): settings land (applied non-empty)
+        // but mainPage still shows "Define Triggers" -- the trigger skeleton was
+        // written but the row didn't commit. New contract: success=true (something
+        // happened), partial=true (needs repair). Old contract was success=false.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        // mainPage still shows the placeholder -- trigger did NOT bake.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", false) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "partial success -- settings were written but trigger row needs repair"
+        result.success == true
+        result.partial == true
+        result.repairHints?.any { it?.toString()?.contains("Define Triggers") || it?.toString()?.contains("trigger did not bake") || it?.toString()?.contains("mainPage still shows") }
+    }
+
+    def "addTrigger returns success=true partial=true when rule label has BROKEN marker"() {
+        // Finding #4 matrix case 3: settings land but health check returns
+        // hasBrokenLabel=true (label contains *BROKEN*). New contract:
+        // success=true (something was written), partial=true (needs repair).
+        // Old contract was success=false because health.ok was false.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            // Return main config with *BROKEN* in label for health check.
+            ruleConfigJson(100, "Test Rule *BROKEN*", [])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        // mainPage shows trigger baked (but label still *BROKEN* from health check).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "Test Rule *BROKEN*", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "partial=true captures the BROKEN label, success=true because something was written"
+        result.partial == true
+        result.success == true
+        result.repairHints?.any { it?.toString()?.contains("BROKEN") || it?.toString()?.contains("broken") }
+    }
+
+    def "addTrigger returns success=true partial=true when rule has pre-existing brokenMarkers"() {
+        // Finding #4 matrix (Fix 2): a PRIOR trigger on the rule is already broken
+        // (health check returns brokenMarkers=["**Broken Trigger**"]). The new
+        // trigger commits successfully (applied non-empty, new trigger bakes), but
+        // the overall rule is in a known-bad state -- surface as partial=true so
+        // the LLM sees it without a separate check_rule_health call.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        // /installedapp/configure/json/100 (no subpage) is the health-check fetch.
+        // Return a mainPage whose rendered paragraphs include the broken-trigger marker.
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "Clean Label", trueLabel: "Clean Label",
+                      installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["**Broken Trigger**"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        // post-commit mainPage: new trigger baked (no "Define Triggers") but the
+        // broken-marker paragraph is still present from the pre-existing bad trigger.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "Clean Label", trueLabel: "Clean Label",
+                      installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["Switch2 is on", "**Broken Trigger**"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "new trigger committed (success=true) but pre-existing broken state drives partial=true"
+        result.success == true
+        result.partial == true
+        result.health?.brokenMarkers?.contains("**Broken Trigger**")
+    }
+
+    def "addTrigger returns success=false when selectTriggers finalConfig has configPage error"() {
+        // Finding #4 matrix case 4: hard failure -- API error present in the
+        // selectTriggers configPage.error field. err != null -> success=false
+        // regardless of how many settings may have landed in applied.
+        // Uses a static schema (no render shift) so applied stays empty; the
+        // test verifies that the err path alone drives success=false.
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectTriggers always returns a configPage error on every fetch.
+        // _rmAddTrigger will detect err != null in finalConfig and set success=false.
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false,
+                             error: "tstate1 enum out of range -- state machine error",
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Switch"]],
+                                 [name: "tDev1", type: "capability.switch", multiple: true],
+                                 [name: "tstate1", type: "enum", options: ["on", "off"]],
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "hard failure -- err != null gates success=false"
+        result.success == false
+        result.configPageError != null
+    }
+
+    def "addTrigger returns success=false when nothing was written (all settings silently rejected)"() {
+        // Finding #4 matrix case 5: hard failure -- applied stays empty because
+        // every _rmWriteSettingOnPage call produces no render-hash shift (the
+        // hub ignores all writes). success=!err && !applied.isEmpty() => false.
+        // This scenario uses a no-deviceIds capability (Mode) with a fully
+        // static schema -- no schema shift, no value landing, no render shift
+        // means every write routes to skipped. The flow still navigates normally,
+        // but nothing accumulates in applied.
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // STATIC schema -- zero paragraphs, zero render shift between fetches.
+        // Every write fires a POST but the before/after schema is identical
+        // so schemaShifted=false, valueLanded=false, renderShifted=false -> skipped.
+        def staticInputs = [
+            [name: "tCapab1", type: "enum", options: ["Mode"]],
+            [name: "tstate1", type: "enum", options: ["Day", "Night"]],
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: staticInputs, paragraphs: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", false) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            // Mode trigger: no deviceIds, so no tDev schema-guard fires.
+            addTrigger: [capability: "Mode", state: "Day"],
+            confirm: true
+        ])
+
+        then: "hard failure -- nothing landed in applied, so success=false"
+        result.success == false
+        (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
+    }
+
+    // ---------- Finding #4: success/partial semantic matrix for _rmAddAction ----------
+
+    /**
+     * Helper: builds a doActPage schema JSON with an incrementing paragraph
+     * so every _rmWriteSettingOnPage call routes to `applied` rather than `skipped`.
+     */
+    private String doActPageSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "actType.1", type: "enum",
+                              options: ["switchActs": "Turn on/off/toggle a switch or switches"]],
+                             [name: "actSubType.1", type: "enum",
+                              options: ["getOnOffSwitch": "Turn on, off, or toggle a switch"]],
+                             [name: "onOffSwitch.1", type: "capability.switch", multiple: true],
+                             [name: "onOff.1", type: "bool"],
+                             [name: "actionDone", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addAction returns success=true partial=false on full success"() {
+        // Finding #4 matrix case 1 (action): all settings land, action bakes.
+        // success=!err && !applied.isEmpty() => true; partial=false.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageSchemaJson(100, fetchSeq)
+        }
+        // mainPage says action IS baked (no "Define Actions" placeholder).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Switch1 on"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "switch", action: "on", deviceIds: [8]],
+            confirm: true
+        ])
+
+        then: "full success -- at least one setting written AND action row exists"
+        result.success == true
+        result.partial == false
+    }
+
+    def "addAction returns success=true partial=true when action does not bake (actionNotBaked)"() {
+        // Finding #4 matrix case 2 (action): settings land (applied non-empty)
+        // but mainPage still shows "Define Actions". New contract: success=true,
+        // partial=true. Old contract was success=false.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageSchemaJson(100, fetchSeq)
+        }
+        // mainPage still shows placeholder -- action did NOT bake.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Define Actions"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "switch", action: "on", deviceIds: [8]],
+            confirm: true
+        ])
+
+        then: "partial success -- settings were written but action row needs repair"
+        result.success == true
+        result.partial == true
+        result.repairHints?.any { it?.toString()?.contains("Define Actions") || it?.toString()?.contains("action did not bake") || it?.toString()?.contains("mainPage still shows") }
+    }
+
+    def "addAction returns success=false when selectActions finalConfig has configPage error"() {
+        // Finding #4 matrix case 4 (action): hard failure -- API error present in
+        // the selectActions configPage.error field. err != null -> success=false.
+        // Uses a static doActPage schema so writes silently reject; the test
+        // verifies that err alone drives success=false.
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectActions always returns a configPage error on every fetch.
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "T", install: false,
+                             error: "actType.1 invalid -- enum out of range",
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum",
+                                  options: ["switchActs": "Switches"]]
+                             ]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            doActPageSchemaJson(100, 1)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Switch1 on"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "switch", action: "on", deviceIds: [8]],
+            confirm: true
+        ])
+
+        then: "hard failure -- err != null gates success=false"
+        result.success == false
+        result.configPageError != null
+    }
+
+    def "addAction returns success=false when nothing was written (all settings silently rejected)"() {
+        // Finding #4 matrix case 5 (action): hard failure -- applied stays empty
+        // because every write produces no observable schema shift. The 'log'
+        // capability has no field writes beyond actType/actSubType; using a
+        // static doActPage schema with no render shift causes both to route to
+        // skipped rather than applied.
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectActions with the log capability in the actType options.
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["notificationActs": "Notifications and Logging"]]])
+        }
+        // STATIC doActPage schema -- no paragraphs, no render shift between fetches.
+        // Both actType.1 and actSubType.1 writes silently reject -> applied stays [].
+        def staticDoActInputs = [
+            [name: "actType.1", type: "enum",
+             options: ["notificationActs": "Notifications and Logging"]],
+            [name: "actSubType.1", type: "enum",
+             options: ["getLog": "Log a message"]],
+            [name: "logType.1", type: "enum", options: ["info", "warn"]],
+            [name: "logMessage.1", type: "text"],
+            [name: "actionDone", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: staticDoActInputs, paragraphs: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Define Actions"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "log", message: "hello"],
+            confirm: true
+        ])
+
+        then: "hard failure -- nothing landed in applied, so success=false"
+        result.success == false
+        (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
+    }
 }
