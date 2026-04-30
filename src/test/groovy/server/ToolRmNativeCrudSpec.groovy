@@ -2157,4 +2157,351 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
     }
+
+    // ---------- ifThen condition wizard (Custom Attribute comparator fix) ----------
+
+    /**
+     * doActPage schema for the ifThen condition wizard. Contains all condition
+     * fields with incrementing paragraphs so every _rmWriteSettingOnPage call
+     * observes a renderShifted=true and routes to applied (not skipped).
+     * Includes rCapab_1 so the condition-index-discovery fetch succeeds.
+     * State_1 has no options so the enum-validation branch is skipped.
+     */
+    private String doActPageCondSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "actType.1", type: "enum",
+                              options: ["condActs": "Conditional Actions"]],
+                             [name: "actSubType.1", type: "enum",
+                              options: ["getIfThen": "IF Expression THEN"]],
+                             [name: "cond", type: "enum",
+                              options: ["a": "New condition", "b": "Sub-expression"]],
+                             [name: "rCapab_1", type: "enum",
+                              options: ["Custom Attribute", "Switch", "Motion"]],
+                             [name: "rDev_1", type: "capability.sensor", multiple: true],
+                             [name: "rCustomAttr_1", type: "enum",
+                              options: ["wickFilterLife", "battery", "rssi"]],
+                             [name: "RelrDev_1", type: "enum",
+                              options: ["<", "<=", ">", ">=", "=", "!="]],
+                             [name: "state_1", type: "number"],
+                             [name: "hasAll", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addAction ifThen condition: Custom Attribute comparator writes RelrDev_N (not compareCond_N)"() {
+        // Finding #12: on doActPage the comparator field is RelrDev_<N> ("Relr",
+        // condition-wizard naming), NOT compareCond_<N> (selectTriggers-only) and
+        // NOT ReltDev_<N> (trigger-row numeric comparator on selectTriggers).
+        // Before the fix, compareCond_1 silently rejected and the condition rendered
+        // as "wickFilterLife null" (broken). After the fix, RelrDev_1 lands in
+        // settingsApplied and compareCond_1 is absent.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)
+        }
+        // mainPage says action IS baked (no "Define Actions" placeholder).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF wickFilterLife < 20 THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "wickFilterLife",
+                    comparator: "<",
+                    value: 20
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "RelrDev_1 lands in applied -- comparator write succeeded"
+        result.success == true
+        (result.settingsApplied as List).contains("RelrDev_1")
+
+        and: "compareCond_1 is NOT in applied -- old (broken) field name was not written"
+        !(result.settingsApplied as List).contains("compareCond_1")
+    }
+
+    def "addAction ifThen condition: no comparator (enum state) does NOT write RelrDev_N"() {
+        // Regression guard: when no comparator is supplied (e.g. Switch capability with
+        // state='on'), neither RelrDev_N nor compareCond_N must be written. The write
+        // only fires inside the `if (cond.comparator != null)` guard.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            // Schema with Switch capability + state_1 options, but no
+            // RelrDev or compareCond fields (they should not be written).
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum",
+                                  options: ["condActs": "Conditional Actions"]],
+                                 [name: "actSubType.1", type: "enum",
+                                  options: ["getIfThen": "IF Expression THEN"]],
+                                 [name: "cond", type: "enum",
+                                  options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum",
+                                  options: ["Switch", "Motion"]],
+                                 [name: "rDev_1", type: "capability.switch", multiple: true],
+                                 [name: "state_1", type: "enum", options: ["on", "off"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF Switch1 is on THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Switch",
+                    deviceIds: [8],
+                    state: "on"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "no RelrDev_N, ReltDev_N, or compareCond_N in any POST -- comparator guard is respected"
+        result.success == true
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("RelrDev") } }
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("ReltDev") } }
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("compareCond") } }
+    }
+
+    // ---------- addRequiredExpression STPage value/state unification ----------
+
+    /**
+     * Full STPage schema for addRequiredExpression condition walks. Includes
+     * rCapab_1 so the condition-index-discovery fetch succeeds. Contains
+     * state_1 (NOT value_1) to match live STPage schema. Incrementing
+     * paragraphs ensure renderShifted=true on every _rmWriteSubPageField
+     * pre/post fetch pair, routing each write to applied rather than skipped.
+     */
+    private String stPageCondSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "cond", type: "enum",
+                              options: ["a": "New condition", "b": "( sub-expression"]],
+                             [name: "rCapab_1", type: "enum",
+                              options: ["Custom Attribute", "Switch", "Contact"]],
+                             [name: "rDev_1", type: "capability.sensor", multiple: true],
+                             [name: "rCustomAttr_1", type: "enum",
+                              options: ["wickFilterLife", "battery", "rssi"]],
+                             [name: "RelrDev_1", type: "enum",
+                              options: ["<", "<=", ">", ">=", "=", "!="]],
+                             [name: "state_1", type: "number"],
+                             [name: "hasAll", type: "button"],
+                             [name: "doneST", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addRequiredExpression Custom Attribute condition: value routes to state_N (not value_N)"() {
+        // Bug (STPage path): the old code wrote value_${cIdx} for cond.value
+        // but STPage only exposes state_${cIdx}. After the fix, cond.value
+        // falls through to condStateOrValue and writes state_${cIdx}.
+        // Asserts: 'state_1' in settingsApplied, 'value_1' NOT in settingsApplied
+        // or any POST body. Also verifies RelrDev_1 lands (comparator fix parity).
+        //
+        // NOTE: write ORDER (RelrDev_ before state_) is not asserted at the
+        // unit level because the schema stub doesn't model progressive disclosure
+        // (state_1 is always present). Order correctness is verified live on
+        // the hub (rule 1377, 2026-04-28): state_1 appears only after RelrDev_1
+        // commits, so writing state_1 first silently rejects.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // mainPage needs useST input so _rmWriteSettingOnPage(useST=true) finds it.
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            // Return body-format paragraph that does NOT say "Define Required Expression"
+            // so the post-commit bake-check passes.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF wickFilterLife < 20 THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            fetchSeq++
+            stPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "wickFilterLife",
+                comparator: "<",
+                value: 20
+            ]]],
+            confirm: true
+        ])
+
+        then: "state_1 lands in applied -- value correctly unified to state_N"
+        result.success == true
+        (result.settingsApplied as List).contains("state_1")
+
+        and: "RelrDev_1 lands in applied -- comparator write succeeded on STPage too"
+        (result.settingsApplied as List).contains("RelrDev_1")
+
+        and: "value_1 was NOT written -- old broken field name absent from all POSTs"
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("value_1") } }
+    }
+
+    def "addRequiredExpression enum capability: cond.state still writes state_N (backward compat)"() {
+        // Regression guard: the condStateOrValue unification must not break the
+        // existing cond.state path. Caller passes state='open' (Contact capability)
+        // with no comparator; state_1 should land in applied, RelrDev_1 should NOT
+        // be written (comparator guard respected).
+        // For enum capabilities, state_1 appears immediately after rDev_<N> so
+        // write order is irrelevant to the Contact/Switch/Motion paths.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF Contact1 is open"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            fetchSeq++
+            // Contact capability: state_1 has enum options; no RelrDev_1 input.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum",
+                                  options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum",
+                                  options: ["Contact", "Switch"]],
+                                 [name: "rDev_1", type: "capability.contactSensor", multiple: true],
+                                 [name: "state_1", type: "enum", options: ["open", "closed"]],
+                                 [name: "hasAll", type: "button"],
+                                 [name: "doneST", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Contact",
+                deviceIds: [8],
+                state: "open"
+            ]]],
+            confirm: true
+        ])
+
+        then: "state_1 lands in applied -- cond.state backward compat preserved"
+        result.success == true
+        (result.settingsApplied as List).contains("state_1")
+
+        and: "RelrDev_1 was NOT written -- no comparator means no comparator write"
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("RelrDev") } }
+    }
 }

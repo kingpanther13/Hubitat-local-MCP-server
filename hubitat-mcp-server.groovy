@@ -12567,17 +12567,24 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             if (cond.deviceIds != null) {
                 _rmWriteSettingOnPage(appId, "doActPage", "rDev_${cIdx}", cond.deviceIds, applied, null, skipped)
             }
-            // Custom Attribute path (mirror of _rmBuildCondition for triggers):
-            // when comparator is set, write the attribute (Custom Attribute only)
-            // and the comparator BEFORE the state/value field. Without these the
-            // condition renders as "(Broken Condition)" and the rule label gets
-            // a *BROKEN* marker -- the wizard advanced past rCapab but the
-            // attribute/comparator/value triplet wasn't completed.
+            // Custom Attribute / numeric comparator path:
+            // The condition-wizard comparator field is RelrDev_<N> (lowercase r
+            // in "Relr"), NOT ReltDev_<N> (which is the TRIGGER-row comparator
+            // on selectTriggers -- a different wizard context). Field naming
+            // divergence: trigger wizard = ReltDev${idx} (no underscore, "Relt");
+            // condition wizard = RelrDev_${cIdx} (underscore, "Relr"). Applies
+            // to all condition wizards regardless of page (doActPage and STPage
+            // use the same condition-wizard field names). Empirically confirmed
+            // on live hub: schema's available list shows RelrDev_<N> after
+            // rCustomAttr_<N> is written; writing the wrong name silently rejects.
+            // Canonical doActPage Custom Attribute wizard sequence:
+            //   cond=a -> rCapab_N=Custom Attribute -> rDev_N=[ids]
+            //   -> rCustomAttr_N=attrName -> RelrDev_N=comparator -> state_N=value
             if (cond.comparator != null) {
                 if (cond.attribute != null) {
                     _rmWriteSettingOnPage(appId, "doActPage", "rCustomAttr_${cIdx}", cond.attribute, applied, null, skipped)
                 }
-                _rmWriteSettingOnPage(appId, "doActPage", "compareCond_${cIdx}", cond.comparator, applied, null, skipped)
+                _rmWriteSettingOnPage(appId, "doActPage", "RelrDev_${cIdx}", cond.comparator, applied, null, skipped)
             }
             // state_<N> holds either the enum state value (Switch on/off, Motion
             // active/inactive) or the numeric threshold (Custom Attribute,
@@ -14385,7 +14392,31 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                     if (cond.deviceIds != null) {
                         writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
                     }
-                    if (cond.state != null) {
+                    // Write order MATTERS: STPage (like doActPage) uses
+                    // progressive disclosure. state_<N> does not appear in
+                    // the schema until RelrDev_<N> commits — empirically
+                    // confirmed live (rule 1377, 2026-04-28): after
+                    // rCustomAttr_<N> the schema shows RelrDev_<N>; only
+                    // after RelrDev_<N> commits does state_<N> appear.
+                    // Writing state_<N> before RelrDev_<N> silently rejects.
+                    // Order: rCustomAttr_<N> → RelrDev_<N> → state_<N>.
+                    // For enum capabilities (no comparator), state_<N> appears
+                    // immediately after rDev_<N>, so the comparator block is
+                    // a no-op and write order has no effect.
+                    if (cond.comparator != null) {
+                        if (cond.attribute != null) {
+                            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
+                        }
+                        // Condition-wizard comparator is RelrDev_<N> ("Relr"),
+                        // not ReltDev_<N> ("Relt" = trigger-row comparator).
+                        writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+                    }
+                    // state and value both write to state_${cIdx} — STPage has
+                    // no separate value_<N> field. Mirror the doActPage fallback:
+                    // state (enum string) takes priority; value (numeric threshold)
+                    // is the alias for Custom Attribute and numeric comparator paths.
+                    def condStateOrValue = cond.state != null ? cond.state : cond.value
+                    if (condStateOrValue != null) {
                         def stateNavResp = _rmFetchConfigJson(appId, "STPage")
                         def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                         def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
@@ -14393,22 +14424,13 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                             def stateOptions = (stateInput.options ?: []).collect { o ->
                                 (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
                             }.findAll { it }
-                            def matched = stateOptions.find { it.equalsIgnoreCase(cond.state.toString()) }
+                            def matched = stateOptions.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
                             if (!matched && stateOptions) {
-                                throw new IllegalArgumentException("conditions[${i}].state '${cond.state}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
+                                throw new IllegalArgumentException("conditions[${i}].state '${condStateOrValue}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
                             }
-                            if (matched) cond.state = matched
+                            if (matched) condStateOrValue = matched
                         }
-                        writeST(hrefParams, "state_${cIdx}".toString(), cond.state)
-                    }
-                    if (cond.comparator != null) {
-                        if (cond.attribute != null) {
-                            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
-                        }
-                        writeST(hrefParams, "ReltDev_${cIdx}".toString(), cond.comparator)
-                    }
-                    if (cond.value != null) {
-                        writeST(hrefParams, "value_${cIdx}".toString(), cond.value)
+                        writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
                     }
                     if (cond.not == true) {
                         writeST(hrefParams, "not${cIdx}".toString(), true)
