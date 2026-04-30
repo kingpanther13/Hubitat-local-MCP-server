@@ -8969,7 +8969,7 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
 /**
  * Pull a named Boolean out of statusJson.appState[]. Hubitat serializes
  * Booleans in appState entries as the real `true`/`false` value, but
- * occasionally as the string "true"/"false" — treat both equivalently.
+ * occasionally as the string "true"/"false" -- treat both equivalently.
  */
 private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) {
     def entry = (status?.appState ?: []).find { it?.name == name }
@@ -8979,6 +8979,27 @@ private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) 
     if (v == "true") return true
     if (v == "false") return false
     return fallback
+}
+
+/**
+ * Fetch statusJson for {@code appId} and return the raw value of
+ * {@code state.editAct}, or {@code null} if the entry is absent.
+ *
+ * <p>RM 5.1 sets {@code state.editAct} to the action index whenever an
+ * action edit is in flight. While set, {@code delAct} and move-arrow
+ * clicks are silently no-oped by RM's {@code appButtonHandler}. This
+ * helper is used as a pre-flight guard in {@code _rmDeleteAction} and
+ * {@code _rmMoveAction} so callers get a descriptive error immediately
+ * rather than retrying for 10s before hitting the generic timeout.
+ *
+ * <p>RM clears {@code state.editAct} automatically after ~60s. The value
+ * is typically an Integer (the action index) but may be serialized as a
+ * String by some firmware versions -- returned as-is without coercion.
+ */
+private Object _rmGetStateEditAct(Integer appId) {
+    def status = _rmFetchStatusJson(appId)
+    def entry = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }
+    return entry?.value
 }
 
 /**
@@ -10982,11 +11003,18 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     if (!beforeIndices.contains(actionIdx)) {
         throw new IllegalArgumentException("removeAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
     }
+    // Pre-flight: if state.editAct is set, RM will silently no-op the delAct
+    // click. Detect and fail immediately with a descriptive error rather than
+    // burning 10s of retries and surfacing a confusing timeout message.
+    def stuckEditAct = _rmGetStateEditAct(appId)
+    if (stuckEditAct != null) {
+        throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) restore_item_backup with a recent snapshot.")
+    }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
     // Verify the action actually disappeared. RM 5.1 silently no-ops the
-    // delAct click if state.editAct is set or the button-handler dispatch
-    // races with another edit. Without this check, the caller would see
-    // success: true while the action remained on the rule.
+    // delAct click if the button-handler dispatch races with another edit.
+    // state.editAct was clear at pre-flight, so the retry loop here absorbs
+    // only click-EFFECT propagation lag -- not a stuck-state no-op.
     //
     // The retry loop below absorbs the async dispatch race: the click can
     // return 200 OK before the deletion propagates to appSettings. Each
@@ -11007,7 +11035,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
             return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
         }
     }
-    throw new IllegalStateException("removeAction(${actionIdx}) waited 10 seconds and action ${actionIdx} is still present in rule ${appId}'s actions list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This may be a definitive RM 5.1 no-op (e.g. state.editAct conflict) OR an extreme propagation lag that completes after this response. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response.")
+    throw new IllegalStateException("removeAction(${actionIdx}) waited 10 seconds and action ${actionIdx} is still present in rule ${appId}'s actions list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag (state.editAct was clear at pre-flight). Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response.")
 }
 
 /**
@@ -11084,13 +11112,21 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     // Capture pre-move ORDERING (insertion order from appSettings, which RM
     // updates on every shuffle to reflect display order). The unsorted list
     // lets us verify the action's POSITION moved, not just that the index
-    // set is unchanged — a mid-list silent no-op (RM rejected the click
-    // because state.editAct was set) leaves both before- and after-sets
-    // identical AND positions identical, but a real move shifts position
-    // by exactly one slot.
+    // set is unchanged -- a mid-list silent no-op leaves both before- and
+    // after-sets identical AND positions identical, but a real move shifts
+    // position by exactly one slot.
     def beforeOrderRaw = _rmCollectActionIndices(appId)
     if (!beforeOrderRaw.contains(actionIdx)) {
         throw new IllegalArgumentException("moveAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeOrderRaw.sort().join(', ')}")
+    }
+    // Pre-flight: if state.editAct is set, RM will silently no-op the move-arrow
+    // click. Detect and fail immediately with a descriptive error rather than
+    // burning a slow position-shift check and surfacing a confusing failure.
+    // Placed after the index-existence check (mirrors _rmDeleteAction ordering):
+    // an invalid index gets the more actionable IllegalArgumentException first.
+    def stuckEditAct = _rmGetStateEditAct(appId)
+    if (stuckEditAct != null) {
+        throw new IllegalStateException("moveAction(${actionIdx}, ${direction}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops move-arrow clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) restore_item_backup with a recent snapshot.")
     }
     def beforePosition = beforeOrderRaw.indexOf(actionIdx)
     def isBoundary = (direction == "up" && beforePosition == 0) ||
@@ -11101,7 +11137,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def cfg = null
     try { cfg = _rmFetchConfigJson(appId, "selectActions") }
     catch (Exception verifyExc) {
-        mcpLog("warn", "rm-native", "moveAction: post-click selectActions fetch failed for app ${appId} (${verifyExc.message}) — render-error check skipped, action ordering may have left the page in an inconsistent state")
+        mcpLog("warn", "rm-native", "moveAction: post-click selectActions fetch failed for app ${appId} (${verifyExc.message}) -- render-error check skipped, action ordering may have left the page in an inconsistent state")
     }
     def renderError = cfg?.configPage?.error
     if (renderError) {
@@ -11113,7 +11149,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
         def expectedShift = direction == "up" ? -1 : 1
         def actualShift = afterPosition - beforePosition
         if (actualShift != expectedShift) {
-            throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but action position did NOT shift — RM may have rejected the click silently (state.editAct set, race with another edit, etc.). Before position: ${beforePosition}, after position: ${afterPosition}, expected shift: ${expectedShift}.")
+            throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but action position did NOT shift -- state.editAct was clear at pre-flight, so this is likely an extreme propagation lag or race with another edit. Before position: ${beforePosition}, after position: ${afterPosition}, expected shift: ${expectedShift}.")
         }
     }
     return [success: true, index: actionIdx, direction: direction, beforePosition: beforePosition, afterPosition: afterPosition, indicesAfter: afterOrderRaw.sort()]

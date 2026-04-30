@@ -1169,6 +1169,125 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("up") || result.error?.toLowerCase()?.contains("direction")
     }
 
+    // ---------- Finding #11: state.editAct pre-flight detection ----------
+
+    def "removeAction pre-flight detects stuck state.editAct and throws immediately"() {
+        // Finding #11: when state.editAct is set, RM silently no-ops delAct
+        // clicks. Without pre-flight detection the caller would burn 10s of
+        // retries before hitting a confusing generic timeout message.
+        // With pre-flight detection, _rmDeleteAction should throw
+        // IllegalStateException immediately with a descriptive message
+        // naming the stuck index and listing recovery options.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // appState carries editAct=3 (action 3 is in-flight from a prior
+        // interrupted edit). appSettings carries actType.1 so beforeIndices
+        // contains index 1 (the one we want to delete) -- pre-flight fires
+        // AFTER the index-existence check, so the rule must have the target.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [[name: "actType.1", value: "switchActs"]],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [[name: "editAct", value: 3]],
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "pre-flight detects stuck editAct and reports it as an error"
+        result.success == false
+        result.error?.contains("state.editAct=3")
+        result.error?.contains("Recovery options")
+
+        and: "delAct button click never fires -- no hub mutation"
+        !posts.any { it.body?.get("stateAttribute") == "delAct" }
+    }
+
+    def "moveAction pre-flight detects stuck state.editAct and throws immediately"() {
+        // Finding #11 (moveAction site): same pre-flight guard as removeAction.
+        // state.editAct set => moveAction should throw immediately with a
+        // descriptive message rather than proceeding to the click and
+        // silently producing a position-unchanged result.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // Two actions present so moveAction(1, "down") is not a boundary move.
+        // editAct=2 is stuck from a prior interrupted edit.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [[name: "actType.1", value: "switchActs"], [name: "actType.2", value: "delayActs"]],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [[name: "editAct", value: 2]],
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+
+        then: "pre-flight detects stuck editAct and reports it as an error"
+        result.success == false
+        result.error?.contains("state.editAct=2")
+        result.error?.contains("Recovery options")
+
+        and: "no move-arrow button click fires -- no hub mutation"
+        !posts.any { it.body?.get("stateAttribute") == "arrowDn" }
+    }
+
+    def "removeAction proceeds normally when state.editAct is not set"() {
+        // Finding #11 no-false-positive: when appState has no editAct entry,
+        // pre-flight must pass through silently and the normal delete flow runs.
+        // This guards against regressions where pre-flight incorrectly blocks
+        // a clean delete. Uses a single-retry success scenario (delAct fires,
+        // first post-click fetch sees action gone).
+        given:
+        enableHubAdminWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // appState is empty (no editAct entry) -- pre-flight returns null, passes through.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired) {
+                // post-click: action 1 gone (deletion propagated immediately)
+                statusJson(100, [[name: "actType.2", value: "switchActs"]])
+            } else {
+                // pre-click: both actions present, appState empty (no stuck state)
+                statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+            }
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "no stuck state -- delete proceeds and succeeds"
+        result.success == true
+        delActFired == true
+        result.note?.contains("Removed action 1") || result.removedIndices?.contains(1)
+    }
+
     def "walkStep introspect returns schema for a page without mutating"() {
         given:
         enableHubAdminWrite()
