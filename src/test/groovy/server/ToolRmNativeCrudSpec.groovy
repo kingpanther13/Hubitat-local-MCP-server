@@ -2980,4 +2980,85 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("read-only mode")
         ex.message.contains("manage_native_rules_and_apps")
     }
+
+    def "search_tools filters write custom_* tools in readonly mode"() {
+        // Engine OFF + builtinApp ON => readonly mode. search_tools must not
+        // surface write/structural custom_* tools (create/delete/export/import/clone)
+        // even though they live in the cached full corpus. Read-subset tools
+        // (list_rules, get_rule, etc.) must still appear in results.
+        given:
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = true
+        // stateMap is cleared by setup() so corpus rebuilds fresh this test
+
+        when:
+        def result = script.toolSearchTools([query: "custom create rule", maxResults: 10])
+        def resultNames = result.results*.tool as Set
+
+        then: "write tools are filtered out of search results"
+        !resultNames.contains("custom_create_rule")
+        !resultNames.contains("custom_delete_rule")
+        !resultNames.contains("custom_export_rule")
+        !resultNames.contains("custom_import_rule")
+        !resultNames.contains("custom_clone_rule")
+
+        and: "only tools from the visible count are searched"
+        result.totalToolsSearched < script.buildToolSearchCorpus().size()
+    }
+
+    def "search_tools filters all custom_* tools in off mode"() {
+        // Engine OFF + builtinApp OFF => off mode. search_tools must not surface
+        // ANY custom_* tools -- the full set of 10 must be excluded from scoring.
+        given:
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = false
+
+        when: "searching for a query that would normally surface custom_list_rules"
+        def result = script.toolSearchTools([query: "custom list rules", maxResults: 10])
+        def resultNames = result.results*.tool as Set
+
+        then: "no custom_* tools appear in off-mode search results"
+        resultNames.every { !it.startsWith("custom_") }
+
+        and: "visible corpus is smaller than full corpus by at least 10 (the hidden custom_* set)"
+        def fullCorpusSize = script.buildToolSearchCorpus().size()
+        result.totalToolsSearched <= fullCorpusSize - 10
+    }
+
+    def "executeTool rejects custom_create_rule when customEngineMode is off"() {
+        // Engine OFF + builtinApp OFF => off mode. All custom_* tools must be
+        // blocked at the executeTool gate with a message that names both toggles
+        // and points to the recommended alternative (Built-in App Tools).
+        given:
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = false
+
+        when:
+        script.executeTool("custom_create_rule", [name: "x",
+            triggers: [[type: "time", time: "00:00"]],
+            actions: [[type: "log", message: "y"]]])
+
+        then: "off-mode gate fires with both-toggles-off message"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Both")
+        ex.message.contains("Custom Rule Engine")
+        ex.message.contains("Built-in App Tools")
+    }
+
+    def "executeTool rejects custom_list_rules in off mode (read tools also blocked)"() {
+        // In off mode even read-only custom_* tools are blocked -- the entire
+        // engine is off. This is different from readonly mode where the read
+        // subset is allowed.
+        given:
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = false
+
+        when:
+        script.executeTool("custom_list_rules", [:])
+
+        then: "read tool also blocked in full-off mode"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Both")
+        ex.message.contains("Custom Rule Engine")
+    }
 }

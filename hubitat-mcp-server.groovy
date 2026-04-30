@@ -2301,7 +2301,7 @@ def executeTool(toolName, args) {
                                "custom_get_rule_diagnostics", "custom_update_rule"] as Set
     if (toolName?.startsWith("custom_")) {
         if (customEngineMode == "off") {
-            throw new IllegalArgumentException("Custom Rule Engine is disabled. Enable 'Enable Custom Rule Engine' in MCP Rule Server app settings to use ${toolName}.")
+            throw new IllegalArgumentException("${toolName} is not available. Both 'Enable Custom Rule Engine' and 'Enable Built-in App Tools' are OFF. To use custom_* legacy MCP rule tools, turn on Custom Rule Engine. To use native Hubitat Rule Machine rules (recommended), turn on Built-in App Tools instead.")
         }
         if (customEngineMode == "readonly" && !customReadonlyTools.contains(toolName)) {
             throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer manage_native_rules_and_apps.")
@@ -15674,15 +15674,51 @@ def toolSearchTools(args) {
     if (!query?.trim()) return [error: "query is required"]
     def maxResults = args.maxResults != null ? Math.max(0, args.maxResults as Integer) : 5
 
-    // Build searchable corpus (cached in state for performance on resource-constrained hub)
+    // Build searchable corpus (cached in state for performance on resource-constrained hub).
+    // The full corpus is always cached; visibility filtering is applied per-request so that
+    // toggle changes take effect immediately without invalidating the cache.
     def corpus = state.toolSearchCorpus
     if (!corpus) {
         corpus = buildToolSearchCorpus()
         state.toolSearchCorpus = corpus
     }
 
+    // Apply the same visibility filter that getToolDefinitions() uses so that
+    // search_tools never surfaces tools the LLM cannot actually invoke.
+    //   "off"      -- engine OFF + builtinApp OFF; all custom_* hidden
+    //   "readonly" -- engine OFF + builtinApp ON; write subset hidden
+    //   "full"     -- engine ON; all custom_* visible
+    def customEngineOn = settings.enableCustomRuleEngine == true
+    def builtinAppOn   = settings.enableBuiltinApp == true
+    def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
+    def searchHideByName = [] as Set
+    def searchHideGwSubTools = [:].withDefault { [] as Set }
+    if (customEngineMode == "off") {
+        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
+         "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
+         "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
+            searchHideByName << it
+        }
+        searchHideGwSubTools["manage_diagnostics"] << "custom_get_rule_diagnostics"
+    } else if (customEngineMode == "readonly") {
+        ["custom_create_rule", "custom_delete_rule", "custom_export_rule",
+         "custom_import_rule", "custom_clone_rule"].each {
+            searchHideByName << it
+        }
+        // custom_get_rule_diagnostics stays visible in readonly mode (read sub-tool)
+    }
+    // Filter corpus to only tools the current toggle state allows.
+    def visibleCorpus = corpus.findAll { entry ->
+        if (searchHideByName.contains(entry.name)) return false
+        if (entry.gateway) {
+            def hiddenInGw = searchHideGwSubTools[entry.gateway]
+            if (hiddenInGw && hiddenInGw.contains(entry.name)) return false
+        }
+        return true
+    }
+
     // Tokenize all documents and the query
-    def docTokens = corpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
+    def docTokens = visibleCorpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
     def queryTokens = bm25Tokenize(query)
 
     if (!queryTokens) return [results: [], message: "No searchable terms in query"]
@@ -15699,7 +15735,7 @@ def toolSearchTools(args) {
     if (ranked.size() > maxResults) ranked = ranked.take(maxResults)
 
     def results = ranked.collect { r ->
-        def tool = corpus[r.index]
+        def tool = visibleCorpus[r.index]
         def entry = [
             tool: tool.name,
             description: tool.description,
@@ -15717,7 +15753,7 @@ def toolSearchTools(args) {
     return [
         query: query,
         resultsCount: results.size(),
-        totalToolsSearched: corpus.size(),
+        totalToolsSearched: visibleCorpus.size(),
         results: results
     ]
 }
