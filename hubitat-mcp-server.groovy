@@ -12119,11 +12119,14 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             "devices.@N": deviceIds,
             "cCmd.@N": actionSpec.command
         ]
-        // ALL parameters require a moreParams click each. Verified live
-        // 2026-04-26: cCmd alone does NOT auto-expose cpType1/cpVal1 — the
-        // schema after writing cCmd shows just the moreParams button. Each
-        // moreParams click allocates the next cpType<N>/cpVal<N> pair. The
-        // earlier comment claiming cpType1 auto-appears was wrong.
+        // Parameter slot allocation (verified live 2026-04-27):
+        // cpType1/cpVal1 are present in the schema after cCmd is written
+        // (or are always present). The FIRST parameter must be written
+        // directly to cpType1/cpVal1 -- do NOT click moreParams first or
+        // the write lands at cpType2 and cpType1 stays empty, causing RM
+        // to wrap the action in "IF (**Broken Condition**)". For the SECOND
+        // and subsequent parameters, click moreParams to allocate the next
+        // cpType<N>/cpVal<N> slot, then write to the newly-revealed field.
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
             // Validate types up-front so a bad type fails fast.
             actionSpec.parameters.each { p ->
@@ -12799,12 +12802,14 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied, null, skipped)
     }
 
-    // runCommand: extra parameters beyond the first. Verified live (2026-04-25):
-    // cpType1/cpVal1 auto-appear after cCmd; only after cpVal1 is written does
-    // a `moreParams` button appear. Each click of moreParams allocates the
-    // next cpType<N>/cpVal<N> pair.
+    // runCommand parameters. First parameter writes directly to cpType1/cpVal1
+    // (those fields are present after cCmd without a moreParams click). Each
+    // subsequent parameter requires one moreParams click to allocate the next
+    // cpType<N>/cpVal<N> pair before writing. Verified live 2026-04-27: always
+    // clicking moreParams first causes the first param to land at cpType2,
+    // leaving cpType1 empty and producing "IF (**Broken Condition**)" in RM.
     if (actionSpec.__runCommandExtraParams instanceof List && !actionSpec.__runCommandExtraParams.isEmpty()) {
-        actionSpec.__runCommandExtraParams.each { p ->
+        actionSpec.__runCommandExtraParams.eachWithIndex { p, paramIdx ->
             def pType, pValue
             if (p instanceof Map) { pType = p.type; pValue = p.value }
             else { pType = "string"; pValue = p }
@@ -12817,24 +12822,42 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             } else {
                 pType = "string"
             }
-            def beforeCfg = _rmFetchConfigJson(appId, "doActPage")
-            def beforeNames = (beforeCfg?.configPage?.sections ?: []).collectMany { sec ->
-                (sec?.input ?: []).collect { it?.name?.toString() }
+
+            def slotName  // base field name, e.g. "cpType1" or "cpType2"
+            if (paramIdx == 0) {
+                // First parameter: cpType1/cpVal1 are already in the schema after
+                // cCmd is written. Write directly -- no moreParams click needed.
+                slotName = "cpType1"
+            } else {
+                // Subsequent parameters: click moreParams to allocate the next slot,
+                // then discover which new cpType<N> field appeared.
+                def beforeCfg = _rmFetchConfigJson(appId, "doActPage")
+                def beforeNames = (beforeCfg?.configPage?.sections ?: []).collectMany { sec ->
+                    (sec?.input ?: []).collect { it?.name?.toString() }
+                }
+                def beforeCpTypes = beforeNames.findAll { it?.startsWith("cpType") && it?.endsWith(".${idx}") } as Set
+                _rmClickAppButton(appId, "moreParams", null, "doActPage")
+                def afterCfg = _rmFetchConfigJson(appId, "doActPage")
+                def afterNames = (afterCfg?.configPage?.sections ?: []).collectMany { sec ->
+                    (sec?.input ?: []).collect { it?.name?.toString() }
+                }
+                def newCpType = afterNames.find { it?.startsWith("cpType") && it?.endsWith(".${idx}") && !beforeCpTypes.contains(it) }
+                if (!newCpType) {
+                    mcpLog("warn", "rm-native", "runCommand: moreParams click did not reveal a new cpType<N> field for action ${idx}; param skipped")
+                    return
+                }
+                // newCpType is e.g. "cpType2.1" -- strip the action-index suffix.
+                def m = newCpType.toString() =~ /^(cpType\d+)\.\d+$/
+                slotName = m ? m[0][1] : null
+                if (!slotName) {
+                    mcpLog("warn", "rm-native", "runCommand: couldn't parse cpType slot from '${newCpType}'; param skipped")
+                    return
+                }
             }
-            def beforeCpTypes = beforeNames.findAll { it?.startsWith("cpType") && it?.endsWith(".${idx}") } as Set
-            _rmClickAppButton(appId, "moreParams", null, "doActPage")
-            def afterCfg = _rmFetchConfigJson(appId, "doActPage")
-            def afterNames = (afterCfg?.configPage?.sections ?: []).collectMany { sec ->
-                (sec?.input ?: []).collect { it?.name?.toString() }
-            }
-            def newCpType = afterNames.find { it?.startsWith("cpType") && it?.endsWith(".${idx}") && !beforeCpTypes.contains(it) }
-            if (!newCpType) {
-                mcpLog("warn", "rm-native", "runCommand: moreParams click did not reveal a new cpType<N> field for action ${idx}; param skipped")
-                return
-            }
-            _rmWriteSettingOnPage(appId, "doActPage", newCpType, pType, applied, null, skipped)
-            def newCpVal = newCpType.replace("cpType", "cpVal")
-            if (pValue != null) _rmWriteSettingOnPage(appId, "doActPage", newCpVal, pValue, applied, null, skipped)
+
+            _rmWriteSettingOnPage(appId, "doActPage", "${slotName}.${idx}".toString(), pType, applied, null, skipped)
+            def valFieldName = slotName.replace("cpType", "cpVal")
+            if (pValue != null) _rmWriteSettingOnPage(appId, "doActPage", "${valFieldName}.${idx}".toString(), pValue, applied, null, skipped)
         }
     }
 

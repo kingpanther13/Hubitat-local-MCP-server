@@ -2961,6 +2961,280 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("manage_native_rules_and_apps")
     }
 
+    // ---------- runCommand parameter slot-allocation fix ----------
+
+    def "addAction runCommand single parameter writes to cpType1/cpVal1 without moreParams click"() {
+        // Bug fix: the first runCommand parameter must write directly to cpType1/cpVal1.
+        // The old code always clicked moreParams first, landing the first param at
+        // cpType2 and leaving cpType1 empty, which caused RM to render
+        // "IF (**Broken Condition**) setMode(...)".
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def moreParamsClicks = 0
+        def writtenFields = []  // field names from settings[*] keys in update POSTs
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "moreParams") {
+                moreParamsClicks++
+            }
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields << m[0][1]
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        // Main page (backup snapshot pre-flight)
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectActions: expose modeActs option so runCommand's actType write lands
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        // doActPage: always includes cpType1.1/cpVal1.1; seqNum changes per fetch
+        // so _rmWriteSettingOnPage routes writes to 'applied' (paragraph shift signal).
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum",
+                                  options: ["modeActs": "Run Custom Action"]],
+                                 [name: "actSubType.1", type: "enum",
+                                  options: ["getDefinedAction": "Run Custom Action"]],
+                                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
+                                 [name: "devices.1", type: "capability.switch", multiple: true],
+                                 [name: "cCmd.1", type: "text"],
+                                 [name: "cpType1.1", type: "enum",
+                                  options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                                 [name: "cpVal1.1", type: "text"],
+                                 [name: "moreParams", type: "button"],
+                                 [name: "actionDone", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["setMode on Device1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "runCommand",
+                command: "setMode",
+                deviceIds: [42],
+                parameters: [[type: "STRING", value: "sleep"]]
+            ],
+            confirm: true
+        ])
+
+        then: "first parameter lands at cpType1.1 / cpVal1.1"
+        result.success == true
+        writtenFields.contains("cpType1.1")
+        writtenFields.contains("cpVal1.1")
+        !writtenFields.contains("cpType2.1")
+        !writtenFields.contains("cpVal2.1")
+
+        and: "no moreParams click was needed for the first parameter"
+        moreParamsClicks == 0
+    }
+
+    def "addAction runCommand two parameters: first param to cpType1, second via moreParams to cpType2"() {
+        // Second parameter requires moreParams to allocate its slot. After the
+        // moreParams click, the schema should expose cpType2.1/cpVal2.1 as new fields.
+        // Exactly ONE moreParams click should be recorded.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def moreParamsClicks = 0
+        def writtenFields = []
+        def moreParamsFired = false  // flips after the moreParams POST
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "moreParams") {
+                moreParamsClicks++
+                moreParamsFired = true
+            }
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields << m[0][1]
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        // doActPage: before moreParams click shows cpType1.1/cpVal1.1 only;
+        // after moreParams click also exposes cpType2.1/cpVal2.1.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]],
+                [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
+                [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
+                [name: "devices.1", type: "capability.switch", multiple: true],
+                [name: "cCmd.1", type: "text"],
+                [name: "cpType1.1", type: "enum",
+                 options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                [name: "cpVal1.1", type: "text"],
+                [name: "moreParams", type: "button"],
+                [name: "actionDone", type: "button"]
+            ]
+            if (moreParamsFired) {
+                // After moreParams click: cpType2.1/cpVal2.1 are now present
+                inputs = inputs + [
+                    [name: "cpType2.1", type: "enum",
+                     options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                    [name: "cpVal2.1", type: "text"]
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["setMode on Device1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "runCommand",
+                command: "setMode",
+                deviceIds: [42],
+                parameters: [
+                    [type: "STRING", value: "sleep"],
+                    [type: "NUMBER", value: "5"]
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "first param at slot 1, second param at slot 2"
+        result.success == true
+        writtenFields.contains("cpType1.1")
+        writtenFields.contains("cpVal1.1")
+        writtenFields.contains("cpType2.1")
+        writtenFields.contains("cpVal2.1")
+
+        and: "exactly one moreParams click (only for the second parameter)"
+        moreParamsClicks == 1
+    }
+
+    def "addAction runCommand with no parameters writes no cpType fields"() {
+        // A runCommand with an empty parameters list (or no parameters key)
+        // should not write any cpType/cpVal fields and must not click moreParams.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def moreParamsClicks = 0
+        def writtenFields = []
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsClicks++
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields << m[0][1]
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum",
+                                  options: ["modeActs": "Run Custom Action"]],
+                                 [name: "actSubType.1", type: "enum",
+                                  options: ["getDefinedAction": "Run Custom Action"]],
+                                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
+                                 [name: "devices.1", type: "capability.switch", multiple: true],
+                                 [name: "cCmd.1", type: "text"],
+                                 [name: "moreParams", type: "button"],
+                                 [name: "actionDone", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["refresh on Device1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "runCommand",
+                command: "refresh",
+                deviceIds: [42]
+                // no parameters key
+            ],
+            confirm: true
+        ])
+
+        then: "no cpType or cpVal fields were written"
+        result.success == true
+        writtenFields.every { !it.startsWith("cpType") && !it.startsWith("cpVal") }
+
+        and: "no moreParams click fired"
+        moreParamsClicks == 0
+    }
+
     def "executeTool rejects write tool custom_create_rule when customEngineMode is readonly"() {
         // Engine OFF + builtinApp ON => readonly mode. Write tools (create/delete/
         // export/import/clone) must be blocked at the executeTool dispatch gate,
