@@ -735,6 +735,31 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         throw new IllegalArgumentException("Cannot call a gateway from within a gateway")
     }
 
+    // Defensive: some MCP clients (e.g. Sonnet subagents) serialize inner `args`
+    // as a JSON-encoded string instead of a Map. Parse it transparently so the
+    // gateway dispatch is not brittle to that serialization quirk.
+    // Non-string args (Map, null) fall through the `instanceof String` check unchanged.
+    if (toolArgs instanceof String) {
+        def parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(toolArgs as String)
+        } catch (Exception e) {
+            throw new IllegalArgumentException(
+                "Gateway arg 'args' was a String but not valid JSON. " +
+                "Expected either a JSON object or a JSON-encoded string of an object. " +
+                "Parse error: ${e.message ?: e.toString()}"
+            )
+        }
+        if (!(parsed instanceof Map)) {
+            def parsedType = (parsed instanceof List) ? "Array" : (parsed == null ? "null" : "non-object")
+            throw new IllegalArgumentException(
+                "Gateway arg 'args' was a String that parsed to a JSON ${parsedType}, not a JSON object. " +
+                "Expected either a JSON object or a JSON-encoded string of an object."
+            )
+        }
+        toolArgs = parsed as Map
+    }
+
     // Option D: Pre-validate required parameters and return helpful error with full schema
     def safeArgs = toolArgs ?: [:]
     def defMap = getAllToolDefinitions().collectEntries { [(it.name): it] }
