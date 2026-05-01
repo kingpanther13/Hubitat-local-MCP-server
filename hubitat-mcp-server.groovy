@@ -145,7 +145,7 @@ def mainPage() {
                           "For new rule creation, prefer <code>manage_native_rules_and_apps</code> create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
-                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_list_rules, custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this.",
+                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_list_rules, custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -256,6 +256,29 @@ def updated() {
     log.info "MCP Rule Server updated"
     state.remove("toolSearchCorpus")  // Invalidate BM25 search cache on app update
     initialize()
+
+    // ===== One-time custom-engine rename migration (PR #134) =====
+    // Legacy users had `enableRuleEngine: true` (default ON). When that setting
+    // was renamed to `enableCustomRuleEngine` (default OFF), firmware upgrades
+    // on 2.5.0.x re-evaluate the renamed Boolean against defaultValue and may
+    // flip a user-set `false` back to `true`. Force OFF once: when the legacy
+    // setting is still present (proves this is a pre-rename install) AND we've
+    // never run this migration AND the new setting is not already false.
+    //
+    // After this fires once, `state.customEngineMigrated` locks it to a single
+    // firing. If a user explicitly toggles ON after migration, their choice
+    // persists -- we only correct the firmware-induced flip, not a deliberate
+    // user toggle. Subsequent firmware-upgrade re-flips (after the initial
+    // migration) are a known quirk the user must spot-check; we don't
+    // auto-correct those because updated() fires before mainPage() re-renders
+    // the new settings value, and we'd race with user-driven toggle events.
+    if (state.customEngineMigrated != true
+            && settings.enableRuleEngine != null
+            && settings.enableCustomRuleEngine != false) {
+        app.updateSetting("enableCustomRuleEngine", [type: "bool", value: false])
+        mcpLog("info", "engine-migration", "Forced enableCustomRuleEngine=false (one-time rename migration; legacy enableRuleEngine present)")
+    }
+    state.customEngineMigrated = true
 }
 
 def uninstalled() {
