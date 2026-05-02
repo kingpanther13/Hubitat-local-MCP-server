@@ -129,7 +129,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `get_device_events`. Returns recent on/off events.
 
-### T08 — list_rules
+### T08 — custom_list_rules
 
 ```json
 {
@@ -137,9 +137,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `list_rules`. Returns rule count, names, enabled/disabled status.
+**Expected**: Calls `custom_list_rules`. Returns rule count, names, enabled/disabled status.
 
-### T09 — get_rule
+### T09 — custom_get_rule
 
 ```json
 {
@@ -149,9 +149,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `get_rule` with rule ID. Returns full structure.
+**Expected**: Calls `custom_get_rule` with rule ID. Returns full structure.
 
-### T10 — create_rule
+### T10 — custom_create_rule
 
 ```json
 {
@@ -161,9 +161,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `create_rule` with proper structure and `testRule=true`.
+**Expected**: Calls `custom_create_rule` with proper structure and `testRule=true`.
 
-### T11 — update_rule
+### T11 — custom_update_rule
 
 ```json
 {
@@ -173,9 +173,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `update_rule` with modified trigger.
+**Expected**: Calls `custom_update_rule` with modified trigger.
 
-### T12 — update_rule enable/disable
+### T12 — custom_update_rule enable/disable
 
 ```json
 {
@@ -185,7 +185,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `update_rule` with `enabled=false`, verifies, calls `update_rule` with `enabled=true`, verifies.
+**Expected**: Calls `custom_update_rule` with `enabled=false`, verifies, calls `custom_update_rule` with `enabled=true`, verifies.
 
 ### T13 — update_device (label)
 
@@ -289,7 +289,7 @@ These ask the AI to do something that requires a **proxied tool** (behind a gate
 
 On v0.7.7 these tools are directly available — this section tests whether v0.8.0 gateway descriptions provide enough information for discovery.
 
-### T20 — Discover export_rule (manage_rules_admin)
+### T20 — Discover custom_export_rule (manage_rules_admin)
 
 ```json
 {
@@ -299,10 +299,10 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.7.7**: Calls `export_rule` directly.
-**Expected v0.8.0**: Finds `manage_rules_admin` → `export_rule`.
+**Expected v0.7.7**: Calls `export_rule` directly *(pre-custom_ rename; tool no longer exists on v0.8.0+)*.
+**Expected v0.8.0+**: Finds `manage_rules_admin` → `custom_export_rule`.
 
-### T21 — Discover clone_rule (manage_rules_admin)
+### T21 — Discover custom_clone_rule (manage_rules_admin)
 
 ```json
 {
@@ -312,9 +312,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_rules_admin` → `clone_rule`.
+**Expected v0.8.0**: Discovers `manage_rules_admin` → `custom_clone_rule`.
 
-### T22 — Discover test_rule (manage_rules_admin)
+### T22 — Discover custom_test_rule (manage_rules_admin)
 
 ```json
 {
@@ -324,9 +324,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_rules_admin` → `test_rule`.
+**Expected v0.8.0**: Discovers `manage_rules_admin` → `custom_test_rule`.
 
-### T23 — Discover import_rule round-trip (manage_rules_admin)
+### T23 — Discover custom_import_rule round-trip (manage_rules_admin)
 
 ```json
 {
@@ -336,7 +336,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_rules_admin` → `import_rule`.
+**Expected v0.8.0**: Discovers `manage_rules_admin` → `custom_import_rule`.
 
 ### T24 — Discover list_variables (manage_hub_variables)
 
@@ -609,7 +609,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_diagnostics` → `generate_bug_report`.
 
-### T53 — Discover get_rule_diagnostics (manage_diagnostics)
+### T53 — Discover custom_get_rule_diagnostics (manage_diagnostics)
 
 ```json
 {
@@ -619,7 +619,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_diagnostics` → `get_rule_diagnostics`.
+**Expected v0.8.0**: Discovers `manage_diagnostics` → `custom_get_rule_diagnostics`.
 
 ### T54 — Discover set_log_level (manage_logs)
 
@@ -735,12 +735,12 @@ These test gateway-specific behaviors: catalog mode, skip-catalog optimization, 
 ```json
 {
   "setup_prompt": "Create a test rule called 'BAT Proxy Test' with a time trigger and log action. Mark as test rule.",
-  "test_prompt": "Call the export_rule tool to export my rule 'BAT Proxy Test'.",
+  "test_prompt": "Call the custom_export_rule tool to export my rule 'BAT Proxy Test'.",
   "teardown_prompt": "Delete the rule 'BAT Proxy Test'."
 }
 ```
 
-**Expected**: AI recognizes `export_rule` is behind `manage_rules_admin` and routes correctly. Does NOT report "tool not found."
+**Expected**: AI recognizes `custom_export_rule` is behind `manage_rules_admin` and routes correctly. Does NOT report "tool not found."
 
 ### T65 — Wrong gateway for tool (error handling)
 
@@ -809,7 +809,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Uses `get_rule_diagnostics` or `get_rule`. Should notice the rule is disabled.
+**Expected**: Uses `custom_get_rule_diagnostics` or `custom_get_rule`. Should notice the rule is disabled.
 
 ### T75 — "What apps do I have installed?" → apps/drivers
 
@@ -841,7 +841,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `clone_rule`.
+**Expected**: Routes to `custom_clone_rule`.
 
 ### T78 — "Back up my rule" → rules admin
 
@@ -853,7 +853,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `export_rule`.
+**Expected**: Routes to `custom_export_rule`.
 
 ### T79 — "Show me the logs" → hub logs (not debug logs)
 
@@ -882,12 +882,12 @@ Complex scenarios spanning multiple tools and gateways.
 ```
 
 **Expected tools (v0.8.0)**:
-1. `create_rule` (core)
-2. `get_rule` (core)
-3. `manage_rules_admin(tool=test_rule)` (gateway)
-4. `update_rule` with `enabled=false` (core)
-5. `manage_rules_admin(tool=export_rule)` (gateway)
-6. `manage_rules_admin(tool=delete_rule)` (gateway)
+1. `custom_create_rule` (core)
+2. `custom_get_rule` (core)
+3. `manage_rules_admin(tool=custom_test_rule)` (gateway)
+4. `custom_update_rule` with `enabled=false` (core)
+5. `manage_rules_admin(tool=custom_export_rule)` (gateway)
+6. `manage_rules_admin(tool=custom_delete_rule)` (gateway)
 
 ### T81 — Virtual device workflow
 
@@ -938,7 +938,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: Core tools (`manage_virtual_device` x2, `create_rule`, `get_rule`) and `manage_rules_admin` (`test_rule`).
+**Expected**: Core tools (`manage_virtual_device` x2, `custom_create_rule`, `custom_get_rule`) and `manage_rules_admin` (`custom_test_rule`).
 
 ### T86 — Variable round-trip workflow
 
@@ -966,7 +966,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: Routes to `delete_rule`, not `delete_device`.
+**Expected**: Routes to `custom_delete_rule`, not `delete_device`.
 
 ### T91 — "Health" ambiguity (hub vs device)
 
@@ -1052,7 +1052,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `get_rule` returns error. AI reports rule not found.
+**Expected**: `custom_get_rule` returns error. AI reports rule not found.
 
 ### T102 — Send command to non-existent device
 
@@ -1073,7 +1073,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `create_rule` returns validation error.
+**Expected**: `custom_create_rule` returns validation error.
 
 ### T104 — Gateway anti-recursion (v0.8.0)
 
@@ -1125,6 +1125,37 @@ Run on hub with zero rooms. **Expected**: Returns empty list, not an error.
 
 Run with no devices selected for MCP access. **Expected**: Returns empty list or message about no devices.
 
+### T109 — addAction partial=true is not a failure (Finding #4)
+
+Tests that agents correctly interpret the `partial=true` flag from `update_native_app(addAction)`.
+Per Finding #4 (shipped in commit `95654ad`), `success` and `partial` are orthogonal:
+- `success: true, partial: false` -- all fields landed cleanly
+- `success: true, partial: true` -- action committed but some sidecar fields were silently rejected by RM's wizard schema (e.g. `onOff.1` after `onOffSwitch.1` writes). **This is cosmetic when `health.ok=true`.**
+- `success: false` -- primary commit failed; rule may be inconsistent
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Partial Test Switch'. Note its device ID.",
+  "test_prompt": "Using update_native_app with addAction, add a 'Switch: on' action targeting 'BAT Partial Test Switch' to a new RM rule called 'BAT Finding4 Rule'. The addAction response may return partial=true -- interpret this response correctly and report whether the action was successfully added to the rule.",
+  "teardown_prompt": "Delete the rule 'BAT Finding4 Rule'. Delete the virtual switch 'BAT Partial Test Switch'."
+}
+```
+
+**Expected**:
+- Agent calls `manage_native_rules_and_apps(tool=create_native_app)` to create the rule, then `manage_native_rules_and_apps(tool=update_native_app, args={addAction: ...})`.
+- The response returns `{success: true, partial: true, ...}` (empirically observed for Switch actions).
+- Agent does NOT panic, does NOT call `removeAction`, does NOT retry the `addAction` (which would create a duplicate).
+- Agent calls `manage_installed_apps(tool=get_app_config, args={appId: ..., includeSettings: true})` OR `manage_native_rules_and_apps(tool=update_native_app, args={walkStep: {page: "mainPage", operation: "introspect"}})` to verify the action rendered correctly in the rule.
+- Agent reports the action was added successfully, noting the partial flag was cosmetic.
+
+**What an agent must NOT do**:
+- Interpret `partial: true` as a failure requiring cleanup or retry.
+- Call `removeAction` to "undo" the partial action (it committed fully -- removing it deletes a working action).
+- Retry `addAction` for the same action (produces a duplicate row).
+- Report to the user that the operation failed when `health.ok=true` and the action paragraph renders correctly.
+
+**Acceptance criterion**: Agent reports success, the rule's mainPage render shows the action (e.g. "On: BAT Partial Test Switch"), and no duplicate action rows exist.
+
 ---
 
 ## Section 8: Comparison/Regression Tests
@@ -1173,7 +1204,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 }
 ```
 
-**v0.7.7**: Calls `export_rule` directly. **v0.8.0**: Via `manage_rules_admin`. Compare extra turns for discovery.
+**v0.7.7**: Calls `export_rule` directly *(pre-custom_ rename)*. **v0.8.0+**: Via `manage_rules_admin(tool=custom_export_rule)`. Compare extra turns for discovery.
 
 ### T114 — Hub logs (moved to gateway in v0.8.0)
 
@@ -1194,7 +1225,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 }
 ```
 
-**v0.7.7**: `delete_rule` directly. **v0.8.0**: Via `manage_rules_admin`. Did AI try direct call first and fail?
+**v0.7.7**: `delete_rule` directly *(pre-custom_ rename)*. **v0.8.0+**: Via `manage_rules_admin(tool=custom_delete_rule)`. Did AI try direct call first and fail?
 
 ### T116 — Multi-tool hub status (regression baseline)
 
@@ -1359,7 +1390,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `list_rules`.
+**Expected**: `custom_list_rules`.
 **Equivalent to**: T08
 
 #### T211 — Walk me through this automation
@@ -1372,7 +1403,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_rule`.
+**Expected**: `custom_get_rule`.
 **Equivalent to**: T09
 
 #### T212 — Build me an automation
@@ -1385,7 +1416,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `create_rule` with time trigger and log action, `testRule=true`.
+**Expected**: `custom_create_rule` with time trigger and log action, `testRule=true`.
 **Equivalent to**: T10
 
 #### T213 — Change when my automation runs
@@ -1398,7 +1429,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `update_rule` with modified trigger time.
+**Expected**: `custom_update_rule` with modified trigger time.
 **Equivalent to**: T11
 
 #### T214 — Pause and unpause an automation
@@ -1411,7 +1442,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `update_rule` with `enabled=false`, verify, `update_rule` with `enabled=true`, verify.
+**Expected**: `custom_update_rule` with `enabled=false`, verify, `custom_update_rule` with `enabled=true`, verify.
 **Equivalent to**: T12
 
 #### T215 — Save a backup of my automation
@@ -1424,7 +1455,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `export_rule`.
+**Expected**: `custom_export_rule`.
 **Equivalent to**: T20
 
 #### T216 — Duplicate an automation
@@ -1437,7 +1468,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `clone_rule`.
+**Expected**: `custom_clone_rule`.
 **Equivalent to**: T21
 
 #### T217 — Simulate an automation
@@ -1450,7 +1481,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `test_rule` (dry run).
+**Expected**: `custom_test_rule` (dry run).
 **Equivalent to**: T22
 
 #### T218 — Restore an automation from backup
@@ -1463,7 +1494,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `import_rule`.
+**Expected**: `custom_import_rule`.
 **Equivalent to**: T23
 
 #### T219 — Get rid of an automation
@@ -1475,7 +1506,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `delete_rule`.
+**Expected**: `custom_delete_rule`.
 **Equivalent to**: T115
 
 ---
@@ -1904,7 +1935,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_rule_diagnostics` or `get_rule`. Should notice the rule is disabled.
+**Expected**: `custom_get_rule_diagnostics` or `custom_get_rule`. Should notice the rule is disabled.
 **Equivalent to**: T53, T74
 
 #### T282 — Too much noise in the logs
@@ -1996,7 +2027,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected tools**: `create_rule` → `get_rule` → `test_rule` → `update_rule(enabled=false)` → `export_rule` → `delete_rule`.
+**Expected tools**: `custom_create_rule` → `custom_get_rule` → `custom_test_rule` → `custom_update_rule(enabled=false)` → `custom_export_rule` → `custom_delete_rule`.
 **Equivalent to**: T80
 
 #### T296 — Virtual device end-to-end
@@ -2052,7 +2083,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `manage_virtual_device` (x2) → `create_rule` → `get_rule` → `test_rule`.
+**Expected**: `manage_virtual_device` (x2) → `custom_create_rule` → `custom_get_rule` → `custom_test_rule`.
 **Equivalent to**: T85
 
 #### T301 — Variable round-trip
@@ -2245,7 +2276,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: AI recognizes RM creation is not supported and either (a) creates an MCP rule via `create_rule` instead (and explains the distinction), or (b) tells the user to use the native RM UI. Does NOT invent a fake RM create tool or pretend to call one.
+**Expected**: AI recognizes RM creation is not supported and either (a) creates an MCP rule via `custom_create_rule` instead (and explains the distinction), or (b) tells the user to use the native RM UI. Does NOT invent a fake RM create tool or pretend to call one.
 
 ### T208 — AI correctly refuses Room Lighting creation
 
@@ -2402,7 +2433,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
 1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 83 tools)** post installed-apps + RM interop + list_app_pages (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
-2. **Merged tools**: `enable_rule`/`disable_rule` → `update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
+2. **Merged tools**: `enable_rule`/`disable_rule` → `custom_update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
 5. **Gateway renames**: `manage_hub_maintenance` → `manage_destructive_hub_ops` (3 tools); `manage_code_changes` → `manage_app_driver_code` (7 tools)
