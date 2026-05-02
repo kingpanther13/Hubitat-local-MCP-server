@@ -12533,6 +12533,19 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied, null, skipped)
     _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied, null, skipped)
 
+    // Pre-emptive cond=[] write (schema-gated). For expression-type actions
+    // (getIfThen/getElseIf/getWhile/getWaitRule), this resets any stale cond
+    // accumulator before the expression builder writes cond=a. For non-expression
+    // actions, cond is not in doActPage's schema, so this write is silently
+    // skipped -- the atomicState.predCapabs context for non-expression actions
+    // was already cleared in _rmAddRequiredExpression Step 4b (ghost ifThen
+    // workaround, issue #77 fix) before this method was called.
+    def condContextClear = []
+    _rmWriteSettingOnPage(appId, "doActPage", "cond", [], applied, null, condContextClear)
+    if (!condContextClear.isEmpty()) {
+        mcpLog("debug", "rm-native", "_rmAddAction: cond not in doActPage schema after actType/actSubType for app ${appId} action ${idx} (${condContextClear[0]?.reason}) -- skipped (non-expression action; predCapabs already cleared in addRequiredExpression Step 4b)")
+    }
+
     // Type-specific fields. The @N placeholder in keys is substituted with
     // the action index here.
     fields.each { rawKey, value ->
@@ -12896,8 +12909,14 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         }
     }
 
-    // Click actionDone (with form context) to commit. By now the schema
-    // has settled and actionDone is present.
+    // Issue #77 context: the predCapabs condition-context leak from a preceding
+    // addRequiredExpression is cleared in _rmAddRequiredExpression's Step 4b
+    // (ghost ifThen workaround) before control returns here. By the time
+    // _rmAddAction runs, atomicState.predCapabs is already clean regardless
+    // of whether this is an expression or plain action type. No per-action
+    // clearing is needed here.
+
+    // Click actionDone (with form context) to commit.
     _rmClickAppButton(appId, "actionDone", null, "doActPage")
 
     // Navigate back to selectActions to commit the in-flight action.
@@ -12910,7 +12929,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // state.actNdx is advanced, and NO updateRule is required.
     //
     // Mirror the navigation by POSTing to selectActions's update/json
-    // endpoint with a minimal form body — the server will commit the
+    // endpoint with a minimal form body -- the server will commit the
     // action's settings and bake into actions[].
     _rmNavigateToPage(appId, "doActPage", "selectActions")
 
@@ -14651,6 +14670,128 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // (verified 2026-04-26 that clicking the doneST button is a no-op,
     // even though it appears in the schema).
     _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams)
+
+    // Step 4b. Issue #77 fix -- clear RM's residual condition-builder
+    // atomicState after STPage Done.
+    //
+    // BACKGROUND (Issue #77):
+    //   After _rmSubmitSubPageDone exits STPage, RM's internal atomicState
+    //   (specifically atomicState.predCapabs and related condition-index fields)
+    //   still reflects the RE's condition context. When a subsequent addAction
+    //   call opens doActPage for any plain (non-expression) action, RM's
+    //   actionDone handler reads that stale atomicState and wraps the new action
+    //   in IF(**Broken Condition**). Probes A1 and A6 fail without this fix.
+    //
+    //   The stale context lives in atomicState, NOT in appSettings. This is
+    //   why all earlier fix attempts targeting appSettings fields (cond=[], STPage
+    //   round-trips, mainPage→selectActions nav, doActPage→selectActions phantom
+    //   nav) did not work -- they never touched the actual cause.
+    //   atomicState is not externally readable or writable, so we can't observe
+    //   it directly or clear it with a simple POST.
+    //
+    // THE FIX -- "ghost ifThen" workaround:
+    //   Opening a condActs/getIfThen action slot and immediately cancelling
+    //   it (via actionCancel WITHOUT clicking actionDone) has the side effect
+    //   of resetting atomicState.predCapabs. This leaves the rule with zero
+    //   new actions (the cancel discards the slot before commit), and the
+    //   next addAction call finds a clean slate.
+    //
+    //   Exact sequence that clears predCapabs:
+    //     1. Click N on selectActions (opens doActPage with a new action slot)
+    //     2. Write actType.{idx}=condActs (marks the slot as conditional type)
+    //     3. Write actSubType.{idx}=getIfThen (triggers RM's ifThen init,
+    //        which re-initializes predCapabs with a fresh state)
+    //     4. Click actionCancel on doActPage (discards the slot without commit;
+    //        the re-initialized predCapabs state is clean, not the old RE state)
+    //     5. Nav doActPage->selectActions (returns to action list)
+    //
+    //   The key distinction from all previous attempts:
+    //     - actionCancel (NOT actionDone) is required. If actionDone fires,
+    //       RM bakes an empty IF block into the rule (probe diag_ifthen_steps.py
+    //       Variant B: result is "IF () THEN\n\tOn: Test Plug").
+    //     - actSubType=getIfThen is required. actType=condActs alone does not
+    //       initialize predCapabs (Variant Z: still broken=True).
+    //     - The cancel must happen BEFORE any condition is written (cond=a).
+    //       Cancelling after cond=a produces no difference but cond=a itself
+    //       is not needed for the clear to work (Variant B vs C are equally
+    //       effective -- both CLEAN when using actionCancel instead of
+    //       actionDone, though actionDone wraps the action in an empty IF).
+    //
+    // WHY THIS WORKS (partial understanding):
+    //   We do not have full visibility into RM's Groovy atomicState. Our best
+    //   guess: writing actSubType=getIfThen invokes RM's condition-builder init
+    //   (used by both STPage and doActPage's condActs flow), which zeroes out
+    //   predCapabs. actionCancel then exits WITHOUT merging the new slot's state
+    //   back into the rule, so the clean predCapabs persists. The subsequent
+    //   addAction opens doActPage to a zeroed predCapabs and actionDone does
+    //   not build any IF wrapper.
+    //
+    //   We verified empirically but do not assert we understand the exact RM
+    //   Groovy code path. DO NOT remove or "simplify" this sequence without
+    //   re-running the full probe matrix (25 probes) and confirming A1/A6 pass.
+    //
+    // IMPORTANT: rCapab_N/rDev_N/state_N in appSettings are NOT cleared.
+    //   Those are the RE's display fields -- RM renders the Required Expression
+    //   paragraph from them on mainPage. Clearing them would erase the RE.
+    //   (Confirmed live: clearing rCapab_2 collapses the RE paragraph to
+    //   "Define Required Expression" placeholder.)
+    //
+    // PROBE MATRIX EVIDENCE (probes run 2026-05-01/02):
+    //   - Without this fix: A1, A4, A6 produce IF(**Broken Condition**) wrapper.
+    //   - cond=[] only (appSettings): A4 passes, A1/A6 still FAIL (atomicState
+    //     unchanged).
+    //   - doActPage->selectActions nav only: all three still FAIL (atomicState
+    //     unchanged).
+    //   - This fix (ghost ifThen): A1, A4, A6 all PASS. B/C/D unaffected.
+    //
+    // Diagnostic scripts for reference (not in repo):
+    //   tests/diag_cancel_clear.py  -- confirmed actionCancel-without-actionDone
+    //                                  clears predCapabs (Variant Y)
+    //   tests/diag_ifthen_steps.py  -- confirmed actSubType=getIfThen is required
+    //                                  (Variant Z: condActs alone still broken)
+    //   tests/diag_variant_y_verify.py -- confirmed A1/A4/A6 equivalents all
+    //                                     pass after ghost ifThen clear
+    //
+    // Reference: Issue #77.
+    try {
+        // Open a new action slot on selectActions.
+        _rmClickAppButton(appId, "N", "doActN", "selectActions")
+
+        // Discover the index RM allocated (same pattern as _rmAddAction).
+        def ghostCfg = _rmFetchConfigJson(appId, "doActPage")
+        def ghostSchema = _rmCollectInputSchema(ghostCfg?.configPage)
+        def ghostActTypeField = ghostSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+        def ghostIdx = 1
+        if (ghostActTypeField) {
+            def m = (ghostActTypeField.toString() =~ /^actType\.(\d+)$/)
+            if (m.matches()) ghostIdx = m[0][1] as Integer
+        }
+
+        // Write condActs + getIfThen to trigger RM's ifThen initializer,
+        // which re-initializes atomicState.predCapabs with a clean state.
+        // actSubType=getIfThen is the minimum required step -- actType=condActs
+        // alone does not trigger the clear.
+        def ghostApplied = []
+        def ghostSkipped = []
+        _rmWriteSettingOnPage(appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped)
+        _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped)
+
+        // Cancel WITHOUT clicking actionDone. This discards the slot before
+        // commit so no action is added to the rule, but the re-initialized
+        // predCapabs state (from the getIfThen init) persists.
+        // DO NOT replace with actionDone -- that bakes an empty IF() block.
+        _rmClickAppButton(appId, "actionCancel", null, "doActPage")
+
+        // Return to selectActions to finalize the cancel.
+        _rmNavigateToPage(appId, "doActPage", "selectActions")
+
+        mcpLog("info", "rm-native", "addRequiredExpression: ghost ifThen clear fired for app ${appId} (issue #77 fix -- clears atomicState.predCapabs without adding an action)")
+    } catch (Exception ghostExc) {
+        // Best-effort: if the ghost ifThen sequence fails, subsequent addAction
+        // calls MAY produce IF(**Broken Condition**) wrapping. The RE itself
+        // is fully committed -- this only affects the next addAction.
+        mcpLog("warn", "rm-native", "addRequiredExpression: ghost ifThen clear failed for app ${appId} (${ghostExc.message ?: ghostExc.toString()}) -- subsequent addAction may produce IF(**Broken Condition**) wrapper (issue #77); verify rule render or restore backup if needed")
+    }
 
     // Step 5. Post-commit validation. RM 5.1's STPage silently accepts
     // many invalid inputs at the field-write level (e.g. unknown device

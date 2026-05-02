@@ -721,6 +721,253 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body["settings[cond]"]?.toString()?.contains("sub-expression") }
     }
 
+    // ---------- Issue #77 -- ghost ifThen predCapabs clear (Step 4b) ----------
+    //
+    // After addRequiredExpression completes, RM's atomicState.predCapabs retains
+    // the RE's condition context. A subsequent addAction for a plain (non-expression)
+    // action opens doActPage and hits actionDone with stale predCapabs, wrapping
+    // the action in IF(**Broken Condition**).
+    //
+    // Fix: _rmAddRequiredExpression Step 4b fires a "ghost ifThen" sequence:
+    //   N click on selectActions -> actType=condActs + actSubType=getIfThen writes
+    //   on doActPage -> actionCancel (NOT actionDone) -> nav doActPage->selectActions.
+    // This triggers RM's ifThen initializer (re-initializes predCapabs) then
+    // cancels before commit, leaving the rule clean and predCapabs zeroed.
+    //
+    // Key invariants under test:
+    //  (a) The N click fires on selectActions with stateAttribute=doActN.
+    //  (b) actType.{idx}=condActs and actSubType.{idx}=getIfThen are written.
+    //  (c) actionCancel fires on doActPage (NOT actionDone).
+    //  (d) The doActPage->selectActions nav fires after the cancel.
+    //  (e) No action is baked into the rule (actionDone never fired).
+    //  (f) When the ghost clear fails (exception), a warn log fires and the
+    //      overall addRequiredExpression still succeeds (best-effort).
+    //
+    // These tests use the shared stPageCondSchemaJson helper (which includes
+    // rCapab_1/rDev_1/state_1/hasAll) so the STPage walk completes through to
+    // Step 4b. Both an STPage Done POST (currentPage=STPage, _action_previous=Done)
+    // and the ghost ifThen N click (currentPage=selectActions) must appear.
+
+    def "addRequiredExpression Step 4b fires ghost ifThen: N on selectActions, condActs+getIfThen, actionCancel, nav"() {
+        // Regression gate for issue #77.
+        // Verifies the exact wire sequence of the ghost ifThen clear:
+        // N click (selectActions) -> actType=condActs -> actSubType=getIfThen
+        // -> actionCancel (doActPage) -> nav doActPage->selectActions.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        // mainPage returns a baked RE paragraph so the post-commit check passes.
+        hubGet.register('/installedapp/configure/json/100') {
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') {
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') {
+            fetchSeq++
+            stPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') {
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') {
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')           { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addRequiredExpression completes (full STPage walk via stPageCondSchemaJson stubs)"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "RE committed successfully (bake-check passed with baked paragraph)"
+        result.success == true
+
+        and: "(a) N button clicked on selectActions with stateAttribute=doActN"
+        def nClick = posts.find { it.path == "/installedapp/btn" &&
+                                   it.body?.name == "N" &&
+                                   it.body?.currentPage == "selectActions" }
+        nClick != null
+        nClick.body?.stateAttribute == "doActN"
+
+        and: "(b) actType.{idx}=condActs written on doActPage"
+        posts.any { it.path == "/installedapp/update/json" &&
+                    it.body?.currentPage == "doActPage" &&
+                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actType.") && v == "condActs" } }
+
+        and: "(b) actSubType.{idx}=getIfThen written on doActPage"
+        posts.any { it.path == "/installedapp/update/json" &&
+                    it.body?.currentPage == "doActPage" &&
+                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+
+        and: "(c) actionCancel clicked on doActPage -- NOT actionDone"
+        def cancelClick = posts.find { it.path == "/installedapp/btn" &&
+                                        it.body?.name == "actionCancel" &&
+                                        it.body?.currentPage == "doActPage" }
+        cancelClick != null
+        !posts.any { it.path == "/installedapp/btn" &&
+                     it.body?.name == "actionDone" &&
+                     it.body?.currentPage == "doActPage" }
+
+        and: "(d) doActPage->selectActions nav fires after the cancel"
+        posts.any { it.path == "/installedapp/update/json" &&
+                    it.body?.currentPage == "doActPage" &&
+                    it.body?.any { k, v -> k?.toString()?.contains("_action_href_name|selectActions|") } }
+
+        and: "(e) no actionDone fired on doActPage anywhere in the sequence"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+    }
+
+    def "addRequiredExpression Step 4b ghost clear fires AFTER STPage Done (not before)"() {
+        // The ghost ifThen clear must occur AFTER _rmSubmitSubPageDone exits STPage.
+        // Ordering invariant: the STPage Done back-nav (currentPage=STPage,
+        // _action_previous=Done) appears in the POST log BEFORE the selectActions
+        // N click.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') {
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') {
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') {
+            fetchSeq++
+            stPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') {
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') {
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')           { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def seenPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            seenPosts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "STPage Done back-nav POST fires before the selectActions N click"
+        // STPage Done: _action_previous=Done is in the POST body (set by _rmSubmitSubPageDone)
+        def stPageDoneIdx = seenPosts.findIndexOf { it.path == "/installedapp/update/json" &&
+                                                     it.body?.currentPage == "STPage" &&
+                                                     it.body?._action_previous == "Done" }
+        // Ghost clear N click
+        def nClickIdx = seenPosts.findIndexOf { it.path == "/installedapp/btn" &&
+                                                 it.body?.name == "N" &&
+                                                 it.body?.currentPage == "selectActions" }
+        stPageDoneIdx != -1
+        nClickIdx != -1
+        stPageDoneIdx < nClickIdx
+    }
+
+    def "addRequiredExpression Step 4b ghost clear failure warns and still returns success"() {
+        // If the ghost ifThen sequence throws (e.g. N click fails), addRequiredExpression
+        // must still return success=true (the RE itself committed successfully).
+        // A warn mcpLog must fire so the operator can diagnose issue #77 risk.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') {
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') {
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') {
+            fetchSeq++
+            stPageCondSchemaJson(100, fetchSeq)
+        }
+        // selectActions fetch returns empty schema (N button absent) so N click
+        // button-version-fetch succeeds but the schema is empty -- this is enough
+        // for the N button POST to fire (pageName triggers the version fetch path,
+        // which succeeds fine). We need the N btn POST itself to throw instead.
+        hubGet.register('/installedapp/configure/json/100/selectActions') {
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')           { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def warnLogs = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
+        }
+
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // N button click on selectActions throws -- simulates ghost clear failure
+            if (path == "/installedapp/btn" && body?.name == "N") {
+                throw new RuntimeException("hub returned 500 on N click (simulated ghost clear failure)")
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "addRequiredExpression still returns a result -- ghost clear is best-effort, not fatal"
+        result != null
+        result.success == true
+
+        and: "a warn log fires naming the failure and noting the IF Broken Condition risk"
+        warnLogs.any { it.msg?.contains("ghost ifThen clear failed") && it.msg?.contains("Broken Condition") }
+    }
+
     def "addTrigger writes isCondTrig.<N>=false finalize for non-conditional triggers"() {
         given:
         enableHubAdminWrite()
