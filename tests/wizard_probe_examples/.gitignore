@@ -1,0 +1,4 @@
+# Ignore local diag scripts (ad-hoc investigations, not committed)
+*
+!.gitignore
+!diag_demo.py

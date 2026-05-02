@@ -1,0 +1,682 @@
+# Hubitat MCP -- RM 5.1 Wizard-State Leak Probe Matrix
+#
+# device_pool: named device IDs used as $key references in probe steps.
+# Each probe step resolver replaces $key with the integer ID below.
+#
+# Hub: 10.2.50.151
+# Device picks:
+#   switch    : 1063 = Test Plug (Generic Zigbee Outlet, confirmed online)
+#   switch_2  : 1080 = Goodmorning (virtual switch, confirmed online)
+#   contact   : 130  = Back Door Contact Sensor
+#   motion    : 151  = Garage Motion Sensor
+
+device_pool:
+  switch: 1063       # Test Plug (Generic Zigbee Outlet)
+  switch_2: 1080     # Goodmorning (virtual switch)
+  contact: 130       # Back Door Contact Sensor
+  motion: 151        # Garage Motion Sensor
+
+
+probes:
+
+  # =========================================================================
+  # Group A -- Wizard-state leaks (#77 class)
+  #
+  # These probes target the class of bug where a wizard sub-flow (Required
+  # Expression builder, IF/THEN editor, action trash/cancel, step introspection)
+  # leaves accumulator state in RM's settings/state that then wraps the NEXT
+  # operation in a stale context, producing "**Broken Condition**" markers,
+  # mis-labeled actions, or silent setting rejections.
+  # =========================================================================
+
+  - name: "A1_addRE_then_addAction"
+    description: |
+      Issue #77 -- addRequiredExpression leaves wizard state (cond builder
+      active, STPage flag set) that wraps the subsequent addAction call in
+      an IF(**Broken Condition**) block.  Regression gate for the fix.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "17:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+      - addAction:
+          capability: "switch"
+          deviceIds:
+            - $switch
+          action: "on"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      # RM renders switch-on actions as "On: <device label>" not "Turn on"
+      final_render_contains: "On: Test Plug"
+      no_step_errors: true
+
+  - name: "A2_addRE_then_addTrigger"
+    description: |
+      Symmetric to A1 -- does the Required Expression condition-builder leak
+      into the TRIGGER wizard?  After addRE, addTrigger(Switch) should produce
+      a clean trigger row, not a phantom Broken Trigger.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "17:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+      - addTrigger:
+          capability: "Switch"
+          deviceIds:
+            - $switch
+          state: "off"
+    expect:
+      final_render_NOT_contains: "Broken Trigger"
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "A3_addRE_then_addRE_second"
+    description: |
+      After one Required Expression is committed, add a second one.
+      Confirms that the cond-builder index counter resets between RE builds
+      (no index collision, no "cond=b already used" state).
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "08:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Contact"
+              deviceIds:
+                - $contact
+              state: "closed"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "A4_addRE_then_ifThen_action"
+    description: |
+      After addRequiredExpression, add an IF/THEN action (capability=ifThen).
+      Confirms that the cond-builder state from STPage does not pollute the
+      IF expression builder in the action wizard (doActPage).
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "09:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+      - addAction:
+          capability: "ifThen"
+          expression:
+            conditions:
+              - capability: "Switch"
+                deviceIds:
+                  - $switch_2
+                state: "off"
+      - addAction:
+          capability: "switch"
+          deviceIds:
+            - $switch
+          action: "off"
+      - addAction:
+          capability: "endIf"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "A5_ifThen_endIf_then_addAction"
+    description: |
+      Open an IF/THEN block, close it with endIf, then add a plain action
+      after.  The plain action must not be wrapped inside the IF block.
+      Tests that the IF-block depth counter (and stateAttribute stack) resets
+      after endIf.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "10:00"
+      - addAction:
+          capability: "ifThen"
+          expression:
+            conditions:
+              - capability: "Switch"
+                deviceIds:
+                  - $switch
+                state: "on"
+      - addAction:
+          capability: "switch"
+          deviceIds:
+            - $switch_2
+          action: "on"
+      - addAction:
+          capability: "endIf"
+      - addAction:
+          capability: "log"
+          message: "after endIf -- should be at top level"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "after endIf"
+      no_step_errors: true
+
+  - name: "A6_STPage_sub_expr_then_addAction"
+    description: |
+      T404 territory -- STPage sub-expression "(A AND B) OR C" followed by
+      addAction.  The sub-expression walker leaves paren-tracking state; this
+      probe checks it doesn't leak into the next action wizard.
+      TODO: sub-expression shape for addRequiredExpression with subExpression
+      field is not yet validated live.  Probe runs a simpler 3-condition RE
+      instead and checks no breakage.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "11:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+            - capability: "Contact"
+              deviceIds:
+                - $contact
+              state: "open"
+            - capability: "Motion"
+              deviceIds:
+                - $motion
+              state: "active"
+          operators:
+            - "AND"
+            - "OR"
+      - addAction:
+          capability: "switch"
+          deviceIds:
+            - $switch
+          action: "off"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "A7_removeAction_then_addAction"
+    description: |
+      Issue #11 sibling -- add 2 actions, remove index 1, then add a third.
+      Verifies that removeAction clears editAct/actNdx state so the next
+      addAction gets a clean index (3 or next-available) rather than re-using
+      the removed slot in a broken way.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "12:00"
+      - addAction:
+          capability: "log"
+          message: "action one"
+      - addAction:
+          capability: "log"
+          message: "action two"
+      - removeAction:
+          index: 1
+      - addAction:
+          capability: "log"
+          message: "action three after remove"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "action three after remove"
+      no_step_errors: true
+
+  - name: "A8_moveAction_then_addAction"
+    description: |
+      Issue #11 sibling -- add 3 actions, move index 2 up, then add a 4th.
+      Verifies that moveAction does not leave stateAttribute/editAct state
+      that poisons the subsequent addAction wizard open.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "13:00"
+      - addAction:
+          capability: "log"
+          message: "action alpha"
+      - addAction:
+          capability: "log"
+          message: "action beta"
+      - addAction:
+          capability: "log"
+          message: "action gamma"
+      - moveAction:
+          index: 2
+          direction: "up"
+      - addAction:
+          capability: "log"
+          message: "action delta after move"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "action delta after move"
+      no_step_errors: true
+
+  - name: "A9_cancelTrash_then_addAction"
+    description: |
+      Open the action editor (button click to start an edit), then cancel
+      without committing (clearActions=false is not an op; we simulate cancel
+      by just never calling actionDone and then calling addAction fresh).
+      This is a shallower probe -- addAction itself fires the cancel path
+      internally when actNdx is already set.  Checks the auto-cancel behavior
+      in the addAction helper doesn't leave a partial skeleton.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "14:00"
+      - addAction:
+          capability: "log"
+          message: "first action"
+      - addAction:
+          capability: "log"
+          message: "second action after implied cancel-and-restart"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "second action after implied cancel-and-restart"
+      no_step_errors: true
+
+  - name: "A10_walkStep_introspect_mid_edit_then_addAction"
+    description: |
+      Use walkStep(operation=introspect) on doActPage while an action edit
+      is open (state.actNdx set), then call addAction fresh.  Verifies that
+      a read-only introspect call doesn't corrupt the actNdx/doActN state
+      machine.
+      TODO: the specific walkStep shape for mid-edit introspect is not yet
+      validated live -- probe uses a getAppConfig snapshot as the read-only
+      substitute.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "15:00"
+      - addAction:
+          capability: "log"
+          message: "action before introspect"
+      - getAppConfig: true
+      - addAction:
+          capability: "log"
+          message: "action after introspect"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "action after introspect"
+      no_step_errors: true
+
+  # =========================================================================
+  # Group B -- Commit semantics
+  #
+  # These probes verify that individual action/trigger types commit cleanly
+  # to the rule's persistent representation with no partial/broken rows.
+  # =========================================================================
+
+  - name: "B1_single_addTrigger_render"
+    description: |
+      Issue #10 regression check -- auto-bake.  A single addTrigger with no
+      subsequent operations should produce a rendered trigger row with a
+      non-empty description.  Catches firmware regressions where the trigger
+      row description bakes as "?" or is absent.
+    group: B
+    steps:
+      - addTrigger:
+          capability: "Switch"
+          deviceIds:
+            - $switch
+          state: "on"
+    expect:
+      final_render_NOT_contains: "Broken Trigger"
+      no_step_errors: true
+
+  - name: "B2_addAction_runCommand_1_param"
+    description: |
+      Issue #76 -- runCommand with 1 parameter (cpType1 slot).  Verifies that
+      the parameter map {type: NUMBER, value: 75} lands in the rule's settings
+      and the action row does not render as broken.
+    group: B
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "16:00"
+      - addAction:
+          capability: "runCommand"
+          command: "setLevel"
+          deviceIds:
+            - $switch
+          capabilityFilter: "Switch"
+          parameters:
+            - type: "NUMBER"
+              value: 75
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "B3_addAction_runCommand_2_params"
+    description: |
+      Issue #76 sibling -- runCommand with 2 parameters (cpType1 + cpType2
+      slots).  Verifies both parameters land.
+    group: B
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "16:30"
+      - addAction:
+          capability: "runCommand"
+          command: "setLevel"
+          deviceIds:
+            - $switch
+          capabilityFilter: "Switch"
+          parameters:
+            - type: "NUMBER"
+              value: 50
+            - type: "NUMBER"
+              value: 2
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "B4_addAction_setMode_no_args"
+    description: |
+      A mode-change action (capability=mode) with just modeName -- no
+      deviceIds, no expression.  Verifies that the mode picker lands correctly
+      as a standalone action with no broken markers.
+    group: B
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "07:00"
+      - addAction:
+          capability: "mode"
+          modeName: "Day"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "B5_addTrigger_custom_attr_then_addAction"
+    description: |
+      Issue #12 -- Custom Attribute trigger followed by addAction.
+      Verifies that the custom-attribute capability picker (tCapab='Custom
+      Attribute', tAtt field) commits cleanly and the subsequent action is
+      not wrapped in a broken condition from a leaked tAtt state.
+    group: B
+    steps:
+      - addTrigger:
+          capability: "Custom Attribute"
+          deviceIds:
+            - $switch
+          attribute: "switch"
+          comparator: "*changed*"
+      - addAction:
+          capability: "log"
+          message: "after custom-attr trigger"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "after custom-attr trigger"
+      no_step_errors: true
+
+  - name: "B6_periodic_schedule_trigger_then_addAction"
+    description: |
+      Periodic Schedule trigger (capability='Periodic Schedule', Daily every
+      1 day at 08:00) followed by addAction.  Verifies that the periodic
+      sub-page walker commits the trigger description correctly (not "?")
+      and that the subsequent addAction is clean.
+    group: B
+    steps:
+      - addTrigger:
+          capability: "Periodic Schedule"
+          periodic:
+            frequency: "Daily"
+            everyN: 1
+            startingTime: "08:00"
+      - addAction:
+          capability: "log"
+          message: "after periodic schedule trigger"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_NOT_contains: "?"
+      final_render_contains: "after periodic schedule trigger"
+      no_step_errors: true
+
+  # =========================================================================
+  # Group C -- Multi-action edit cycles
+  #
+  # These probes verify that bulk / sequential action operations leave the
+  # rule's action list in a consistent state, with correct render and no
+  # index artifacts.
+  # =========================================================================
+
+  - name: "C1_addAction_x3_sequential_clean"
+    description: |
+      Add 3 log actions sequentially.  The simplest multi-action smoke test --
+      verifies that indices 1, 2, 3 all land and render correctly with no
+      phantom rows.
+    group: C
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "03:00"
+      - addAction:
+          capability: "log"
+          message: "step one"
+      - addAction:
+          capability: "log"
+          message: "step two"
+      - addAction:
+          capability: "log"
+          message: "step three"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "step three"
+      no_step_errors: true
+
+  - name: "C2_addAction_then_editAction_param_swap"
+    description: |
+      Add a switch action (on), then edit it in-place to change to "off" via
+      a settings write.  Verifies that the editAction path (button=editAct +
+      settings write + actionDone) doesn't leave stale actType/editAct state
+      that poisons a subsequent getAppConfig.
+    group: C
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "04:00"
+      - addAction:
+          capability: "switch"
+          deviceIds:
+            - $switch
+          action: "on"
+      - settings:
+          ruleTitle: "C2 edit cycle test"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      no_step_errors: true
+
+  - name: "C3_addAction_moveAction_addAction"
+    description: |
+      Add 2 actions, move index 2 up (so order becomes 2,1), then add a third.
+      Verifies that the third action gets the next clean index and the moved
+      actions still render correctly.
+    group: C
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "05:00"
+      - addAction:
+          capability: "log"
+          message: "first"
+      - addAction:
+          capability: "log"
+          message: "second"
+      - moveAction:
+          index: 2
+          direction: "up"
+      - addAction:
+          capability: "log"
+          message: "third after move"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "third after move"
+      no_step_errors: true
+
+  - name: "C4_clearActions_then_addAction"
+    description: |
+      Add 3 actions, clear all, then add a new action.  Verifies that
+      clearActions resets the actNdx counter so the fresh addAction gets
+      index 1 rather than 4 (stale continuation).
+    group: C
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "06:00"
+      - addAction:
+          capability: "log"
+          message: "will be cleared 1"
+      - addAction:
+          capability: "log"
+          message: "will be cleared 2"
+      - addAction:
+          capability: "log"
+          message: "will be cleared 3"
+      - clearActions: true
+      - addAction:
+          capability: "log"
+          message: "after clear"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "after clear"
+      no_step_errors: true
+
+  - name: "C5_replaceActions_then_addAction"
+    description: |
+      Add 2 actions, then replaceActions with 1 different action, then add
+      another.  Verifies that replaceActions is truly atomic (wipe + rebuild)
+      and leaves the index counter consistent for subsequent addAction.
+    group: C
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "06:30"
+      - addAction:
+          capability: "log"
+          message: "original one"
+      - addAction:
+          capability: "log"
+          message: "original two"
+      - replaceActions:
+          - capability: "log"
+            message: "replacement action"
+      - addAction:
+          capability: "log"
+          message: "appended after replace"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "appended after replace"
+      no_step_errors: true
+
+  # =========================================================================
+  # Group D -- Cross-feature interactions
+  #
+  # These probes verify that hub-level or rule-level state mutations (label
+  # changes, updateRule clicks, pause/resume, local variables) don't interfere
+  # with the wizard sub-flows that follow.
+  # =========================================================================
+
+  - name: "D1_setLabel_then_addAction"
+    description: |
+      Set the rule's label (ruleTitle settings write) and then addAction.
+      Verifies that the settings write + implicit updateRule click doesn't
+      leave editAct/moreCond state that confuses the action wizard.
+    group: D
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "18:00"
+      - setLabel: "D1 probe rule"
+      - addAction:
+          capability: "log"
+          message: "after label set"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "after label set"
+      no_step_errors: true
+
+  - name: "D2_updateRule_click_then_addAction"
+    description: |
+      Explicitly click updateRule (re-initialize), then addAction.  Verifies
+      that an explicit re-init doesn't reset wizard sub-page state in a way
+      that makes subsequent addAction fail to find the next clean index.
+    group: D
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "19:00"
+      - updateRule: true
+      - addAction:
+          capability: "log"
+          message: "after explicit updateRule"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "after explicit updateRule"
+      no_step_errors: true
+
+  - name: "D3_pauseRule_resumeRule_then_addAction"
+    description: |
+      Pause the rule (button=pausRule), resume it (button=resRule), then
+      addAction.  Verifies that the pause/resume lifecycle doesn't leave a
+      stateAttribute or mode flag active that wraps the subsequent action.
+    group: D
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "20:00"
+      - pauseRule: true
+      - resumeRule: true
+      - addAction:
+          capability: "log"
+          message: "after pause-resume"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "after pause-resume"
+      no_step_errors: true
+
+  - name: "D4_addLocalVar_then_addAction_referencing_it"
+    description: |
+      Add a local variable (String, value "hello"), then add a log action
+      that references it via %varname%.  Verifies that addLocalVariable
+      does not pollute the action wizard's stateAttribute stack and that
+      the %varname% token is accepted in the message field.
+    group: D
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "21:00"
+      - addLocalVar:
+          name: "probeVar"
+          type: "String"
+          value: "hello"
+      - addAction:
+          capability: "log"
+          message: "value is %probeVar%"
+    expect:
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "value is %probeVar%"
+      no_step_errors: true

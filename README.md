@@ -1609,13 +1609,19 @@ For easier bug reporting:
 
 ## Testing
 
-Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper:
+The `tests/` directory contains:
+
+- **`tests/BAT-v2.md`** — Behavior Acceptance Tests (BAT): scripted scenarios for hand-run validation against a live hub. Includes the `wizard_probe` usage docs and the wizard-state regression appendix.
+- **`tests/sandbox_lint.py`** — fast structural lint of the Groovy sandbox patterns (forbidden calls, version-string consistency). Run via `uv run --python 3.12 tests/sandbox_lint.py`.
+- **`tests/e2e_test.py`** — end-to-end smoke test against a live hub. Requires `tests/e2e_config.json` (gitignored). Run via `uv run --python 3.12 --with requests tests/e2e_test.py`.
+- **`tests/wizard_probe.py`** — systematic Rule Machine wizard-state regression probe. Runs a 25-probe matrix that exercises suspected wizard-state-leak paths, and exposes a `quick_probe()` helper for one-off diagnostic investigation. See the wizard_probe appendix in `tests/BAT-v2.md` for full usage.
+- **Spock unit tests** under `src/test/groovy/` — run via the Gradle wrapper:
 
 ```bash
 ./gradlew test
 ```
 
-See [docs/testing.md](docs/testing.md) for the full harness overview, how to add new specs, and the RMUtils mocking recipe for `manage_native_rules_and_apps` tools.
+See [docs/testing.md](docs/testing.md) for the full Spock harness overview, how to add new specs, and the RMUtils mocking recipe for `manage_native_rules_and_apps` tools.
 
 ## Contributing
 

@@ -15,7 +15,7 @@ This project is a **Model Context Protocol (MCP) server** implemented as a nativ
 
 The server exposes an OAuth-secured HTTP endpoint that speaks JSON-RPC 2.0 per the MCP protocol specification. AI assistants connect to this endpoint and invoke tools to control devices, manage automation rules, query hub state, and administer the hub.
 
-There are **no external dependencies, build steps, or test frameworks**. Everything runs inside the Hubitat Groovy sandbox. The two Groovy files plus `packageManifest.json` and `repository.json` (for Hubitat Package Manager distribution) are the entire project.
+The Hubitat-runtime code has no external dependencies -- everything runs inside the Hubitat Groovy sandbox. Development tooling (under `tests/`) does include test frameworks: Spock unit tests via Gradle, a sandbox-pattern lint, an end-to-end live-hub test, and the wizard-state regression probe (`tests/wizard_probe.py`). See README.md "Testing" for details.
 
 **Documentation files:**
 - `README.md` — User-facing documentation

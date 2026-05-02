@@ -2411,3 +2411,215 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
 10. **Corrected test count**: 159 → 172 (was undercounted in v1)
+
+---
+
+## Appendix: RM Wizard-State Leak Probe (wizard_probe.py)
+
+See [`tests/wizard_probe.py`](./wizard_probe.py) and [`tests/wizard_probe_matrix.yaml`](./wizard_probe_matrix.yaml).
+
+These are not BAT scenarios (they run autonomously, not via AI session prompts), but they test the same system surface and are documented here for discoverability.
+
+### What the probe does
+
+The wizard probe systematically tests RM 5.1 wizard sub-flow sequences that have historically produced "**Broken Condition**" markers, silent setting rejections, or mis-labeled action rows when wizard accumulator state leaks across operations.
+
+For each probe:
+1. Creates a fresh RM rule via `manage_native_rules_and_apps create_native_app`
+2. Executes a sequence of `update_native_app` calls (addTrigger, addRequiredExpression, addAction, etc.)
+3. Snapshots the rule's `mainPage` render via `manage_installed_apps get_app_config` after each step
+4. Evaluates expectations against the final render (e.g. `Broken Condition` must NOT be present)
+5. Deletes the test rule in a `try/finally` block regardless of outcome
+
+### How to run
+
+```bash
+# Full matrix (all 25 probes)
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml
+
+# Single probe
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --probe A1_addRE_then_addAction
+
+# Group only
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --group A
+
+# With baseline comparison (regression check after firmware upgrade)
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml \
+  --baseline tests/wizard_probe_results/20260501_231240.json
+
+# Clean up stale _PROBE_* rules from failed prior runs
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --cleanup
+
+# Auto-create a hub backup if none exists (skips interactive prompt)
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --auto-backup
+```
+
+### Config
+
+Hub connection from `tests/e2e_config.json` (same format as `e2e_test.py`), with env var overrides:
+- `HUB_URL` (or `HUBITAT_HUB_URL`) -- default `http://10.2.50.151`
+- `MCP_APP_ID` (or `HUBITAT_APP_ID`) -- default `953`
+- `MCP_ACCESS_TOKEN` (or `HUBITAT_ACCESS_TOKEN`)
+
+### Output
+
+Results written to `tests/wizard_probe_results/<timestamp>.json` and `.md`.
+Non-zero exit code if any probe fails (useful as CI gate).
+
+### How to add new probes
+
+1. Add an entry to `tests/wizard_probe_matrix.yaml` under `probes:`.
+2. Choose a `group` (A/B/C/D or a new letter), a unique `name`, and a `description`.
+3. List `steps:` as a sequence of single-key operation dicts (see existing probes for shapes).
+4. Declare `expect:` assertions -- at minimum `final_render_NOT_contains: "Broken Condition"`.
+5. Use `$switch`, `$contact`, etc. to reference devices from `device_pool` (resolved to integer IDs at runtime).
+6. If the step shape is not yet known, set `expect: { skip: true, todo: "<note>" }` to mark it as TODO without failing.
+
+**Available step ops:**
+
+| Step key | Description |
+|---|---|
+| `addTrigger` | High-level addTrigger spec (capability + fields) |
+| `addAction` | High-level addAction spec (capability + fields) |
+| `addRequiredExpression` | High-level RE spec (conditions list) |
+| `addTriggers` | Bulk list of trigger specs |
+| `addActions` | Bulk list of action specs |
+| `replaceActions` | Replace entire action list atomically |
+| `clearActions: true` | Delete all actions |
+| `removeAction` | Delete action at `{index: N}` |
+| `moveAction` | Move action at `{index: N, direction: up/down}` |
+| `addLocalVar` | Add local variable `{name, type, value}` |
+| `settings` | Raw settings map write |
+| `button` | Page-transition button click by name |
+| `setLabel` | Set rule title (shorthand for `settings: {ruleTitle: ...}`) |
+| `pauseRule: true` | Click pausRule button |
+| `resumeRule: true` | Click resRule button |
+| `updateRule: true` | Click updateRule button |
+| `getAppConfig: true` | Read-only snapshot (no mutation) |
+
+**Available expect keys:**
+
+| Key | Assertion |
+|---|---|
+| `final_render_NOT_contains` | String must NOT appear in concatenated paragraph text |
+| `final_render_contains` | String must appear in paragraph text |
+| `final_settings_contains_key` | Key must be present in settings map |
+| `final_settings_value` | Dict of `{key: expected_value}` equality assertions |
+| `no_step_errors` | No step returned an error |
+| `health_ok` | Rule health check embedded in snapshot must be ok |
+| `skip: true` | Mark probe as TODO (always passes, noted as skipped) |
+| `todo` | Narrative reason for the skip |
+
+### Baseline mode (regression checks)
+
+After a baseline run, save the JSON output path. On the next run (e.g., after a firmware upgrade), pass `--baseline <path>` to emit a diff showing which probes newly fail, newly pass, or have changed render output. This catches silent RM behavior regressions.
+
+### Current probe status (as of 2026-05-02)
+
+**All 25 probes: PASS** -- Bug #77 fix (ghost ifThen predCapabs clear) deployed and verified. Full 25-probe matrix run recorded in `tests/wizard_probe_results/20260502_014427.md`.
+
+### Known false positives / probe quirks
+
+- **A6** (STPage sub-expression): uses a simplified 3-condition RE rather than a true sub-expression because the sub-expression `{subExpression: ...}` shape has not been validated live. The simplified form is still a useful regression gate for multi-condition RE behavior.
+- **A10** (walkStep introspect): uses `getAppConfig: true` as a read-only substitute for the walkStep introspect path, because the exact mid-edit walkStep shape is not yet validated live. The probe still covers the primary concern (read-only snapshot does not corrupt actNdx).
+- The "Local Variables" HTML table paragraph in the render text is long and present in all rules; it does not indicate a bug.
+
+### Diag mode -- `quick_probe()` importable API
+
+The matrix runner is for regression -- enumerate known patterns and assert outcomes.
+When investigating a *new* suspected bug or verifying a fix hypothesis, the same
+plumbing is available as a one-liner Python call via `quick_probe()`.
+
+**When to use diag mode vs the matrix:**
+
+| Scenario | Use |
+|---|---|
+| Firmware upgrade regression check | `--matrix` runner |
+| After a code deploy (issue #77 class) | `--matrix` runner |
+| Investigating a new suspected state leak | `quick_probe()` diag mode |
+| Verifying a single step's side-effect (e.g. cancel vs done) | `quick_probe()` diag mode |
+| Reproducing a specific wizard-state hypothesis live | `quick_probe()` diag mode |
+
+**Import and basic usage:**
+
+```python
+from tests.wizard_probe import HubitatMcpClient, load_config, quick_probe
+
+config = load_config()
+client = HubitatMcpClient(
+    config["hub_url"], config["app_id"], config["access_token"], verbose=True
+)
+client.initialize()
+
+result = quick_probe(client, "my_hypothesis", steps=[
+    {"addRequiredExpression": {"conditions": [
+        {"capability": "Switch", "deviceIds": [1063], "state": "on"}
+    ]}},
+    {"addAction": {"capability": "Switch", "deviceIds": [1063], "command": "on"}},
+])
+
+print(result["final"]["render"])    # joined paragraph text from mainPage
+print(result["final"]["broken"])    # True if "Broken Condition" present
+print(result["errors"])             # list of step errors; [] = all steps succeeded
+```
+
+**Return shape:**
+
+| Field | Type | Description |
+|---|---|---|
+| `app_id` | `int \| None` | Created rule's appId (None on create failure) |
+| `snapshots` | `list[dict]` | Per-step snapshots (`{step_index, op, paragraphs, settings, error}`) |
+| `final` | `dict` | Convenience: `{render, broken, paragraphs, settings, error}` |
+| `errors` | `list[str]` | Step-level errors (empty = all OK) |
+| `status` | `str` | `"pass"` (no step errors), `"fail"` (step errors), or `"error"` (exception) |
+| `duration_s` | `float` | Wall-clock seconds |
+
+Always cleans up the test rule via `try/finally` -- a crashed diag script will not leave stale `_PROBE_*` rules. Use `--cleanup` flag as a backstop if a process-kill interrupts before the finally block.
+
+**Escape-hatch step types (diag mode only):**
+
+The matrix YAML step ops cover the high-level `update_native_app` arguments. For low-level investigation you sometimes need to fire a raw button click or raw settings write on a specific page mid-sequence. Two escape hatches exist:
+
+`raw_button` -- direct button click on a named page:
+
+```python
+{"raw_button": {"page": "doActPage", "name": "actionCancel"}}
+# Optional: state_attribute for stateAttribute body field
+{"raw_button": {"page": "selectActions", "name": "N", "state_attribute": "doActN"}}
+```
+
+`raw_setting` -- direct settings write on a named page:
+
+```python
+{"raw_setting": {"page": "doActPage",
+                 "settings": {"actType.1": "condActs", "actSubType.1": "getIfThen"}}}
+```
+
+These map to `walkStep` calls (the MCP tool's single-step wizard walker):
+- `raw_button` uses `operation: "click"` with the named button
+- `raw_setting` uses `operation: "write"` once per key (walkStep.write allows exactly one key per call)
+
+Use sparingly -- direct page manipulation can leave the hub app in states that the
+high-level tools don't expect.
+
+**Demo script:**
+
+`tests/wizard_probe_examples/diag_demo.py` is a worked example that reproduces the
+Variant Y finding from the Issue #77 investigation (actionCancel vs actionDone after
+condActs+getIfThen write). Run it against the live hub to verify the ghost ifThen
+sequence behaves as documented:
+
+```bash
+cd Hubitat-local-MCP-server
+uv run --python 3.12 --with pyyaml tests/wizard_probe_examples/diag_demo.py
+# Expected: broken: False, errors: [], status: pass
+```
+
+Set `DEVICE_ID=<id>` to override the default switch device ID (1063).
+- The warning paragraph about "Do not use back button" is also normal and does not indicate a bug.
