@@ -9939,8 +9939,19 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // index because RM models time triggers as singletons within the
     // trigger row -- the index is on the wrapper trigger, not the inner
     // time picker. (Verified live on firmware 2.5.0.123.)
-    if (triggerSpec.time != null) {
-        writeIfPresent("time${idx}", triggerSpec.time)
+    //
+    // BUG A FIX: when caller provides atTime but omits time, infer
+    // time='A specific time' automatically. atTime is only meaningful
+    // for the wall-clock path; Sunrise/Sunset use offset instead.
+    // Without this inference the entire time block was silently skipped
+    // (the if-guard required time != null), leaving atTime unwritten and
+    // the trigger rendering as "Certain Time **Broken Trigger**".
+    def effectiveTime = triggerSpec.time
+    if (effectiveTime == null && triggerSpec.atTime != null) {
+        effectiveTime = "A specific time"
+    }
+    if (effectiveTime != null) {
+        writeIfPresent("time${idx}", effectiveTime)
         if (triggerSpec.atTime != null) {
             // RM 5.1's selectTriggers page parser requires the full
             // 'YYYY-MM-DDTHH:mm:ss.SSS+HHMM' form. Short ISO forms
@@ -9951,7 +9962,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             writeIfPresent("atTime${idx}", _rmNormalizeAtTime(triggerSpec.atTime.toString()))
         }
         if (triggerSpec.offset != null) {
-            def t = triggerSpec.time?.toString()
+            def t = effectiveTime?.toString()
             if (t == "Sunrise") writeIfPresent("atSunriseOffset${idx}", triggerSpec.offset)
             else if (t == "Sunset") writeIfPresent("atSunsetOffset${idx}", triggerSpec.offset)
         }
@@ -14782,8 +14793,20 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         // DO NOT replace with actionDone -- that bakes an empty IF() block.
         _rmClickAppButton(appId, "actionCancel", null, "doActPage")
 
-        // Return to selectActions to finalize the cancel.
+        // Return to selectActions to finalize the cancel, then navigate
+        // back to mainPage. Without the mainPage nav, the app's server-side
+        // routing context stays at selectActions. When the user later opens
+        // the browser and clicks "Manage Conditions" (STPage href on
+        // mainPage), RM sees a conflicting editAct context and renders
+        // "Required Fields missing or not passing validation" on STPage.
+        // Navigating back to mainPage here mirrors the live UI's pattern
+        // (every addTrigger ends with selectTriggers->mainPage nav) and
+        // leaves the app in the same clean context the browser expects.
+        // Verified live: without this nav, Browser STPage shows validation
+        // error after addRequiredExpression completes; with it, STPage
+        // opens cleanly and shows the committed conditions. (Bug B fix)
         _rmNavigateToPage(appId, "doActPage", "selectActions")
+        _rmNavigateToPage(appId, "selectActions", "mainPage")
 
         mcpLog("info", "rm-native", "addRequiredExpression: ghost ifThen clear fired for app ${appId} (issue #77 fix -- clears atomicState.predCapabs without adding an action)")
     } catch (Exception ghostExc) {
@@ -14826,7 +14849,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             repairHints: [
                 "Verify every deviceIds entry exists via list_devices.",
                 "Verify the 'state' value matches the capability's domain (Switch: 'on'/'off', Motion: 'active'/'inactive', Contact: 'open'/'closed', Lock: 'locked'/'unlocked', etc.).",
-                "Inspect the rule's actual state via get_app_config(appId, includeSettings=true) — settings.rDev_<N> = {<id>: null} indicates the device wasn't resolved, settings.cond='a' (instead of cond=['<idx>']) indicates the condition wasn't committed."
+                "Inspect the rule's actual state via get_app_config(appId, includeSettings=true) — settings.rDev_<N> = {<id>: null} indicates the device wasn't resolved; settings.rCapab_<N> absent means the condition slot wasn't committed. Note: 'cond' is an ephemeral wizard selector (value 'a'/'b') and is NOT present in appSettings after commit -- conditions live in rCapab_N/rDev_N/state_N only."
             ]
         ]
     }
@@ -15300,8 +15323,11 @@ def toolUpdateNativeApp(args) {
         // walks each condition's reveal sequence, commits via hasAll +
         // hasRule, and submits the sub-page Done back-nav. After return
         // the rule's mainPage paragraph renders the expression text and
-        // settings show useST=true + cond=["<idx>", ...] + per-cond
-        // rCapab_<idx>/rDev_<idx>/state_<idx>.
+        // settings show useST=true + per-cond
+        // rCapab_<idx>/rDev_<idx>/state_<idx>. Note: `cond` is the
+        // in-wizard selector (value "a"/"b") and is NOT persisted in
+        // appSettings after STPage commit -- conditions are stored in
+        // rCapab_N/rDev_N/state_N only. Verified live via diag probes.
         def reResult
         try {
             reResult = _rmAddRequiredExpression(appId, addRequiredExpressionSpec)

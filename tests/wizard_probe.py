@@ -545,6 +545,19 @@ def evaluate_expectations(expect: dict, final_snap: dict,
     Evaluate all expectations declared on a probe against the final snapshot.
 
     Returns (all_passed: bool, failure_messages: list[str]).
+
+    Supported expect keys:
+      final_render_NOT_contains: str       -- assert string absent from render
+      final_render_NOT_contains_any: list  -- assert NONE of the strings appear
+                                             (use this instead of duplicate
+                                             final_render_NOT_contains keys --
+                                             YAML silently drops duplicate keys)
+      final_render_contains: str           -- assert string present in render
+      final_render_contains_any: list      -- assert AT LEAST ONE string present
+      final_settings_contains_key: str     -- assert key present in settings map
+      final_settings_value: {k: v, ...}    -- assert settings[k] == v for each
+      no_step_errors: true                 -- assert no step returned an error
+      health_ok: true                      -- assert rule health check ok
     """
     if expect.get("skip"):
         return True, []  # Probe is TODO -- auto-pass
@@ -565,11 +578,35 @@ def evaluate_expectations(expect: dict, final_snap: dict,
                     f"found it in render -- render text: {all_para_text[:300]!r}"
                 )
 
+        elif key == "final_render_NOT_contains_any":
+            # List form: assert NONE of the strings appear in the render.
+            # Use this instead of duplicate final_render_NOT_contains keys in
+            # YAML (duplicate keys silently drop all but the last).
+            if not isinstance(expected_val, list):
+                failures.append(f"FAIL final_render_NOT_contains_any must be a list, got {type(expected_val)}")
+            else:
+                for item in expected_val:
+                    if item in all_para_text:
+                        failures.append(
+                            f"FAIL final_render_NOT_contains_any '{item}': "
+                            f"found it in render -- render text: {all_para_text[:300]!r}"
+                        )
+
         elif key == "final_render_contains":
             if expected_val not in all_para_text:
                 failures.append(
                     f"FAIL final_render_contains '{expected_val}': "
                     f"not found -- render text: {all_para_text[:300]!r}"
+                )
+
+        elif key == "final_render_contains_any":
+            # List form: assert AT LEAST ONE of the strings appears in the render.
+            if not isinstance(expected_val, list):
+                failures.append(f"FAIL final_render_contains_any must be a list, got {type(expected_val)}")
+            elif not any(item in all_para_text for item in expected_val):
+                failures.append(
+                    f"FAIL final_render_contains_any {expected_val!r}: "
+                    f"none found in render -- render text: {all_para_text[:300]!r}"
                 )
 
         elif key == "final_settings_contains_key":

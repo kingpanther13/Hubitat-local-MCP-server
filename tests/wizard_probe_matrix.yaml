@@ -78,8 +78,9 @@ probes:
             - $switch
           state: "off"
     expect:
-      final_render_NOT_contains: "Broken Trigger"
-      final_render_NOT_contains: "Broken Condition"
+      final_render_NOT_contains_any:
+        - "Broken Trigger"
+        - "Broken Condition"
       no_step_errors: true
 
   - name: "A3_addRE_then_addRE_second"
@@ -321,6 +322,138 @@ probes:
     expect:
       final_render_NOT_contains: "Broken Condition"
       final_render_contains: "action after introspect"
+      no_step_errors: true
+
+  - name: "A11_addTrigger_certainTime_atTime_only"
+    description: |
+      Bug A regression -- addTrigger with capability='Certain Time (and optional date)'
+      and atTime='17:00' but NO explicit 'time' field.  Before the fix, the entire
+      time block was guarded on `triggerSpec.time != null`, so atTime was never
+      written and the trigger rendered as "Certain Time **Broken Trigger**".
+      After the fix, time is auto-inferred as 'A specific time' when atTime is
+      provided without time.  Expects the render to contain the 5:00 PM wall-clock
+      time text (RM formats 17:00 as "5:00 PM").
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "17:00"
+      - addAction:
+          capability: "log"
+          message: "Bug A regression guard"
+    expect:
+      final_render_NOT_contains: "Broken Trigger"
+      final_render_NOT_contains: "Broken Condition"
+      final_render_contains: "PM"
+      no_step_errors: true
+
+  - name: "A12_addRequiredExpression_single_condition_committed"
+    description: |
+      addRequiredExpression with a single Switch condition.  Verifies that the
+      condition commits cleanly: (1) mainPage renders the expression text (not
+      "Define Required Expression" placeholder), (2) settings contain rCapab_N
+      and useST='true' confirming the wizard baked, and (3) no step errors.
+      Regression gate for Bug B (cond=NOT_PRESENT after commit is CORRECT
+      behavior -- conditions live in rCapab_N/rDev_N/state_N, not in `cond`).
+      NOTE: condition index starts at 2 because tCapab1 is consumed by the
+      preceding addTrigger (RM indexes triggers and RE conditions from the same
+      shared counter).  Hubitat returns boolean settings as the string 'true',
+      not the JSON literal true.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "18:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+    expect:
+      final_render_NOT_contains_any:
+        - "Define Required Expression"
+        - "Broken Condition"
+      final_settings_contains_key: "rCapab_2"
+      final_settings_value:
+        useST: "true"
+      no_step_errors: true
+
+  - name: "A13_addRequiredExpression_multi_condition_AND"
+    description: |
+      addRequiredExpression with two Switch conditions joined by AND.  Verifies
+      that the multi-condition wizard completes without partial commit:
+      rCapab_2 present in settings (first RE condition; index 2 because tCapab1
+      is consumed by the preceding addTrigger), mainPage shows the expression
+      text (not "Define Required Expression" placeholder), and a subsequent
+      addAction is clean (no Broken Condition wrapper from ghost ifThen state
+      leak).  Two conditions joined by AND is the minimal multi-condition shape
+      from the humidifier rule migration use case.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "19:30"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+            - capability: "Switch"
+              deviceIds:
+                - $switch_2
+              state: "off"
+          operator: "AND"
+      - addAction:
+          capability: "log"
+          message: "after multi-cond RE"
+    expect:
+      final_render_NOT_contains_any:
+        - "Define Required Expression"
+        - "Broken Condition"
+      final_settings_contains_key: "rCapab_2"
+      final_settings_value:
+        useST: "true"
+      final_render_contains: "after multi-cond RE"
+      no_step_errors: true
+
+  - name: "A14_addRequiredExpression_then_addAction_navigation_clean"
+    description: |
+      Bug B regression -- after addRequiredExpression, the ghost ifThen
+      workaround (issue #77 fix) used to leave the app in selectActions
+      routing context.  When the browser user navigated to "Manage Conditions"
+      (STPage href), RM saw the selectActions context and rendered "Required
+      Fields missing or not passing validation".  The fix adds a
+      selectActions->mainPage nav after the ghost ifThen, leaving the app in
+      mainPage context identical to addTrigger's post-commit state.
+      This probe verifies the end-to-end flow: addRE, then addAction, checks
+      that (a) the RE rendered on mainPage (not "Define Required Expression"
+      placeholder), (b) the action is NOT wrapped in an IF block, and
+      (c) settings have the RE-committed fields (rCapab_2, useST='true').
+      NOTE: rCapab_2 not rCapab_1 -- tCapab1 is consumed by addTrigger.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "20:30"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+      - addAction:
+          capability: "log"
+          message: "A14 nav clean guard"
+    expect:
+      final_render_NOT_contains_any:
+        - "Define Required Expression"
+        - "Broken Condition"
+      final_render_contains: "A14 nav clean guard"
+      final_settings_contains_key: "rCapab_2"
+      final_settings_value:
+        useST: "true"
       no_step_errors: true
 
   # =========================================================================

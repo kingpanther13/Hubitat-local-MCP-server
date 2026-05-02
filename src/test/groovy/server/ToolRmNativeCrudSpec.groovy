@@ -3582,4 +3582,169 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("Both")
         ex.message.contains("Custom Rule Engine")
     }
+
+    // -----------------------------------------------------------------------
+    // Bug A regression: addTrigger with atTime but no time field
+    // -----------------------------------------------------------------------
+    //
+    // Before the fix, the entire time block was guarded on
+    // `triggerSpec.time != null`, so a caller providing only atTime="17:00"
+    // (the natural LLM shape) skipped BOTH the time${idx} write AND the
+    // atTime${idx} write.  The trigger committed with only tCapab=Certain Time
+    // and rendered as "**Broken Trigger**".
+    //
+    // Fix: when atTime is non-null and time is null, effectiveTime is inferred
+    // as "A specific time".  Both time${idx} and atTime${idx} then write.
+
+    def "addTrigger with atTime but no time infers time='A specific time' and writes both fields"() {
+        // Verifies Bug A fix: the inference path writes settings[time1]="A specific time"
+        // AND settings[atTime1]="17:00" when the spec has atTime but omits time.
+        // The schema includes tCapab1 (with "Certain Time" option), time1, and atTime1
+        // so _rmWriteSettingOnPage doesn't skip them as "not in schema".
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // Schema includes tCapab1 + time1 + atTime1 so both writes land.
+        // moreCond click and hasAll click both hit the same static schema.
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum",
+                                  options: ["Certain Time (and optional date)", "Switch"]],
+                                 [name: "time1", type: "enum",
+                                  options: ["A specific time", "Sunrise", "Sunset"]],
+                                 [name: "atTime1", type: "time"],
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            mainPageJson(100, "r", true)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "addTrigger is called with atTime but no explicit time field"
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Certain Time (and optional date)",
+                atTime: "17:00"
+                // NOTE: no 'time' field -- caller relies on auto-inference
+            ],
+            confirm: true
+        ])
+
+        then: "time1='A specific time' was written (inferred from atTime presence)"
+        def time1Write = posts.find { it.path == "/installedapp/update/json" &&
+                                      it.body?.any { k, v ->
+                                          k?.toString()?.contains("settings[time1]") && v == "A specific time"
+                                      } }
+        time1Write != null
+
+        and: "atTime1='17:00' was also written (the HH:mm form passes through normalize unchanged)"
+        posts.any { it.path == "/installedapp/update/json" &&
+                    it.body?.any { k, v ->
+                        k?.toString()?.contains("settings[atTime1]") && v == "17:00"
+                    } }
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug B regression: addRequiredExpression ghost ifThen leaves app at
+    //                   selectActions, not mainPage
+    // -----------------------------------------------------------------------
+    //
+    // After the ghost ifThen sequence (_rmAddRequiredExpression Step 4b):
+    //   N click (selectActions) -> condActs/getIfThen writes -> actionCancel
+    //   -> nav doActPage->selectActions
+    //
+    // Before the Bug B fix, the sequence ended at selectActions. When the
+    // browser user subsequently navigated to "Manage Conditions" (STPage href
+    // on mainPage), RM saw the selectActions routing context and showed
+    // "Required Fields missing or not passing validation".
+    //
+    // Fix: after nav doActPage->selectActions, add nav selectActions->mainPage.
+    // This mirrors addTrigger's pattern (selectTriggers->mainPage nav at end)
+    // and leaves the app in mainPage context for the browser's next visit.
+
+    def "addRequiredExpression Step 4b ends with selectActions->mainPage nav (Bug B fix)"() {
+        // Verifies the Bug B fix: after the doActPage->selectActions nav, a
+        // second selectActions->mainPage nav fires, leaving the app in mainPage
+        // context so browser STPage visits don't see a conflicting editAct context.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') {
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') {
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') {
+            fetchSeq++
+            stPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') {
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') {
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')           { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "doActPage->selectActions nav fires (existing invariant d)"
+        def doActToSelectActionsIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
+                                                           it.body?.currentPage == "doActPage" &&
+                                                           it.body?.any { k, v ->
+                                                               k?.toString()?.contains("_action_href_name|selectActions|")
+                                                           } }
+        doActToSelectActionsIdx != -1
+
+        and: "selectActions->mainPage nav fires AFTER doActPage->selectActions nav (Bug B fix)"
+        def selectActionsToMainPageIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
+                                                              it.body?.currentPage == "selectActions" &&
+                                                              it.body?.any { k, v ->
+                                                                  k?.toString()?.contains("_action_href_name|mainPage|")
+                                                              } }
+        selectActionsToMainPageIdx != -1
+        selectActionsToMainPageIdx > doActToSelectActionsIdx
+    }
 }
