@@ -456,6 +456,255 @@ probes:
         useST: "true"
       no_step_errors: true
 
+  - name: "A15_addRE_single_cond_committed"
+    description: |
+      Bug C regression gate -- single-condition Required Expression.  After
+      the expression-builder fix, even a single condition must be assembled via
+      the Phase 2 wizard (settings[cond]=<N> then hasRule) before it bakes.
+      Verifies: (1) mainPage does NOT contain "(unused)", (2) mainPage does NOT
+      contain "Define Required Expression" placeholder (expression baked), and
+      (3) no step errors.  rCapab_2 is the expected slot index (tCapab1 consumed
+      by the preceding addTrigger).
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "08:15"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+    expect:
+      final_render_NOT_contains_any:
+        - "(unused)"
+        - "Define Required Expression"
+        - "Broken Condition"
+      final_settings_contains_key: "rCapab_2"
+      final_settings_value:
+        useST: "true"
+      no_step_errors: true
+
+  - name: "A16_addRE_two_cond_AND_committed"
+    description: |
+      Bug C main use case -- two-condition Required Expression joined by AND.
+      Verifies the Phase 2 expression-builder assembly (cond=N1 + oper=AND +
+      cond=N2 + hasRule) bakes the formula.  Checks: (1) mainPage does NOT
+      contain "(unused)", (2) does NOT contain "Define Required Expression",
+      (3) no step errors.  This is the humidifier-rule migration shape
+      (Switch is on AND Custom Attribute water != empty).
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "08:30"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+            - capability: "Switch"
+              deviceIds:
+                - $switch_2
+              state: "off"
+          operator: "AND"
+    expect:
+      final_render_NOT_contains_any:
+        - "(unused)"
+        - "Define Required Expression"
+        - "Broken Condition"
+      final_settings_contains_key: "rCapab_2"
+      final_settings_value:
+        useST: "true"
+      no_step_errors: true
+
+  - name: "A17_addRE_two_cond_OR"
+    description: |
+      Bug C operator variant -- two-condition RE joined by OR.  Verifies that
+      the assembly loop generalizes beyond AND (oper=OR must produce a baked
+      formula, not "(unused)").  Same shape as A16 but with OR operator.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "08:45"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+            - capability: "Contact"
+              deviceIds:
+                - $contact
+              state: "open"
+          operator: "OR"
+    expect:
+      final_render_NOT_contains_any:
+        - "(unused)"
+        - "Define Required Expression"
+        - "Broken Condition"
+      final_settings_contains_key: "rCapab_2"
+      final_settings_value:
+        useST: "true"
+      no_step_errors: true
+
+  - name: "A18_addRE_three_cond_AND"
+    description: |
+      Bug C loop generalization -- three-condition RE joined by AND.  Verifies
+      the assembly loop iterates correctly for 3+ conditions (cond=N1 + oper +
+      cond=N2 + oper + cond=N3 + hasRule).  Uses mixed devices: switch, contact,
+      motion.  All three must bake (no "(unused)" markers).
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "09:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+            - capability: "Contact"
+              deviceIds:
+                - $contact
+              state: "closed"
+            - capability: "Motion"
+              deviceIds:
+                - $motion
+              state: "active"
+          operator: "AND"
+    expect:
+      final_render_NOT_contains_any:
+        - "(unused)"
+        - "Define Required Expression"
+        - "Broken Condition"
+      final_settings_contains_key: "rCapab_2"
+      final_settings_value:
+        useST: "true"
+      no_step_errors: true
+
+  - name: "A19_addRE_then_addAction_no_IF_wrapper"
+    description: |
+      Bug D regression gate -- after addRequiredExpression (with the Bug C
+      expression-builder fix), a subsequent addAction must NOT be wrapped in
+      IF(**Broken Condition**).  The expression-builder writes (cond=N, oper,
+      cond=N, hasRule) re-leak atomicState.predCapabs just like walkConds did;
+      _rmClearPredCapabsViaGhostIfThen must fire AFTER hasRule to clear it.
+      Verifies: action renders cleanly (no "Broken Condition"), action text is
+      present, RE render does NOT contain "(unused)".
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "09:15"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+            - capability: "Switch"
+              deviceIds:
+                - $switch_2
+              state: "off"
+          operator: "AND"
+      - addAction:
+          capability: "switch"
+          deviceIds:
+            - $switch
+          action: "on"
+    expect:
+      final_render_NOT_contains_any:
+        - "(unused)"
+        - "Broken Condition"
+        - "Define Required Expression"
+      final_render_contains: "On: Test Plug"
+      no_step_errors: true
+
+  - name: "A20_addTrigger_Mode_writes_modesXN"
+    description: |
+      Pattern 2 regression gate -- addTrigger with capability=Mode + state name
+      must write modesX<N> (a multi-select enum of mode IDs) NOT tstate<N>.
+      Pre-fix the high-level shortcut wrote tstate<N> (the wrong field), which
+      RM silently rejected and left the trigger broken.  The fix resolves the
+      mode name via location.modes and writes modesX<N> with the resolved ID.
+
+      Verifies: the rendered trigger paragraph reads "Mode becomes Night"
+      (or whatever mode the resolution picked), modesX1 lands in settings,
+      and no step errored.  An accompanying Spock test asserts that tstate
+      is NEVER written for Mode triggers (caught at the wire-sequence level);
+      this probe complements that with end-to-end render verification.
+
+      Mode "Night" is assumed to exist on the test hub.  If it doesn't, the
+      probe will fail with a clear error from the addTrigger validator
+      listing valid mode names -- caller can swap "Night" for any local mode.
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Mode"
+          state: "Night"
+    expect:
+      final_render_contains: "Mode becomes Night"
+      final_render_NOT_contains_any:
+        - "Broken Trigger"
+        - "(unused)"
+      final_settings_contains_key: "modesX1"
+      no_step_errors: true
+
+  - name: "A21_addRE_custom_attribute_no_cosmetic_partial"
+    description: |
+      Pattern 1 regression gate -- addRequiredExpression with a Custom
+      Attribute condition + comparator must NOT report RelrDev_<N> as a
+      silent_rejection in settingsSkipped, even though the wizard's schema
+      check briefly flags it as "field not in schema after write".  The
+      settingsLanded 4th-detection mechanism in _rmWriteSubPageField (and
+      _rmWriteSettingOnPage) reads the post-write settings map and routes
+      the write to applied when the value lands there even if it's absent
+      from the schema's input descriptors.
+
+      Pre-fix: every Custom Attribute condition with a comparator produced
+      a noisy partial=true response with RelrDev_<N> in settingsSkipped.
+      Worst case observed: a fresh-context Sonnet abandoned the high-level
+      shortcut after seeing the partial flag and walked the wizard in 13
+      manual walkStep calls, ballooning a one-shot operation to 67 tool
+      calls (rule 1318 in the PR #134 zero-context validation).
+
+      Verifies: the rule renders cleanly with the comparator visible
+      (e.g. "water != empty"), and step settingsSkipped contains NO key
+      matching RelrDev_ or useLastDev. (the two cosmetic-partial families
+      this fix targets).
+    group: A
+    steps:
+      - addTrigger:
+          capability: "Certain Time (and optional date)"
+          atTime: "10:00"
+      - addRequiredExpression:
+          conditions:
+            - capability: "Switch"
+              deviceIds:
+                - $switch
+              state: "on"
+            - capability: "Custom Attribute"
+              deviceIds:
+                - $switch_2
+              attribute: "switch"
+              comparator: "!="
+              value: "off"
+          operator: "AND"
+    expect:
+      final_render_NOT_contains_any:
+        - "(unused)"
+        - "Broken Condition"
+        - "Define Required Expression"
+      no_step_errors: true
+      step_settings_skipped_excludes:
+        - "RelrDev_"
+        - "useLastDev."
+
   # =========================================================================
   # Group B -- Commit semantics
   #

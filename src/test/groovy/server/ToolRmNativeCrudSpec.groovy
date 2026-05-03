@@ -1,7 +1,9 @@
 package server
 
+import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
+import spock.lang.Shared
 
 /**
  * Spec for the native Rule Machine CRUD tools in hubitat-mcp-server.groovy:
@@ -36,6 +38,27 @@ import groovy.json.JsonOutput
  * regression on that code path.
  */
 class ToolRmNativeCrudSpec extends ToolSpecBase {
+
+    // Shared location stub for tests that exercise location.modes (Mode trigger)
+    // or location.hub (future). AppExecutor.getLocation() is wired in setupSpec
+    // below. Tests that need specific modes assign sharedLocation.modes in their
+    // given: block; cleanup() resets to the empty default so tests stay isolated.
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        // Wire location reads to the shared TestLocation stub so code paths that
+        // call location.modes (addTrigger Mode, get_modes, toolSetMode) get
+        // deterministic results instead of NPE from the @AutoImplement null default.
+        // HarnessSpec.setupSpec() runs first (Spock calls all setupSpec in hierarchy),
+        // so appExecutor is already a Mock when this override runs.
+        appExecutor.getLocation() >> sharedLocation
+    }
+
+    def cleanup() {
+        // Reset modes after each test so a test that assigns sharedLocation.modes
+        // cannot leak into unrelated tests.
+        sharedLocation.modes = []
+    }
 
     private void enableHubAdminWrite() {
         settingsMap.enableHubAdminWrite = true
@@ -3746,5 +3769,741 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                                               } }
         selectActionsToMainPageIdx != -1
         selectActionsToMainPageIdx > doActToSelectActionsIdx
+    }
+
+    // ---------- Pattern 1: settingsLanded detection (wizard-consumed fields) ----------
+    //
+    // Covers _rmWriteSettingOnPage's 4th detection mechanism (PR #134
+    // zero-context validation 2026-05-02).  Wizard-consumed fields (RelrDev_N,
+    // useLastDev.N, time1, etc.) have their value persist in the app's settings
+    // map but the field's schema input descriptor does NOT reflect the value
+    // back (either schema stays identical before/after OR the field disappears
+    // from schema).  The 3 existing detectors all inspect configPage; the 4th
+    // (settingsLanded) checks afterCfg?.settings.
+    //
+    // _rmWriteSettingOnPage is called from addTrigger / addAction / addRequiredExpression
+    // (NOT from walkStep -- walkStep write bypasses it and calls hubInternalPostForm
+    // directly).  To test via a public tool API, these tests go through addTrigger
+    // for the tstate<N> write (Switch capability).  The mock controls what the
+    // post-write configPage fetch returns: same schema keys + same no-value for
+    // tstate1, but settings["tstate1"]="on" present.  The observable is
+    // result.settingsSkipped -- the field should NOT appear there when settingsLanded
+    // fires.
+
+    def "addTrigger does not report tstate as skipped when value lands in settings but not in configPage schema -- settingsLanded case"() {
+        given:
+        enableHubAdminWrite()
+        // Switch trigger.  The selectTriggers mock returns the SAME schema on all
+        // fetches (schemaShifted=false, valueLanded=false, renderShifted=false) but
+        // settings["tstate1"]="on" is always present in the response.
+        //
+        // What the 3 old detectors see for the tstate1 write:
+        //   schemaShifted: beforeKeys=afterKeys (same 4 inputs), beforeValueStr=null,
+        //                  afterValueStr=null (enum has no defaultValue) -> false
+        //   valueLanded:   afterValueNorm is null -> false
+        //   renderShifted: same paragraphs -> false
+        //   OLD result: tstate1 goes to skipped (silent_rejection) -> partial=true
+        //
+        // What settingsLanded sees:
+        //   afterCfg.settings["tstate1"] = "on" == newValueStr "on" -> true
+        //   NEW result: tstate1 goes to applied -> no spurious partial
+        def schemaInputs = [
+            [name: "tCapab1", type: "enum", options: ["Switch"]],
+            [name: "tDev1", type: "capability.switch", multiple: true],
+            [name: "tstate1", type: "enum", options: ["on", "off"]],
+            // No defaultValue on tstate1 -- RM does not echo the value back via schema
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            // Identical schema on every fetch; settings always carry the written
+            // values.  This produces schemaShifted=false for every field write
+            // and valueLanded=false (no defaultValue in schema input), so the
+            // settingsLanded path is the only path that can route tstate1 to
+            // applied.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: schemaInputs,
+                                         paragraphs: ["Switch 1 is on"]]]],
+                settings: ["tCapab1": "Switch", "tstate1": "on"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            // Return a paragraph showing the trigger baked (not "Define Triggers").
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "T", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["Switch is on"]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addTrigger with Switch capability and state=on"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "tstate1 NOT in settingsSkipped -- settingsLanded routed it to applied"
+        // If tstate1 is in settingsSkipped, the old silent_rejection path fired.
+        // After the fix, settingsLanded detects settings["tstate1"]="on" and routes
+        // to applied, so the field is absent from settingsSkipped.
+        def skipped = result?.settingsSkipped ?: []
+        !skipped.any { it?.key == "tstate1" }
+    }
+
+    def "addTrigger does not report tDev as skipped when device IDs land in settings as a List -- settingsLanded list-normalization case"() {
+        given:
+        enableHubAdminWrite()
+        // Verify the list-normalization branch of settingsLanded: when settings
+        // returns a List (Hubitat stores multi-select as a JSON array) and the
+        // written value was also a List, the sorted-comma-join normalization must
+        // match.  This tests the `settingsValue instanceof List` branch at line ~13327.
+        def schemaInputs = [
+            [name: "tCapab1", type: "enum", options: ["Switch"]],
+            [name: "tDev1", type: "capability.switch", multiple: true],
+            // No tstate -- we're testing tDev1's list-normalization path
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: schemaInputs,
+                                         paragraphs: ["Switch 1 or 2"]]]],
+                // settings["tDev1"] is a List (JSON array) -- simulates Hubitat's
+                // multi-select storage format for capability.* inputs.
+                settings: ["tDev1": ["8", "9"]],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addTrigger with two device IDs"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8, 9]],
+            confirm: true
+        ])
+
+        then: "tDev1 NOT in settingsSkipped -- List-typed settings value matched via normalization"
+        def skipped = result?.settingsSkipped ?: []
+        !skipped.any { it?.key == "tDev1" }
+    }
+
+    def "addTrigger still reports true silent rejection in settingsSkipped when value absent from both schema AND settings"() {
+        given:
+        enableHubAdminWrite()
+        // Regression guard for settingsLanded: when the value does NOT land in
+        // settings (genuine write failure), the field must stay in settingsSkipped.
+        // The fix must NOT over-promote writes that genuinely failed.
+        //
+        // Scenario: tstate1 write returns 200 OK but hub ignores it -- after the
+        // write, settings["tstate1"] is absent and schema hasn't changed.
+        def schemaInputs = [
+            [name: "tCapab1", type: "enum", options: ["Switch"]],
+            [name: "tDev1", type: "capability.switch", multiple: true],
+            [name: "tstate1", type: "enum", options: ["on", "off"]],
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            // settings is EMPTY -- tstate1 truly was not written.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: schemaInputs,
+                                         paragraphs: ["no state set"]]]],
+                settings: [:],   // <-- empty: tstate1 genuinely did not persist
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addTrigger with state=on -- hub silently ignores the write"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "tstate1 IS in settingsSkipped -- genuine silent_rejection, settingsLanded did NOT fire"
+        def skipped = result?.settingsSkipped ?: []
+        skipped.any { it?.key == "tstate1" }
+    }
+
+    // ---------- Pattern 2: addTrigger Mode capability writes modesX<N> ----------
+    //
+    // Covers the Mode-trigger field routing fix (PR #134 zero-context
+    // validation 2026-05-02).  Before the fix, addTrigger{capability:"Mode",
+    // state:"Night"} wrote tstate<N>="Night" -- silently ignored by RM, leaving
+    // the trigger as Broken Trigger.  After the fix, the code resolves the mode
+    // name to an ID via location.modes and writes modesX<N>=[id].
+
+    def "addTrigger Mode + state name resolves to mode ID and writes modesX<N>"() {
+        given:
+        enableHubAdminWrite()
+        // Location has three modes.  The test uses "Night" which resolves to id "3".
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // selectTriggers mock: after moreCond click, tCapab1 appears; after
+        // writing tCapab1=Mode, modesX1 appears (no tDev1 for hub-state caps).
+        // A single progressively-changing schema is simulated via a fetch counter.
+        def fetchCount = 0
+        def modesXWritten = []
+        def tstateWritten = []
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchCount++
+            // Fetch sequence for a Mode trigger (no upper bound -- modesX1 must
+            // remain available through all writes, not just the first two):
+            //   1  version-prefetch inside _rmClickAppButton(moreCond)
+            //   2  schema-discovery (line 9862, finds tCapab1)
+            //   3  _rmWriteSettingOnPage(tCapab1) before-write
+            //   4  _rmWriteSettingOnPage(tCapab1) after-write
+            //   5  _rmWriteSettingOnPage(modesX1) before-write  <-- needs modesX1 present
+            //   6  _rmWriteSettingOnPage(modesX1) after-write
+            //   7+ isCondTrig finalize + post-hasAll reads
+            // Upper-bounding at 4 caused fetch 5 to return inputs=[] and modesX1
+            // to be routed as not_in_schema (no POST issued).  No upper bound here.
+            def inputs = []
+            if (fetchCount >= 2) {
+                inputs = [[name: "tCapab1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+                          [name: "isCondTrig.1", type: "bool"],
+                          [name: "hasAll", type: "button"]]
+            }
+            if (fetchCount >= 3) {
+                // After tCapab1=Mode is committed: modesX1 appears alongside
+                // tCapab1.  No tstate1 or tDev1 -- Mode is a hub-state cap,
+                // not device-based.  No upper bound so modesX1 is visible on
+                // both the before-write AND after-write fetches for its own
+                // _rmWriteSettingOnPage call (fetches 5 and 6).
+                inputs = [[name: "tCapab1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+                          [name: "modesX1", type: "enum", multiple: true,
+                           options: ["1": "Home", "2": "Away", "3": "Night"]],
+                          [name: "isCondTrig.1", type: "bool"],
+                          [name: "hasAll", type: "button"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["fetch ${fetchCount}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        // mainPage for trigger-baked check -- return a paragraph showing the mode trigger.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Capture field writes of interest.
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX")) modesXWritten << [key: ks, value: v]
+                if (ks?.startsWith("settings[tstate")) tstateWritten << [key: ks, value: v]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Mode", state: "Night"],
+            confirm: true
+        ])
+
+        then: "modesX1 was written with the resolved mode ID -- not tstate1"
+        modesXWritten.any { it.value?.contains("3") }
+
+        and: "tstate was never written for a Mode trigger"
+        tstateWritten.isEmpty()
+
+        and: "result carries triggerIndex=1 and capability=Mode"
+        result?.triggerIndex == 1
+        result?.capability == "Mode"
+
+        and: "modesX1 not in settingsSkipped (mock miscalibration guard)"
+        // If the fetchCount upper-bound bug recurs, modesX1 routes as not_in_schema
+        // and lands in settingsSkipped with partial=true.  Asserting it is absent
+        // here makes future mock miscalibrations surface loudly instead of silently
+        // producing a partial result that passes the modesXWritten check (which only
+        // looks at POST body captures, not at what _rmWriteSettingOnPage reported).
+        !(result?.settingsSkipped?.any { it?.key == "modesX1" })
+    }
+
+    def "addTrigger Mode + modeIds list writes modesX<N> directly without name resolution"() {
+        given:
+        enableHubAdminWrite()
+        // Pass IDs directly -- location.modes is NOT consulted (no name resolution).
+        // Even if location.modes is empty, the write should succeed.
+        sharedLocation.modes = []  // would cause NPE/error if consulted
+
+        def modesXWritten = []
+        def fetchCount = 0
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchCount++
+            def inputs = []
+            if (fetchCount >= 2) {
+                inputs = [[name: "tCapab1", type: "enum", options: ["Mode", "Switch"]],
+                          [name: "isCondTrig.1", type: "bool"],
+                          [name: "hasAll", type: "button"]]
+            }
+            if (fetchCount >= 3) {
+                inputs = [[name: "tCapab1", type: "enum", options: ["Mode", "Switch"]],
+                          [name: "modesX1", type: "enum", multiple: true,
+                           options: ["3": "Night", "5": "Day"]],
+                          [name: "isCondTrig.1", type: "bool"],
+                          [name: "hasAll", type: "button"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["fetch ${fetchCount}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            body?.each { k, v ->
+                if (k?.toString()?.startsWith("settings[modesX")) modesXWritten << [key: k, value: v]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Mode", modeIds: [3, 5]],
+            confirm: true
+        ])
+
+        then: "modesX1 was written with the supplied IDs -- no name resolution needed"
+        modesXWritten.any { it.value?.contains("3") && it.value?.contains("5") }
+    }
+
+    def "addTrigger Mode with unknown state name throws with clear error listing valid modes"() {
+        given:
+        enableHubAdminWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Minimal selectTriggers setup so the pre-moreCond fetch doesn't fail.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Mode", "Switch"]],
+                                 [name: "hasAll", type: "button"]
+                             ]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Mode", state: "NotAMode"],
+            confirm: true
+        ])
+
+        then: "clear IllegalArgumentException listing the valid mode names"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("NotAMode")
+        ex.message.contains("Home")
+        ex.message.contains("Away")
+        ex.message.contains("Night")
+    }
+
+    def "addTrigger Mode never writes tstate<N> regardless of the state value passed"() {
+        given:
+        enableHubAdminWrite()
+        // Verify the exclusive-or invariant: Mode always takes the modesX path
+        // and NEVER falls through to the tstate path.  Even a "valid-looking"
+        // state string like "on" must not produce a tstate write.
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"]]
+
+        def tstateWrites = []
+        def modesXWrites = []
+        def fetchCount = 0
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchCount++
+            def inputs = fetchCount >= 2
+                ? [[name: "tCapab1", type: "enum", options: ["Mode", "Switch"]],
+                   [name: "modesX1", type: "enum", multiple: true,
+                    options: ["1": "Home", "2": "Away"]],
+                   [name: "isCondTrig.1", type: "bool"],
+                   [name: "hasAll", type: "button"]]
+                : []
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["fetch ${fetchCount}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[tstate")) tstateWrites << ks
+                if (ks?.startsWith("settings[modesX")) modesXWrites << ks
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Mode", state: "Home"],
+            confirm: true
+        ])
+
+        then: "tstate was NEVER written for a Mode trigger"
+        tstateWrites.isEmpty()
+
+        and: "modesX WAS written"
+        !modesXWrites.isEmpty()
+    }
+
+    // ---------- Pattern 1 (mirror): settingsLanded in _rmWriteSubPageField ----------
+    //
+    // The same wizard-consumed-field false-positive that was fixed in
+    // _rmWriteSettingOnPage (above) also exists in _rmWriteSubPageField, which
+    // is called by addRequiredExpression's writeST closure for every STPage
+    // write.  Live hub validation (rule 1318, 2026-05-02) showed RelrDev_3 in
+    // settingsSkipped as silent_rejection even though "!=" landed in stored
+    // settings -- because _rmWriteSubPageField's persisted calculation only
+    // checked schemaShifted/valueLanded/renderShifted (not settings).
+    //
+    // These three tests mirror Pattern 1's three scenarios for the STPage
+    // code path.  The STPage mock uses a STATIC schema (same keys, same
+    // paragraphs on every fetch) so schemaShifted=false, valueLanded=false,
+    // and renderShifted=false for every write -- forcing all detection to
+    // fall through to the settingsLanded path.
+
+    def "_rmWriteSubPageField settingsLanded: RelrDev_1 routes to applied when value in settings but not echoed in schema (STPage wizard-consumed)"() {
+        given:
+        enableHubAdminWrite()
+        // STPage mock: STATIC schema (same keys + same paragraph on every fetch)
+        // so schemaShifted=false, valueLanded=false, renderShifted=false.
+        // settings["RelrDev_1"]="!=" is present on all fetches, so settingsLanded
+        // fires on the post-verify fetch for the RelrDev_1 write and routes
+        // the field to applied rather than silent_rejection / settingsSkipped.
+        //
+        // Without the fix, persisted = schemaShifted || valueLanded || renderShifted
+        // = false || false || false = false, and RelrDev_1 lands in settingsSkipped.
+        // With the fix, settingsLanded = ("!=" == "!=") = true, and persisted=true.
+        def stPageJson = JsonOutput.toJson([
+            app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "cond", type: "enum",
+                              options: ["a": "New condition", "b": "( sub-expression"]],
+                             [name: "rCapab_1", type: "enum",
+                              options: ["Custom Attribute", "Switch", "Motion"]],
+                             [name: "rDev_1", type: "capability.sensor", multiple: true],
+                             [name: "rCustomAttr_1", type: "enum",
+                              options: ["wickFilterLife", "battery", "rssi"]],
+                             // RelrDev_1 has no defaultValue -- RM never echoes the written
+                             // comparator back via schema (progressive-disclosure side-effect).
+                             [name: "RelrDev_1", type: "enum",
+                              options: ["<", "<=", ">", ">=", "=", "!="]],
+                             [name: "state_1", type: "number"],
+                             [name: "hasAll", type: "button"],
+                             [name: "doneST", type: "button"]
+                         ], paragraphs: ["static paragraph"]]]],  // STATIC -- renderShifted=false always
+            // settings echoes the written comparator value -- settingsLanded fires here.
+            settings: ["RelrDev_1": "!="],
+            childApps: []
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            // Bake-check: paragraph must NOT say "Define Required Expression".
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF wickFilterLife != 20 THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params -> stPageJson }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addRequiredExpression with Custom Attribute + comparator writes RelrDev_1 via writeST -> _rmWriteSubPageField"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "wickFilterLife",
+                comparator: "!=",
+                value: 20
+            ]]],
+            confirm: true
+        ])
+
+        then: "RelrDev_1 is in settingsApplied -- settingsLanded routed it to applied"
+        // Without the fix, _rmWriteSubPageField returns persisted=false for RelrDev_1
+        // (schemaShifted=false, valueLanded=false, renderShifted=false with static schema),
+        // and writeST routes it to settingsSkipped as silent_rejection.
+        // With the fix, settingsLanded detects settings["RelrDev_1"]="!=" and persisted=true.
+        (result?.settingsApplied as List).contains("RelrDev_1")
+
+        and: "RelrDev_1 is NOT in settingsSkipped"
+        def skipped = result?.settingsSkipped ?: []
+        !skipped.any { it?.key == "RelrDev_1" }
+    }
+
+    def "_rmWriteSubPageField settingsLanded list-normalization: rDev_1 routes to applied when device IDs land in settings as a List"() {
+        given:
+        enableHubAdminWrite()
+        // Verify the List-normalization branch of settingsLanded in _rmWriteSubPageField.
+        // settings["rDev_1"] is a List (Hubitat stores multi-select as a JSON array).
+        // The written value is also a List ([8]).  The sorted-comma-join normalization
+        // must produce "8" == "8" for settingsLanded=true.
+        def stPageJson = JsonOutput.toJson([
+            app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "cond", type: "enum",
+                              options: ["a": "New condition", "b": "( sub-expression"]],
+                             [name: "rCapab_1", type: "enum",
+                              options: ["Switch", "Motion"]],
+                             [name: "rDev_1", type: "capability.switch", multiple: true],
+                             // No RelrDev_1 -- Switch has no comparator
+                             [name: "state_1", type: "enum", options: ["on", "off"]],
+                             [name: "hasAll", type: "button"],
+                             [name: "doneST", type: "button"]
+                         ], paragraphs: ["static paragraph"]]]],
+            // settings["rDev_1"] is a List -- Hubitat's JSON array storage format.
+            settings: ["rDev_1": ["8"]],
+            childApps: []
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF Switch1 is on THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params -> stPageJson }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addRequiredExpression with Switch condition writes rDev_1 as a List via writeST -> _rmWriteSubPageField"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Switch",
+                deviceIds: [8],
+                state: "on"
+            ]]],
+            confirm: true
+        ])
+
+        then: "rDev_1 is in settingsApplied -- List-typed settings value matched via normalization"
+        (result?.settingsApplied as List).contains("rDev_1")
+
+        and: "rDev_1 is NOT in settingsSkipped"
+        def skipped = result?.settingsSkipped ?: []
+        !skipped.any { it?.key == "rDev_1" }
+    }
+
+    def "_rmWriteSubPageField settingsLanded regression: RelrDev_1 stays in settingsSkipped when value absent from both schema AND settings"() {
+        given:
+        enableHubAdminWrite()
+        // Regression guard: when the value does NOT land in settings (genuine write
+        // failure), _rmWriteSubPageField must still return persisted=false, and writeST
+        // must route the field to settingsSkipped.  The fix must NOT over-promote
+        // genuine silent rejections.
+        //
+        // Scenario: RelrDev_1 write returns 200 OK but hub ignores it -- after the
+        // write, settings["RelrDev_1"] is absent and schema hasn't changed.
+        def stPageJson = JsonOutput.toJson([
+            app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "cond", type: "enum",
+                              options: ["a": "New condition", "b": "( sub-expression"]],
+                             [name: "rCapab_1", type: "enum",
+                              options: ["Custom Attribute", "Switch", "Motion"]],
+                             [name: "rDev_1", type: "capability.sensor", multiple: true],
+                             [name: "rCustomAttr_1", type: "enum",
+                              options: ["wickFilterLife", "battery", "rssi"]],
+                             [name: "RelrDev_1", type: "enum",
+                              options: ["<", "<=", ">", ">=", "=", "!="]],
+                             [name: "state_1", type: "number"],
+                             [name: "hasAll", type: "button"],
+                             [name: "doneST", type: "button"]
+                         ], paragraphs: ["static paragraph"]]]],
+            settings: [:],   // EMPTY -- RelrDev_1 truly did not persist
+            childApps: []
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF wickFilterLife != 20 THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params -> stPageJson }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: "addRequiredExpression with comparator -- hub silently ignores the RelrDev_1 write"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "wickFilterLife",
+                comparator: "!=",
+                value: 20
+            ]]],
+            confirm: true
+        ])
+
+        then: "RelrDev_1 IS in settingsSkipped -- genuine silent_rejection, settingsLanded did NOT fire"
+        def skipped = result?.settingsSkipped ?: []
+        skipped.any { it?.key == "RelrDev_1" }
     }
 }

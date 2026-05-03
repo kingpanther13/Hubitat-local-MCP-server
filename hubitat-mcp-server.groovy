@@ -1988,6 +1988,10 @@ Capability families and the spec fields each accepts:
   - Time / Sunrise / Sunset (Certain Time and optional date):
     capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime — see SEMANTIC choice below; offset (minutes for sunrise/sunset)
        atTime SEMANTIC: 'HH:mm' form (e.g. '17:00') = DAILY-recurring trigger that fires every day at that wall-clock time; full ISO datetime (e.g. '2026-04-29T17:00:00' or '2026-04-29T17:00:00.000-0500') = ONE-SHOT dated trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
+  - Mode (hub mode change trigger):
+    capability='Mode', state='Night' OR state=['Away','Night'] (mode names, case-insensitive)
+    OR modeIds=['3'] OR modeIds=['3','5'] (IDs directly, from get_modes).
+    IMPORTANT: writes modesX<N> internally -- do NOT pass tstate or rawSettings.tstate for Mode triggers (silently ignored; trigger renders as Broken Trigger). Use get_modes to list valid mode names/IDs.
   - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
     capability='Periodic Schedule', periodic={frequency: 'Hourly'|'Daily'|'Cron String'|...,
       everyN: <int>,           // for "every N <unit>" mode (Hourly/Daily)
@@ -9927,11 +9931,61 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         writeIfPresent("ButtontDev${idx}", triggerSpec.buttonNumber)
     }
 
-    // tstate<N> covers both enum-state ("on"/"active") and numeric value
-    // (Temperature reading) paths. value field is the numeric form.
-    def stateValue = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
-    if (stateValue != null) {
-        writeIfPresent("tstate${idx}", stateValue)
+    // MODE CAPABILITY -- special-case BEFORE the generic tstate path.
+    //
+    // RM 5.1 Mode triggers do NOT use tstate<N>. The correct field is
+    // modesX<N>, which takes a List of mode IDs (String representations of
+    // Long IDs from location.modes). Writing tstate<N> for a Mode trigger
+    // causes: tCapab<N>=Mode lands, tstate<N> is silently ignored, and the
+    // trigger renders as "**Broken Trigger**" because modesX<N> is absent.
+    //
+    // Two input shapes are accepted:
+    //   state  -- String or List<String> of mode NAMES (e.g. "Night" or
+    //             ["Away", "Night"]). Names are resolved to IDs via
+    //             location.modes. Case-insensitive. All names must resolve;
+    //             unresolved names throw IllegalArgumentException with the
+    //             full valid-modes list so the caller can correct the input.
+    //   modeIds -- List<Integer or String> of mode IDs. Written directly as
+    //              String values inside a List (e.g. ["3"] or ["3", "5"]).
+    //
+    // Verified live (PR #134 zero-context validation 2026-05-02): two agents
+    // hit this pattern (rules 1319, 1320), each spending 30+ extra tool calls
+    // deleting and rebuilding the rule because tstate<N> silently no-ops.
+    if (capCanonical == "Mode") {
+        def rawModeIds = []
+        if (triggerSpec.modeIds instanceof List) {
+            // Caller supplied IDs directly -- convert each to String.
+            rawModeIds = (triggerSpec.modeIds as List).collect { it?.toString() }.findAll { it }
+        } else {
+            // Resolve mode name(s) from location.modes. Support single
+            // String or List<String>.
+            def nameInput = triggerSpec.state
+            def modeNames = (nameInput instanceof List) ? (nameInput as List) : (nameInput != null ? [nameInput] : [])
+            if (modeNames.isEmpty()) {
+                throw new IllegalArgumentException("addTrigger Mode requires state (mode name or list of mode names) or modeIds (list of mode IDs)")
+            }
+            def allModes = location.modes ?: []
+            def validModeNames = allModes.collect { it?.name?.toString() }.findAll { it }
+            modeNames.each { mn ->
+                def matched = allModes.find { it?.name?.toString()?.equalsIgnoreCase(mn?.toString()) }
+                if (!matched) {
+                    throw new IllegalArgumentException("addTrigger Mode: mode name '${mn}' not found. Valid modes: ${validModeNames.sort().join(', ')}")
+                }
+                rawModeIds << matched.id.toString()
+            }
+        }
+        if (rawModeIds.isEmpty()) {
+            throw new IllegalArgumentException("addTrigger Mode: no mode IDs resolved -- pass state with valid mode name(s) or modeIds with mode ID(s)")
+        }
+        writeIfPresent("modesX${idx}", rawModeIds)
+    } else {
+        // tstate<N> covers both enum-state ("on"/"active") and numeric value
+        // (Temperature reading) paths. value field is the numeric form.
+        // NOT used for Mode (see special-case above) -- Mode uses modesX<N>.
+        def stateValue = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
+        if (stateValue != null) {
+            writeIfPresent("tstate${idx}", stateValue)
+        }
     }
 
     // Time-based capability uses time1, atTime1, atSunriseOffset1 etc.
@@ -10202,7 +10256,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             repairHints << "Some trigger settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
         }
         if (hasBrokenLabel) {
-            repairHints << "Trigger row has *BROKEN* marker — capability '${cap}' likely needs a capability-specific field that addTrigger didn't auto-supply (e.g. Mode trigger needs modesX1=[<modeIds>], Periodic needs the periodic={} sub-spec). Pass missing fields via the per-capability spec OR rawSettings={fieldName: value} as an escape hatch, then re-add the trigger."
+            repairHints << "Trigger row has *BROKEN* marker -- capability '${cap}' likely needs a capability-specific field (Mode: pass state='ModeName' or modeIds=['id'], NOT rawSettings.tstate; Periodic: pass periodic={} sub-spec). Re-add the trigger with the correct fields."
         }
         if ((health?.brokenMarkers as List)?.size() > 0 && !hasBrokenLabel) {
             repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new trigger committed, but run check_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
@@ -10476,9 +10530,12 @@ private Map _rmTriggerSchemaForDiscover() {
                 name: "Mode",
                 family: "hub-state",
                 requiredFields: [
-                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Away' or ['Away', 'Night'])"]
+                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Night' or ['Away', 'Night']). Names are resolved to IDs via location.modes -- must match existing hub modes (case-insensitive). Use get_modes to list available modes and their IDs. Required unless modeIds is provided."]
                 ],
-                notes: "No deviceIds required. Triggers when hub mode changes to any of the listed values."
+                optionalFields: [
+                    [name: "modeIds", type: "List<String or Integer>", description: "Mode IDs directly (alternative to state). Use when you already have the ID from get_modes. E.g. ['3'] or ['3', '5']. When provided, state is not required."]
+                ],
+                notes: "No deviceIds required. Triggers when hub mode becomes any of the listed modes. IMPORTANT: internally writes modesX<N> (not tstate<N>) -- passing only rawSettings with tstate will produce a broken trigger."
             ]
         ]
     ]
@@ -11600,8 +11657,32 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // RM's rendered paragraph text DID shift to reflect the new wizard state.
     // renderShifted catches that case.
     def renderShifted = (beforeRenderHash != afterRenderHash)
-    def persisted = schemaShifted || valueLanded || renderShifted
-    return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, verifyFetchFailed: false, afterKeys: afterKeys.toList().sort()]
+    // settingsLanded: catches wizard-consumed fields (RelrDev_N, useLastDev.N,
+    // time1, etc.) that disappear from configPage schema after the wizard
+    // advances but persist in settings. Applies only on STPage path where
+    // afterCfg is a full /installedapp/configure/json response (has settings).
+    // On the periodic schedule path, afterCfg is the navigate response shape
+    // [configPage:, app:] with no settings key, so settingsValue is null and
+    // settingsLanded stays false -- no over-promotion risk.
+    //
+    // Same normalization strategy as valueLanded: List values are sorted and
+    // comma-joined; scalar strings are compared directly. Mirrors the identical
+    // fix applied to _rmWriteSettingOnPage for the same field class.
+    def settingsValue = afterCfg?.settings?."${key}"
+    def settingsValueNorm
+    if (settingsValue instanceof List) {
+        settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+    } else if (settingsValue != null) {
+        def settingsValueStr = settingsValue.toString()
+        if (value instanceof List && settingsValueStr.contains(",")) {
+            settingsValueNorm = settingsValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+        } else {
+            settingsValueNorm = settingsValueStr
+        }
+    }
+    def settingsLanded = (newValueStr != null) && (settingsValueNorm != null) && (settingsValueNorm == newValueStr)
+    def persisted = schemaShifted || valueLanded || renderShifted || settingsLanded
+    return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, settingsLanded: settingsLanded, verifyFetchFailed: false, afterKeys: afterKeys.toList().sort()]
 }
 
 /**
@@ -12549,12 +12630,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // accumulator before the expression builder writes cond=a. For non-expression
     // actions, cond is not in doActPage's schema, so this write is silently
     // skipped -- the atomicState.predCapabs context for non-expression actions
-    // was already cleared in _rmAddRequiredExpression Step 4b (ghost ifThen
-    // workaround, issue #77 fix) before this method was called.
+    // was already cleared by _rmClearPredCapabsViaGhostIfThen (called from
+    // _rmAddRequiredExpression after the expression-builder hasRule click) before
+    // this method was called.
     def condContextClear = []
     _rmWriteSettingOnPage(appId, "doActPage", "cond", [], applied, null, condContextClear)
     if (!condContextClear.isEmpty()) {
-        mcpLog("debug", "rm-native", "_rmAddAction: cond not in doActPage schema after actType/actSubType for app ${appId} action ${idx} (${condContextClear[0]?.reason}) -- skipped (non-expression action; predCapabs already cleared in addRequiredExpression Step 4b)")
+        mcpLog("debug", "rm-native", "_rmAddAction: cond not in doActPage schema after actType/actSubType for app ${appId} action ${idx} (${condContextClear[0]?.reason}) -- skipped (non-expression action; predCapabs already cleared via ghost ifThen in addRequiredExpression)")
     }
 
     // Type-specific fields. The @N placeholder in keys is substituted with
@@ -12851,12 +12933,14 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied, null, skipped)
     }
 
-    // runCommand parameters. First parameter writes directly to cpType1/cpVal1
-    // (those fields are present after cCmd without a moreParams click). Each
-    // subsequent parameter requires one moreParams click to allocate the next
-    // cpType<N>/cpVal<N> pair before writing. Verified live 2026-04-27: always
-    // clicking moreParams first causes the first param to land at cpType2,
-    // leaving cpType1 empty and producing "IF (**Broken Condition**)" in RM.
+    // runCommand parameters. For the FIRST action's first parameter, cpType1/cpVal1
+    // auto-expose in the doActPage schema after cCmd is written (no moreParams click
+    // needed). For SUBSEQUENT actions (action 2, 3...), only the moreParams button
+    // appears after cCmd -- cpType1.N is absent. The code below checks schema first
+    // and falls through to the moreParams-click path if cpType1.N is missing.
+    // Verified live 2026-04-27: always clicking moreParams first causes the first
+    // param to land at cpType2, leaving cpType1 empty and producing
+    // "IF (**Broken Condition**)" in RM.
     if (actionSpec.__runCommandExtraParams instanceof List && !actionSpec.__runCommandExtraParams.isEmpty()) {
         actionSpec.__runCommandExtraParams.eachWithIndex { p, paramIdx ->
             def pType, pValue
@@ -12873,18 +12957,28 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             }
 
             def slotName  // base field name, e.g. "cpType1" or "cpType2"
-            if (paramIdx == 0) {
-                // First parameter: cpType1/cpVal1 are already in the schema after
-                // cCmd is written. Write directly -- no moreParams click needed.
+
+            // For the first parameter, cpType1/cpVal1 auto-expose after cCmd is
+            // written on ACTION 1 only.  On subsequent actions (action 2, 3, ...)
+            // only the "moreParams" button appears in the doActPage schema after
+            // cCmd is written -- cpType1.N is NOT present.  Check the schema
+            // before assuming cpType1 is available; if it is missing, use the
+            // same moreParams-click + discovery path as for later parameters.
+            def checkCurCfg = _rmFetchConfigJson(appId, "doActPage")
+            def checkCurNames = (checkCurCfg?.configPage?.sections ?: []).collectMany { sec ->
+                (sec?.input ?: []).collect { it?.name?.toString() }
+            }
+            if (checkCurNames.contains("cpType1.${idx}".toString())) {
+                // cpType1.N is already in schema (typical for the first action's
+                // first parameter) -- write directly without moreParams click.
                 slotName = "cpType1"
             } else {
-                // Subsequent parameters: click moreParams to allocate the next slot,
+                // cpType1.N absent -- click moreParams to allocate the next slot,
                 // then discover which new cpType<N> field appeared.
-                def beforeCfg = _rmFetchConfigJson(appId, "doActPage")
-                def beforeNames = (beforeCfg?.configPage?.sections ?: []).collectMany { sec ->
-                    (sec?.input ?: []).collect { it?.name?.toString() }
-                }
-                def beforeCpTypes = beforeNames.findAll { it?.startsWith("cpType") && it?.endsWith(".${idx}") } as Set
+                // This is the normal path for:
+                //   - any action > 1's first parameter
+                //   - any parameter beyond the first on any action
+                def beforeCpTypes = checkCurNames.findAll { it?.startsWith("cpType") && it?.endsWith(".${idx}") } as Set
                 _rmClickAppButton(appId, "moreParams", null, "doActPage")
                 def afterCfg = _rmFetchConfigJson(appId, "doActPage")
                 def afterNames = (afterCfg?.configPage?.sections ?: []).collectMany { sec ->
@@ -12921,10 +13015,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     }
 
     // Issue #77 context: the predCapabs condition-context leak from a preceding
-    // addRequiredExpression is cleared in _rmAddRequiredExpression's Step 4b
-    // (ghost ifThen workaround) before control returns here. By the time
-    // _rmAddAction runs, atomicState.predCapabs is already clean regardless
-    // of whether this is an expression or plain action type. No per-action
+    // addRequiredExpression is cleared by _rmClearPredCapabsViaGhostIfThen
+    // (called from _rmAddRequiredExpression after the expression-builder hasRule
+    // click) before control returns here. By the time _rmAddAction runs,
+    // atomicState.predCapabs is already clean regardless of whether this is
+    // an expression or plain action type. No per-action
     // clearing is needed here.
 
     // Click actionDone (with form context) to commit.
@@ -13211,12 +13306,65 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
     // identical but RM's rendered paragraph text shifts to reflect the new
     // wizard state. The render hash catches that case.
     def renderShifted = (beforeRenderHash != afterRenderHash)
-    if (schemaShifted || valueLanded || renderShifted) {
+    // Wizard-consumed / submitOnChange field families (4th detection mechanism).
+    //
+    // WHY this case exists: certain RM 5.1 fields are consumed by the wizard
+    // immediately on submitOnChange -- the wizard advances its internal state
+    // and the field disappears from the configPage schema (it is no longer
+    // rendered as a UI input), EVEN THOUGH the value persists correctly in
+    // the app's settings map. The three schema-based mechanisms above all
+    // check configPage (input descriptors), so they miss this pattern:
+    //   schemaShifted: keys may be unchanged (wizard is at same step)
+    //   valueLanded:   key absent from afterSchema -> afterValueStr is null
+    //   renderShifted: paragraphs may not shift for this specific write
+    //
+    // WHICH field families this catches (verified live, PR #134 zero-context
+    // validation 2026-05-02):
+    //   RelrDev_N  -- Custom Attribute condition's comparator (=, !=, etc.),
+    //                 written inside addRequiredExpression's STPage wizard walk.
+    //                 Field disappears from schema after write but persists in
+    //                 settings as a plain enum string.
+    //   useLastDev.N -- runCommand's "use last device" checkbox written during
+    //                   addAction. Disappears from doActPage schema after write
+    //                   but persists in settings as "true"/"false".
+    //   time1      -- Certain Time trigger's time/mode label written during
+    //                 addTrigger. Disappears from selectTriggers schema after
+    //                 the wizard advances past it, but persists in settings.
+    //   Any other submitOnChange-but-not-re-rendered field in RM 5.1.
+    //
+    // HOW it works: the /installedapp/configure/json response includes BOTH
+    // configPage (current rendered inputs) AND settings (all persisted app
+    // settings). When a field disappears from configPage but the value is in
+    // settings, the write succeeded -- route to applied, not skipped.
+    //
+    // The comparison uses the same string-normalization as valueLanded (above)
+    // so List values compare correctly against comma-joined settings strings.
+    def settingsValue = afterCfg?.settings?."${key}"
+    // Normalize the settings value to a comparable string using the same
+    // strategy as valueLanded above. Settings entries can be:
+    //   - a String (simple scalar, e.g. "=" for RelrDev_N)
+    //   - a comma-joined String (e.g. "3,5" for multi-select written as CSV)
+    //   - a List (e.g. ["3","5"] when Hubitat stores multi-select as a JSON array)
+    // Flatten List entries to a sorted comma-joined string so they compare
+    // cleanly against newValueStr (which is also sorted-comma-joined for Lists).
+    def settingsValueNorm
+    if (settingsValue instanceof List) {
+        settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+    } else if (settingsValue != null) {
+        def settingsValueStr = settingsValue.toString()
+        if (value instanceof List && settingsValueStr.contains(",")) {
+            settingsValueNorm = settingsValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+        } else {
+            settingsValueNorm = settingsValueStr
+        }
+    }
+    def settingsLanded = (newValueStr != null) && (settingsValueNorm != null) && (settingsValueNorm == newValueStr)
+    if (schemaShifted || valueLanded || renderShifted || settingsLanded) {
         applied << key
     } else if (skipped != null) {
         skipped << [key: key, reason: "silent_rejection", value: value, schemaUnchanged: true, available: afterKeys.toList().sort()]
     } else {
-        applied << key  // legacy callers without a skipped list — preserve old optimistic behavior
+        applied << key  // legacy callers without a skipped list -- preserve old optimistic behavior
     }
 }
 
@@ -14347,6 +14495,69 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
 }
 
 /**
+ * Clear RM's residual atomicState.predCapabs via the "ghost ifThen" workaround.
+ *
+ * Shared by _rmAddRequiredExpression (called after walkConds+hasRule commit) and
+ * any future flow that needs to flush the condition-builder accumulator without
+ * leaving a visible action in the rule.
+ *
+ * Sequence: open a condActs/getIfThen slot on selectActions, immediately cancel
+ * it (actionCancel -- NOT actionDone), then nav doActPage->selectActions->mainPage.
+ * actSubType=getIfThen triggers RM's ifThen initializer, which zeroes out
+ * predCapabs; actionCancel discards the slot so no action lands in the rule.
+ *
+ * Caller supplies a short label for log attribution (e.g. "addRequiredExpression").
+ *
+ * Mechanistic rationale: writing actSubType=getIfThen invokes RM's condition-builder
+ * initializer (used by both STPage and doActPage condActs flow), which zeroes out
+ * predCapabs. actionCancel then exits WITHOUT merging the new slot's state back into
+ * the rule, so the clean predCapabs persists. Verified live via probe diag variants Y
+ * and Z (2026-05-01/02). DO NOT remove or simplify without re-running full probe matrix.
+ */
+private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
+    // Open a new action slot on selectActions.
+    _rmClickAppButton(appId, "N", "doActN", "selectActions")
+
+    // Discover the index RM allocated (same pattern as _rmAddAction).
+    def ghostCfg = _rmFetchConfigJson(appId, "doActPage")
+    def ghostSchema = _rmCollectInputSchema(ghostCfg?.configPage)
+    def ghostActTypeField = ghostSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+    def ghostIdx = 1
+    if (ghostActTypeField) {
+        def m = (ghostActTypeField.toString() =~ /^actType\.(\d+)$/)
+        if (m.matches()) ghostIdx = m[0][1] as Integer
+    }
+
+    // Write condActs + getIfThen to trigger RM's ifThen initializer,
+    // which re-initializes atomicState.predCapabs with a clean state.
+    // actSubType=getIfThen is the minimum required step -- actType=condActs
+    // alone does not trigger the clear (Variant Z: condActs alone still broken).
+    def ghostApplied = []
+    def ghostSkipped = []
+    _rmWriteSettingOnPage(appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped)
+    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped)
+
+    // Cancel WITHOUT clicking actionDone. This discards the slot before
+    // commit so no action is added to the rule, but the re-initialized
+    // predCapabs state (from the getIfThen init) persists.
+    // DO NOT replace with actionDone -- that bakes an empty IF() block.
+    _rmClickAppButton(appId, "actionCancel", null, "doActPage")
+
+    // Return to selectActions to finalize the cancel, then navigate
+    // back to mainPage. Without the mainPage nav, the app's server-side
+    // routing context stays at selectActions. When the user later opens
+    // the browser and clicks "Manage Conditions" (STPage href on mainPage),
+    // RM sees a conflicting editAct context and renders "Required Fields
+    // missing or not passing validation" on STPage. (Bug B fix -- verified
+    // live: without this nav, Browser STPage shows validation error after
+    // addRequiredExpression completes; with it, STPage opens cleanly.)
+    _rmNavigateToPage(appId, "doActPage", "selectActions")
+    _rmNavigateToPage(appId, "selectActions", "mainPage")
+
+    mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
+}
+
+/**
  * High-level structured Required Expression creation for Rule Machine 5.1.
  *
  * Replaces the 7+ wizard calls (useST=true on mainPage → navigate STPage →
@@ -14381,33 +14592,41 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
  *
  * After commit, settings show:
  *   useST=true
- *   cond=["<idx1>", "<idx2>", ...]   (string-typed list of cond indices)
  *   rCapab_<idxN>, rDev_<idxN>, state_<idxN> per condition
- *   oper=<operator> if multi-condition
+ *   oper=<operator> if multi-condition (ephemeral -- may not persist after commit)
  *
  * mainPage paragraph renders e.g. "Switch1 is on" or "Switch1 is on AND
- * Motion1 is active" — verified live 2026-04-26 via T400.
+ * Motion1 is active" -- verified live 2026-04-26 via T400.
  *
  * STPage internals discovered live (firmware 2.5.0.123):
+ *
+ *   Phase 1 -- condition building (one pass per condition, STPage build-wizard):
  *   1. mainPage.useST=true exposes the "Define Required Expression" href
- *   2. STPage's hrefParams is {unUsed: null} — placeholder only
+ *   2. STPage's hrefParams is {unUsed: null} -- placeholder only
  *   3. STPage shows enum `cond` with options a (new condition) / b (sub-
- *      expression) / c (NOT) — write "a" to start a new condition
+ *      expression) / c (NOT) -- write "a" to start a new condition
  *   4. After cond=a, schema reveals rCapab_<N> where N is the live cond
- *      counter (NOT 1 — RM increments globally; 2nd rule on the parent
+ *      counter (NOT 1 -- RM increments globally; 2nd rule on the parent
  *      may start at _2)
  *   5. After rCapab_<N>=Switch, rDev_<N> appears (capability.switch)
  *   6. After rDev_<N>=[id], state_<N> appears (on/off enum)
- *   7. After state_<N>=on, hasAll button appears — click to commit
- *   8. After hasAll, oper enum appears (AND/OR/XOR). For single-condition
- *      expressions, no operator is needed and the next click is hasRule.
- *      hasRule may not be present immediately after a single-condition
- *      hasAll — the schema-aware probe below handles either shape.
- *   9. hasRule click reveals expression-final-options (cancelST, editST,
- *      stopOnST, evalOnBoot) plus a "Manage Conditions" href. The doneST
- *      button at this stage is a no-op (verified 2026-04-26: clicking it
- *      returns identical schema). The proper exit is via the back-nav
- *      _action_previous=Done — same as walkStep operation='done'.
+ *   7. After state_<N>=on, hasAll button appears -- click to commit this slot
+ *   8. Repeat 3-7 for each condition. Write oper=<AND|OR|XOR> between
+ *      conditions (the oper picker shown after hasAll IS the expression-
+ *      builder state machine -- it assembles the formula inline as each
+ *      condition is added, so the formula is complete when walkConds returns).
+ *      No separate post-walkConds assembly loop is needed.
+ *
+ *   9. hasRule is a submitOnChange button (HTML value="button"). Writing
+ *      it as a settings write to /installedapp/update/json SEALS the
+ *      assembled formula: conditions move from "(unused)" to committed, and
+ *      the "Edit/Delete Required Expression" buttons appear. Using
+ *      /installedapp/btn (the normal button-click endpoint) does NOT trigger
+ *      the commit handler -- verified live 2026-05-02: /installedapp/btn
+ *      left both conditions as "(unused)"; writeST(hrefParams, "hasRule",
+ *      "button") committed correctly in the same rule state.
+ *   10. After hasRule, the doneST button is a no-op (verified 2026-04-26).
+ *      The proper exit is via the back-nav _action_previous=Done.
  *
  * Returns: [success, conditionIndices, settingsApplied, settingsSkipped]
  */
@@ -14666,154 +14885,117 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     }
     walkConds.call(conditions, operator, opsList)
 
-    // Step 3. Click hasRule to finalize the expression — but only if
-    // present in the schema. RM exposes hasRule on multi-condition
-    // expressions and on the post-operator decision view; for some
-    // single-condition shapes it's auto-promoted on hasAll. Probe first.
-    def finalNavResp = _rmFetchConfigJson(appId, "STPage")
-    def finalInputs = (finalNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-    if (finalInputs.find { it?.name == "hasRule" }) {
-        _rmClickAppButton(appId, "hasRule", null, "STPage")
+    // Step 3. Seal the expression with hasRule.
+    //
+    // BACKGROUND:
+    //   walkConds (Step 2) builds AND assembles the expression formula inline:
+    //   - Each `cond=a` starts a new condition slot (rCapab_<N>/rDev_<N>/state_<N>).
+    //   - Each `oper=<AND|OR|XOR>` write between conditions advances RM's
+    //     expression-builder to include that condition in the formula (the oper
+    //     picker shown after hasAll is RM's expression-assembly state machine,
+    //     not a separate post-processing step).
+    //   - By the time walkConds returns, the formula is fully assembled.
+    //     Writing additional cond=<idx>/oper pairs AFTER walkConds DUPLICATES
+    //     conditions in the formula -- verified live 2026-05-02: a 2-condition
+    //     AND rule produced "(2 AND 3 AND 3)" when Phase 2 assembly writes were
+    //     added after walkConds.
+    //
+    //   Sub-expressions (cond=b / oper=end-sub-expression) also assemble inline
+    //   during walkConds, so the same hasRule-only seal applies for all shapes.
+    //   No separate assembly loop is needed for plain or sub-expression shapes.
+    //
+    //   hasRule SEALS the assembled formula -- without it, conditions render
+    //   as "(unused)" in Manage Conditions and the RE evaluates false forever.
+    //
+    //   WIRE FORMAT (verified live 2026-05-02, appUI.js source inspection):
+    //   The DOM "Done with Expression" button uses a two-step flow:
+    //     1. POST /installedapp/btn  settings[hasRule]=clicked (notify)
+    //     2. POST /installedapp/update/json  hasRule=button  (actual commit,
+    //        because the button has class=submitOnChange)
+    //   writeST routes through _rmWriteSubPageField -> /installedapp/update/json
+    //   with settings[hasRule]=button, which is step 2 -- the actual commit
+    //   handler.  The /installedapp/btn notify step (step 1) is not needed
+    //   because the commit is driven entirely by /installedapp/update/json.
+    //   Verified live 2026-05-02 (app 1779): writeST alone produced
+    //   state="complete" with params.unUsed=null on mainPage.
+    //
+    //   NOTE: STPage's completion button in the JSON schema is named "doneST"
+    //   (not "hasRule"). "doneST" is the back-navigation exit button; "hasRule"
+    //   is the formula-commit field that RM reads from the update/json payload.
+    //   They are separate: hasRule commits, doneST navigates.
+    writeST(hrefParams, "hasRule", "button", "hasRule")
+
+    // Step 3b. Click doneST to seal STPage into "Done mode".
+    //
+    // BACKGROUND:
+    //   writeST(hasRule) commits the formula text (state=complete, unUsed=null
+    //   on mainPage) BUT leaves STPage in "build mode":
+    //     - cond field still has required=true
+    //     - no editST / cancelST / stopOnST / evalOnBoot buttons visible
+    //
+    //   In build mode, any browser navigation using _action_href_name from
+    //   STPage triggers jsonSubmit with validate=true, which fails the
+    //   required-field check on cond and shows the "Required Fields missing"
+    //   popup. The user reported this exactly: opening the rule post-build
+    //   and clicking "Manage Conditions" shows the popup.
+    //
+    //   Clicking doneST via /installedapp/btn transitions STPage to "Done mode":
+    //     - cond field disappears (no required=true)
+    //     - editST / cancelST / stopOnST / evalOnBoot appear
+    //     - doneST is idempotent once in Done mode
+    //
+    //   Verified live 2026-05-02 (app 1782):
+    //     Before doneST: s0i0 cond required=true
+    //     After doneST:  s0i0 cancelST, s0i1 editST, s0i2 stopOnST, ...
+    //     (no required fields anywhere)
+    //
+    //   doneST is type=button WITHOUT submitOnChange (no changeSubmit needed).
+    //   Wire format: POST /installedapp/btn with settings[doneST]=clicked,
+    //   stateAttribute=doneST, doneST.type=button, pageBreadcrumbs=["mainPage"].
+    try {
+        _rmClickAppButton(appId, "doneST", "doneST", "STPage")
+    } catch (Exception doneStExc) {
+        // doneST click failure is non-fatal for the formula itself -- the RE
+        // is fully committed. It only means the browser may show the
+        // "Required Fields missing" popup when navigating STPage manually.
+        // Log warn so the operator can detect and navigate away with
+        // update_native_app(button='doneST', pageName='STPage') as repair.
+        mcpLog("warn", "rm-native", "addRequiredExpression: doneST click failed for app ${appId} (${doneStExc.message ?: doneStExc.toString()}) -- RE is committed but STPage stays in build mode; browser navigation may show validation popup")
     }
 
     // Step 4. Submit sub-page Done to return to mainPage. This is the
-    // _action_previous=Done back-nav with full settings — the proper exit
-    // (verified 2026-04-26 that clicking the doneST button is a no-op,
-    // even though it appears in the schema).
+    // _action_previous=Done back-nav with full settings -- the proper exit.
+    // After Step 3b, STPage is in Done mode (cond not required); the schema
+    // sent by _rmSubmitSubPageDone now reflects editST/cancelST/stopOnST/
+    // evalOnBoot fields, which is correct for the Done-mode back-nav.
     _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams)
 
-    // Step 4b. Issue #77 fix -- clear RM's residual condition-builder
-    // atomicState after STPage Done.
+    // Step 4b. Issue #77 + Bug D fix -- clear RM's residual condition-builder
+    // atomicState after the expression-builder hasRule click.
     //
-    // BACKGROUND (Issue #77):
-    //   After _rmSubmitSubPageDone exits STPage, RM's internal atomicState
-    //   (specifically atomicState.predCapabs and related condition-index fields)
-    //   still reflects the RE's condition context. When a subsequent addAction
-    //   call opens doActPage for any plain (non-expression) action, RM's
-    //   actionDone handler reads that stale atomicState and wraps the new action
-    //   in IF(**Broken Condition**). Probes A1 and A6 fail without this fix.
+    // BACKGROUND:
+    //   The walkConds writes + hasRule seal leave atomicState.predCapabs in a
+    //   stale state that wraps subsequent addAction calls in
+    //   IF(**Broken Condition**).  _rmClearPredCapabsViaGhostIfThen fires the
+    //   ghost ifThen workaround (open condActs/getIfThen slot + actionCancel)
+    //   that resets predCapabs without leaving a visible action in the rule.
     //
-    //   The stale context lives in atomicState, NOT in appSettings. This is
-    //   why all earlier fix attempts targeting appSettings fields (cond=[], STPage
-    //   round-trips, mainPage→selectActions nav, doActPage→selectActions phantom
-    //   nav) did not work -- they never touched the actual cause.
-    //   atomicState is not externally readable or writable, so we can't observe
-    //   it directly or clear it with a simple POST.
+    //   See _rmClearPredCapabsViaGhostIfThen Groovydoc for the full mechanistic
+    //   rationale.  DO NOT remove this call without re-running the full probe
+    //   matrix (probes A1, A4, A6, and A15-A19 are the regression gates).
     //
-    // THE FIX -- "ghost ifThen" workaround:
-    //   Opening a condActs/getIfThen action slot and immediately cancelling
-    //   it (via actionCancel WITHOUT clicking actionDone) has the side effect
-    //   of resetting atomicState.predCapabs. This leaves the rule with zero
-    //   new actions (the cancel discards the slot before commit), and the
-    //   next addAction call finds a clean slate.
-    //
-    //   Exact sequence that clears predCapabs:
-    //     1. Click N on selectActions (opens doActPage with a new action slot)
-    //     2. Write actType.{idx}=condActs (marks the slot as conditional type)
-    //     3. Write actSubType.{idx}=getIfThen (triggers RM's ifThen init,
-    //        which re-initializes predCapabs with a fresh state)
-    //     4. Click actionCancel on doActPage (discards the slot without commit;
-    //        the re-initialized predCapabs state is clean, not the old RE state)
-    //     5. Nav doActPage->selectActions (returns to action list)
-    //
-    //   The key distinction from all previous attempts:
-    //     - actionCancel (NOT actionDone) is required. If actionDone fires,
-    //       RM bakes an empty IF block into the rule (probe diag_ifthen_steps.py
-    //       Variant B: result is "IF () THEN\n\tOn: Test Plug").
-    //     - actSubType=getIfThen is required. actType=condActs alone does not
-    //       initialize predCapabs (Variant Z: still broken=True).
-    //     - The cancel must happen BEFORE any condition is written (cond=a).
-    //       Cancelling after cond=a produces no difference but cond=a itself
-    //       is not needed for the clear to work (Variant B vs C are equally
-    //       effective -- both CLEAN when using actionCancel instead of
-    //       actionDone, though actionDone wraps the action in an empty IF).
-    //
-    // WHY THIS WORKS (partial understanding):
-    //   We do not have full visibility into RM's Groovy atomicState. Our best
-    //   guess: writing actSubType=getIfThen invokes RM's condition-builder init
-    //   (used by both STPage and doActPage's condActs flow), which zeroes out
-    //   predCapabs. actionCancel then exits WITHOUT merging the new slot's state
-    //   back into the rule, so the clean predCapabs persists. The subsequent
-    //   addAction opens doActPage to a zeroed predCapabs and actionDone does
-    //   not build any IF wrapper.
-    //
-    //   We verified empirically but do not assert we understand the exact RM
-    //   Groovy code path. DO NOT remove or "simplify" this sequence without
-    //   re-running the full probe matrix (25 probes) and confirming A1/A6 pass.
-    //
-    // IMPORTANT: rCapab_N/rDev_N/state_N in appSettings are NOT cleared.
-    //   Those are the RE's display fields -- RM renders the Required Expression
-    //   paragraph from them on mainPage. Clearing them would erase the RE.
-    //   (Confirmed live: clearing rCapab_2 collapses the RE paragraph to
-    //   "Define Required Expression" placeholder.)
-    //
-    // PROBE MATRIX EVIDENCE (probes run 2026-05-01/02):
-    //   - Without this fix: A1, A4, A6 produce IF(**Broken Condition**) wrapper.
-    //   - cond=[] only (appSettings): A4 passes, A1/A6 still FAIL (atomicState
-    //     unchanged).
-    //   - doActPage->selectActions nav only: all three still FAIL (atomicState
-    //     unchanged).
-    //   - This fix (ghost ifThen): A1, A4, A6 all PASS. B/C/D unaffected.
-    //
-    // Diagnostic scripts for reference (not in repo):
-    //   tests/diag_cancel_clear.py  -- confirmed actionCancel-without-actionDone
-    //                                  clears predCapabs (Variant Y)
-    //   tests/diag_ifthen_steps.py  -- confirmed actSubType=getIfThen is required
-    //                                  (Variant Z: condActs alone still broken)
-    //   tests/diag_variant_y_verify.py -- confirmed A1/A4/A6 equivalents all
-    //                                     pass after ghost ifThen clear
-    //
-    // Reference: Issue #77.
+    //   Probe matrix evidence:
+    //     - A1, A4, A6 (walkConds-only + hasRule seal leak): pass with this
+    //       call in place.
+    //     - A15-A19 (hasRule-seal-specifically leak, Bug D): FAIL without this
+    //       call, PASS with it.
     try {
-        // Open a new action slot on selectActions.
-        _rmClickAppButton(appId, "N", "doActN", "selectActions")
-
-        // Discover the index RM allocated (same pattern as _rmAddAction).
-        def ghostCfg = _rmFetchConfigJson(appId, "doActPage")
-        def ghostSchema = _rmCollectInputSchema(ghostCfg?.configPage)
-        def ghostActTypeField = ghostSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
-        def ghostIdx = 1
-        if (ghostActTypeField) {
-            def m = (ghostActTypeField.toString() =~ /^actType\.(\d+)$/)
-            if (m.matches()) ghostIdx = m[0][1] as Integer
-        }
-
-        // Write condActs + getIfThen to trigger RM's ifThen initializer,
-        // which re-initializes atomicState.predCapabs with a clean state.
-        // actSubType=getIfThen is the minimum required step -- actType=condActs
-        // alone does not trigger the clear.
-        def ghostApplied = []
-        def ghostSkipped = []
-        _rmWriteSettingOnPage(appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped)
-        _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped)
-
-        // Cancel WITHOUT clicking actionDone. This discards the slot before
-        // commit so no action is added to the rule, but the re-initialized
-        // predCapabs state (from the getIfThen init) persists.
-        // DO NOT replace with actionDone -- that bakes an empty IF() block.
-        _rmClickAppButton(appId, "actionCancel", null, "doActPage")
-
-        // Return to selectActions to finalize the cancel, then navigate
-        // back to mainPage. Without the mainPage nav, the app's server-side
-        // routing context stays at selectActions. When the user later opens
-        // the browser and clicks "Manage Conditions" (STPage href on
-        // mainPage), RM sees a conflicting editAct context and renders
-        // "Required Fields missing or not passing validation" on STPage.
-        // Navigating back to mainPage here mirrors the live UI's pattern
-        // (every addTrigger ends with selectTriggers->mainPage nav) and
-        // leaves the app in the same clean context the browser expects.
-        // Verified live: without this nav, Browser STPage shows validation
-        // error after addRequiredExpression completes; with it, STPage
-        // opens cleanly and shows the committed conditions. (Bug B fix)
-        _rmNavigateToPage(appId, "doActPage", "selectActions")
-        _rmNavigateToPage(appId, "selectActions", "mainPage")
-
-        mcpLog("info", "rm-native", "addRequiredExpression: ghost ifThen clear fired for app ${appId} (issue #77 fix -- clears atomicState.predCapabs without adding an action)")
+        _rmClearPredCapabsViaGhostIfThen(appId, "addRequiredExpression")
     } catch (Exception ghostExc) {
         // Best-effort: if the ghost ifThen sequence fails, subsequent addAction
         // calls MAY produce IF(**Broken Condition**) wrapping. The RE itself
         // is fully committed -- this only affects the next addAction.
-        mcpLog("warn", "rm-native", "addRequiredExpression: ghost ifThen clear failed for app ${appId} (${ghostExc.message ?: ghostExc.toString()}) -- subsequent addAction may produce IF(**Broken Condition**) wrapper (issue #77); verify rule render or restore backup if needed")
+        mcpLog("warn", "rm-native", "addRequiredExpression: ghost ifThen clear failed for app ${appId} (${ghostExc.message ?: ghostExc.toString()}) -- subsequent addAction may produce IF(**Broken Condition**) wrapper (issue #77 / Bug D); verify rule render or restore backup if needed")
     }
 
     // Step 5. Post-commit validation. RM 5.1's STPage silently accepts

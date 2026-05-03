@@ -1481,6 +1481,42 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: `create_rm_rule` returns `{success:false}` with clear error about malformed expression OR missing device reference, OR hub returns [INV-1 violation: `configPage.error != null`]. No partial rule left behind. AI reports the validation failure without fabricating success.
 
+### T430b — Bug C: Required Expression formula assembled (no "(unused)" markers)
+
+```json
+{
+  "setup_prompt": "No setup.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T430b-BugC' with: (1) a Certain Time trigger at 3:00 AM, (2) a Required Expression with two Switch conditions joined by AND -- Condition A: switch device 1063 is on; Condition B: switch device 1080 is off. After creation, call get_app_config(appId=<ruleId>, includeSettings=true) and report ALL paragraph text from the mainPage. Confirm the render does NOT contain '(unused)' and does NOT contain 'Define Required Expression'.",
+  "teardown_prompt": "Force-delete BAT-RM-T430b-BugC."
+}
+```
+
+**Expected**: `create_rm_rule` (or the equivalent addRequiredExpression tool) bakes the expression formula via the Phase 2 expression-builder wizard. `get_app_config` mainPage paragraphs contain the baked condition text (e.g. "... is on AND ... is off") and do NOT contain "(unused)" or the "Define Required Expression" placeholder. Settings map contains `rCapab_2`, `useST='true'`. [INV-1] `configPage.error == null`.
+
+### T431b — Bug D: Action after Required Expression not wrapped in IF(**Broken Condition**)
+
+```json
+{
+  "setup_prompt": "No setup.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T431b-BugD' with: (1) a Certain Time trigger at 3:15 AM, (2) a Required Expression with Switch device 1063 is on AND Switch device 1080 is off, (3) a plain switch-on action on device 1063. After creation, call get_app_config(appId=<ruleId>) and report ALL paragraph text. Confirm the action renders as 'On: <device name>' NOT as 'IF (**Broken Condition**) ...'.",
+  "teardown_prompt": "Force-delete BAT-RM-T431b-BugD."
+}
+```
+
+**Expected**: After `addRequiredExpression` + `addAction`, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. This confirms `_rmClearPredCapabsViaGhostIfThen` fired after the expression-builder hasRule click and cleared the predCapabs leak. [INV-1] `configPage.error == null`.
+
+### T432b — Bug E: Sequential runCommand actions all render with parameters
+
+```json
+{
+  "setup_prompt": "No setup.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T432b-BugE' with: (1) a Certain Time trigger at 4:00 AM, (2) four sequential runCommand actions -- action 1: device 1072 setDisplay('on'), action 2: device 1121 setChildLock('on'), action 3: device 1072 setDisplay('off'), action 4: device 1121 setChildLock('off'). After creation, call get_app_config(appId=<ruleId>, includeSettings=true) and report ALL paragraph text from mainPage and the settingsApplied/settingsSkipped counts for each action. Confirm that all four actions render with their parameter (e.g., 'on' or 'off') and none show empty/missing parameter text.",
+  "teardown_prompt": "Force-delete BAT-RM-T432b-BugE."
+}
+```
+
+**Expected**: All four `addAction` calls complete with `settingsApplied` containing `cpType1.<N>` and `cpVal1.<N>` (or equivalent cpType slot). `get_app_config` paragraphs show each action rendering with its parameter value (e.g. "setDisplay(on)", "setChildLock(on)", etc.). No action shows a missing/empty parameter. This confirms the schema-aware cpType slot detection (Bug E fix): for actions 2+, the code correctly detects that `cpType1.N` is not in schema after `cCmd.N` write and falls through to the moreParams-click + discovery path. [INV-1] `configPage.error == null`.
+
 ## Section 5: HTTP endpoints + edge cases (T430–T449)
 
 ### T430 — Local End Point trigger with /runRuleAct verb

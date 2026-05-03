@@ -558,6 +558,10 @@ def evaluate_expectations(expect: dict, final_snap: dict,
       final_settings_value: {k: v, ...}    -- assert settings[k] == v for each
       no_step_errors: true                 -- assert no step returned an error
       health_ok: true                      -- assert rule health check ok
+      step_settings_skipped_excludes: list -- assert NO step's result.settingsSkipped
+                                             contains a key starting with any of the
+                                             listed prefixes (cosmetic-partial regression
+                                             gate -- e.g. ["RelrDev_", "useLastDev."])
     """
     if expect.get("skip"):
         return True, []  # Probe is TODO -- auto-pass
@@ -634,6 +638,38 @@ def evaluate_expectations(expect: dict, final_snap: dict,
                     failures.append(
                         f"FAIL no_step_errors: step '{sr['op']}' errored: {sr['error'][:200]}"
                     )
+
+        elif key == "step_settings_skipped_excludes":
+            # Regression gate for cosmetic-partial suppression.  For each
+            # listed prefix, scan every step's result.settingsSkipped (a list
+            # of dicts with a "key" field) and fail if any matching key is
+            # present.  Matches by prefix so callers can guard whole field
+            # families (e.g. "RelrDev_" catches RelrDev_2, RelrDev_3, ...).
+            if not isinstance(expected_val, list):
+                failures.append(
+                    f"FAIL step_settings_skipped_excludes must be a list, got {type(expected_val)}"
+                )
+            else:
+                for prefix in expected_val:
+                    for sr in step_results:
+                        result = sr.get("result")
+                        # result may be a dict (single-step ops like addAction) or
+                        # absent for snapshot/raw steps; only inspect dicts.
+                        if not isinstance(result, dict):
+                            continue
+                        skipped_list = result.get("settingsSkipped") or []
+                        if not isinstance(skipped_list, list):
+                            continue
+                        for entry in skipped_list:
+                            if not isinstance(entry, dict):
+                                continue
+                            entry_key = entry.get("key", "")
+                            if isinstance(entry_key, str) and entry_key.startswith(prefix):
+                                failures.append(
+                                    f"FAIL step_settings_skipped_excludes '{prefix}*': "
+                                    f"step '{sr.get('op')}' settingsSkipped contains "
+                                    f"'{entry_key}' (reason={entry.get('reason')})"
+                                )
 
         elif key == "health_ok":
             # Expect the rule's health check to be clean
