@@ -3329,12 +3329,24 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Second parameter requires moreParams to allocate its slot. After the
         // moreParams click, the schema should expose cpType2.1/cpVal2.1 as new fields.
         // Exactly ONE moreParams click should be recorded.
+        //
+        // BUG E refactor context: the old code always clicked moreParams for param>=1;
+        // the new code (Bug E) checks whether cpType1.N is already in schema and writes
+        // directly if so. The mock must reflect RM's actual wizard progression:
+        //   - cpType1.1 is present until the FIRST cpType1.1 write commits (param 0).
+        //   - After that write, cpType1.1 disappears (wizard advanced past slot 1).
+        //   - The second param's schema check (param 1) sees cpType1.1 absent, triggers
+        //     the moreParams path, which exposes cpType2.1/cpVal2.1.
+        // Using `cpType1Written` (flipped by the POST body inspector) to gate
+        // cpType1.1 visibility is more robust than a fetch counter because it
+        // ties directly to the production event that advances the wizard state.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
         def moreParamsClicks = 0
         def writtenFields = []
-        def moreParamsFired = false  // flips after the moreParams POST
+        def cpType1Written = false  // flips when cpType1.1 is first written
+        def moreParamsFired = false // flips after moreParams POST
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3344,8 +3356,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    def ks = k.toString()
+                    def m = ks =~ /^settings\[(.+)\]$/
                     if (m) writtenFields << m[0][1]
+                    // Flip once the first cpType1.1 write commits.  Subsequent
+                    // GET fetches will drop cpType1.1 from the schema, forcing
+                    // the second parameter's schema-check to take the moreParams path.
+                    if (ks == "settings[cpType1.1]") cpType1Written = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -3356,8 +3373,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
                 options: ["modeActs": "Run Custom Action"]]])
         }
-        // doActPage: before moreParams click shows cpType1.1/cpVal1.1 only;
-        // after moreParams click also exposes cpType2.1/cpVal2.1.
+        // doActPage schema progression:
+        //   - cpType1.1 visible until the first cpType1.1 write (param 0 slot allocation).
+        //   - After cpType1Written=true: cpType1.1 absent; param 1 schema check sees only
+        //     moreParams -> takes the moreParams path.
+        //   - After moreParamsFired=true: cpType2.1/cpVal2.1 appear (new slot allocated).
+        //   - cpVal1.1 stays visible once it first appears (write target for param 0 value).
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             fetchSeq++
             def inputs = [
@@ -3366,14 +3387,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
                 [name: "cCmd.1", type: "text"],
-                [name: "cpType1.1", type: "enum",
-                 options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
-                [name: "cpVal1.1", type: "text"],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
+            if (!cpType1Written) {
+                // Slot 1 available: cpType1.1 exposed before first write.
+                inputs = inputs + [
+                    [name: "cpType1.1", type: "enum",
+                     options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                    [name: "cpVal1.1", type: "text"]
+                ]
+            } else {
+                // Slot 1 consumed: cpType1.1 gone, cpVal1.1 stays for value write.
+                inputs = inputs + [[name: "cpVal1.1", type: "text"]]
+            }
             if (moreParamsFired) {
-                // After moreParams click: cpType2.1/cpVal2.1 are now present
+                // moreParams click revealed slot 2.
                 inputs = inputs + [
                     [name: "cpType2.1", type: "enum",
                      options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
@@ -4063,9 +4092,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "tstate was never written for a Mode trigger"
         tstateWritten.isEmpty()
 
-        and: "result carries triggerIndex=1 and capability=Mode"
+        and: "result indicates success and trigger was indexed"
+        // toolUpdateNativeApp does not surface capability on the addTrigger path
+        // (only addAction does).  Assert on the fields that ARE returned.
+        result?.success == true
         result?.triggerIndex == 1
-        result?.capability == "Mode"
+        (result?.settingsApplied as List).contains("tCapab1")
+        (result?.settingsApplied as List).contains("modesX1")
+        !(result?.settingsApplied as List).any { it?.toString()?.startsWith("tstate") }
 
         and: "modesX1 not in settingsSkipped (mock miscalibration guard)"
         // If the fetchCount upper-bound bug recurs, modesX1 routes as not_in_schema
@@ -4165,18 +4199,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateNativeApp([
+        def result = script.toolUpdateNativeApp([
             appId: 100,
             addTrigger: [capability: "Mode", state: "NotAMode"],
             confirm: true
         ])
 
-        then: "clear IllegalArgumentException listing the valid mode names"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("NotAMode")
-        ex.message.contains("Home")
-        ex.message.contains("Away")
-        ex.message.contains("Night")
+        then: "result carries success=false and the error message names the bad mode + valid options"
+        // toolUpdateNativeApp catches IllegalArgumentException from _rmAddTrigger and
+        // returns it as [success:false, error:"..."] rather than re-throwing. The error
+        // message must identify the unrecognized name and list the valid alternatives.
+        result?.success == false
+        result?.error?.contains("NotAMode")
+        result?.error?.contains("Home")
+        result?.error?.contains("Away")
+        result?.error?.contains("Night")
     }
 
     def "addTrigger Mode never writes tstate<N> regardless of the state value passed"() {
