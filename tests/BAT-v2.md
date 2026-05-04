@@ -2493,7 +2493,7 @@ These tests exercise the Developer Mode self-administration surface — the `man
 }
 ```
 
-**Expected**: Tool throws `IllegalArgumentException` (-32602) about safety check requiring `confirm=true`. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+**Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter(s): confirm"` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
 
 ---
 

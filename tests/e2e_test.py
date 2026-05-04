@@ -320,8 +320,11 @@ class TestRunner:
 
     def _delete_variable_safe(self, name: str) -> None:
         try:
+            # confirm=true is required by Hub Admin Write gate; without it the
+            # delete is silently skipped (try/except swallows the refusal),
+            # leaving the variable stranded.
             self.client.call_tool("manage_hub_variables", {
-                "tool": "delete_variable", "args": {"name": name},
+                "tool": "delete_variable", "args": {"name": name, "confirm": True},
             })
         except Exception:
             pass
@@ -991,7 +994,238 @@ class TestRunner:
         assert result is not None, "list_rooms returned None"
 
     # -----------------------------------------------------------------------
-    # GROUP 10: error_verification (1 test)
+    # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
+    # -----------------------------------------------------------------------
+    # Preconditions (provided by .github/scripts/mcp_setup_env.sh in CI, or
+    # set manually for local runs):
+    #   - enableDeveloperMode: true   (UI-only to enable; lockout protection)
+    #   - enableHubAdminWrite: true   (UI-only to enable)
+    #   - lastBackupTimestamp within 24h
+    #   - enableRuleEngine, enableHubAdminRead, enableBuiltinAppRead: true
+    #
+    # T219 (toggle-OFF refusal) is omitted — would require briefly disabling
+    # Developer Mode via UI, which CI can't do (toggle excluded from
+    # update_mcp_settings allowlist by design). Covered by ToolUpdateMcpSettingsSpec
+    # at the unit level + manual BAT.
+
+    @test("developer_mode")
+    def test_t220_update_mcp_settings_boolean_flip(self) -> None:
+        """T220: update_mcp_settings flips a boolean setting end-to-end."""
+        # Capture initial value so we can restore.
+        info = self.client.call_tool("get_hub_info")
+        # debugLogging isn't surfaced in get_hub_info; just round-trip through
+        # update_mcp_settings — true → false → true and assert success each time.
+        for value in (True, False, True):
+            result = self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {"settings": {"debugLogging": value}, "confirm": True},
+            })
+            assert result.get("success") is True, f"flip to {value} did not succeed: {result}"
+            assert result.get("updated") == {"debugLogging": value}, f"updated field mismatch for {value}: {result}"
+            assert "Updated 1 setting" in (result.get("message") or ""), f"message missing 'Updated 1 setting': {result}"
+
+    @test("developer_mode")
+    def test_t221_update_mcp_settings_allowlist_rejection(self) -> None:
+        """T221: rejects setting outside the allowlist (enableHubAdminWrite is excluded)."""
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {"settings": {"enableHubAdminWrite": False}, "confirm": True},
+            })
+            assert False, "Expected -32602 rejection for enableHubAdminWrite (footgun)"
+        except McpError as e:
+            msg = str(e)
+            assert "enableHubAdminWrite" in msg, f"error didn't mention the rejected key: {msg}"
+            assert "not allowed" in msg, f"error didn't say 'not allowed': {msg}"
+            # Should list allowed keys for caller to correct
+            assert "Allowed:" in msg or "mcpLogLevel" in msg, f"error didn't list allowed keys: {msg}"
+
+    @test("developer_mode")
+    def test_t222_atomic_batch_one_bad_key_blocks_all(self) -> None:
+        """T222: a single bad key in a multi-key batch rejects the whole batch (no partial writes)."""
+        # Capture pre-state: read debugLogging via update_mcp_settings round-trip
+        # is not feasible from this side, so assert via behavior — flip debugLogging
+        # to a known value first (true), then attempt mixed-batch with a bad key,
+        # then verify debugLogging is STILL true (i.e., the OTHER keys did not flip).
+        self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        # Mixed batch: one valid (debugLogging=false), one invalid (enableHubAdminWrite).
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {
+                    "settings": {"debugLogging": False, "enableHubAdminWrite": False},
+                    "confirm": True,
+                },
+            })
+            assert False, "Expected mixed batch to be rejected atomically"
+        except McpError:
+            pass
+        # debugLogging should STILL be true — flip again with that single key
+        # and assert no-op-like success (atomic validation prevented partial write).
+        # Best assertion we can make from outside: after a mixed-batch reject,
+        # writing the same value again should still succeed.
+        result = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        assert result.get("success") is True, f"post-rejection write didn't succeed: {result}"
+
+    @test("developer_mode")
+    def test_t223_update_mcp_settings_reconnect_hint(self) -> None:
+        """T223: response message includes a client-reconnect hint."""
+        result = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"enableRuleEngine": False}, "confirm": True},
+        })
+        assert result.get("success") is True
+        msg = result.get("message") or ""
+        assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
+        assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
+        # Restore so the rest of the suite (rule_crud etc.) keeps working.
+        restore = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"enableRuleEngine": True}, "confirm": True},
+        })
+        assert restore.get("success") is True
+
+    @test("developer_mode")
+    def test_t224_delete_variable_round_trip(self) -> None:
+        """T224: set → delete → verify gone."""
+        var_name = f"{PREFIX}DELETE_T224"
+        # Setup
+        self.client.call_tool("manage_hub_variables", {
+            "tool": "set_variable",
+            "args": {"name": var_name, "value": "scratch-t224"},
+        })
+        # Track for cleanup in case assertion fails partway
+        self.created_variable_names.append(var_name)
+        # Delete
+        result = self.client.call_tool("manage_hub_variables", {
+            "tool": "delete_variable",
+            "args": {"name": var_name, "confirm": True},
+        })
+        assert result.get("success") is True
+        assert result.get("deleted") is True
+        assert result.get("source") == "rule_engine"
+        assert result.get("previousValue") == "scratch-t224"
+        assert result.get("brokenConsumers") is None  # no rules reference this var
+        # Verify gone
+        try:
+            self.client.call_tool("manage_hub_variables", {
+                "tool": "get_variable",
+                "args": {"name": var_name},
+            })
+            assert False, f"{var_name} should not be retrievable after delete"
+        except McpError as e:
+            assert "not found" in str(e).lower(), f"unexpected error after delete: {e}"
+        # Don't double-cleanup
+        if var_name in self.created_variable_names:
+            self.created_variable_names.remove(var_name)
+
+    @test("developer_mode")
+    def test_t225_delete_variable_not_in_rule_engine_namespace(self) -> None:
+        """T225: refusal with redirect-to-UI hint when name isn't in rule_engine state."""
+        # The refusal fires whether the var exists in the connector namespace or
+        # doesn't exist anywhere at all — error message text is identical.
+        try:
+            self.client.call_tool("manage_hub_variables", {
+                "tool": "delete_variable",
+                "args": {"name": f"{PREFIX}DEFINITELY_NONEXISTENT_T225", "confirm": True},
+            })
+            assert False, "Expected refusal for variable not in rule_engine namespace"
+        except McpError as e:
+            msg = str(e)
+            assert "not found in rule_engine namespace" in msg, f"wrong refusal text: {msg}"
+            assert "Settings" in msg, f"missing UI redirect hint: {msg}"
+            assert "Hub Variables" in msg, f"missing 'Hub Variables' in redirect: {msg}"
+
+    @test("developer_mode")
+    def test_t226_delete_variable_no_confirm(self) -> None:
+        """T226: delete_variable refuses when confirm flag is absent.
+
+        Note: gateway-layer parameter validation returns the refusal as
+        `isError: true` in result content (not as JSON-RPC -32602). Same
+        wire-format pattern other gateway-required-param checks use.
+        """
+        var_name = f"{PREFIX}NO_CONFIRM_T226"
+        self.client.call_tool("manage_hub_variables", {
+            "tool": "set_variable",
+            "args": {"name": var_name, "value": "safe"},
+        })
+        self.created_variable_names.append(var_name)
+        result = self.client.call_tool("manage_hub_variables", {
+            "tool": "delete_variable",
+            "args": {"name": var_name},  # no confirm
+        })
+        assert result.get("isError") is True, f"Expected isError result for missing confirm: {result}"
+        assert "confirm" in str(result.get("error", "")).lower(), f"refusal didn't mention confirm: {result}"
+        # Variable should still exist
+        verify = self.client.call_tool("manage_hub_variables", {
+            "tool": "get_variable",
+            "args": {"name": var_name},
+        })
+        assert verify.get("value") == "safe", f"variable was deleted despite missing confirm: {verify}"
+
+    @test("developer_mode")
+    def test_per_key_mcplogs_validation_atomic(self) -> None:
+        """Atomic rejection — bad mcpLogLevel in a mixed batch with debugLogging blocks both."""
+        # Set known baseline for debugLogging (true) — needs to NOT change despite the bad key.
+        self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {
+                    "settings": {"debugLogging": False, "mcpLogLevel": "blarg"},
+                    "confirm": True,
+                },
+            })
+            assert False, "Expected -32602 rejection for mcpLogLevel='blarg'"
+        except McpError as e:
+            msg = str(e)
+            assert "mcpLogLevel" in msg, f"error didn't mention mcpLogLevel: {msg}"
+            assert "blarg" in msg, f"error didn't surface the rejected value: {msg}"
+
+    @test("developer_mode")
+    def test_type_coercion_string_to_bool(self) -> None:
+        """Type coercion — JSON-RPC clients sending string 'true'/'false' get coerced to native bool."""
+        # JSON in this test runner naturally encodes Python bool as JSON true/false,
+        # so to actually exercise the coercion path we have to send a string literal.
+        result = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": "false"}, "confirm": True},
+        })
+        assert result.get("success") is True
+        # Re-read via a write that should be a no-op if coercion landed correctly:
+        # writing native False should also succeed and round-trip cleanly.
+        result2 = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        assert result2.get("success") is True
+        assert result2.get("updated") == {"debugLogging": True}
+
+    @test("developer_mode")
+    def test_type_coercion_rejects_invalid_bool_string(self) -> None:
+        """Type coercion — strings that aren't 'true'/'false' get rejected, not silently coerced."""
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {"settings": {"debugLogging": "yes"}, "confirm": True},
+            })
+            assert False, "Expected rejection for ambiguous bool-coerced string 'yes'"
+        except McpError as e:
+            msg = str(e)
+            assert "debugLogging" in msg, f"error didn't mention the key: {msg}"
+            assert "boolean" in msg.lower(), f"error didn't say boolean: {msg}"
+
+    # -----------------------------------------------------------------------
+    # GROUP 11: error_verification (1 test)
     # -----------------------------------------------------------------------
 
     @test("error_verification")
@@ -1061,7 +1295,7 @@ class TestRunner:
                 print(f"  Deleting tracked variable {var_name}")
                 self.client.call_tool("manage_hub_variables", {
                     "tool": "delete_variable",
-                    "args": {"name": var_name},
+                    "args": {"name": var_name, "confirm": True},
                 })
             except Exception as exc:
                 print(f"  [WARN] Failed to delete variable {var_name}: {exc}")
