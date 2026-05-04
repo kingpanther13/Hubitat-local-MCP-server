@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 import time
 from datetime import datetime, timezone
@@ -121,7 +122,9 @@ class HubitatMcpClient:
                     # queries (e.g. get_performance_stats) sometimes 504.
                     last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
-                    time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                    # Exponential backoff with jitter to avoid thundering-herd if
+                    # multiple consumers ever retry simultaneously.
+                    time.sleep((2 ** attempt) + random.uniform(0, 1))  # ~1-2s, ~2-3s, ~4-5s
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -129,7 +132,7 @@ class HubitatMcpClient:
             except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
                 last_exc = exc
                 self._log(f"<< network error (attempt {attempt + 1}/3): {exc} — retrying")
-                time.sleep(2 ** attempt)
+                time.sleep((2 ** attempt) + random.uniform(0, 1))
         else:
             # Exhausted retries — surface the last transient failure.
             raise last_exc if last_exc else McpError(f"transport failure on {method}")

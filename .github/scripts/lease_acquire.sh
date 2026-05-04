@@ -16,7 +16,8 @@ set -euo pipefail
 BY="${1:?Usage: $0 <by-identifier>}"
 : "${MCP_URL:?MCP_URL env var required (full cloud OAuth URL with access_token)}"
 
-NOW_MS=$(($(date +%s%N) / 1000000))
+# Portable epoch milliseconds (date +%s%N is GNU-only — fails on BSD/macOS).
+NOW_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
 LEASE_DURATION_MIN=30
 EXPIRES_MS=$((NOW_MS + LEASE_DURATION_MIN * 60 * 1000))
 VERIFY_SLEEP_S=2
