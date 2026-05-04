@@ -2133,18 +2133,19 @@ These operations are too destructive for automated testing. Test manually with e
 | 8. Comparison | T110-T116 | v0.7.7 vs v0.8.0 regression |
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
+| 12. Developer Mode | T219-T226 | Self-administration: update_mcp_settings + delete_variable |
 
-### Architecture (post installed-apps + RM interop)
+### Architecture (post installed-apps + RM interop + Developer Mode)
 
 | Component | Count |
 |-----------|-------|
 | Core tools on `tools/list` | 22 |
-| Gateways on `tools/list` | 11 |
-| Total visible on `tools/list` | 33 |
-| Tools proxied behind gateways | 61 |
-| Total tools in codebase | 83 |
+| Gateways on `tools/list` | 12 |
+| Total visible on `tools/list` | 34 |
+| Tools proxied behind gateways | 63 |
+| Total tools in codebase | 85 |
 
-**11 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5)
+**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5), `manage_mcp_self` (1)
 
 ### Tool Coverage (non-destructive tools only)
 
@@ -2394,6 +2395,105 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 ```
 
 **Expected**: AI uses the Rule Machine app ID discovered in setup, then calls `manage_installed_apps(tool='list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list with a single entry `{name: 'mainPage', role: 'primary'}` plus a `note` confirming rules are single-page. AI explains there is only one page (mainPage) and no sub-pages are available.
+
+---
+
+## Section 12: Developer Mode Tests
+
+These tests exercise the Developer Mode self-administration surface — the `manage_mcp_self` gateway and the `delete_variable` op on `manage_hub_variables`. Both require opt-in toggles in the MCP rule app settings page (`enableDeveloperMode` for `update_mcp_settings`, `enableHubAdminWrite` for both). Each successful Developer Mode write is logged at WARN level for audit.
+
+**Pre-flight (manual one-time):**
+1. In the MCP rule app settings, enable **Enable Hub Admin Write Tools** (with confirmation), and create a hub backup.
+2. In the same settings page, enable **Enable Developer Mode Tools** (you'll see a warning banner).
+3. Click Done.
+
+### T219 — update_mcp_settings refuses when Developer Mode toggle is OFF
+
+```json
+{
+  "setup_prompt": "First, manually disable 'Enable Developer Mode Tools' in the MCP rule app settings (UI). Confirm Hub Admin Write is still enabled and a recent backup exists.",
+  "test_prompt": "Use update_mcp_settings to change mcpLogLevel to warn."
+}
+```
+
+**Expected**: Tool returns an `isError: true` MCP response with a message containing "Developer Mode tools are disabled" and pointing the user to the toggle. No setting is written. AI surfaces the message and asks the user to enable the toggle in the UI before retrying.
+
+### T220 — update_mcp_settings flips a boolean setting end-to-end
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled, Hub Admin Write is enabled, recent backup exists. Note the current value of debugLogging via get_hub_info or by reading state.",
+  "test_prompt": "Use update_mcp_settings to set debugLogging to true. Then verify the change took effect."
+}
+```
+
+**Expected**: AI calls `manage_mcp_self(tool='update_mcp_settings', args={settings:{debugLogging:true}, confirm:true})`. Result: `{success:true, updated:{debugLogging:true}, message:"Updated 1 setting(s)..."}`. AI verifies via a follow-up read (e.g., the value persists across a subsequent call). Hub log shows a WARN-level `[developer-mode]` audit line.
+
+### T221 — update_mcp_settings rejects a setting outside the allowlist
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled and Hub Admin Write is enabled.",
+  "test_prompt": "Use update_mcp_settings to set enableHubAdminWrite to false."
+}
+```
+
+**Expected**: Tool returns an MCP error (`-32602`) with a message: `Setting 'enableHubAdminWrite' is not allowed for self-modification via update_mcp_settings. Allowed: ...` listing the allowlisted keys. No change is made. AI explains that this setting is intentionally excluded as a footgun (would lock the agent out of its own write path) and offers to walk the user through the UI toggle.
+
+### T222 — update_mcp_settings batches multiple settings atomically
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled and Hub Admin Write is enabled.",
+  "test_prompt": "Use update_mcp_settings to set both enableHubAdminRead=true and enableBuiltinAppRead=true in a single call."
+}
+```
+
+**Expected**: AI passes both keys in one `settings` map. Result: `{success:true, updated:{enableHubAdminRead:true, enableBuiltinAppRead:true}, message:"Updated 2 setting(s)..."}`. Both settings persist. The all-or-nothing pre-validation means a single bad key would have rejected the entire batch before any write — verifiable by re-running with one good and one bad key and confirming neither was applied.
+
+### T223 — update_mcp_settings includes a reconnect hint after toggling enable* flags
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled.",
+  "test_prompt": "Use update_mcp_settings to flip enableRuleEngine to false, then back to true."
+}
+```
+
+**Expected**: Both calls return success. The `message` field on each response contains "MCP clients ... may need to reconnect to refresh cached tool schemas". AI surfaces this hint to the user explaining that tools/list won't reflect the toggle until the client reconnects.
+
+### T224 — delete_variable removes a stale rule_engine variable
+
+```json
+{
+  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use set_variable to create a temporary variable named BAT_E2E_DELETE_TEST with value 'scratch'.",
+  "test_prompt": "We don't need BAT_E2E_DELETE_TEST any more. Use delete_variable to remove it, then confirm via get_variable that it's gone."
+}
+```
+
+**Expected**: AI calls `manage_hub_variables(tool='delete_variable', args={name:'BAT_E2E_DELETE_TEST', confirm:true})`. Result: `{success:true, name:'BAT_E2E_DELETE_TEST', deleted:true, source:'rule_engine', previousValue:'scratch'}`. Follow-up `get_variable` returns "Variable not found". Hub log shows a WARN-level `[developer-mode] delete_variable: removed 'BAT_E2E_DELETE_TEST'` audit entry.
+
+### T225 — delete_variable refuses connector-namespace variables with redirect hint
+
+```json
+{
+  "setup_prompt": "Hub Admin Write is enabled. Manually create a Hub Variable named TEST_CONNECTOR_VAR via Settings → Hub Variables UI (this lives in the connector namespace, not rule_engine).",
+  "test_prompt": "Use delete_variable to remove TEST_CONNECTOR_VAR."
+}
+```
+
+**Expected**: Tool returns MCP error (`-32602`) with message: `Variable 'TEST_CONNECTOR_VAR' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP — use Settings → Hub Variables UI.)`. AI surfaces the hint and offers to walk the user through the UI deletion. The variable is unchanged.
+
+### T226 — delete_variable refuses without confirm flag (Hub Admin Write 24h gate)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use set_variable to create BAT_E2E_NO_CONFIRM with value 'safe'.",
+  "test_prompt": "Use delete_variable to remove BAT_E2E_NO_CONFIRM. Don't pass confirm — let's see what happens."
+}
+```
+
+**Expected**: Tool throws `IllegalArgumentException` (-32602) about safety check requiring `confirm=true`. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
 
 ---
 

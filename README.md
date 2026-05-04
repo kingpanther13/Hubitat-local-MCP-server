@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 83 MCP tools (33 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 85 MCP tools (34 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 83 tools total — 22 core tools are always visible, while 61 additional tools are organized behind 11 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 85 tools total — 22 core tools are always visible, while 63 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (83 total — 33 on tools/list)
+### MCP Tools (85 total — 34 on tools/list)
 
-The server has 83 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **61 additional tools** are organized behind **11 domain-named gateways**. The AI sees 33 items on `tools/list` (22 + 11 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 85 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **63 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (22) — Always visible on tools/list
 
@@ -323,13 +323,14 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>manage_hub_variables</b> (3) — Hub variables</summary>
+<summary><b>manage_hub_variables</b> (4) — Hub variables</summary>
 
 | Tool | Description |
 |------|-------------|
 | `list_variables` | List all hub connector and rule engine variables |
 | `get_variable` | Get a variable value |
 | `set_variable` | Set a variable value (creates if doesn't exist) |
+| `delete_variable` | Permanently delete a rule engine variable (DESTRUCTIVE) |
 
 </details>
 
@@ -467,6 +468,17 @@ Write/delete require Hub Admin Write + confirm.
 | `set_rm_rule_boolean` | Set an RM rule's private boolean variable |
 
 **Cannot create, modify, or delete** RM rules — Hubitat's platform blocks third-party apps from managing built-in app children. Use the native RM UI for configuration. Requires opt-in **Enable Built-in App Tools** setting.
+
+</details>
+
+<details>
+<summary><b>manage_mcp_self</b> (1) — Developer Mode self-administration</summary>
+
+| Tool | Description |
+|------|-------------|
+| `update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlist-gated. |
+
+First gateway under the **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need to manage the MCP rule app's own configuration without manual UI intervention. Additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle. Requires opt-in **Enable Developer Mode Tools** setting (default OFF). Each successful write is logged at WARN level for audit.
 
 </details>
 
@@ -1450,6 +1462,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v0.11.0** - fix(release): positive-match the skip cascade so recursion guard short-circuits cleanly; PR #120; tests: RM 5.1 native BAT suite — acceptance gate for #120; docs: add Gemini testing results for PR #134; fix(manage_virtual_device): rename "Virtual Presence Sensor" enum entry to "Virtual Presence"; feat(developer-mode): add manage_mcp_self gateway + delete_variable. PRs: [#123](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/123), [#133](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/133), [#138](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/138), [#144](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/144), [#145](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/145)
 - **v0.10.1** - test(server): unit-test manage_destructive_hub_ops / manage_apps_drivers / manage_app_driver_code gateways; test(server): unit-test manage_logs / manage_diagnostics / manage_files gateways; PR #75; test(rules): breadth coverage for conditions, actions, triggers, loop guard, error paths (closes #75); test: backfill regression specs from CHANGELOG / release-notes history (closes #76); PR #76; Add get_app_config + list_app_pages (manage_installed_apps gateway); test: backfill sunrise/sunset silent-failure fix + broader silent-device-not-found coverage (#76); PR #77; test(integration): in-harness dispatch drive-through for handleMcpRequest + subscribe/fire (#77); fix(release): push via deploy key to bypass main-branch ruleset. PRs: [#110](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/110), [#111](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/111), [#115](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/115), [#116](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/116), [#112](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/112), [#117](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/117), [#119](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/119), [#122](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/122)
 - **v0.10.0** - docs: re-collapse Future Plans + refresh MCP tools list; build(deps): bump the gradle-dependencies group with 2 updates ([#101](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/101), @app/dependabot); fix(lint): scan GString interpolations for sandbox violations; perf(test): cache HubitatAppSandbox parse per spec class (5m → 1.5m); Built-in app visibility + Rule Machine interop (2 new gateways, 7 tools); test(server): unit-test manage_rules_admin / manage_hub_variables / manage_rooms gateways; test(rm-interop): pin registerRmRule warn-log emission and type classification; fix(release): trigger on push to main (fork-PR bot-permission workaround); fix(release): cascade skip flags + retry PR lookup for indexing lag. PRs: [#102](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/102), [#101](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/101), [#103](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/103), [#104](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/104), [#79](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/79), [#106](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/106), [#107](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/107), [#108](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/108), [#109](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/109)
 - **v0.9.7** - build: add Groovy/Spock/HubitatCI test harness (#69); test: gateway proxy dispatch + JSON-RPC envelope + resolution paths; ci: silence Groovy 2.5 reflective warnings + run Gradle daemon on JDK 17; chore: migrate hubitat_ci to joelwetzel fork + Dependabot + version-check; docs: credit biocomp and joelwetzel for the test harness; build(deps): bump the github-actions group with 5 updates ([#87](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/87), @app/dependabot); build(deps): bump gradle-wrapper from 8.10 to 9.4.1 in the gradle-dependencies group ([#86](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/86), @app/dependabot); build: assignment syntax for url + exceptionFormat (Gradle 10 prep); docs(futureplans): correct two 'infeasible' claims contradicted by Hubitat docs; test: rule-engine primitive specs (closes #71); chore: migrate test harness from joelwetzel to eighty20results/hubitat_ci. PRs: [#81](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/81), [#82](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/82), [#83](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/83), [#85](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/85), [#88](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/88), [#87](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/87), [#86](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/86), [#89](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/89), [#90](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/90), [#98](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/98), [#100](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/100)

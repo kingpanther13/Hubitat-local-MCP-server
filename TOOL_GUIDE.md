@@ -4,13 +4,13 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 33 items (22 core + 11 gateways) covering 83 total tools. Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 34 items (22 core + 12 gateways) covering 85 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (3), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5)
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5), `manage_mcp_self` (1)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -90,7 +90,7 @@ When using `manage_virtual_device` (action: "create"), these types are available
 | Virtual Button | pushable button | Triggering automations |
 | Virtual Contact Sensor | open/closed | Simulate door/window state |
 | Virtual Motion Sensor | active/inactive | Simulate motion detection |
-| Virtual Presence Sensor | present/not present | Presence simulation |
+| Virtual Presence | present/not present | Presence simulation |
 | Virtual Lock | lock/unlock | Lock state simulation |
 | Virtual Temperature Sensor | numeric temp | Temperature reporting |
 | Virtual Humidity Sensor | numeric humidity | Humidity reporting |
@@ -341,3 +341,22 @@ If a user asks "create a new RM rule" or "set up a new Room Lighting":
 3. Or direct them to the native Rule Machine / Room Lighting UI for configuration
 
 **Do NOT invent fake tools like `create_rm_rule` or pretend to call one.** This is the most important safety rule for these tools.
+
+---
+
+## Developer Mode
+
+The `manage_mcp_self` gateway exposes self-administration tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration without manual UI intervention. **Requires the opt-in `Enable Developer Mode Tools` toggle** in the MCP rule app settings page (default OFF). Each successful write is logged at WARN level for audit. If the user sees "Developer Mode tools are disabled" errors, direct them to enable the toggle in the MCP Rule Server app settings.
+
+### manage_mcp_self (1 tool)
+
+- **`update_mcp_settings`** — update one or more of the MCP rule app's own settings (toggles, log level, tuning params)
+  - Args: `settings` (map of `{key: value}`), `confirm=true`
+  - Allowlisted keys (intentionally conservative for v1): `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableHubAdminRead`, `enableBuiltinAppRead`, `enableRuleEngine`
+  - **Excluded** from v1 allowlist: `enableHubAdminWrite` (footgun — would disable own write path mid-session), `enableDeveloperMode` (lockout protection — must remain UI-only to disable), `selectedDevices` (different wire format, separate tool planned)
+  - After changing any `enable*` toggle, MCP clients (Claude Code, etc.) may need to reconnect to refresh the cached tool schema
+  - Gated on: `enableDeveloperMode` + `requireHubAdminWrite` + recent backup
+
+### manage_hub_variables — `delete_variable`
+
+The `delete_variable` op (DESTRUCTIVE, no undo) removes a rule_engine variable. Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale lease variables, or general cleanup. Connector-namespace deletion is not yet supported via MCP — use the Settings → Hub Variables UI for those.

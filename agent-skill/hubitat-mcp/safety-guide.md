@@ -93,7 +93,7 @@ ALL Hub Admin Write tools require these steps in order:
 - Use `manage_virtual_device` with `action="create"` or `action="delete"` for MCP-managed virtual devices
 - Do NOT use `delete_device` for virtual devices created by MCP
 - Virtual devices created by MCP are automatically accessible to all device tools
-- 15 supported types: Virtual Switch, Button, Contact Sensor, Motion Sensor, Presence Sensor, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Opener, Water Sensor, Omni Sensor, Fan Controller
+- 15 supported types: Virtual Switch, Button, Contact Sensor, Motion Sensor, Presence, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Opener, Water Sensor, Omni Sensor, Fan Controller
 
 ---
 
