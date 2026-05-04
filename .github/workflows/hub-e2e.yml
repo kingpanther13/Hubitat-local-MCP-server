@@ -48,28 +48,50 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Check secret availability + skip if absent
+        # Two cases where MCP_URL is empty (and we want to skip silently
+        # rather than fail red):
+        #   - PRs from forks: GitHub's security policy strips secrets from
+        #     fork-PR workflow runs, even when the secret is set on the
+        #     upstream repo. The job runs but the env var is empty.
+        #   - Secret intentionally not configured (no donated test hub,
+        #     maintainer-private fork without test infra).
+        # The fork-dispatch path (workflow_dispatch from level99's fork)
+        # DOES have access to the secret, so this gate doesn't block the
+        # intended "run via fork dispatch" use case.
+        # GitHub doesn't allow `secrets` in job-level `if:` conditions, so
+        # the check happens here as a step output and gates everything below.
+        id: gate
+        run: |
+          if [ -z "$MCP_URL" ]; then
+            echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on fork PRs and on repos without the test hub configured)"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v6
+        if: steps.gate.outputs.available == 'true'
         with:
           python-version: '3.x'
 
       - name: Install Python dependencies
+        if: steps.gate.outputs.available == 'true'
         run: pip install requests
 
-      - name: Verify MCP_URL secret is present + mask token
+      - name: Mask access token in subsequent log lines
+        if: steps.gate.outputs.available == 'true'
+        # Secrets are auto-masked, but the URL parsing below can split the
+        # token out into a separate string that isn't recognized as the
+        # original secret value. Force-mask.
         run: |
-          if [ -z "$MCP_URL" ]; then
-            echo "::error::LEVEL99_TEST_HUB_MCP_URL secret is empty or missing on this repo. Cannot proceed."
-            exit 1
-          fi
-          # Defensive masking — secrets are auto-masked, but URL parsing
-          # below can split the token out into a separate string that
-          # isn't recognized as the original secret value. Force-mask.
           TOKEN="$(echo "$MCP_URL" | sed -nE 's|.*access_token=(.*)|\1|p')"
           if [ -n "$TOKEN" ]; then
             echo "::add-mask::$TOKEN"
           fi
 
       - name: Parse MCP_URL into HUBITAT_* env vars
+        if: steps.gate.outputs.available == 'true'
         # tests/e2e_test.py expects these three env vars (see its docstring).
         # MCP_URL format: https://cloud.hubitat.com/api/<UUID>/apps/<APPID>/mcp?access_token=<TOKEN>
         run: |
@@ -83,9 +105,11 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Acquire test hub lease
+        if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
 
       - name: Configure test environment (capture pre-state + enable toggles)
+        if: steps.gate.outputs.available == 'true'
         # Captures enableRuleEngine / enableHubAdminRead / enableBuiltinAppRead
         # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
         # tests can exercise the rule engine + hub admin read paths regardless
@@ -94,21 +118,22 @@ jobs:
         run: bash .github/scripts/mcp_setup_env.sh
 
       - name: Run E2E tests
+        if: steps.gate.outputs.available == 'true'
         run: python tests/e2e_test.py
 
       - name: Cleanup BAT_E2E_ artifacts
-        if: always()
+        if: always() && steps.gate.outputs.available == 'true'
         # Defensive — e2e_test.py cleans up after itself in the happy path,
         # but a crashed run can strand virtual devices / rules / variables
         # under the BAT_E2E_ prefix. This sweeps anything left over.
         run: python tests/e2e_test.py --cleanup-only
 
       - name: Restore test environment (settings back to pre-run state)
-        if: always()
+        if: always() && steps.gate.outputs.available == 'true'
         # Tolerant of missing pre-state file (early-exit no-op) so a setup
         # failure before capture doesn't propagate here.
         run: bash .github/scripts/mcp_restore_env.sh
 
       - name: Release test hub lease
-        if: always()
+        if: always() && steps.gate.outputs.available == 'true'
         run: bash .github/scripts/lease_release.sh
