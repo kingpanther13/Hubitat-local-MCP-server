@@ -22,6 +22,17 @@ tests/e2e_config.json
 # Shape-drift audit config (personalized hub app IDs)
 scripts/audit_config.json
 
+# Gemini CLI / Code Assist: ignore everything in .gemini/ by default and
+# allowlist only the two files the Code Assist GitHub App reads from the
+# repo. Gemini CLI (the local Google CLI tool, distinct from the GitHub
+# App) writes project-local state into .gemini/ — including .env (the
+# documented place to store GEMINI_API_KEY), settings.json, tmp/chats/,
+# tmp/shell_history, and extensions/. None of that should land in commits.
+# Mirrors Google's own pattern in google-gemini/gemini-cli's .gitignore.
+.gemini/*
+!.gemini/styleguide.md
+!.gemini/config.yaml
+
 # Python bytecode cache (from running lint / release scripts locally)
 __pycache__/
 *.pyc
