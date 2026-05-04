@@ -7,6 +7,11 @@ on:
       - 'scripts/**.py'
       - 'tests/test_*.py'
       - 'tests/conftest.py'
+      # Sources-under-test that aren't in tests/test_*.py — without these
+      # entries, edits to sandbox_lint.py or e2e_test.py wouldn't trigger
+      # the pytest suite that exercises their pure helpers.
+      - 'tests/sandbox_lint.py'
+      - 'tests/e2e_test.py'
       - '.github/workflows/python-tests.yml'
 
 jobs:
@@ -20,4 +25,6 @@ jobs:
       - name: Install pytest
         run: pip install pytest
       - name: Run Python unit tests
-        run: pytest tests/ -v
+        # --doctest-modules makes the `>>> parse_release_notes(...)` examples
+        # in release_bump.py executable; without this they're documentation only.
+        run: pytest tests/ .github/scripts/release_bump.py --doctest-modules -v

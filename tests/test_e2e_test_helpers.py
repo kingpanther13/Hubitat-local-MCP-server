@@ -126,8 +126,12 @@ def test_inject_device_id_does_not_mutate_original():
     assert obj["deviceId"] == original_id
 
 
-def test_inject_device_id_recurses_into_conditions():
-    """PLACEHOLDER in a nested condition dict is replaced."""
+def test_inject_device_id_does_not_recurse_into_dict_condition():
+    """Singular `condition` is a dict, not a list — _inject_device_id only
+    recurses into list-valued keys (conditions/thenActions/elseActions/actions),
+    so a PLACEHOLDER inside a dict-typed `condition` is left untouched. This
+    locks in the documented limitation; a future refactor that adds dict
+    recursion will need to update this test."""
     obj = {
         "type": "if_then_else",
         "condition": {"type": "device_state", "deviceId": "PLACEHOLDER"},
@@ -135,10 +139,7 @@ def test_inject_device_id_recurses_into_conditions():
         "elseActions": [],
     }
     result = et._inject_device_id(obj, "77")
-    # Top-level has no deviceId; the nested condition is not recursed directly
-    # (only list keys are recursed — condition is a dict, not a list)
-    # This verifies the documented shallow-copy + list-recursion behavior.
-    assert "deviceId" not in result or result.get("deviceId") != "PLACEHOLDER"
+    assert result["condition"]["deviceId"] == "PLACEHOLDER"
 
 
 def test_inject_device_id_recurses_into_actions_list():

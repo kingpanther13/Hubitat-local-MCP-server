@@ -32,9 +32,9 @@ The three checks below are **soft requests**, not blockers. Phrase them as sugge
 
 ### 1. Release Notes section presence
 
-Every non-Dependabot PR description should contain a `## Release Notes` heading followed by at least one bulleted item (`-` or `*`). The matcher is lenient: the heading match is case-insensitive ("release notes", "Release Notes", "RELEASE NOTES" all valid), an optional trailing colon is fine, and any markdown heading level (h1–h4) counts.
+Every non-Dependabot PR description should contain a `## Release Notes` heading followed by at least one bulleted item (`-` or `*`). The matcher is lenient: the heading match is case-insensitive ("release notes", "Release Notes", "RELEASE NOTES" all valid), an optional trailing colon is fine, and any markdown heading level (h1–h6) counts.
 
-If the section is missing, empty, or contains only prose with no bullets, ask the author to add bulleted release notes. In your comment, explain why this matters: **these bullets are what HPM users see in the update prompt when they upgrade the rule app**. They should be written for end users, not developers — short, scannable, free of internal jargon. Sub-bullets are supported (nested 2-space indent) for grouping related details under one top-level point.
+If the section is missing, empty, or contains only prose with no bullets, ask the author to add bulleted release notes. In your comment, explain why this matters: **these bullets are what HPM users see in the update prompt when they upgrade the rule app**. They should be written for end users, not developers — short, scannable, free of internal jargon. Sub-bullets are supported (nest with any leading whitespace) for grouping related details under one top-level point.
 
 ### 2. Title prefix matches the "Type of change" checkbox
 
