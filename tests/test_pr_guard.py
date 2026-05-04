@@ -130,7 +130,7 @@ def test_check_bookkeeping_clean_pass(monkeypatch, tmp_path):
     readme = "## Version History\n- v0.11.0 release\n"
 
     # Patch git (simulates base ref) and file reads (simulates working tree)
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return server_groovy
         if path == "hubitat-mcp-rule.groovy":
@@ -168,7 +168,7 @@ def test_check_bookkeeping_version_changed(monkeypatch, tmp_path):
     manifest_text = _make_manifest(base_version)
     readme = "## Version History\n- unchanged\n"
 
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return base_groovy
         if path == "hubitat-mcp-rule.groovy":
@@ -210,7 +210,7 @@ def test_check_bookkeeping_manifest_version_changed(monkeypatch, tmp_path):
 
     readme = "## Version History\n- unchanged\n"
 
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return groovy
         if path == "hubitat-mcp-rule.groovy":
@@ -246,7 +246,7 @@ def test_check_bookkeeping_readme_version_history_changed(monkeypatch, tmp_path)
     base_readme = "## Version History\n- v0.11.0 original\n\n## Other\ncontent"
     new_readme = "## Version History\n- v0.11.0 original\n- v0.11.1 new\n\n## Other\ncontent"
 
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return groovy
         if path == "hubitat-mcp-rule.groovy":
@@ -283,7 +283,7 @@ def test_check_bookkeeping_changelog_changed(monkeypatch, tmp_path):
     base_changelog = "## Changelog\n- 0.11.0 initial"
     new_changelog = "## Changelog\n- 0.11.0 initial\n- 0.11.1 added"
 
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return groovy
         if path == "hubitat-mcp-rule.groovy":
@@ -318,7 +318,7 @@ def test_check_bookkeeping_changelog_new_file_no_error(monkeypatch, tmp_path):
     manifest = _make_manifest(version)
     readme = "## Version History\n- unchanged\n"
 
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return groovy
         if path == "hubitat-mcp-rule.groovy":
@@ -353,7 +353,7 @@ def test_check_bookkeeping_invalid_manifest_json(monkeypatch, tmp_path):
     rule_groovy = f" * Version: {version}\n"
     readme = "## Version History\n- unchanged\n"
 
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return groovy
         if path == "hubitat-mcp-rule.groovy":
@@ -397,7 +397,7 @@ def test_check_bookkeeping_multiple_errors_accumulated(monkeypatch, tmp_path):
 
     readme = "## Version History\n- unchanged\n"
 
-    def fake_file_at_ref(ref, path):
+    def fake_file_at_ref(_ref, path):
         if path == "hubitat-mcp-server.groovy":
             return base_groovy
         if path == "hubitat-mcp-rule.groovy":
