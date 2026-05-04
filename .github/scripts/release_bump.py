@@ -150,7 +150,11 @@ def fetch_pr(number: int) -> dict | None:
             "--json", "number,title,url,author,body",
         )
     except subprocess.CalledProcessError as e:
-        stderr = (e.stderr or "").strip().splitlines()[-1] if e.stderr else "(no stderr)"
+        # Pull the last non-blank line of stderr for the warning. Defensive
+        # against whitespace-only stderr (would IndexError on [-1] of an empty
+        # list after stripping).
+        stderr_lines = (e.stderr or "").strip().splitlines()
+        stderr = stderr_lines[-1] if stderr_lines else "(no stderr)"
         print(
             f"::warning::fetch_pr: gh CLI failed for PR #{number}: {stderr}. "
             "Bullet will fall back to '- PR #N' placeholder.",

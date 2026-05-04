@@ -539,6 +539,26 @@ def test_build_bullets_no_warning_when_section_absent(monkeypatch, capsys):
     assert "::warning::" not in captured.err
 
 
+def test_fetch_pr_handles_whitespace_only_stderr(monkeypatch, capsys):
+    """fetch_pr's warning-formatter must not IndexError on whitespace-only
+    stderr (Gemini-flagged: stripped-empty splitlines → []; [-1] would crash).
+    """
+    import subprocess as sp
+
+    def fake_run(*args, **kwargs):
+        # Simulate gh CLI failing with whitespace-only stderr
+        raise sp.CalledProcessError(
+            returncode=1, cmd=args, output="", stderr="   \n  \n"
+        )
+
+    monkeypatch.setattr(rb, "run", fake_run)
+    result = rb.fetch_pr(42)
+    assert result is None  # graceful None return, not a crash
+    captured = capsys.readouterr()
+    assert "::warning::fetch_pr" in captured.err
+    assert "(no stderr)" in captured.err  # the fallback string is used
+
+
 def test_build_bullets_warns_when_fetch_pr_fails(monkeypatch, capsys):
     """When fetch_pr returns None, build_bullets uses the placeholder bullet
     AND fetch_pr itself emits the warning (verified here by checking that
