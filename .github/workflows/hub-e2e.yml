@@ -19,6 +19,8 @@ on:
       - '.github/workflows/hub-e2e.yml'
       - '.github/scripts/lease_acquire.sh'
       - '.github/scripts/lease_release.sh'
+      - '.github/scripts/mcp_setup_env.sh'
+      - '.github/scripts/mcp_restore_env.sh'
   workflow_dispatch: {}
 
 # Serialize concurrent runs against the shared test hub. Don't cancel
@@ -83,6 +85,14 @@ jobs:
       - name: Acquire test hub lease
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
 
+      - name: Configure test environment (capture pre-state + enable toggles)
+        # Captures enableRuleEngine / enableHubAdminRead / enableBuiltinAppRead
+        # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
+        # tests can exercise the rule engine + hub admin read paths regardless
+        # of the test hub's prior toggle state. Refuses if Developer Mode
+        # itself is off (UI-only to enable).
+        run: bash .github/scripts/mcp_setup_env.sh
+
       - name: Run E2E tests
         run: python tests/e2e_test.py
 
@@ -92,6 +102,12 @@ jobs:
         # but a crashed run can strand virtual devices / rules / variables
         # under the BAT_E2E_ prefix. This sweeps anything left over.
         run: python tests/e2e_test.py --cleanup-only
+
+      - name: Restore test environment (settings back to pre-run state)
+        if: always()
+        # Tolerant of missing pre-state file (early-exit no-op) so a setup
+        # failure before capture doesn't propagate here.
+        run: bash .github/scripts/mcp_restore_env.sh
 
       - name: Release test hub lease
         if: always()

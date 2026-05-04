@@ -3028,6 +3028,7 @@ def toolGetHubInfo() {
     info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
     info.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
+    info.ruleEngineEnabled = settings.enableRuleEngine != false  // defaults true
     info.developerModeEnabled = settings.enableDeveloperMode ?: false
 
     // PII/location data requires Hub Admin Read
@@ -5376,6 +5377,7 @@ def toolGetHubDetails(args) {
     details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
     details.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
+    details.ruleEngineEnabled = settings.enableRuleEngine != false  // defaults true
     details.developerModeEnabled = settings.enableDeveloperMode ?: false
 
     mcpLog("info", "hub-admin", "Retrieved extended hub details")
