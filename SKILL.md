@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 83 tools (33 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver management, installed-app visibility, and Rule Machine interoperability.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 85 tools (34 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver management, installed-app visibility, Rule Machine interoperability, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ There are **no external dependencies, build steps, or test frameworks**. Everyth
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 83 tools (33 on tools/list + gateways) │  │
+│  │  - 85 tools (34 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,23 +93,23 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 83 items to 33. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 85 items to 34. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
 
 **Architecture:**
-- `getGatewayConfig()` — defines 11 gateways, each with a description, tools list, and summaries map
-- `getToolDefinitions()` — returns 22 core tools + 11 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 83 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getGatewayConfig()` — defines 12 gateways, each with a description, tools list, and summaries map
+- `getToolDefinitions()` — returns 22 core tools + 12 gateway tool definitions (client-visible)
+- `getAllToolDefinitions()` — returns all 85 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
 
-**11 gateways (61 proxied tools):**
+**12 gateways (63 proxied tools):**
 | Gateway | Tools | Domain |
 |---------|-------|--------|
 | `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
-| `manage_hub_variables` | 3 | Hub connector and rule engine variables |
+| `manage_hub_variables` | 4 | Hub connector and rule engine variables (incl. delete) |
 | `manage_rooms` | 5 | Room CRUD |
 | `manage_destructive_hub_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
 | `manage_apps_drivers` | 6 | List/get apps, drivers, backups (read-only) |
@@ -119,6 +119,7 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 | `manage_files` | 4 | File Manager CRUD |
 | `manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
 | `manage_rule_machine` | 5 | Rule Machine interop via RMUtils — list/run/pause/resume/boolean |
+| `manage_mcp_self` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |
 
 **22 core tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `list_rules`, `get_rule`, `create_rule`, `update_rule`, `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`, `search_tools` (BM25 natural language search across all tools)
 

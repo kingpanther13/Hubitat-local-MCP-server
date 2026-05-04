@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 83 MCP tools. The server exposes **33 items on `tools/list`**: 22 core tools + 11 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 85 MCP tools. The server exposes **34 items on `tools/list`**: 22 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -56,11 +56,11 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 83 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 85 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
-## Gateway Tools (11) — Each proxies multiple tools
+## Gateway Tools (12) — Each proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas for all its tools. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -76,7 +76,7 @@ Rule administration: delete, test, export, import, and clone rules.
 | `import_rule` | Import a rule from exported JSON. | None |
 | `clone_rule` | Duplicate an existing rule. | None |
 
-### manage_hub_variables (3 tools)
+### manage_hub_variables (4 tools)
 
 Manage hub connector and rule engine variables.
 
@@ -85,6 +85,7 @@ Manage hub connector and rule engine variables.
 | `list_variables` | List all hub connector and rule engine variables. | None |
 | `get_variable` | Get a specific variable value. | None |
 | `set_variable` | Set a variable value (creates if doesn't exist). | None |
+| `delete_variable` | Permanently delete a rule engine variable (DESTRUCTIVE — no undo). Connector-namespace deletion not yet supported via MCP. | Hub Admin Write + recent backup |
 
 ### manage_rooms (5 tools)
 
@@ -201,3 +202,11 @@ Rule Machine interop via the official `hubitat.helper.RMUtils` helper class: lis
 | `pause_rm_rule` | Pause an RM rule (reversible; paused rules don't fire on triggers). | Built-in App Read |
 | `resume_rm_rule` | Resume a paused RM rule. | Built-in App Read |
 | `set_rm_rule_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`) — flips the flag that rules can reference in conditions. | Built-in App Read |
+
+### manage_mcp_self (1 tool)
+
+Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration without manual UI intervention. Requires the opt-in `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each successful write is logged at WARN level for audit. First gateway under the Developer Mode pattern — additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableHubAdminRead`, `enableBuiltinAppRead`, `enableRuleEngine`. After flipping any `enable*` toggle, MCP clients may need to reconnect to refresh their cached tool schema. | Developer Mode + Hub Admin Write + recent backup |

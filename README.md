@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 83 MCP tools (33 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 85 MCP tools (34 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 83 tools total — 22 core tools are always visible, while 61 additional tools are organized behind 11 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 85 tools total — 22 core tools are always visible, while 63 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (83 total — 33 on tools/list)
+### MCP Tools (85 total — 34 on tools/list)
 
-The server has 83 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **61 additional tools** are organized behind **11 domain-named gateways**. The AI sees 33 items on `tools/list` (22 + 11 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 85 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **63 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (22) — Always visible on tools/list
 
@@ -323,13 +323,14 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>manage_hub_variables</b> (3) — Hub variables</summary>
+<summary><b>manage_hub_variables</b> (4) — Hub variables</summary>
 
 | Tool | Description |
 |------|-------------|
 | `list_variables` | List all hub connector and rule engine variables |
 | `get_variable` | Get a variable value |
 | `set_variable` | Set a variable value (creates if doesn't exist) |
+| `delete_variable` | Permanently delete a rule engine variable (DESTRUCTIVE) |
 
 </details>
 
@@ -467,6 +468,17 @@ Write/delete require Hub Admin Write + confirm.
 | `set_rm_rule_boolean` | Set an RM rule's private boolean variable |
 
 **Cannot create, modify, or delete** RM rules — Hubitat's platform blocks third-party apps from managing built-in app children. Use the native RM UI for configuration. Requires opt-in **Enable Built-in App Tools** setting.
+
+</details>
+
+<details>
+<summary><b>manage_mcp_self</b> (1) — Developer Mode self-administration</summary>
+
+| Tool | Description |
+|------|-------------|
+| `update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlist-gated. |
+
+First gateway under the **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need to manage the MCP rule app's own configuration without manual UI intervention. Additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle. Requires opt-in **Enable Developer Mode Tools** setting (default OFF). Each successful write is logged at WARN level for audit.
 
 </details>
 

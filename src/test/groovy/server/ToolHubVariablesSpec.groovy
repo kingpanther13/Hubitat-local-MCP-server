@@ -5,16 +5,25 @@ import support.ToolSpecBase
 /**
  * Spec for the manage_hub_variables gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolListVariables -> list_variables
- * - toolGetVariable   -> get_variable
- * - toolSetVariable   -> set_variable
+ * - toolListVariables    -> list_variables
+ * - toolGetVariable      -> get_variable
+ * - toolSetVariable      -> set_variable
+ * - toolDeleteHubVariable -> delete_variable
  *
  * Hub-variable APIs (getAllGlobalConnectorVariables / getGlobalConnectorVariable /
  * setGlobalConnectorVariable) are purely dynamic — not on AppExecutor — so
  * they're stubbed per-test via script.metaClass in given: blocks. See
  * docs/testing.md "Which interception point to use" for the general pattern.
+ *
+ * delete_variable is gated by requireHubAdminWrite (3-layer: setting flag,
+ * args.confirm, 24h backup window). Helper enableHubAdminWrite() seeds those.
  */
 class ToolHubVariablesSpec extends ToolSpecBase {
+
+    private void enableHubAdminWrite() {
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L  // matches HarnessSpec's fixed now()
+    }
 
     // -------- toolListVariables --------
 
@@ -193,5 +202,108 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.success == true
         result.value == null
         result.source == 'rule_engine'
+    }
+
+    // -------- toolDeleteHubVariable --------
+
+    def "delete_variable removes an existing rule_engine variable and reports the previous value"() {
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [scratch_var: 'to-be-removed', keep_me: 42]
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
+
+        then:
+        result.success == true
+        result.name == 'scratch_var'
+        result.deleted == true
+        result.source == 'rule_engine'
+        result.previousValue == 'to-be-removed'
+
+        and: 'only the targeted variable is gone — siblings preserved'
+        stateMap.ruleVariables == [keep_me: 42]
+    }
+
+    def "delete_variable throws when confirm is not provided"() {
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [scratch_var: 'value']
+
+        when:
+        script.toolDeleteHubVariable([name: 'scratch_var'])
+
+        then:
+        thrown(IllegalArgumentException)
+        // Variable should NOT be deleted when the gate refuses
+        stateMap.ruleVariables == [scratch_var: 'value']
+    }
+
+    def "delete_variable throws when no recent backup exists (Hub Admin Write 24h gate)"() {
+        given: 'enableHubAdminWrite is true but no lastBackupTimestamp seeded'
+        settingsMap.enableHubAdminWrite = true
+        stateMap.ruleVariables = [scratch_var: 'value']
+
+        when:
+        script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+        stateMap.ruleVariables == [scratch_var: 'value']
+    }
+
+    def "delete_variable throws when enableHubAdminWrite setting is off"() {
+        given:
+        // No settingsMap.enableHubAdminWrite seed — gate refuses on the first layer
+        stateMap.ruleVariables = [scratch_var: 'value']
+
+        when:
+        script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+        stateMap.ruleVariables == [scratch_var: 'value']
+    }
+
+    def "delete_variable throws when name is missing"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolDeleteHubVariable([confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('name is required')
+    }
+
+    def "delete_variable throws with helpful hint when variable is not in rule_engine namespace"() {
+        given: 'rule_engine namespace is empty'
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [:]
+
+        when:
+        script.toolDeleteHubVariable([name: 'nonexistent', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'nonexistent'")
+        ex.message.contains('rule_engine namespace')
+        // Error should redirect users to UI for connector-namespace deletion
+        ex.message.contains('Hub Variables UI')
+    }
+
+    def "delete_variable throws when ruleVariables map is null (variable also not present)"() {
+        given:
+        enableHubAdminWrite()
+        // stateMap.ruleVariables not seeded at all — null check path
+
+        when:
+        script.toolDeleteHubVariable([name: 'never_set', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'never_set'")
+        ex.message.contains('rule_engine namespace')
     }
 }

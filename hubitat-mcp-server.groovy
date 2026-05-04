@@ -84,6 +84,25 @@ def mainPage() {
                   defaultValue: false, submitOnChange: true
         }
 
+        section("Developer Mode") {
+            paragraph "<b>Developer Mode</b> exposes self-administration capabilities — tools that let an LLM agent or CI/CD pipeline manage the MCP's own configuration, scope, and operational state without requiring manual UI intervention."
+            paragraph "<i>Capability categories under this mode (current + planned):</i>"
+            paragraph "<ul>" +
+                      "<li>Configuration management — toggle states, log levels, loop guards, tuning parameters</li>" +
+                      "<li>Device-access scope — add/remove devices from MCP visibility</li>" +
+                      "<li>Hub-variable management — true Hub Variables namespace (Settings → Hub Variables)</li>" +
+                      "<li>Artifact cleanup — sweep ephemeral CI/test devices, variables, rules</li>" +
+                      "<li>Operational diagnostics + self-healing routines</li>" +
+                      "</ul>"
+            paragraph "<i>Useful for end-to-end CI/CD automation, agent-driven configuration, and workflows where manual UI ops would be impractical.</i>"
+            input "enableDeveloperMode", "bool", title: "Enable Developer Mode Tools",
+                  description: "Exposes self-administration tools for MCP-managed configuration and lifecycle changes.",
+                  defaultValue: false, submitOnChange: true
+            if (settings.enableDeveloperMode) {
+                paragraph "<b style='color: red;'>⚠ WARNING: Developer Mode allows the AI assistant to modify which tools it can access (via toggle changes), what device scope it has, how verbose its logging is, and other operational settings. Only enable if you understand and trust the agent's authorization model. Every write is logged at WARN level for audit.</b>"
+            }
+        }
+
         section("Hub Security") {
             paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
                       "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
@@ -369,7 +388,9 @@ def processJsonRpcMessage(msg) {
                 return jsonRpcError(msg.id, -32601, "Method not found: ${msg.method}")
         }
     } catch (Exception e) {
-        log.error "MCP Error: ${e.message}", e
+        // Hubitat's LogWrapper.error() does NOT accept (String, Throwable). Use string-only.
+        // Stack trace would only be visible in mcpLog details (which this top-level catch lacks).
+        log.error "MCP Error: ${e.message} (${e.class.simpleName})"
         return jsonRpcError(msg.id, -32603, "Internal error: ${e.message}")
     }
 }
@@ -420,7 +441,10 @@ def handleToolsCall(msg) {
             details: [tool: toolName, error: e.message],
             stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")
         ])
-        log.error "Tool execution error: ${e.message}", e
+        // Hubitat's LogWrapper.error() does NOT accept (String, Throwable) — passing the
+        // exception object as a 2nd arg throws MissingMethodException, masking the real error
+        // (and creating cascading log.error failures). mcpLog above already captured the stack trace.
+        log.error "Tool execution error: ${e.message} (${e.class.simpleName})"
         // MCP spec: tool execution errors are returned as successful results with isError flag
         return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
     }
@@ -454,16 +478,18 @@ def getGatewayConfig() {
         ],
         manage_hub_variables: [
             description: "Manage hub connector and rule engine variables.",
-            tools: ["list_variables", "get_variable", "set_variable"],
+            tools: ["list_variables", "get_variable", "set_variable", "delete_variable"],
             summaries: [
                 list_variables: "List all hub connector and rule engine variables",
                 get_variable: "Get a variable value. Args: name",
-                set_variable: "Set a variable value (creates if doesn't exist). Args: name, value"
+                set_variable: "Set a variable value (creates if doesn't exist). Args: name, value",
+                delete_variable: "Permanently delete a rule engine variable (DESTRUCTIVE). Args: name, confirm=true"
             ],
             searchHints: [
                 list_variables: "show all global state connector",
                 get_variable: "read fetch lookup global state",
-                set_variable: "write update change store global state"
+                set_variable: "write update change store global state",
+                delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable"
             ]
         ],
         manage_rooms: [
@@ -647,6 +673,16 @@ def getGatewayConfig() {
                 pause_rm_rule: "disable stop temporarily rule machine rule",
                 resume_rm_rule: "enable unpause restart rule machine rule",
                 set_rm_rule_boolean: "private boolean flag rule machine rule condition"
+            ]
+        ],
+        manage_mcp_self: [
+            description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. First gateway under the Developer Mode pattern — additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
+            tools: ["update_mcp_settings"],
+            summaries: [
+                update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
+            ],
+            searchHints: [
+                update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinAppRead enableRuleEngine ci automation"
             ]
         ]
     ]
@@ -956,6 +992,30 @@ Verify rule after creation.""",
                     value: [type: "string", description: "Variable value (string, number, or boolean as string)"]
                 ],
                 required: ["name", "value"]
+            ]
+        ],
+        [
+            name: "delete_variable",
+            description: "Permanently delete a rule engine variable (DESTRUCTIVE — no undo). Variable must exist. Use the Settings → Hub Variables UI for connector-namespace variable deletion (separate namespace, not yet exposed via MCP).\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Variable name to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"]
+                ],
+                required: ["name", "confirm"]
+            ]
+        ],
+        [
+            name: "update_mcp_settings",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinAppRead, enableRuleEngine.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    settings: [type: "object", description: "Map of setting key → new value (e.g., {\"mcpLogLevel\":\"warn\",\"enableRuleEngine\":true})"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
+                ],
+                required: ["settings", "confirm"]
             ]
         ],
         [
@@ -1793,6 +1853,8 @@ def executeTool(toolName, args) {
         case "list_variables": return toolListVariables()
         case "get_variable": return toolGetVariable(args.name)
         case "set_variable": return toolSetVariable(args.name, args.value)
+        case "delete_variable": return toolDeleteHubVariable(args)
+        case "update_mcp_settings": return toolUpdateMcpSettings(args)
         case "get_hsm_status": return toolGetHsmStatus()
         case "set_hsm": return toolSetHsm(args.mode)
 
@@ -1910,6 +1972,7 @@ def executeTool(toolName, args) {
         case "manage_files":
         case "manage_installed_apps":
         case "manage_rule_machine":
+        case "manage_mcp_self":
             return handleGateway(toolName, args.tool, args.args)
 
         default:
@@ -2964,6 +3027,7 @@ def toolGetHubInfo() {
     info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
     info.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
+    info.developerModeEnabled = settings.enableDeveloperMode ?: false
 
     // PII/location data requires Hub Admin Read
     if (settings.enableHubAdminRead) {
@@ -3058,6 +3122,82 @@ def toolSetVariable(name, value) {
         state.ruleVariables[name] = value
         return [success: true, name: name, value: value, source: "rule_engine"]
     }
+}
+
+def toolDeleteHubVariable(args) {
+    requireHubAdminWrite(args.confirm)
+    def name = args.name
+    if (!name) throw new IllegalArgumentException("name is required")
+
+    // Currently only rule_engine variables are addressable from this MCP — connector
+    // variables (Settings → Hub Variables) live in a separate namespace not yet
+    // accessible from this app. See task #112 for the broader namespace fix.
+    if (!state.ruleVariables?.containsKey(name)) {
+        throw new IllegalArgumentException("Variable '${name}' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP — use Settings → Hub Variables UI.)")
+    }
+
+    def previousValue = state.ruleVariables[name]
+    state.ruleVariables.remove(name)
+    mcpLog("warn", "developer-mode", "delete_variable: removed '${name}' (previous value: ${previousValue?.toString()?.take(80)})")
+    return [success: true, name: name, deleted: true, source: "rule_engine", previousValue: previousValue]
+}
+
+def toolUpdateMcpSettings(args) {
+    if (!settings.enableDeveloperMode) {
+        throw new IllegalStateException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use update_mcp_settings.")
+    }
+    requireHubAdminWrite(args.confirm)
+
+    if (!args.settings || !(args.settings instanceof Map) || args.settings.isEmpty()) {
+        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
+    }
+
+    // Allowlist of settings that can be modified via this tool, with their Hubitat input
+    // type (matches the input "<key>", "<type>", ... declarations in the mainPage section).
+    // Excluded:
+    //   enableHubAdminWrite  — would footgun: could disable own write path mid-session
+    //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
+    //   selectedDevices      — capability multi-select, separate tool planned (Developer Mode follow-up)
+    def allowedSettings = [
+        "mcpLogLevel":            "enum",
+        "debugLogging":           "bool",
+        "maxCapturedStates":      "number",
+        "loopGuardMax":           "number",
+        "loopGuardWindowSec":     "number",
+        "enableHubAdminRead":     "bool",
+        "enableBuiltinAppRead":   "bool",
+        "enableRuleEngine":       "bool"
+    ]
+
+    def updates = [:]
+    args.settings.each { key, value ->
+        def keyStr = key.toString()
+        if (!allowedSettings.containsKey(keyStr)) {
+            throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via update_mcp_settings. Allowed: ${allowedSettings.keySet().sort().join(', ')}")
+        }
+        updates[keyStr] = value
+    }
+
+    // Audit trail — every Developer Mode write is WARN-level
+    mcpLog("warn", "developer-mode", "update_mcp_settings: ${updates}")
+
+    // Apply each update via app.updateSetting() — the documented Hubitat sandbox API for
+    // self-modifying app settings. mcpLogLevel needs special handling because the runtime
+    // log threshold is cached in state.debugLogs.config (UI display reads from settings).
+    updates.each { key, value ->
+        if (key == "mcpLogLevel") {
+            // Delegate to existing helper — it updates both state cache + setting
+            toolSetLogLevel([level: value.toString()])
+        } else {
+            app.updateSetting(key, [type: allowedSettings[key], value: value])
+        }
+    }
+
+    return [
+        success: true,
+        updated: updates,
+        message: "Updated ${updates.size()} setting(s). MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
+    ]
 }
 
 // Helper method for child apps to get variable values
@@ -5119,6 +5259,7 @@ def toolGetHubDetails(args) {
     details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
     details.builtinAppReadEnabled = settings.enableBuiltinAppRead ?: false
+    details.developerModeEnabled = settings.enableDeveloperMode ?: false
 
     mcpLog("info", "hub-admin", "Retrieved extended hub details")
     return details
