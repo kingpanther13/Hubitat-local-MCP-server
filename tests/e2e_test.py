@@ -63,7 +63,17 @@ class HubitatMcpClient:
     def __init__(self, hub_url: str, app_id: str, access_token: str, verbose: bool = False):
         self.hub_url = hub_url.rstrip("/")
         self.app_id = app_id
-        self.endpoint = f"{self.hub_url}/apps/api/{app_id}/mcp"
+        # Hubitat URL conventions differ between local hub and Hubitat cloud:
+        #   Local: http://<hub-ip>/apps/api/<id>/mcp?access_token=...
+        #   Cloud: https://cloud.hubitat.com/api/<UUID>/apps/<id>/mcp?access_token=...
+        # In the cloud form, hub_url already includes /api/<UUID>/, so the
+        # path under the app is just /apps/<id>/<endpoint> (no extra /api/).
+        # Detect cloud by the cloud.hubitat.com host marker and adjust.
+        if "cloud.hubitat.com" in self.hub_url:
+            self._app_path_prefix = f"{self.hub_url}/apps/{app_id}"
+        else:
+            self._app_path_prefix = f"{self.hub_url}/apps/api/{app_id}"
+        self.endpoint = f"{self._app_path_prefix}/mcp"
         self.access_token = access_token
         self.verbose = verbose
         self._request_id = 0
@@ -144,7 +154,7 @@ class HubitatMcpClient:
 
     def get_health(self) -> dict:
         """GET the /health REST endpoint (not JSON-RPC)."""
-        url = f"{self.hub_url}/apps/api/{self.app_id}/health"
+        url = f"{self._app_path_prefix}/health"
         resp = requests.get(url, params={"access_token": self.access_token}, timeout=15)
         resp.raise_for_status()
         return resp.json()
