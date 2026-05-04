@@ -9,12 +9,17 @@ import support.ToolSpecBase
  *
  * - toolUpdateMcpSettings -> update_mcp_settings
  *
- * Three layers of access control are enforced before the write:
- *   1. settings.enableDeveloperMode must be true                  -> IllegalStateException
+ * Four validation gates fire before any app.updateSetting() call (all-or-nothing):
+ *   1. settings.enableDeveloperMode must be true                  -> IllegalArgumentException
  *   2. requireHubAdminWrite(args.confirm) — 3 sub-checks          -> IllegalArgumentException
  *      (settings.enableHubAdminWrite, args.confirm, 24h backup)
  *   3. settings map must be a non-empty Map                       -> IllegalArgumentException
  *   4. each setting key must be in the v1 allowlist               -> IllegalArgumentException
+ *   5. per-key sub-validation (e.g. mcpLogLevel ∈ getLogLevels()) -> IllegalArgumentException
+ *
+ * All gates throw IllegalArgumentException so handleToolsCall routes through the clean
+ * -32602 Invalid params branch (vs. the broad Exception catch that would generate ERROR
+ * + stack trace for what is fundamentally a config refusal).
  *
  * Mocking strategy (see docs/testing.md):
  *   - app.updateSetting -> sharedAppStub (TestChildApp) provides settingsStore.
@@ -47,7 +52,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     // -------- Gate: enableDeveloperMode toggle --------
 
-    def "throws IllegalStateException when enableDeveloperMode is off"() {
+    def "throws IllegalArgumentException when enableDeveloperMode is off (routes through -32602, not generic ERROR catch)"() {
         given: 'Hub Admin Write is enabled but Developer Mode is not'
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -56,7 +61,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         script.toolUpdateMcpSettings([settings: [debugLogging: true], confirm: true])
 
         then:
-        def ex = thrown(IllegalStateException)
+        def ex = thrown(IllegalArgumentException)
         ex.message.contains('Developer Mode tools are disabled')
         ex.message.contains("'Developer Mode Tools'")
 
@@ -395,5 +400,122 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         sharedAppStub.settingsStore['loopGuardMax'] == [type: 'number', value: 25]
+    }
+
+    // -------- Per-key sub-validation (catches errors that would otherwise leak into apply phase) --------
+
+    def "rejects mcpLogLevel='blarg' during validation (no apply-phase leakage)"() {
+        // Without per-key pre-validation, this would only fail INSIDE toolSetLogLevel
+        // during apply — by which time prior keys in the batch had already been written
+        // by app.updateSetting(). Asserts validation now happens up front.
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [mcpLogLevel: 'blarg'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('mcpLogLevel')
+        ex.message.contains('blarg')
+
+        and: 'no settings were written — validation rejected the batch up front'
+        sharedAppStub.settingsStore.isEmpty()
+    }
+
+    def "mixed batch with bad mcpLogLevel rejects ALL keys (atomic validation)"() {
+        // The critical safety property — without per-key validation, debugLogging would
+        // have landed before mcpLogLevel's enum check fired inside toolSetLogLevel.
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([
+            settings: [debugLogging: true, mcpLogLevel: 'blarg'],
+            confirm: true
+        ])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        and: 'critical: debugLogging is NOT in the settingsStore — no partial write'
+        !sharedAppStub.settingsStore.containsKey('debugLogging')
+        sharedAppStub.settingsStore.isEmpty()
+    }
+
+    // -------- Apply-phase failure handling --------
+
+    def "apply order is sequential — non-mcpLogLevel keys before mcpLogLevel last"() {
+        // Documents the apply-phase ordering contract. mcpLogLevel goes through
+        // toolSetLogLevel (which has its own state.debugLogs.config side-effect),
+        // and is intentionally applied LAST so any prior app.updateSetting() writes
+        // have landed before the log-level cache flip. With the per-key validation
+        // upstream of apply, mcpLogLevel='blarg' can no longer partially apply (see
+        // the "rejects mcpLogLevel='blarg'" + "mixed batch" specs above) — this spec
+        // captures the behavioral contract that makes the apply phase safe even if
+        // Hubitat itself rejects a write later.
+        //
+        // Apply-time failure interception (e.g. Hubitat rejecting at apply for a value
+        // the MCP allowlist permits) is documented behavior: sequential apply with no
+        // rollback, audit log captures attempted= before apply and applied= after.
+        // Not unit-testable in the @Shared mock harness without modifying TestChildApp;
+        // covered by the live-hub BAT scenarios in tests/BAT-v2.md Section 12.
+        given:
+        enableDeveloperModeAndAdminWrite()
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [
+                debugLogging: true,
+                mcpLogLevel: 'warn'
+            ],
+            confirm: true
+        ])
+
+        then: 'both keys applied via their respective paths'
+        result.success == true
+        sharedAppStub.settingsStore['debugLogging'] == [type: 'bool', value: true]
+        sharedAppStub.settingsStore['mcpLogLevel'] == [type: 'enum', value: 'warn']
+        stateMap.debugLogs.config.logLevel == 'warn'
+    }
+
+    // -------- Dispatcher-level LogWrapper regression guard --------
+
+    def "toggle-off path through handleToolsCall returns clean -32602, never cascades"() {
+        // Regression guard for the LogWrapper bug: previously, the dispatcher's broad
+        // Exception catch called `log.error "msg", throwable`, which Hubitat's
+        // LogWrapper.error(String) doesn't accept — triggered MissingMethodException
+        // cascade and produced a generic "An unexpected error occurred" response,
+        // hiding the real exception's message. Two failure modes locked in here:
+        //   (1) gate exception is IllegalArgumentException (routes through -32602, not
+        //       the broad catch that hosted the cascade), AND
+        //   (2) IF anything ever does fall into the broad catch, the log.error call is
+        //       single-string form so no MissingMethodException re-emerges.
+        // This spec exercises (1) directly via handleToolsCall. (2) is locked in by
+        // sandbox lint + the source-line itself.
+        given: 'Hub Admin Write enabled but Developer Mode toggle is off'
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+
+        def msg = [
+            jsonrpc: '2.0',
+            id: 99,
+            method: 'tools/call',
+            params: [
+                name: 'manage_mcp_self',
+                arguments: [tool: 'update_mcp_settings', args: [settings: [debugLogging: true], confirm: true]]
+            ]
+        ]
+
+        when:
+        def response = script.handleToolsCall(msg)
+
+        then: 'JSON-RPC error envelope, NOT generic "An unexpected error occurred"'
+        response.error?.code == -32602
+        response.error?.message?.contains('Developer Mode tools are disabled')
+
+        and: 'verbatim message reaches the caller — proves the broad-catch cascade is not in the path'
+        response.error.message.contains("'Developer Mode Tools'")
     }
 }

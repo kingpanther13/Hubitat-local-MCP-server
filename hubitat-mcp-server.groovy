@@ -483,7 +483,7 @@ def getGatewayConfig() {
                 list_variables: "List all hub connector and rule engine variables",
                 get_variable: "Get a variable value. Args: name",
                 set_variable: "Set a variable value (creates if doesn't exist). Args: name, value",
-                delete_variable: "Permanently delete a rule engine variable (DESTRUCTIVE). Args: name, confirm=true"
+                delete_variable: "Permanently delete a rule engine variable (DESTRUCTIVE). Args: name, confirm=true, [force=true if rules reference it]"
             ],
             searchHints: [
                 list_variables: "show all global state connector",
@@ -996,12 +996,13 @@ Verify rule after creation.""",
         ],
         [
             name: "delete_variable",
-            description: "Permanently delete a rule engine variable (DESTRUCTIVE — no undo). Variable must exist. Use the Settings → Hub Variables UI for connector-namespace variable deletion (separate namespace, not yet exposed via MCP).\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.",
+            description: "Permanently delete a rule engine variable (DESTRUCTIVE — no undo). Variable must exist. Use the Settings → Hub Variables UI for connector-namespace variable deletion (separate namespace, not yet exposed via MCP).\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"]
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
+                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."]
                 ],
                 required: ["name", "confirm"]
             ]
@@ -3131,9 +3132,43 @@ def toolDeleteHubVariable(args) {
 
     // Currently only rule_engine variables are addressable from this MCP — connector
     // variables (Settings → Hub Variables) live in a separate namespace not yet
-    // accessible from this app. See task #112 for the broader namespace fix.
+    // accessible from this app.
     if (!state.ruleVariables?.containsKey(name)) {
         throw new IllegalArgumentException("Variable '${name}' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP — use Settings → Hub Variables UI.)")
+    }
+
+    // Pre-deletion safety scan: child rule apps that reference this variable will silently
+    // break on next access (null lookup → conditions flip false, %varname% substitution
+    // leaves literal text). Block by default — caller must opt in via force=true after
+    // acknowledging the breakage. Match heuristic: variable name appears in the rule's
+    // serialized triggers/conditions/actions JSON.
+    def force = args.force == true
+    def consumers = []
+    try {
+        getChildApps()?.each { child ->
+            def ruleData = null
+            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
+            if (ruleData) {
+                def serialized = groovy.json.JsonOutput.toJson(ruleData)
+                if (serialized?.contains(name)) {
+                    consumers << [id: child.id, label: child.label]
+                }
+            }
+        }
+    } catch (Exception e) {
+        // Defensive: if the scan itself errors, fall through to apply normal force gate
+        // rather than blocking deletion entirely. Log so investigators know the scan
+        // didn't run.
+        logDebug("delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
+    }
+    if (consumers && !force) {
+        throw new IllegalArgumentException(
+            "Variable '${name}' is referenced by ${consumers.size()} rule(s): " +
+            "${consumers.collect { "${it.label} (id=${it.id})" }.join(', ')}. " +
+            "Deleting will silently break those rules (null lookups, false conditions, " +
+            "literal %${name}% in substitutions). Pass force=true to proceed anyway, " +
+            "or update/remove the consuming rules first."
+        )
     }
 
     def previousValue = state.ruleVariables[name]
@@ -3143,13 +3178,21 @@ def toolDeleteHubVariable(args) {
     // map to force serialization.
     def updated = state.ruleVariables.findAll { k, v -> k != name }
     state.ruleVariables = updated
-    mcpLog("warn", "developer-mode", "delete_variable: removed '${name}' (previous value: ${previousValue?.toString()?.take(80)})")
-    return [success: true, name: name, deleted: true, source: "rule_engine", previousValue: previousValue]
+
+    def prevStr = previousValue?.toString()
+    def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
+    def consumerNote = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
+    mcpLog("warn", "developer-mode", "delete_variable: removed '${name}' (previous value: ${auditValue})${consumerNote}")
+    return [success: true, name: name, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
 
 def toolUpdateMcpSettings(args) {
+    // IllegalArgumentException (not IllegalStateException) so the dispatcher routes this
+    // through the clean -32602 Invalid params branch in handleToolsCall — same exception
+    // type all other gates throw (requireHubAdminWrite, requireBuiltinAppRead). Toggle-off
+    // is a config refusal, not an unexpected runtime error worth a stack trace + ERROR log.
     if (!settings.enableDeveloperMode) {
-        throw new IllegalStateException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use update_mcp_settings.")
+        throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use update_mcp_settings.")
     }
     requireHubAdminWrite(args.confirm)
 
@@ -3174,26 +3217,46 @@ def toolUpdateMcpSettings(args) {
         "enableRuleEngine":       "bool"
     ]
 
-    // Validate, coerce, and stage each update. Type coercion is mandatory: a JSON-RPC
-    // client (e.g. a curl-based CI script) may send "true"/"false" or "50" as strings
-    // instead of native bool/number. Without coercion, app.updateSetting(key,
-    // [type:'bool', value:'false']) writes the string "false", which is truthy in
-    // Groovy — silently flipping the toggle to enabled when the caller meant disabled.
+    // Validate, coerce, and stage each update. Validation is fully atomic — every key
+    // and every value is checked BEFORE any app.updateSetting() fires, so a single bad
+    // entry in a multi-key batch can't leave the hub in a half-applied state. This
+    // includes per-key sub-validation that would otherwise only fire during apply
+    // (e.g. mcpLogLevel against getLogLevels()).
+    //
+    // Type coercion is also mandatory: a JSON-RPC client (e.g. a curl-based CI script)
+    // may send "true"/"false" or "50" as strings instead of native bool/number. Without
+    // coercion, app.updateSetting(key, [type:'bool', value:'false']) writes the string
+    // "false", which is truthy in Groovy — silently flipping the toggle to enabled
+    // when the caller meant disabled.
     def updates = [:]
     args.settings.each { key, value ->
         def keyStr = key.toString()
         if (!allowedSettings.containsKey(keyStr)) {
             throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via update_mcp_settings. Allowed: ${allowedSettings.keySet().sort().join(', ')}")
         }
-        updates[keyStr] = coerceSettingValue(keyStr, value, allowedSettings[keyStr])
+        def coerced = coerceSettingValue(keyStr, value, allowedSettings[keyStr])
+        // Per-key sub-validation that the apply step would otherwise discover too late.
+        // mcpLogLevel must be one of the configured log levels — if 'blarg' slipped through
+        // the enum coerce and only failed inside toolSetLogLevel during apply, any prior
+        // app.updateSetting() calls in the same batch would have already landed.
+        if (keyStr == "mcpLogLevel" && !getLogLevels().contains(coerced)) {
+            throw new IllegalArgumentException("Setting 'mcpLogLevel' must be one of ${getLogLevels()}, got: ${coerced}")
+        }
+        updates[keyStr] = coerced
     }
 
-    // Audit trail — every Developer Mode write is WARN-level
-    mcpLog("warn", "developer-mode", "update_mcp_settings: ${updates}")
+    // Two-phase audit so post-mortem investigators can distinguish "validation accepted N
+    // keys" (attempted) from "all N writes landed" (applied). Both fire at WARN.
+    mcpLog("warn", "developer-mode", "update_mcp_settings: attempted=${updates}")
 
     // Apply each update via app.updateSetting() — the documented Hubitat sandbox API for
     // self-modifying app settings. mcpLogLevel needs special handling because the runtime
     // log threshold is cached in state.debugLogs.config (UI display reads from settings).
+    //
+    // Apply order is intentional: app.updateSetting calls first, then mcpLogLevel last via
+    // toolSetLogLevel. If toolSetLogLevel ever evolves to throw on an unexpected condition,
+    // the rest of the batch has already landed. Per-key validation above is the primary
+    // safeguard; this ordering is belt-and-suspenders.
     updates.each { key, value ->
         if (key == "mcpLogLevel") {
             // Delegate to existing helper — it updates both state cache + setting
@@ -3202,6 +3265,8 @@ def toolUpdateMcpSettings(args) {
             app.updateSetting(key, [type: allowedSettings[key], value: value])
         }
     }
+
+    mcpLog("warn", "developer-mode", "update_mcp_settings: applied=${updates}")
 
     return [
         success: true,
@@ -3255,7 +3320,10 @@ def getVariableValue(name) {
         def hubVar = getGlobalConnectorVariable(name)
         if (hubVar != null) return hubVar
     } catch (Exception e) {
-        // Hub connector variable not found
+        // Hub connector variable not found — fall through to rule_engine namespace.
+        // Logged at DEBUG so investigators can tell whether the connector lookup
+        // genuinely missed (no such variable) or errored for some other reason.
+        logDebug("getVariableValue: connector lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
     }
     return state.ruleVariables?.get(name)
 }

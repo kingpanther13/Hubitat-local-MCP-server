@@ -326,4 +326,85 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         and: 'state.ruleVariables points to a NEW map instance — the read-modify-write pattern Hubitat needs to persist'
         !stateMap.ruleVariables.is(originalMapRef)
     }
+
+    // -------- Reference-scan safety (delete_variable refuses to silently break consumers) --------
+
+    def "delete_variable refuses when a child rule app references the variable (no force)"() {
+        // A child rule's serialized triggers/conditions/actions contains the variable
+        // name. Without force=true, deletion would null-out the consumer's lookup and
+        // silently break the rule. The tool must surface the breakage and require opt-in.
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [shared_var: 'in-use']
+
+        and: 'a child rule that references shared_var in a condition'
+        def consumer = new support.TestChildApp(id: 99L, label: 'Rule Using Shared Var')
+        consumer.ruleData = [
+            triggers: [],
+            conditions: [[type: 'variable', name: 'shared_var', operator: '=', value: 'on']],
+            actions: []
+        ]
+        childAppsList << consumer
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared_var', confirm: true])
+
+        then: 'refused with consumer details so the caller knows what would break'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'shared_var'")
+        ex.message.contains('1 rule(s)')
+        ex.message.contains('Rule Using Shared Var')
+        ex.message.contains('id=99')
+        ex.message.contains('force=true')
+
+        and: 'the variable is still present — refusal must not partially mutate state'
+        stateMap.ruleVariables == [shared_var: 'in-use']
+    }
+
+    def "delete_variable proceeds with force=true and reports brokenConsumers"() {
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [shared_var: 'in-use']
+        def consumer = new support.TestChildApp(id: 42L, label: 'Acknowledged Breakage')
+        consumer.ruleData = [
+            triggers: [[type: 'variable_change', variable: 'shared_var']],
+            conditions: [],
+            actions: []
+        ]
+        childAppsList << consumer
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'shared_var', confirm: true, force: true])
+
+        then: 'deletion proceeds'
+        result.success == true
+        result.deleted == true
+        stateMap.ruleVariables == [:]
+
+        and: 'response surfaces the consumers that are now broken'
+        result.brokenConsumers?.size() == 1
+        result.brokenConsumers[0].id == 42L
+        result.brokenConsumers[0].label == 'Acknowledged Breakage'
+    }
+
+    def "delete_variable proceeds normally when no child rules reference the variable"() {
+        given: 'a child rule that does NOT mention the variable being deleted'
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [orphan_var: 'safe-to-delete']
+        def unrelated = new support.TestChildApp(id: 7L, label: 'Unrelated Rule')
+        unrelated.ruleData = [
+            triggers: [[type: 'device_event', deviceId: '1', attribute: 'switch']],
+            conditions: [],
+            actions: []
+        ]
+        childAppsList << unrelated
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'orphan_var', confirm: true])
+
+        then: 'no force needed, no consumers reported'
+        result.success == true
+        result.deleted == true
+        result.brokenConsumers == null
+    }
 }
