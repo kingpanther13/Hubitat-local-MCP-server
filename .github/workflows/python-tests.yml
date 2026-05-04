@@ -1,0 +1,23 @@
+name: Python Tests
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/scripts/**'
+      - 'scripts/**.py'
+      - 'tests/test_*.py'
+      - 'tests/conftest.py'
+      - '.github/workflows/python-tests.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Install pytest
+        run: pip install pytest
+      - name: Run Python unit tests
+        run: pytest tests/test_release_bump.py -v
