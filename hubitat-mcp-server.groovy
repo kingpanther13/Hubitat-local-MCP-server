@@ -1315,7 +1315,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
                 properties: [
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
                     deviceType: [type: "string", description: "Virtual device driver type (required for create)",
-                        enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
+                        enum: getSupportedVirtualDeviceTypes()],
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
                     deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
@@ -7014,7 +7014,7 @@ def toolManageVirtualDevice(args) {
     }
     switch (action) {
         case "create":
-            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller.")
+            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: ${getSupportedVirtualDeviceTypes().join(', ')}.")
             if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
             return toolCreateVirtualDevice(args)
         case "delete":
@@ -7023,6 +7023,22 @@ def toolManageVirtualDevice(args) {
         default:
             throw new IllegalArgumentException("Unknown action '${action}'. Use 'create' or 'delete'.")
     }
+}
+
+// Single source of truth for virtual device types supported by manage_virtual_device.
+// Referenced from (a) the deviceType enum in the tool schema, (b) the
+// IllegalArgumentException error message thrown when deviceType is missing,
+// and (c) the validation list inside toolCreateVirtualDevice. Keep these three
+// sites in sync via this helper to prevent the kind of single-element mismatch
+// fixed in PR #144 (Virtual Presence Sensor → Virtual Presence).
+def getSupportedVirtualDeviceTypes() {
+    [
+        "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
+        "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
+        "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
+        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
+        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
+    ]
 }
 
 def toolCreateVirtualDevice(args) {
@@ -7035,14 +7051,8 @@ def toolCreateVirtualDevice(args) {
     if (!deviceType) throw new IllegalArgumentException("deviceType is required")
     if (!deviceLabel) throw new IllegalArgumentException("deviceLabel is required")
 
-    // Validate device type against supported list
-    def supportedTypes = [
-        "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
-        "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
-        "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
-        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
-        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
-    ]
+    // Validate device type against supported list (see getSupportedVirtualDeviceTypes)
+    def supportedTypes = getSupportedVirtualDeviceTypes()
     if (!supportedTypes.contains(deviceType)) {
         throw new IllegalArgumentException("Unsupported device type: '${deviceType}'. Supported types: ${supportedTypes.join(', ')}")
     }
