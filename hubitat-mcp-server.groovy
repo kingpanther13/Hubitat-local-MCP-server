@@ -3137,7 +3137,12 @@ def toolDeleteHubVariable(args) {
     }
 
     def previousValue = state.ruleVariables[name]
-    state.ruleVariables.remove(name)
+    // Hubitat-sandbox quirk: nested-map mutations on state are not persisted across
+    // hub reboot / app restart unless the top-level key is reassigned. Same pattern
+    // used by toolSetLogLevel for state.debugLogs.config. Read-modify-write the whole
+    // map to force serialization.
+    def updated = state.ruleVariables.findAll { k, v -> k != name }
+    state.ruleVariables = updated
     mcpLog("warn", "developer-mode", "delete_variable: removed '${name}' (previous value: ${previousValue?.toString()?.take(80)})")
     return [success: true, name: name, deleted: true, source: "rule_engine", previousValue: previousValue]
 }
@@ -3169,13 +3174,18 @@ def toolUpdateMcpSettings(args) {
         "enableRuleEngine":       "bool"
     ]
 
+    // Validate, coerce, and stage each update. Type coercion is mandatory: a JSON-RPC
+    // client (e.g. a curl-based CI script) may send "true"/"false" or "50" as strings
+    // instead of native bool/number. Without coercion, app.updateSetting(key,
+    // [type:'bool', value:'false']) writes the string "false", which is truthy in
+    // Groovy — silently flipping the toggle to enabled when the caller meant disabled.
     def updates = [:]
     args.settings.each { key, value ->
         def keyStr = key.toString()
         if (!allowedSettings.containsKey(keyStr)) {
             throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via update_mcp_settings. Allowed: ${allowedSettings.keySet().sort().join(', ')}")
         }
-        updates[keyStr] = value
+        updates[keyStr] = coerceSettingValue(keyStr, value, allowedSettings[keyStr])
     }
 
     // Audit trail — every Developer Mode write is WARN-level
@@ -3198,6 +3208,45 @@ def toolUpdateMcpSettings(args) {
         updated: updates,
         message: "Updated ${updates.size()} setting(s). MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
     ]
+}
+
+// Coerce + validate a single setting value into the type the Hubitat input expects.
+// Throws IllegalArgumentException for unrepresentable values (rather than silently
+// substituting a default — that would mask the caller's intent and recreate the same
+// kind of footgun the bool string-truthiness bug is fixing).
+//
+// - bool: accepts native Boolean, plus case-insensitive "true"/"false" strings.
+// - number: accepts native Number, plus integer/decimal-formatted strings.
+// - enum: passed through; downstream (e.g. toolSetLogLevel) does its own enum-membership
+//         check against a tool-specific allowed list.
+private coerceSettingValue(String key, value, String type) {
+    if (value == null) {
+        throw new IllegalArgumentException("Setting '${key}' value cannot be null")
+    }
+    switch (type) {
+        case "bool":
+            if (value instanceof Boolean) return value
+            def s = value.toString().toLowerCase()
+            if (s == "true") return true
+            if (s == "false") return false
+            throw new IllegalArgumentException("Setting '${key}' expects a boolean (true/false), got: ${value} (${value.class.simpleName})")
+
+        case "number":
+            if (value instanceof Number) return value
+            def s = value.toString()
+            if (s.isInteger()) return s.toInteger()
+            if (s.isLong()) return s.toLong()
+            if (s.isBigDecimal()) return s.toBigDecimal()
+            throw new IllegalArgumentException("Setting '${key}' expects a number, got: ${value} (${value.class.simpleName})")
+
+        case "enum":
+            // Pass through as String — downstream validates against tool-specific enum set.
+            return value.toString()
+
+        default:
+            // Defensive: unknown type from the allowlist map should not reach here.
+            return value
+    }
 }
 
 // Helper method for child apps to get variable values

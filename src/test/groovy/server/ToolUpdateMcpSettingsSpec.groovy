@@ -286,4 +286,114 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         and: 'the persisted setting is updated so the UI stays in sync'
         sharedAppStub.settingsStore['mcpLogLevel'] == [type: 'enum', value: 'warn']
     }
+
+    // -------- Type coercion (string-encoded values from non-Claude clients) --------
+
+    def "coerces string-encoded boolean #stringValue to native #expected for bool settings"() {
+        given: 'a CI script (e.g. curl) sends a string instead of a JSON bool'
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [debugLogging: stringValue],
+            confirm: true
+        ])
+
+        then: 'the value is coerced to the right native type before app.updateSetting fires'
+        result.success == true
+        sharedAppStub.settingsStore['debugLogging'] == [type: 'bool', value: expected]
+
+        where:
+        stringValue | expected
+        'true'      | true
+        'TRUE'      | true
+        'True'      | true
+        'false'     | false
+        'FALSE'     | false
+        'False'     | false
+    }
+
+    def "rejects #badValue as a boolean (no silent truthiness)"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [debugLogging: badValue], confirm: true])
+
+        then: 'a string like "yes" would silently become truthy if not validated — fail loudly instead'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'debugLogging'")
+        ex.message.contains('boolean')
+
+        and: 'no setting was written'
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        badValue << ['yes', 'no', '1', '0', 'maybe', '']
+    }
+
+    def "coerces string-encoded number #stringValue to native int"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [maxCapturedStates: stringValue],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore['maxCapturedStates'] == [type: 'number', value: expected]
+
+        where:
+        stringValue | expected
+        '50'        | 50
+        '0'         | 0
+        '999'       | 999
+    }
+
+    def "rejects non-numeric strings for number settings"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [maxCapturedStates: 'abc'], confirm: true])
+
+        then: 'better to fail loudly than silently substitute 0'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'maxCapturedStates'")
+        ex.message.contains('number')
+
+        and:
+        sharedAppStub.settingsStore.isEmpty()
+    }
+
+    def "rejects null setting values"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [debugLogging: null], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'debugLogging'")
+        ex.message.contains('cannot be null')
+    }
+
+    def "native Number is preserved when passed for a number setting"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [loopGuardMax: 25],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore['loopGuardMax'] == [type: 'number', value: 25]
+    }
 }
