@@ -7025,12 +7025,8 @@ def toolManageVirtualDevice(args) {
     }
 }
 
-// Single source of truth for virtual device types supported by manage_virtual_device.
-// Referenced from (a) the deviceType enum in the tool schema, (b) the
-// IllegalArgumentException error message thrown when deviceType is missing,
-// and (c) the validation list inside toolCreateVirtualDevice. Keep these three
-// sites in sync via this helper to prevent the kind of single-element mismatch
-// fixed in PR #144 (Virtual Presence Sensor → Virtual Presence).
+// Single source of truth: the tool-schema enum, the missing-arg error,
+// and the create-time validator must all agree on this list.
 def getSupportedVirtualDeviceTypes() {
     [
         "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
@@ -7051,7 +7047,6 @@ def toolCreateVirtualDevice(args) {
     if (!deviceType) throw new IllegalArgumentException("deviceType is required")
     if (!deviceLabel) throw new IllegalArgumentException("deviceLabel is required")
 
-    // Validate device type against supported list (see getSupportedVirtualDeviceTypes)
     def supportedTypes = getSupportedVirtualDeviceTypes()
     if (!supportedTypes.contains(deviceType)) {
         throw new IllegalArgumentException("Unsupported device type: '${deviceType}'. Supported types: ${supportedTypes.join(', ')}")
