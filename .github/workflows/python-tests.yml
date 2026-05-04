@@ -20,4 +20,4 @@ jobs:
       - name: Install pytest
         run: pip install pytest
       - name: Run Python unit tests
-        run: pytest tests/test_release_bump.py -v
+        run: pytest tests/ -v
