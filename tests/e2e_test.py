@@ -332,7 +332,7 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
-        assert len(tools) == 33, f"Expected 33 tools (22 core + 11 gateways), got {len(tools)}"
+        assert len(tools) == 34, f"Expected 34 tools (22 core + 12 gateways), got {len(tools)}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
