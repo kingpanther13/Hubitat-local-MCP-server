@@ -257,11 +257,62 @@ def test_manifest_block_from_bullets_no_pr_ref_passthrough():
 
 
 # ---------------------------------------------------------------------------
+# compute_next — single point of failure for every release version string
+# ---------------------------------------------------------------------------
+
+def test_compute_next_patch_increments_patch():
+    """release:patch increments the patch component only."""
+    assert rb.compute_next("0.11.0", "release:patch") == "0.11.1"
+
+
+def test_compute_next_minor_resets_patch():
+    """release:minor increments minor and resets patch to 0 (not preserving)."""
+    assert rb.compute_next("0.11.5", "release:minor") == "0.12.0"
+
+
+def test_compute_next_major_resets_minor_and_patch():
+    """release:major increments major and resets BOTH minor and patch to 0."""
+    assert rb.compute_next("0.11.5", "release:major") == "1.0.0"
+
+
+def test_compute_next_patch_from_zeroes():
+    """Patch from a fresh 0.0.0 baseline."""
+    assert rb.compute_next("0.0.0", "release:patch") == "0.0.1"
+
+
+def test_compute_next_patch_at_double_digit():
+    """No string-based off-by-one at the 9 → 10 boundary."""
+    assert rb.compute_next("9.9.9", "release:patch") == "9.9.10"
+
+
+def test_compute_next_zero_to_one_major():
+    """0.x → 1.0.0 transition (the user-flagged accumulation reset boundary)."""
+    assert rb.compute_next("0.11.5", "release:major") == "1.0.0"
+
+
+def test_compute_next_unknown_label_raises_value_error():
+    """Unknown labels raise ValueError instead of silently bumping patch."""
+    with pytest.raises(ValueError, match="Unknown release label"):
+        rb.compute_next("0.11.0", "release:hotfix")
+
+
+def test_compute_next_empty_label_raises_value_error():
+    """Empty label is also rejected with ValueError."""
+    with pytest.raises(ValueError):
+        rb.compute_next("0.11.0", "")
+
+
+# ---------------------------------------------------------------------------
 # bump_manifest — integration tests (uses tmp_path fixture)
 # ---------------------------------------------------------------------------
 
-def _make_manifest(tmp_path, version="0.11.0", release_notes=""):
-    """Write a minimal packageManifest.json to tmp_path and point rb.MANIFEST at it."""
+def _make_manifest(tmp_path, monkeypatch, version="0.11.0", release_notes=""):
+    """Write a minimal packageManifest.json to tmp_path and redirect rb.MANIFEST.
+
+    Uses monkeypatch.setattr so the module attribute auto-restores after the
+    test — direct assignment leaks across tests and points at deleted paths
+    once tmp_path is cleaned up.
+    """
     data = {
         "packageName": "Test",
         "author": "tester",
@@ -274,7 +325,7 @@ def _make_manifest(tmp_path, version="0.11.0", release_notes=""):
     }
     manifest_path = tmp_path / "packageManifest.json"
     manifest_path.write_text(json.dumps(data, indent=4) + "\n")
-    rb.MANIFEST = manifest_path
+    monkeypatch.setattr(rb, "MANIFEST", manifest_path)
     return manifest_path
 
 
@@ -288,9 +339,9 @@ def _block(version, date, lines):
     return f"v{version} - {date}\n{body}"
 
 
-def test_bump_manifest_patch_keeps_same_minor(tmp_path):
+def test_bump_manifest_patch_keeps_same_minor(tmp_path, monkeypatch):
     """release:patch with one prior same-minor entry retains it below the new block."""
-    _make_manifest(tmp_path, "0.11.0",
+    _make_manifest(tmp_path, monkeypatch, "0.11.0",
                    release_notes="v0.11.0 - 2026-05-04\n- old fix (#100)")
     new_block = _block("0.11.1", "2026-05-05", ["new fix (#101)"])
     rb.bump_manifest("0.11.1", "release:patch", new_block)
@@ -300,10 +351,10 @@ def test_bump_manifest_patch_keeps_same_minor(tmp_path):
     assert "v0.11.0" in notes
 
 
-def test_bump_manifest_patch_keeps_multiple_same_minor(tmp_path):
+def test_bump_manifest_patch_keeps_multiple_same_minor(tmp_path, monkeypatch):
     """release:patch with two prior same-minor entries retains both in order."""
     prior = "v0.11.1 - 2026-05-05\n- b (#102)\n\nv0.11.0 - 2026-05-04\n- a (#100)"
-    _make_manifest(tmp_path, "0.11.1", release_notes=prior)
+    _make_manifest(tmp_path, monkeypatch, "0.11.1", release_notes=prior)
     new_block = _block("0.11.2", "2026-05-06", ["c (#103)"])
     rb.bump_manifest("0.11.2", "release:patch", new_block)
     m = _read_manifest(tmp_path)
@@ -314,7 +365,7 @@ def test_bump_manifest_patch_keeps_multiple_same_minor(tmp_path):
     assert pos_2 < pos_1 < pos_0, "versions must appear in descending order"
 
 
-def test_bump_manifest_patch_drops_older_minors(tmp_path):
+def test_bump_manifest_patch_drops_older_minors(tmp_path, monkeypatch):
     """release:patch drops v0.10.x and v0.9.x entries, keeps only same-minor."""
     prior = (
         "v0.11.0 - 2026-05-04\n- x (#100)\n\n"
@@ -322,7 +373,7 @@ def test_bump_manifest_patch_drops_older_minors(tmp_path):
         "v0.10.0 - 2026-03-01\n- z (#80)\n\n"
         "v0.9.7 - 2026-02-01\n- w (#70)"
     )
-    _make_manifest(tmp_path, "0.11.0", release_notes=prior)
+    _make_manifest(tmp_path, monkeypatch, "0.11.0", release_notes=prior)
     new_block = _block("0.11.1", "2026-05-05", ["new (#101)"])
     rb.bump_manifest("0.11.1", "release:patch", new_block)
     m = _read_manifest(tmp_path)
@@ -334,10 +385,10 @@ def test_bump_manifest_patch_drops_older_minors(tmp_path):
     assert "v0.9.7" not in notes
 
 
-def test_bump_manifest_minor_wipes(tmp_path):
+def test_bump_manifest_minor_wipes(tmp_path, monkeypatch):
     """release:minor replaces the field entirely with just the new block."""
     prior = "v0.11.5 - 2026-05-04\n- a\n\nv0.11.0 - 2026-05-01\n- b"
-    _make_manifest(tmp_path, "0.11.5", release_notes=prior)
+    _make_manifest(tmp_path, monkeypatch, "0.11.5", release_notes=prior)
     new_block = _block("0.12.0", "2026-05-05", ["minor bump (#200)"])
     rb.bump_manifest("0.12.0", "release:minor", new_block)
     m = _read_manifest(tmp_path)
@@ -347,10 +398,10 @@ def test_bump_manifest_minor_wipes(tmp_path):
     assert "v0.11.0" not in notes
 
 
-def test_bump_manifest_major_wipes(tmp_path):
+def test_bump_manifest_major_wipes(tmp_path, monkeypatch):
     """release:major replaces the field entirely with just the new block."""
     prior = "v0.11.5 - 2026-05-04\n- a\n\nv0.11.0 - 2026-05-01\n- b"
-    _make_manifest(tmp_path, "0.11.5", release_notes=prior)
+    _make_manifest(tmp_path, monkeypatch, "0.11.5", release_notes=prior)
     new_block = _block("1.0.0", "2026-05-05", ["major release (#300)"])
     rb.bump_manifest("1.0.0", "release:major", new_block)
     m = _read_manifest(tmp_path)
@@ -360,16 +411,16 @@ def test_bump_manifest_major_wipes(tmp_path):
     assert "v0.11.0" not in notes
 
 
-def test_bump_manifest_fresh_manifest_empty_notes(tmp_path):
+def test_bump_manifest_fresh_manifest_empty_notes(tmp_path, monkeypatch):
     """Patch bump on a manifest with empty releaseNotes produces only the new block."""
-    _make_manifest(tmp_path, "0.11.0", release_notes="")
+    _make_manifest(tmp_path, monkeypatch, "0.11.0", release_notes="")
     new_block = _block("0.11.1", "2026-05-05", ["first patch (#101)"])
     rb.bump_manifest("0.11.1", "release:patch", new_block)
     m = _read_manifest(tmp_path)
     assert m["releaseNotes"] == new_block
 
 
-def test_bump_manifest_first_run_regression_anchor(tmp_path):
+def test_bump_manifest_first_run_regression_anchor(tmp_path, monkeypatch):
     """Regression anchor: real v0.11.0 manifest state; bump to 0.11.1 adds on top."""
     real_notes = (
         'v0.11.0 - 2026-05-04\n'
@@ -377,7 +428,7 @@ def test_bump_manifest_first_run_regression_anchor(tmp_path):
         'to "Virtual Presence" (#144)\n'
         '- feat(developer-mode): add manage_mcp_self gateway + delete_variable (#145)'
     )
-    _make_manifest(tmp_path, "0.11.0", release_notes=real_notes)
+    _make_manifest(tmp_path, monkeypatch, "0.11.0", release_notes=real_notes)
     new_block = _block("0.11.1", "2026-05-05", ["new feature (#146)"])
     rb.bump_manifest("0.11.1", "release:patch", new_block)
     m = _read_manifest(tmp_path)
@@ -388,10 +439,10 @@ def test_bump_manifest_first_run_regression_anchor(tmp_path):
     assert real_notes in notes
 
 
-def test_bump_manifest_updates_version_and_date(tmp_path):
+def test_bump_manifest_updates_version_and_date(tmp_path, monkeypatch):
     """bump_manifest writes new_version and today's date into the JSON."""
     from datetime import datetime, timezone
-    _make_manifest(tmp_path, "0.11.0", release_notes="")
+    _make_manifest(tmp_path, monkeypatch, "0.11.0", release_notes="")
     new_block = _block("0.11.1", "2026-05-05", ["something (#101)"])
     rb.bump_manifest("0.11.1", "release:patch", new_block)
     m = _read_manifest(tmp_path)
@@ -400,7 +451,7 @@ def test_bump_manifest_updates_version_and_date(tmp_path):
     assert m["dateReleased"] == today
 
 
-def test_bump_manifest_null_release_notes_no_crash(tmp_path):
+def test_bump_manifest_null_release_notes_no_crash(tmp_path, monkeypatch):
     """bump_manifest handles null releaseNotes in the manifest without crashing."""
     data = {
         "packageName": "Test",
@@ -414,9 +465,61 @@ def test_bump_manifest_null_release_notes_no_crash(tmp_path):
     }
     manifest_path = tmp_path / "packageManifest.json"
     manifest_path.write_text(json.dumps(data, indent=4) + "\n")
-    rb.MANIFEST = manifest_path
+    monkeypatch.setattr(rb, "MANIFEST", manifest_path)
     new_block = _block("0.11.1", "2026-05-05", ["fix (#101)"])
     # Must not raise
     rb.bump_manifest("0.11.1", "release:patch", new_block)
     m = _read_manifest(tmp_path)
     assert "v0.11.1" in m["releaseNotes"]
+
+
+def test_bump_manifest_legacy_blob_shrinkage_regression_anchor(tmp_path, monkeypatch):
+    """Regression anchor for the headline 65 KB → small shrinkage.
+
+    Locks in two properties simultaneously:
+    1. The resulting releaseNotes is dramatically smaller than the legacy blob
+       (a refactor that re-introduces accumulation across minors would balloon
+       the field again — this assertion catches that without depending on an
+       exact byte count).
+    2. None of the older-minor versions appear in the result. A regression
+       that changes filter_same_minor to filter_same_major or no-filter would
+       leave v0.10.x / v0.9.x entries in the field; this assertion catches it.
+
+    Uses a synthesized ~5 KB legacy blob covering 8 minor lines (v0.4 through
+    v0.11) — proportionally the same shape as the real 65 KB legacy state, but
+    small enough to read inline.
+    """
+    legacy_blob = "\n\n".join([
+        "v0.11.0 - 2026-05-04\n- new format starts here (#144)",
+        "v0.10.5 - 2026-04-15\n- some old run-on prose / more old prose / "
+        "still more / and so on " * 20,
+        "v0.10.1 - 2026-04-01\n- another old entry / with run-on text " * 20,
+        "v0.10.0 - 2026-03-20\n- old major-zero-ten entry / etc " * 15,
+        "v0.9.7 - 2026-02-15\n- nine seven entry / lots of prose " * 15,
+        "v0.9.0 - 2026-02-01\n- nine zero entry / blah blah " * 15,
+        "v0.8.7 - 2026-01-15\n- eight seven / etc " * 15,
+        "v0.4.5 - 2025-08-01\n- ancient entry / etc " * 15,
+    ])
+    legacy_size = len(legacy_blob)
+    assert legacy_size > 4000, "fixture should be a meaningful blob, not tiny"
+
+    _make_manifest(tmp_path, monkeypatch, "0.11.0", release_notes=legacy_blob)
+    new_block = _block("0.11.1", "2026-05-05", ["new author-curated entry (#150)"])
+    rb.bump_manifest("0.11.1", "release:patch", new_block)
+    m = _read_manifest(tmp_path)
+    notes = m["releaseNotes"]
+
+    # Property 1: the resulting field is dramatically smaller — at least 5x
+    # reduction, which any genuine fix to the accumulation will achieve.
+    assert len(notes) < legacy_size / 5, (
+        f"releaseNotes did not shrink: legacy {legacy_size} bytes, "
+        f"after bump {len(notes)} bytes (need < {legacy_size // 5})"
+    )
+
+    # Property 2: every older-minor version is gone, the new one and same-minor
+    # one are present.
+    assert "v0.11.1" in notes
+    assert "v0.11.0" in notes
+    for older in ("v0.10.5", "v0.10.1", "v0.10.0", "v0.9.7", "v0.9.0",
+                  "v0.8.7", "v0.4.5"):
+        assert older not in notes, f"older minor {older} leaked through"

@@ -421,5 +421,152 @@ def test_check_bookkeeping_multiple_errors_accumulated(monkeypatch, tmp_path):
     monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
 
     errors = pr_guard.check_bookkeeping("origin/main")
-    # Should have at least groovy server, groovy rule, and manifest version errors
-    assert len(errors) >= 3
+    # Lock the actual content: each independent violation must be present, not
+    # just "at least 3 errors of any kind". A regression that silently drops
+    # one of the extractors would otherwise pass with the loose count.
+    assert any("server header comment" in e for e in errors), \
+        "missing server-header version error"
+    assert any("rule header comment" in e for e in errors), \
+        "missing rule-header version error"
+    assert any("'version'" in e for e in errors), \
+        "missing manifest version error"
+
+
+def _setup_check_bookkeeping(
+    monkeypatch, tmp_path,
+    *,
+    base_groovy_server, after_groovy_server,
+    base_rule, after_rule,
+    base_manifest_text, after_manifest_text,
+    base_readme="## Version History\n- unchanged\n",
+    after_readme="## Version History\n- unchanged\n",
+    base_changelog="",
+    after_changelog="",
+):
+    """Set up monkeypatched file_at_ref + ROOT for a check_bookkeeping scenario.
+
+    Reduces the boilerplate needed for the per-version-source and per-manifest-
+    field tests below.
+    """
+    def fake_file_at_ref(_ref, path):
+        return {
+            "hubitat-mcp-server.groovy": base_groovy_server,
+            "hubitat-mcp-rule.groovy": base_rule,
+            "packageManifest.json": base_manifest_text,
+            "README.md": base_readme,
+            "CHANGELOG.md": base_changelog,
+        }.get(path, "")
+
+    monkeypatch.setattr(pr_guard, "file_at_ref", fake_file_at_ref)
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(after_groovy_server)
+    (tmp_path / "hubitat-mcp-rule.groovy").write_text(after_rule)
+    (tmp_path / "packageManifest.json").write_text(after_manifest_text)
+    (tmp_path / "README.md").write_text(after_readme)
+    (tmp_path / "CHANGELOG.md").write_text(after_changelog)
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
+
+
+def test_check_bookkeeping_rule_header_version_changed(monkeypatch, tmp_path):
+    """Error reported when ONLY the rule.groovy header version changed.
+
+    Anchors that the rule-header extractor is exercised independently — without
+    this, a regression silencing the rule-header pattern would still pass
+    `test_check_bookkeeping_version_changed` (which only asserts the server
+    error appears).
+    """
+    base_v = "0.11.0"
+    new_v = "0.11.1"
+    server = _make_groovy(base_v)  # server stays at base
+    manifest = _make_manifest(base_v)
+    _setup_check_bookkeeping(
+        monkeypatch, tmp_path,
+        base_groovy_server=server, after_groovy_server=server,
+        base_rule=f" * Version: {base_v}\n",
+        after_rule=f" * Version: {new_v}\n",  # only this changed
+        base_manifest_text=manifest, after_manifest_text=manifest,
+    )
+    errors = pr_guard.check_bookkeeping("origin/main")
+    assert any("hubitat-mcp-rule.groovy" in e and "rule header comment" in e
+               for e in errors), f"rule-header error missing from: {errors}"
+    # And no spurious server error
+    assert not any("server header comment" in e for e in errors)
+
+
+def test_check_bookkeeping_currentVersion_changed_only(monkeypatch, tmp_path):
+    """Error reported when ONLY currentVersion()'s return changed (header stays).
+
+    Anchors the currentVersion() extractor independently — a regression that
+    drops this pattern would otherwise hide behind the lockstep `_make_groovy`
+    helper that bumps both at once.
+    """
+    base_v = "0.11.0"
+    new_v = "0.11.1"
+    # Build a server groovy where the header says base_v but currentVersion
+    # returns new_v — desync that only the second extractor will catch.
+    base_server = _make_groovy(base_v)
+    desynced_server = (
+        f" * Version: {base_v}\n"
+        f"def currentVersion() {{\n"
+        f'    return "{new_v}"\n'
+        f"}}\n"
+    )
+    rule = f" * Version: {base_v}\n"
+    manifest = _make_manifest(base_v)
+    _setup_check_bookkeeping(
+        monkeypatch, tmp_path,
+        base_groovy_server=base_server, after_groovy_server=desynced_server,
+        base_rule=rule, after_rule=rule,
+        base_manifest_text=manifest, after_manifest_text=manifest,
+    )
+    errors = pr_guard.check_bookkeeping("origin/main")
+    assert any("currentVersion() return value" in e for e in errors), \
+        f"currentVersion() error missing from: {errors}"
+    # Header didn't change, so no "server header comment" error.
+    assert not any("server header comment" in e for e in errors)
+
+
+def test_check_bookkeeping_manifest_dateReleased_changed(monkeypatch, tmp_path):
+    """Error reported when packageManifest.json 'dateReleased' field changed.
+
+    This whole PR exists to keep contributors out of release-bookkeeping
+    fields — a regression dropping `dateReleased` from the iteration list at
+    pr_guard.py:96 would silently let date drift through.
+    """
+    version = "0.11.0"
+    server = _make_groovy(version)
+    rule = f" * Version: {version}\n"
+    base_manifest = _make_manifest(version, date_released="2026-05-04")
+    after_manifest = _make_manifest(version, date_released="2026-05-05")
+    _setup_check_bookkeeping(
+        monkeypatch, tmp_path,
+        base_groovy_server=server, after_groovy_server=server,
+        base_rule=rule, after_rule=rule,
+        base_manifest_text=base_manifest, after_manifest_text=after_manifest,
+    )
+    errors = pr_guard.check_bookkeeping("origin/main")
+    assert any("'dateReleased'" in e for e in errors), \
+        f"dateReleased error missing from: {errors}"
+
+
+def test_check_bookkeeping_manifest_releaseNotes_changed(monkeypatch, tmp_path):
+    """Error reported when packageManifest.json 'releaseNotes' field changed.
+
+    The headline reason this guard exists. A regression dropping `releaseNotes`
+    from the iteration list would let contributors hand-edit HPM-facing
+    release notes without any check.
+    """
+    version = "0.11.0"
+    server = _make_groovy(version)
+    rule = f" * Version: {version}\n"
+    base_manifest = _make_manifest(version, release_notes="v0.11.0\n- original")
+    # Hand-edit the field — exactly what the guard should flag.
+    after_manifest = _make_manifest(version, release_notes="v0.11.0\n- contributor edit")
+    _setup_check_bookkeeping(
+        monkeypatch, tmp_path,
+        base_groovy_server=server, after_groovy_server=server,
+        base_rule=rule, after_rule=rule,
+        base_manifest_text=base_manifest, after_manifest_text=after_manifest,
+    )
+    errors = pr_guard.check_bookkeeping("origin/main")
+    assert any("'releaseNotes'" in e for e in errors), \
+        f"releaseNotes error missing from: {errors}"
