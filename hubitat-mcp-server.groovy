@@ -1315,7 +1315,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
                 properties: [
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
                     deviceType: [type: "string", description: "Virtual device driver type (required for create)",
-                        enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
+                        enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
                     deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
@@ -7014,7 +7014,7 @@ def toolManageVirtualDevice(args) {
     }
     switch (action) {
         case "create":
-            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller.")
+            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller.")
             if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
             return toolCreateVirtualDevice(args)
         case "delete":
@@ -7038,7 +7038,7 @@ def toolCreateVirtualDevice(args) {
     // Validate device type against supported list
     def supportedTypes = [
         "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
-        "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock",
+        "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
         "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
         "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
         "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
@@ -8662,7 +8662,7 @@ All Hub Admin Write tools require these steps:
 | Virtual Button | pushable button | Triggering automations |
 | Virtual Contact Sensor | open/closed | Simulate door/window |
 | Virtual Motion Sensor | active/inactive | Simulate motion |
-| Virtual Presence Sensor | present/not present | Presence simulation |
+| Virtual Presence | present/not present | Presence simulation |
 | Virtual Lock | lock/unlock | Lock state simulation |
 | Virtual Temperature Sensor | numeric temp | Temperature reporting |
 | Virtual Humidity Sensor | numeric humidity | Humidity reporting |

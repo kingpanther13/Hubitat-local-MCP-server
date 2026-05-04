@@ -90,7 +90,7 @@ When using `manage_virtual_device` (action: "create"), these types are available
 | Virtual Button | pushable button | Triggering automations |
 | Virtual Contact Sensor | open/closed | Simulate door/window state |
 | Virtual Motion Sensor | active/inactive | Simulate motion detection |
-| Virtual Presence Sensor | present/not present | Presence simulation |
+| Virtual Presence | present/not present | Presence simulation |
 | Virtual Lock | lock/unlock | Lock state simulation |
 | Virtual Temperature Sensor | numeric temp | Temperature reporting |
 | Virtual Humidity Sensor | numeric humidity | Humidity reporting |
