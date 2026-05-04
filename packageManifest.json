@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "0.11.0",
+    "version": "0.11.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-05-04",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v0.11.0 - 2026-05-04\n- fix(manage_virtual_device): rename \"Virtual Presence Sensor\" enum entry to \"Virtual Presence\" (#144)\n- feat(developer-mode): add manage_mcp_self gateway + delete_variable (#145)",
+    "releaseNotes": "v0.11.1 - 2026-05-04\n- build(deps): bump gradle-wrapper from 9.4.1 to 9.5.0 in the gradle-dependencies group ([#143](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/143), @app/dependabot)\n- feat(release): author-curated, minor-scoped HPM release notes + PR review tooling (#146)\n  - HPM release notes are now scoped to the current minor version\n    - Patch bumps within a minor still accumulate (e.g. v0.11.2 will show v0.11.0 / v0.11.1 / v0.11.2 together)\n    - Minor and major bumps wipe and start fresh\n    - CHANGELOG.md continues to hold the full long-term history\n  - Author-curated release notes via the new PR template `## Release Notes` section\n    - Bullets only — prose is silently skipped, but the workflow now warns when an author writes a section with no bullets\n    - Sub-bullets are supported (this is itself a sub-bullet to verify HPM nested rendering)\n  - Bundled improvements\n    - New PR template with title-prefix conventions and Type-of-change checkbox\n    - Gemini Code Assist styleguide that requests (never blocks) Release Notes presence and prefix/checkbox congruence\n    - Full pytest coverage for every Python file in the repo, run via a new path-filtered `Python Tests` workflow\n\nv0.11.0 - 2026-05-04\n- fix(manage_virtual_device): rename \"Virtual Presence Sensor\" enum entry to \"Virtual Presence\" (#144)\n- feat(developer-mode): add manage_mcp_self gateway + delete_variable (#145)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
