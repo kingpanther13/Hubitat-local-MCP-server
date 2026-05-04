@@ -1,0 +1,98 @@
+name: Hub E2E (test hub)
+
+# End-to-end tests against a real Hubitat hub provided by @level99
+# (see issue #77 + the GitHub secret LEVEL99_TEST_HUB_MCP_URL).
+#
+# Failure mode: ADVISORY only. Hub flakiness must not block PR merges,
+# so this workflow is intentionally not added to branch protection's
+# required-checks. Treat it as a signal, not a gate.
+
+on:
+  pull_request:
+    branches: [main]
+    # Skip when only docs / non-test files change. Cuts CI cost on
+    # README-only / SKILL-only PRs that can't break the hub-side surface.
+    paths:
+      - 'hubitat-mcp-server.groovy'
+      - 'hubitat-mcp-rule.groovy'
+      - 'tests/e2e_test.py'
+      - '.github/workflows/hub-e2e.yml'
+      - '.github/scripts/lease_acquire.sh'
+      - '.github/scripts/lease_release.sh'
+  workflow_dispatch: {}
+
+# Serialize concurrent runs against the shared test hub. Don't cancel
+# in-progress — they hold the lease and need to release it cleanly via
+# the `if: always()` cleanup step. A cancelled run that leaves a
+# stranded lease will eventually expire via the 30-min TTL, but it's
+# better to let things finish and release explicitly.
+concurrency:
+  group: hub-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # Must match the lease duration in lease_acquire.sh so the job can't
+    # outlive the lease and let another run trample state mid-test.
+    timeout-minutes: 30
+
+    env:
+      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Verify MCP_URL secret is present + mask token
+        run: |
+          if [ -z "$MCP_URL" ]; then
+            echo "::error::LEVEL99_TEST_HUB_MCP_URL secret is empty or missing on this repo. Cannot proceed."
+            exit 1
+          fi
+          # Defensive masking — secrets are auto-masked, but URL parsing
+          # below can split the token out into a separate string that
+          # isn't recognized as the original secret value. Force-mask.
+          TOKEN="$(echo "$MCP_URL" | sed -nE 's|.*access_token=(.*)|\1|p')"
+          if [ -n "$TOKEN" ]; then
+            echo "::add-mask::$TOKEN"
+          fi
+
+      - name: Parse MCP_URL into HUBITAT_* env vars
+        # tests/e2e_test.py expects these three env vars (see its docstring).
+        # MCP_URL format: https://cloud.hubitat.com/api/<UUID>/apps/<APPID>/mcp?access_token=<TOKEN>
+        run: |
+          BASE=$(echo "$MCP_URL"  | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\1|')
+          APPID=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\2|')
+          TOKEN=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\3|')
+          {
+            echo "HUBITAT_HUB_URL=$BASE"
+            echo "HUBITAT_APP_ID=$APPID"
+            echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
+          } >> "$GITHUB_ENV"
+
+      - name: Acquire test hub lease
+        run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
+
+      - name: Run E2E tests
+        run: python tests/e2e_test.py
+
+      - name: Cleanup BAT_E2E_ artifacts
+        if: always()
+        # Defensive — e2e_test.py cleans up after itself in the happy path,
+        # but a crashed run can strand virtual devices / rules / variables
+        # under the BAT_E2E_ prefix. This sweeps anything left over.
+        run: python tests/e2e_test.py --cleanup-only
+
+      - name: Release test hub lease
+        if: always()
+        run: bash .github/scripts/lease_release.sh
