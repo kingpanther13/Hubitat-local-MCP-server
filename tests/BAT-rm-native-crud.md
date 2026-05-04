@@ -353,7 +353,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Create BAT virtual devices: 'BAT-Motion-CS' (Virtual Motion Sensor) and 'BAT-Presence-CS' (Virtual Presence Sensor). Record IDs.",
+  "setup_prompt": "Create BAT virtual devices: 'BAT-Motion-CS' (Virtual Motion Sensor) and 'BAT-Presence-CS' (Virtual Presence). Record IDs.",
   "test_prompt": "Create 'BAT-RM-Cond+AndStays' where BAT-Motion-CS becoming active is BOTH a conditional trigger (condition: BAT-Presence-CS is present) AND an and-stays trigger (must stay active for 60 seconds). Verify both flags are set on the same trigger entry after round-trip.",
   "teardown_prompt": "Delete the rule and remove both virtual devices."
 }
@@ -437,7 +437,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Create BAT virtual devices: 'BAT-Presence-1' (Virtual Presence Sensor) and 'BAT-PowerSource-1' (any device with powerSource attribute, or skip if unavailable). Record IDs.",
+  "setup_prompt": "Create BAT virtual devices: 'BAT-Presence-1' (Virtual Presence) and 'BAT-PowerSource-1' (any device with powerSource attribute, or skip if unavailable). Record IDs.",
   "test_prompt": "Create 'BAT-RM-Presence PowerSource' with: (1) BAT-Presence-1 arrives, (2) BAT-PowerSource-1 switches to battery (away from mains). Verify both triggers are captured with correct capabilities.",
   "teardown_prompt": "Delete the rule and remove the devices."
 }

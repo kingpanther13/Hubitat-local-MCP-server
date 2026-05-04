@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 0.10.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 0.11.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -82,6 +82,25 @@ def mainPage() {
             input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write)",
                   description: "Allows MCP to list all installed apps, find apps using a device, list/trigger/pause/resume Rule Machine rules, and create/update/delete native Rule Machine rules and other classic apps. Create/update/delete additionally requires Hub Admin Write.",
                   defaultValue: false, submitOnChange: true
+        }
+
+        section("Developer Mode") {
+            paragraph "<b>Developer Mode</b> exposes self-administration capabilities — tools that let an LLM agent or CI/CD pipeline manage the MCP's own configuration, scope, and operational state without requiring manual UI intervention."
+            paragraph "<i>Capability categories under this mode (current + planned):</i>"
+            paragraph "<ul>" +
+                      "<li>Configuration management — toggle states, log levels, loop guards, tuning parameters</li>" +
+                      "<li>Device-access scope — add/remove devices from MCP visibility</li>" +
+                      "<li>Hub-variable management — true Hub Variables namespace (Settings → Hub Variables)</li>" +
+                      "<li>Artifact cleanup — sweep ephemeral CI/test devices, variables, rules</li>" +
+                      "<li>Operational diagnostics + self-healing routines</li>" +
+                      "</ul>"
+            paragraph "<i>Useful for end-to-end CI/CD automation, agent-driven configuration, and workflows where manual UI ops would be impractical.</i>"
+            input "enableDeveloperMode", "bool", title: "Enable Developer Mode Tools",
+                  description: "Exposes self-administration tools for MCP-managed configuration and lifecycle changes.",
+                  defaultValue: false, submitOnChange: true
+            if (settings.enableDeveloperMode) {
+                paragraph "<b style='color: red;'>⚠ WARNING: Developer Mode allows the AI assistant to modify which tools it can access (via toggle changes), what device scope it has, how verbose its logging is, and other operational settings. Only enable if you understand and trust the agent's authorization model. Every write is logged at WARN level for audit.</b>"
+            }
         }
 
         section("Hub Security") {
@@ -410,7 +429,9 @@ def processJsonRpcMessage(msg) {
                 return jsonRpcError(msg.id, -32601, "Method not found: ${msg.method}")
         }
     } catch (Exception e) {
-        log.error "MCP Error: ${e.message}", e
+        // Hubitat's LogWrapper.error() does NOT accept (String, Throwable). Use string-only.
+        // Stack trace would only be visible in mcpLog details (which this top-level catch lacks).
+        log.error "MCP Error: ${e.message} (${e.class.simpleName})"
         return jsonRpcError(msg.id, -32603, "Internal error: ${e.message}")
     }
 }
@@ -461,7 +482,10 @@ def handleToolsCall(msg) {
             details: [tool: toolName, error: e.message],
             stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")
         ])
-        log.error "Tool execution error: ${e.message}", e
+        // Hubitat's LogWrapper.error() does NOT accept (String, Throwable) — passing the
+        // exception object as a 2nd arg throws MissingMethodException, masking the real error
+        // (and creating cascading log.error failures). mcpLog above already captured the stack trace.
+        log.error "Tool execution error: ${e.message} (${e.class.simpleName})"
         // MCP spec: tool execution errors are returned as successful results with isError flag
         return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
     }
@@ -495,16 +519,18 @@ def getGatewayConfig() {
         ],
         manage_hub_variables: [
             description: "Manage hub connector and rule engine variables.",
-            tools: ["list_variables", "get_variable", "set_variable"],
+            tools: ["list_variables", "get_variable", "set_variable", "delete_variable"],
             summaries: [
                 list_variables: "List all hub connector and rule engine variables",
                 get_variable: "Get a variable value. Args: name",
-                set_variable: "Set a variable value (creates if doesn't exist). Args: name, value"
+                set_variable: "Set a variable value (creates if doesn't exist). Args: name, value",
+                delete_variable: "Permanently delete a rule engine variable (DESTRUCTIVE). Args: name, confirm=true, [force=true if rules reference it]"
             ],
             searchHints: [
                 list_variables: "show all global state connector",
                 get_variable: "read fetch lookup global state",
-                set_variable: "write update change store global state"
+                set_variable: "write update change store global state",
+                delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable"
             ]
         ],
         manage_rooms: [
@@ -696,6 +722,16 @@ def getGatewayConfig() {
                 update_native_app: "modify edit change native rule machine room lighting button controller basic rule notifier app trigger action condition setting",
                 delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
                 check_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption"
+            ]
+        ],
+        manage_mcp_self: [
+            description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. First gateway under the Developer Mode pattern — additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
+            tools: ["update_mcp_settings"],
+            summaries: [
+                update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
+            ],
+            searchHints: [
+                update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinAppRead enableRuleEngine ci automation"
             ]
         ]
     ]
@@ -1100,6 +1136,31 @@ Verify rule after creation.""",
             ]
         ],
         [
+            name: "delete_variable",
+            description: "Permanently delete a rule engine variable (DESTRUCTIVE — no undo). Variable must exist. Use the Settings → Hub Variables UI for connector-namespace variable deletion (separate namespace, not yet exposed via MCP).\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Variable name to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
+                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."]
+                ],
+                required: ["name", "confirm"]
+            ]
+        ],
+        [
+            name: "update_mcp_settings",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinAppRead, enableRuleEngine.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    settings: [type: "object", description: "Map of setting key → new value (e.g., {\"mcpLogLevel\":\"warn\",\"enableRuleEngine\":true})"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
+                ],
+                required: ["settings", "confirm"]
+            ]
+        ],
+        [
             name: "get_hsm_status",
             description: "Get the current HSM (Hubitat Safety Monitor) status",
             inputSchema: [type: "object", properties: [:]]
@@ -1456,7 +1517,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
                 properties: [
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
                     deviceType: [type: "string", description: "Virtual device driver type (required for create)",
-                        enum: ["Virtual Switch", "Virtual Button", "Virtual Contact Sensor", "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock", "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer", "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener", "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"]],
+                        enum: getSupportedVirtualDeviceTypes()],
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
                     deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
@@ -2383,6 +2444,8 @@ def executeTool(toolName, args) {
         case "list_variables": return toolListVariables()
         case "get_variable": return toolGetVariable(args.name)
         case "set_variable": return toolSetVariable(args.name, args.value)
+        case "delete_variable": return toolDeleteHubVariable(args)
+        case "update_mcp_settings": return toolUpdateMcpSettings(args)
         case "get_hsm_status": return toolGetHsmStatus()
         case "set_hsm": return toolSetHsm(args.mode)
 
@@ -2507,6 +2570,7 @@ def executeTool(toolName, args) {
         case "manage_files":
         case "manage_installed_apps":
         case "manage_native_rules_and_apps":
+        case "manage_mcp_self":
             return handleGateway(toolName, args.tool, args.args)
 
         default:
@@ -3580,6 +3644,7 @@ def toolGetHubInfo() {
     info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
     info.builtinAppEnabled = settings.enableBuiltinApp ?: false
+    info.developerModeEnabled = settings.enableDeveloperMode ?: false
 
     // PII/location data requires Hub Admin Read
     if (settings.enableHubAdminRead) {
@@ -3676,13 +3741,205 @@ def toolSetVariable(name, value) {
     }
 }
 
+def toolDeleteHubVariable(args) {
+    requireHubAdminWrite(args.confirm)
+    def name = args.name
+    if (!name) throw new IllegalArgumentException("name is required")
+
+    // Currently only rule_engine variables are addressable from this MCP — connector
+    // variables (Settings → Hub Variables) live in a separate namespace not yet
+    // accessible from this app.
+    if (!state.ruleVariables?.containsKey(name)) {
+        throw new IllegalArgumentException("Variable '${name}' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP — use Settings → Hub Variables UI.)")
+    }
+
+    // Pre-deletion safety scan: child rule apps that reference this variable will silently
+    // break on next access (null lookup → conditions flip false, %varname% substitution
+    // leaves literal text). Block by default — caller must opt in via force=true after
+    // acknowledging the breakage. Match heuristic: variable name appears in the rule's
+    // serialized triggers/conditions/actions JSON.
+    def force = args.force == true
+    def consumers = []
+    try {
+        getChildApps()?.each { child ->
+            def ruleData = null
+            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
+            if (ruleData) {
+                def serialized = groovy.json.JsonOutput.toJson(ruleData)
+                if (serialized?.contains(name)) {
+                    consumers << [id: child.id, label: child.label]
+                }
+            }
+        }
+    } catch (Exception e) {
+        // Defensive: if the scan itself errors, fall through to apply normal force gate
+        // rather than blocking deletion entirely. Log so investigators know the scan
+        // didn't run.
+        logDebug("delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
+    }
+    if (consumers && !force) {
+        throw new IllegalArgumentException(
+            "Variable '${name}' is referenced by ${consumers.size()} rule(s): " +
+            "${consumers.collect { "${it.label} (id=${it.id})" }.join(', ')}. " +
+            "Deleting will silently break those rules (null lookups, false conditions, " +
+            "literal %${name}% in substitutions). Pass force=true to proceed anyway, " +
+            "or update/remove the consuming rules first."
+        )
+    }
+
+    def previousValue = state.ruleVariables[name]
+    // Hubitat-sandbox quirk: nested-map mutations on state are not persisted across
+    // hub reboot / app restart unless the top-level key is reassigned. Same pattern
+    // used by toolSetLogLevel for state.debugLogs.config. Read-modify-write the whole
+    // map to force serialization.
+    def updated = state.ruleVariables.findAll { k, v -> k != name }
+    state.ruleVariables = updated
+
+    def prevStr = previousValue?.toString()
+    def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
+    def consumerNote = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
+    mcpLog("warn", "developer-mode", "delete_variable: removed '${name}' (previous value: ${auditValue})${consumerNote}")
+    return [success: true, name: name, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
+}
+
+def toolUpdateMcpSettings(args) {
+    // IllegalArgumentException (not IllegalStateException) so the dispatcher routes this
+    // through the clean -32602 Invalid params branch in handleToolsCall — same exception
+    // type all other gates throw (requireHubAdminWrite, requireBuiltinAppRead). Toggle-off
+    // is a config refusal, not an unexpected runtime error worth a stack trace + ERROR log.
+    if (!settings.enableDeveloperMode) {
+        throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use update_mcp_settings.")
+    }
+    requireHubAdminWrite(args.confirm)
+
+    if (!args.settings || !(args.settings instanceof Map) || args.settings.isEmpty()) {
+        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
+    }
+
+    // Allowlist of settings that can be modified via this tool, with their Hubitat input
+    // type (matches the input "<key>", "<type>", ... declarations in the mainPage section).
+    // Excluded:
+    //   enableHubAdminWrite  — would footgun: could disable own write path mid-session
+    //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
+    //   selectedDevices      — capability multi-select, separate tool planned (Developer Mode follow-up)
+    def allowedSettings = [
+        "mcpLogLevel":            "enum",
+        "debugLogging":           "bool",
+        "maxCapturedStates":      "number",
+        "loopGuardMax":           "number",
+        "loopGuardWindowSec":     "number",
+        "enableHubAdminRead":     "bool",
+        "enableBuiltinAppRead":   "bool",
+        "enableRuleEngine":       "bool"
+    ]
+
+    // Validate, coerce, and stage each update. Validation is fully atomic — every key
+    // and every value is checked BEFORE any app.updateSetting() fires, so a single bad
+    // entry in a multi-key batch can't leave the hub in a half-applied state. This
+    // includes per-key sub-validation that would otherwise only fire during apply
+    // (e.g. mcpLogLevel against getLogLevels()).
+    //
+    // Type coercion is also mandatory: a JSON-RPC client (e.g. a curl-based CI script)
+    // may send "true"/"false" or "50" as strings instead of native bool/number. Without
+    // coercion, app.updateSetting(key, [type:'bool', value:'false']) writes the string
+    // "false", which is truthy in Groovy — silently flipping the toggle to enabled
+    // when the caller meant disabled.
+    def updates = [:]
+    args.settings.each { key, value ->
+        def keyStr = key.toString()
+        if (!allowedSettings.containsKey(keyStr)) {
+            throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via update_mcp_settings. Allowed: ${allowedSettings.keySet().sort().join(', ')}")
+        }
+        def coerced = coerceSettingValue(keyStr, value, allowedSettings[keyStr])
+        // Per-key sub-validation that the apply step would otherwise discover too late.
+        // mcpLogLevel must be one of the configured log levels — if 'blarg' slipped through
+        // the enum coerce and only failed inside toolSetLogLevel during apply, any prior
+        // app.updateSetting() calls in the same batch would have already landed.
+        if (keyStr == "mcpLogLevel" && !getLogLevels().contains(coerced)) {
+            throw new IllegalArgumentException("Setting 'mcpLogLevel' must be one of ${getLogLevels()}, got: ${coerced}")
+        }
+        updates[keyStr] = coerced
+    }
+
+    // Two-phase audit so post-mortem investigators can distinguish "validation accepted N
+    // keys" (attempted) from "all N writes landed" (applied). Both fire at WARN.
+    mcpLog("warn", "developer-mode", "update_mcp_settings: attempted=${updates}")
+
+    // Apply each update via app.updateSetting() — the documented Hubitat sandbox API for
+    // self-modifying app settings. mcpLogLevel needs special handling because the runtime
+    // log threshold is cached in state.debugLogs.config (UI display reads from settings).
+    //
+    // Apply order is intentional: app.updateSetting calls first, then mcpLogLevel last via
+    // toolSetLogLevel. If toolSetLogLevel ever evolves to throw on an unexpected condition,
+    // the rest of the batch has already landed. Per-key validation above is the primary
+    // safeguard; this ordering is belt-and-suspenders.
+    updates.each { key, value ->
+        if (key == "mcpLogLevel") {
+            // Delegate to existing helper — it updates both state cache + setting
+            toolSetLogLevel([level: value.toString()])
+        } else {
+            app.updateSetting(key, [type: allowedSettings[key], value: value])
+        }
+    }
+
+    mcpLog("warn", "developer-mode", "update_mcp_settings: applied=${updates}")
+
+    return [
+        success: true,
+        updated: updates,
+        message: "Updated ${updates.size()} setting(s). MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
+    ]
+}
+
+// Coerce + validate a single setting value into the type the Hubitat input expects.
+// Throws IllegalArgumentException for unrepresentable values (rather than silently
+// substituting a default — that would mask the caller's intent and recreate the same
+// kind of footgun the bool string-truthiness bug is fixing).
+//
+// - bool: accepts native Boolean, plus case-insensitive "true"/"false" strings.
+// - number: accepts native Number, plus integer/decimal-formatted strings.
+// - enum: passed through; downstream (e.g. toolSetLogLevel) does its own enum-membership
+//         check against a tool-specific allowed list.
+private coerceSettingValue(String key, value, String type) {
+    if (value == null) {
+        throw new IllegalArgumentException("Setting '${key}' value cannot be null")
+    }
+    switch (type) {
+        case "bool":
+            if (value instanceof Boolean) return value
+            def s = value.toString().toLowerCase()
+            if (s == "true") return true
+            if (s == "false") return false
+            throw new IllegalArgumentException("Setting '${key}' expects a boolean (true/false), got: ${value} (${value.class.simpleName})")
+
+        case "number":
+            if (value instanceof Number) return value
+            def s = value.toString()
+            if (s.isInteger()) return s.toInteger()
+            if (s.isLong()) return s.toLong()
+            if (s.isBigDecimal()) return s.toBigDecimal()
+            throw new IllegalArgumentException("Setting '${key}' expects a number, got: ${value} (${value.class.simpleName})")
+
+        case "enum":
+            // Pass through as String — downstream validates against tool-specific enum set.
+            return value.toString()
+
+        default:
+            // Defensive: unknown type from the allowlist map should not reach here.
+            return value
+    }
+}
+
 // Helper method for child apps to get variable values
 def getVariableValue(name) {
     try {
         def hubVar = getGlobalConnectorVariable(name)
         if (hubVar != null) return hubVar
     } catch (Exception e) {
-        // Hub connector variable not found
+        // Hub connector variable not found — fall through to rule_engine namespace.
+        // Logged at DEBUG so investigators can tell whether the connector lookup
+        // genuinely missed (no such variable) or errored for some other reason.
+        logDebug("getVariableValue: connector lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
     }
     return state.ruleVariables?.get(name)
 }
@@ -5828,6 +6085,7 @@ def toolGetHubDetails(args) {
     details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
     details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
     details.builtinAppEnabled = settings.enableBuiltinApp ?: false
+    details.developerModeEnabled = settings.enableDeveloperMode ?: false
 
     mcpLog("info", "hub-admin", "Retrieved extended hub details")
     return details
@@ -7808,7 +8066,7 @@ def toolManageVirtualDevice(args) {
     }
     switch (action) {
         case "create":
-            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence Sensor, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller.")
+            if (!args.deviceType) throw new IllegalArgumentException("deviceType is required for action='create'. Supported types: ${getSupportedVirtualDeviceTypes().join(', ')}.")
             if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
             return toolCreateVirtualDevice(args)
         case "delete":
@@ -7817,6 +8075,18 @@ def toolManageVirtualDevice(args) {
         default:
             throw new IllegalArgumentException("Unknown action '${action}'. Use 'create' or 'delete'.")
     }
+}
+
+// Single source of truth: the tool-schema enum, the missing-arg error,
+// and the create-time validator must all agree on this list.
+def getSupportedVirtualDeviceTypes() {
+    [
+        "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
+        "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
+        "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
+        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
+        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
+    ]
 }
 
 def toolCreateVirtualDevice(args) {
@@ -7829,14 +8099,7 @@ def toolCreateVirtualDevice(args) {
     if (!deviceType) throw new IllegalArgumentException("deviceType is required")
     if (!deviceLabel) throw new IllegalArgumentException("deviceLabel is required")
 
-    // Validate device type against supported list
-    def supportedTypes = [
-        "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
-        "Virtual Motion Sensor", "Virtual Presence Sensor", "Virtual Lock",
-        "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
-        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
-        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
-    ]
+    def supportedTypes = getSupportedVirtualDeviceTypes()
     if (!supportedTypes.contains(deviceType)) {
         throw new IllegalArgumentException("Unsupported device type: '${deviceType}'. Supported types: ${supportedTypes.join(', ')}")
     }
@@ -15967,7 +16230,7 @@ private Map _rmRestoreFromBackup(Map entry) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "0.10.1"
+    return "0.11.1"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -16350,7 +16613,7 @@ All Hub Admin Write tools require these steps:
 | Virtual Button | pushable button | Triggering automations |
 | Virtual Contact Sensor | open/closed | Simulate door/window |
 | Virtual Motion Sensor | active/inactive | Simulate motion |
-| Virtual Presence Sensor | present/not present | Presence simulation |
+| Virtual Presence | present/not present | Presence simulation |
 | Virtual Lock | lock/unlock | Lock state simulation |
 | Virtual Temperature Sensor | numeric temp | Temperature reporting |
 | Virtual Humidity Sensor | numeric humidity | Humidity reporting |

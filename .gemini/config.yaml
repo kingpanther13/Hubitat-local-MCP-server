@@ -1,0 +1,11 @@
+# Gemini Code Assist behavior configuration.
+#
+# Schema: https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github
+# All fields are optional; only listing what we override from defaults.
+
+code_review:
+  # Skip the .gemini/ directory in PR review diffs. The styleguide and this
+  # config aren't code-under-review — letting Gemini comment on its own
+  # config noise-pollutes reviews when this directory changes.
+  ignore_patterns:
+    - ".gemini/**"

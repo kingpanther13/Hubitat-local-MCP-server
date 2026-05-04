@@ -5,16 +5,25 @@ import support.ToolSpecBase
 /**
  * Spec for the manage_hub_variables gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolListVariables -> list_variables
- * - toolGetVariable   -> get_variable
- * - toolSetVariable   -> set_variable
+ * - toolListVariables    -> list_variables
+ * - toolGetVariable      -> get_variable
+ * - toolSetVariable      -> set_variable
+ * - toolDeleteHubVariable -> delete_variable
  *
  * Hub-variable APIs (getAllGlobalConnectorVariables / getGlobalConnectorVariable /
  * setGlobalConnectorVariable) are purely dynamic — not on AppExecutor — so
  * they're stubbed per-test via script.metaClass in given: blocks. See
  * docs/testing.md "Which interception point to use" for the general pattern.
+ *
+ * delete_variable is gated by requireHubAdminWrite (3-layer: setting flag,
+ * args.confirm, 24h backup window). Helper enableHubAdminWrite() seeds those.
  */
 class ToolHubVariablesSpec extends ToolSpecBase {
+
+    private void enableHubAdminWrite() {
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L  // matches HarnessSpec's fixed now()
+    }
 
     // -------- toolListVariables --------
 
@@ -193,5 +202,209 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.success == true
         result.value == null
         result.source == 'rule_engine'
+    }
+
+    // -------- toolDeleteHubVariable --------
+
+    def "delete_variable removes an existing rule_engine variable and reports the previous value"() {
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [scratch_var: 'to-be-removed', keep_me: 42]
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
+
+        then:
+        result.success == true
+        result.name == 'scratch_var'
+        result.deleted == true
+        result.source == 'rule_engine'
+        result.previousValue == 'to-be-removed'
+
+        and: 'only the targeted variable is gone — siblings preserved'
+        stateMap.ruleVariables == [keep_me: 42]
+    }
+
+    def "delete_variable throws when confirm is not provided"() {
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [scratch_var: 'value']
+
+        when:
+        script.toolDeleteHubVariable([name: 'scratch_var'])
+
+        then:
+        thrown(IllegalArgumentException)
+        // Variable should NOT be deleted when the gate refuses
+        stateMap.ruleVariables == [scratch_var: 'value']
+    }
+
+    def "delete_variable throws when no recent backup exists (Hub Admin Write 24h gate)"() {
+        given: 'enableHubAdminWrite is true but no lastBackupTimestamp seeded'
+        settingsMap.enableHubAdminWrite = true
+        stateMap.ruleVariables = [scratch_var: 'value']
+
+        when:
+        script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+        stateMap.ruleVariables == [scratch_var: 'value']
+    }
+
+    def "delete_variable throws when enableHubAdminWrite setting is off"() {
+        given:
+        // No settingsMap.enableHubAdminWrite seed — gate refuses on the first layer
+        stateMap.ruleVariables = [scratch_var: 'value']
+
+        when:
+        script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+        stateMap.ruleVariables == [scratch_var: 'value']
+    }
+
+    def "delete_variable throws when name is missing"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolDeleteHubVariable([confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('name is required')
+    }
+
+    def "delete_variable throws with helpful hint when variable is not in rule_engine namespace"() {
+        given: 'rule_engine namespace is empty'
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [:]
+
+        when:
+        script.toolDeleteHubVariable([name: 'nonexistent', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'nonexistent'")
+        ex.message.contains('rule_engine namespace')
+        // Error should redirect users to UI for connector-namespace deletion
+        ex.message.contains('Hub Variables UI')
+    }
+
+    def "delete_variable throws when ruleVariables map is null (variable also not present)"() {
+        given:
+        enableHubAdminWrite()
+        // stateMap.ruleVariables not seeded at all — null check path
+
+        when:
+        script.toolDeleteHubVariable([name: 'never_set', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'never_set'")
+        ex.message.contains('rule_engine namespace')
+    }
+
+    def "delete_variable reassigns the top-level state.ruleVariables map (Hubitat persistence quirk)"() {
+        // Hubitat's state Map serialization only catches mutations when the top-level
+        // key is reassigned — a bare .remove() on the nested Map silently fails to
+        // persist across hub reboot / app restart. Asserts that toolDeleteHubVariable
+        // emits a NEW Map object on stateMap.ruleVariables (not just mutates in place).
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [target_var: 'will-go', sibling: 'stays']
+        def originalMapRef = stateMap.ruleVariables
+
+        when:
+        script.toolDeleteHubVariable([name: 'target_var', confirm: true])
+
+        then: 'sibling is preserved'
+        stateMap.ruleVariables == [sibling: 'stays']
+
+        and: 'state.ruleVariables points to a NEW map instance — the read-modify-write pattern Hubitat needs to persist'
+        !stateMap.ruleVariables.is(originalMapRef)
+    }
+
+    // -------- Reference-scan safety (delete_variable refuses to silently break consumers) --------
+
+    def "delete_variable refuses when a child rule app references the variable (no force)"() {
+        // A child rule's serialized triggers/conditions/actions contains the variable
+        // name. Without force=true, deletion would null-out the consumer's lookup and
+        // silently break the rule. The tool must surface the breakage and require opt-in.
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [shared_var: 'in-use']
+
+        and: 'a child rule that references shared_var in a condition'
+        def consumer = new support.TestChildApp(id: 99L, label: 'Rule Using Shared Var')
+        consumer.ruleData = [
+            triggers: [],
+            conditions: [[type: 'variable', name: 'shared_var', operator: '=', value: 'on']],
+            actions: []
+        ]
+        childAppsList << consumer
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared_var', confirm: true])
+
+        then: 'refused with consumer details so the caller knows what would break'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'shared_var'")
+        ex.message.contains('1 rule(s)')
+        ex.message.contains('Rule Using Shared Var')
+        ex.message.contains('id=99')
+        ex.message.contains('force=true')
+
+        and: 'the variable is still present — refusal must not partially mutate state'
+        stateMap.ruleVariables == [shared_var: 'in-use']
+    }
+
+    def "delete_variable proceeds with force=true and reports brokenConsumers"() {
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [shared_var: 'in-use']
+        def consumer = new support.TestChildApp(id: 42L, label: 'Acknowledged Breakage')
+        consumer.ruleData = [
+            triggers: [[type: 'variable_change', variable: 'shared_var']],
+            conditions: [],
+            actions: []
+        ]
+        childAppsList << consumer
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'shared_var', confirm: true, force: true])
+
+        then: 'deletion proceeds'
+        result.success == true
+        result.deleted == true
+        stateMap.ruleVariables == [:]
+
+        and: 'response surfaces the consumers that are now broken'
+        result.brokenConsumers?.size() == 1
+        result.brokenConsumers[0].id == 42L
+        result.brokenConsumers[0].label == 'Acknowledged Breakage'
+    }
+
+    def "delete_variable proceeds normally when no child rules reference the variable"() {
+        given: 'a child rule that does NOT mention the variable being deleted'
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [orphan_var: 'safe-to-delete']
+        def unrelated = new support.TestChildApp(id: 7L, label: 'Unrelated Rule')
+        unrelated.ruleData = [
+            triggers: [[type: 'device_event', deviceId: '1', attribute: 'switch']],
+            conditions: [],
+            actions: []
+        ]
+        childAppsList << unrelated
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'orphan_var', confirm: true])
+
+        then: 'no force needed, no consumers reported'
+        result.success == true
+        result.deleted == true
+        result.brokenConsumers == null
     }
 }
