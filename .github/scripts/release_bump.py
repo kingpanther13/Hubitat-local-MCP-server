@@ -61,14 +61,31 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 
 
 def latest_tag() -> str | None:
-    """Return the latest 'v*.*.*' tag, or None if no tags exist."""
+    """Return the latest 'v*.*.*' tag, or None if no tags exist OR if the tag
+    is found but doesn't match strict semver.
+
+    Two distinct failure modes that look similar at the call site but mean
+    different things:
+      - `subprocess.CalledProcessError` ⇒ git found no matching tag (normal
+        first-run state). Return None silently.
+      - tag exists but isn't strict semver (e.g. someone pushed `v0.10.0-rc1`
+        or `v0.10.0 ` with trailing whitespace) ⇒ emit a `::warning::` so the
+        run page surfaces the malformed tag. Still return None so the caller
+        falls back to the manifest version, but the operator now knows.
+    """
     try:
         result = run("git", "describe", "--tags", "--abbrev=0", "--match", "v*.*.*")
-        tag = result.stdout.strip()
-        if SEMVER_RE.match(tag.lstrip("v")):
-            return tag
     except subprocess.CalledProcessError:
-        pass
+        return None
+    tag = result.stdout.strip()
+    if SEMVER_RE.match(tag.lstrip("v")):
+        return tag
+    print(
+        f"::warning::latest_tag: tag {tag!r} does not match strict semver "
+        "(X.Y.Z); falling back to manifest version. Fix the tag or this "
+        "release will compute its bump from the wrong base.",
+        file=sys.stderr,
+    )
     return None
 
 
@@ -116,17 +133,38 @@ def merged_pr_numbers_since(tag: str | None) -> list[int]:
 
 
 def fetch_pr(number: int) -> dict | None:
-    """Fetch PR metadata via gh CLI. Returns None on failure."""
+    """Fetch PR metadata via gh CLI. Returns None on failure.
+
+    On failure, emits a `::warning::` so the run page surfaces the issue.
+    Without this, the placeholder bullet `- PR #NN` looks identical to a
+    success path in every artifact (CHANGELOG, manifest, README), and the
+    workflow turns green while shipping garbage.
+
+    Common failures: gh CLI missing, GH_TOKEN expired or lacking
+    `pull-requests: read` scope, GitHub API outage, deleted PR number,
+    network blip.
+    """
     try:
         result = run(
             "gh", "pr", "view", str(number),
             "--json", "number,title,url,author,body",
         )
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip().splitlines()[-1] if e.stderr else "(no stderr)"
+        print(
+            f"::warning::fetch_pr: gh CLI failed for PR #{number}: {stderr}. "
+            "Bullet will fall back to '- PR #N' placeholder.",
+            file=sys.stderr,
+        )
         return None
     try:
         return json.loads(result.stdout)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(
+            f"::warning::fetch_pr: gh CLI returned non-JSON for PR #{number}: {e}. "
+            "Bullet will fall back to '- PR #N' placeholder.",
+            file=sys.stderr,
+        )
         return None
 
 
@@ -202,6 +240,23 @@ def parse_release_notes(body: str | None) -> list[str]:
     return bullets
 
 
+def _has_release_notes_section(body: str | None) -> bool:
+    """Return True if the body contains a `## Release Notes`-ish heading.
+
+    Used by build_bullets to distinguish "PR has no Release Notes section"
+    from "PR has a Release Notes section but it has no bullets" — the second
+    case means the author wrote prose-only content that parse_release_notes
+    silently dropped, which is a degradation worth surfacing to the
+    workflow log so it gets fixed before the release ships.
+    """
+    if not body:
+        return False
+    return any(
+        _RELEASE_NOTES_HEADING_RE.match(line)
+        for line in body.splitlines()
+    )
+
+
 def build_bullets(pr_numbers: list[int]) -> list[str]:
     """Return one bullet per PR.
 
@@ -215,6 +270,12 @@ def build_bullets(pr_numbers: list[int]) -> list[str]:
 
     The bullet shape produced here is the "rich" CHANGELOG-friendly form;
     `manifest_block_from_bullets` derives the plain-text form HPM displays.
+
+    If a PR body has a `## Release Notes` section but it contains only
+    prose (no bullets), a `::warning::` is emitted: the author signaled
+    intent to write release notes, but parse_release_notes silently dropped
+    the content because it isn't bulleted. The bullet falls back to title-
+    only either way, but the warning makes the degradation visible.
     """
     bullets = []
     for n in pr_numbers:
@@ -228,14 +289,28 @@ def build_bullets(pr_numbers: list[int]) -> list[str]:
         suffix = f"([#{n}]({url}), @{author})" if author else f"([#{n}]({url}))"
         header = f"- {title} {suffix}"
 
-        notes = parse_release_notes(pr.get("body"))
+        body = pr.get("body")
+        notes = parse_release_notes(body)
         if notes:
             indented = "\n".join(
                 f"  {line}" for note in notes for line in note.splitlines()
             )
             bullets.append(f"{header}\n{indented}")
-        else:
-            bullets.append(header)
+            continue
+
+        # Section-was-found-but-empty path: author intended release notes but
+        # wrote only prose. Surface it; the operator can decide to re-run after
+        # asking the author to bullet-format their content.
+        if _has_release_notes_section(body):
+            print(
+                f"::warning::PR #{n} has a `## Release Notes` section but no "
+                "bulleted items — falling back to title-only. Ask the author to "
+                "reformat their notes as bullets ('- ' or '* ') so they reach "
+                "HPM users.",
+                file=sys.stderr,
+            )
+
+        bullets.append(header)
     return bullets
 
 
@@ -353,6 +428,26 @@ def bump_manifest(new_version: str, label: str, new_block: str) -> None:
     if label == "release:patch":
         existing_blocks = split_release_blocks(manifest.get("releaseNotes") or "")
         kept = filter_same_minor(existing_blocks, new_version)
+        # Sanity check on each kept block's body shape. The splitter regex looks
+        # for line-starts matching `vMAJOR.MINOR.PATCH`, which would also match
+        # if a hand-edit ever introduced a continuation line beginning with
+        # `vX.Y.Z`. A "block" with no bullet body and no other content is the
+        # tell — emit a warning so the operator can sanity-check the manifest
+        # before the next release. We still keep the block (don't drop content
+        # silently) so legacy hand-edited entries survive.
+        for version, block_text in kept:
+            body_lines = [ln for ln in block_text.splitlines()[1:] if ln.strip()]
+            if body_lines and not any(ln.lstrip().startswith(("-", "*"))
+                                       for ln in body_lines):
+                print(
+                    f"::warning::bump_manifest: prior block v{version} has no "
+                    "bullet body — keeping it as-is, but verify it isn't a "
+                    "split-mid-prose artifact from a legacy hand-edit. "
+                    "First non-blank body line: "
+                    f"{body_lines[0][:80]!r}",
+                    file=sys.stderr,
+                )
+
         kept_text = "\n\n".join(b for _, b in kept)
         manifest["releaseNotes"] = (
             f"{new_block}\n\n{kept_text}" if kept_text else new_block
@@ -361,7 +456,22 @@ def bump_manifest(new_version: str, label: str, new_block: str) -> None:
         manifest["releaseNotes"] = new_block
 
     MANIFEST.write_text(json.dumps(manifest, indent=4, ensure_ascii=False) + "\n")
-    json.loads(MANIFEST.read_text())  # round-trip validation
+
+    # Real post-write assertions (replaces the previous round-trip-loads which
+    # only confirmed the file was still parseable JSON — a property json.dumps
+    # guarantees by definition). Catch the failure modes that actually matter:
+    # a regression to the field-assignment ordering, an empty releaseNotes
+    # field, or the new block somehow not making it in.
+    written = json.loads(MANIFEST.read_text())
+    assert written["version"] == new_version, (
+        f"manifest version after write: {written.get('version')!r} != "
+        f"expected {new_version!r}"
+    )
+    assert written.get("releaseNotes"), "releaseNotes is empty after write"
+    assert new_block in written["releaseNotes"], (
+        "new_block is missing from written releaseNotes — the assignment "
+        "branch must have dropped it"
+    )
 
 
 def prepend_changelog_entry(new_version: str, date: str, bullets: list[str]) -> None:

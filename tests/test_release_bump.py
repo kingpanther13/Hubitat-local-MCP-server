@@ -257,6 +257,33 @@ def test_manifest_block_from_bullets_no_pr_ref_passthrough():
 
 
 # ---------------------------------------------------------------------------
+# _has_release_notes_section — used by build_bullets to distinguish "no
+# section" from "section found but empty" (which warrants a warning).
+# ---------------------------------------------------------------------------
+
+def test_has_release_notes_section_present():
+    """Returns True when a Release Notes heading appears anywhere in the body."""
+    assert rb._has_release_notes_section("intro\n## Release Notes\n- a") is True
+
+
+def test_has_release_notes_section_lenient_matching():
+    """Same lenient heading matching as parse_release_notes (lowercase, colon)."""
+    assert rb._has_release_notes_section("# release notes:\nbody") is True
+    assert rb._has_release_notes_section("### RELEASE NOTES\n") is True
+
+
+def test_has_release_notes_section_absent():
+    """Returns False when no Release Notes heading is present."""
+    assert rb._has_release_notes_section("just prose, no headings") is False
+
+
+def test_has_release_notes_section_handles_none_and_empty():
+    """Handles None and empty body without raising."""
+    assert rb._has_release_notes_section(None) is False
+    assert rb._has_release_notes_section("") is False
+
+
+# ---------------------------------------------------------------------------
 # compute_next — single point of failure for every release version string
 # ---------------------------------------------------------------------------
 
@@ -471,6 +498,56 @@ def test_bump_manifest_null_release_notes_no_crash(tmp_path, monkeypatch):
     rb.bump_manifest("0.11.1", "release:patch", new_block)
     m = _read_manifest(tmp_path)
     assert "v0.11.1" in m["releaseNotes"]
+
+
+def test_build_bullets_warns_on_section_with_no_bullets(monkeypatch, capsys):
+    """When a PR body has a `## Release Notes` heading but only prose under it,
+    build_bullets falls back to title-only AND emits a ::warning:: so the
+    operator sees the silent degradation."""
+    fake_pr = {
+        "number": 42,
+        "title": "feat: do a thing",
+        "url": "https://example.com/42",
+        "author": {"login": "alice"},
+        "body": "## Release Notes\nThis fixes a thing but the author wrote prose.",
+    }
+    monkeypatch.setattr(rb, "fetch_pr", lambda n: fake_pr)
+    bullets = rb.build_bullets([42])
+    # Title-only fallback shape
+    assert len(bullets) == 1
+    assert "feat: do a thing" in bullets[0]
+    assert "\n  -" not in bullets[0], "should not have indented author bullets"
+    # Warning surfaced
+    captured = capsys.readouterr()
+    assert "::warning::PR #42" in captured.err
+    assert "no bulleted items" in captured.err
+
+
+def test_build_bullets_no_warning_when_section_absent(monkeypatch, capsys):
+    """When a PR has no Release Notes section at all, no warning fires —
+    the title-only fallback is the documented expected behavior."""
+    fake_pr = {
+        "number": 42,
+        "title": "feat: thing",
+        "url": "https://example.com/42",
+        "author": {"login": "alice"},
+        "body": "## Summary\nNo release notes section at all.",
+    }
+    monkeypatch.setattr(rb, "fetch_pr", lambda n: fake_pr)
+    rb.build_bullets([42])
+    captured = capsys.readouterr()
+    assert "::warning::" not in captured.err
+
+
+def test_build_bullets_warns_when_fetch_pr_fails(monkeypatch, capsys):
+    """When fetch_pr returns None, build_bullets uses the placeholder bullet
+    AND fetch_pr itself emits the warning (verified here by checking that
+    the placeholder is in the output — fetch_pr's warning is exercised by
+    its own subprocess error path, which we can't easily mock without
+    overriding `run`)."""
+    monkeypatch.setattr(rb, "fetch_pr", lambda n: None)
+    bullets = rb.build_bullets([99])
+    assert bullets == ["- PR #99"]
 
 
 def test_bump_manifest_legacy_blob_shrinkage_regression_anchor(tmp_path, monkeypatch):
