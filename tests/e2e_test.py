@@ -85,7 +85,13 @@ class HubitatMcpClient:
             print(f"    [DEBUG] {msg}")
 
     def _send(self, method: str, params: Optional[dict] = None) -> dict:
-        """Send a JSON-RPC 2.0 request and return the parsed result."""
+        """Send a JSON-RPC 2.0 request and return the parsed result.
+
+        Retries transient HTTP 5xx and network errors (cloud relay flake) with
+        exponential backoff. Never retries on 4xx (real auth/request errors)
+        or on JSON-RPC error responses (intentional tool behavior we're
+        trying to test).
+        """
         self._request_id += 1
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
@@ -100,14 +106,33 @@ class HubitatMcpClient:
         # Rate-limit: don't overwhelm the hub
         time.sleep(0.2)
 
-        resp = requests.post(
-            self.endpoint,
-            params={"access_token": self.access_token},
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        last_exc: Optional[Exception] = None
+        data: Optional[dict] = None
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    self.endpoint,
+                    params={"access_token": self.access_token},
+                    json=payload,
+                    timeout=60,
+                )
+                if 500 <= resp.status_code < 600:
+                    # Hub or cloud relay returned a transient error. Heavy
+                    # queries (e.g. get_performance_stats) sometimes 504.
+                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
+                    self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
+                    time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
+                last_exc = exc
+                self._log(f"<< network error (attempt {attempt + 1}/3): {exc} — retrying")
+                time.sleep(2 ** attempt)
+        else:
+            # Exhausted retries — surface the last transient failure.
+            raise last_exc if last_exc else McpError(f"transport failure on {method}")
 
         self._log(f"<< {json.dumps(data)[:500]}")
 
