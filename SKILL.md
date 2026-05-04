@@ -118,9 +118,9 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 | `manage_diagnostics` | 11 | Diagnostics, state capture, zwave/zigbee details, zwave repair, memory history, GC |
 | `manage_files` | 4 | File Manager CRUD |
 | `manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
-| `manage_rule_machine` | 5 | Rule Machine interop via RMUtils — list/run/pause/resume/boolean |
+| `manage_native_rules_and_apps` | 8 | Rule Machine interop (RMUtils: list/run/pause/resume/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete_native_app — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
 
-**22 core tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `list_rules`, `get_rule`, `create_rule`, `update_rule`, `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`, `search_tools` (BM25 natural language search across all tools)
+**Core tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `custom_list_rules`, `custom_get_rule`, `custom_create_rule`, `custom_update_rule` (the MCP custom rule engine — distinct from native Rule Machine; native-RM CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `manage_native_rules_and_apps` gateway via `create_native_app` / `update_native_app` / `delete_native_app`), `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`, `search_tools` (BM25 natural language search across all tools)
 
 **Safety gates are preserved:** All Hub Admin Read/Write checks live in the handler functions (e.g., `requireHubAdminRead()`, `requireHubAdminWrite(args.confirm)`), not in the dispatch layer. The gateway simply calls `executeTool()`, which calls the handler, which enforces the gate. No safety check is bypassed.
 
@@ -275,13 +275,13 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Reduces context consumption when tools are loaded into AI context
 - New `get_tool_guide` tool provides detailed reference on-demand (embedded in server, accessible via MCP)
 
-**Rule Deletion Safety** (delete_rule):
+**Custom-engine Rule Deletion Safety** (custom_delete_rule):
 - Automatically backs up rule to File Manager before deletion as `mcp_rule_backup_<name>_<timestamp>.json`
 - Backup includes full rule export (triggers, conditions, actions, device manifest)
-- Restore via: `read_file(fileName)` → `import_rule(exportData: <json>)`
-- **Test rules**: Set `testRule: true` in `create_rule` or `update_rule` to skip backup on deletion
+- Restore via: `read_file(fileName)` → `custom_import_rule(exportData: <json>)`
+- **Test rules**: Set `testRule: true` in `custom_create_rule` or `custom_update_rule` to skip backup on deletion
 - `skipBackupCheck: true` parameter forces skip regardless of testRule flag (rarely needed)
-- Test rule flag visible in `get_rule` and `list_rules` responses
+- Test rule flag visible in `custom_get_rule` and `custom_list_rules` responses
 - No Hub Admin Write required (rules are MCP-managed, not hub-level resources)
 
 ### Hub Internal API Helpers

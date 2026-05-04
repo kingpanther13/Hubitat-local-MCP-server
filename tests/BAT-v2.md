@@ -2158,13 +2158,13 @@ Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests 
 
 ## Section 11: Built-in App Integration Tests
 
-Tools in this section have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the `Enable Built-in App Tools` toggle (`requireBuiltinAppRead`). `get_app_config` and `list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `manage_rule_machine` tools require `Enable Built-in App Tools`. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+Tools in this section have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the `Enable Built-in App Tools` toggle (`requireBuiltinApp`). `get_app_config` and `list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `manage_rule_machine` tools require `Enable Built-in App Tools`. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
 
 ### Safety Rules for Section 11
 
 - Tests are **read-only or reversibly-trigger** — no create/modify/delete of RM rules or RL instances (platform blocks that anyway)
 - `run_rm_rule`, `pause_rm_rule`, `resume_rm_rule`, `set_rm_rule_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
-- Tests skip entirely if Built-in App Tools is disabled — that's the expected behavior of `requireBuiltinAppRead()`
+- Tests skip entirely if Built-in App Tools is disabled — that's the expected behavior of `requireBuiltinApp()`
 
 ### T200 — List installed apps (default)
 
