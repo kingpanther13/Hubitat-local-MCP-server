@@ -731,7 +731,7 @@ def getGatewayConfig() {
                 update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
             ],
             searchHints: [
-                update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinAppRead enableRuleEngine ci automation"
+                update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinApp enableCustomRuleEngine ci automation"
             ]
         ]
     ]
@@ -1150,11 +1150,11 @@ Verify rule after creation.""",
         ],
         [
             name: "update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinAppRead, enableRuleEngine.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g., {\"mcpLogLevel\":\"warn\",\"enableRuleEngine\":true})"],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g., {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
@@ -3829,8 +3829,8 @@ def toolUpdateMcpSettings(args) {
         "loopGuardMax":           "number",
         "loopGuardWindowSec":     "number",
         "enableHubAdminRead":     "bool",
-        "enableBuiltinAppRead":   "bool",
-        "enableRuleEngine":       "bool"
+        "enableBuiltinApp":       "bool",
+        "enableCustomRuleEngine": "bool"
     ]
 
     // Validate, coerce, and stage each update. Validation is fully atomic — every key

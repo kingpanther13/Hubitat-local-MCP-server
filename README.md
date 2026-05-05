@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 85 MCP tools (34 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 88 MCP tools (34 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 85 tools total — 22 core tools are always visible, while 63 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 88 tools total — 22 core tools are always visible, while 66 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (85 total — 34 on tools/list)
+### MCP Tools (88 total — 34 on tools/list)
 
-The server has 85 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **63 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 88 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **66 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (22) — Always visible on tools/list
 
