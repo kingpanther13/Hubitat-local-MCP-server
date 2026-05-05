@@ -833,7 +833,21 @@ def run_probe(client: HubitatMcpClient, probe: dict, pool: dict,
 # ---------------------------------------------------------------------------
 
 
-def cleanup_stale_probes(client: HubitatMcpClient) -> None:
+def confirm_or_fail(prompt: str, auto_yes: bool, ci_hint: str) -> bool:
+    """Y/N prompt with --yes bypass and non-interactive guard.
+
+    Returns True iff the user answered 'y' (or auto_yes is set).
+    Exits 2 with ci_hint if stdin is not a TTY and auto_yes is False.
+    """
+    if auto_yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"  ERROR: stdin is not a TTY (cannot prompt). {ci_hint}", flush=True)
+        sys.exit(2)
+    return input(prompt).strip().lower() == "y"
+
+
+def cleanup_stale_probes(client: HubitatMcpClient, auto_yes: bool = False) -> None:
     """
     Scan list_rm_rules for any rule matching _PROBE_* from prior failed runs
     and offer to delete them interactively.
@@ -869,8 +883,11 @@ def cleanup_stale_probes(client: HubitatMcpClient) -> None:
         rname = r.get("name") or r.get("label") or "?"
         print(f"    id={rid}  name={rname}", flush=True)
 
-    answer = input("  Delete all stale probe rules? [y/N] ").strip().lower()
-    if answer != "y":
+    if not confirm_or_fail(
+        "  Delete all stale probe rules? [y/N] ",
+        auto_yes=auto_yes,
+        ci_hint="Pass --yes to auto-confirm probe cleanup."
+    ):
         print("  Skipping cleanup.", flush=True)
         return
 
@@ -892,7 +909,7 @@ def cleanup_stale_probes(client: HubitatMcpClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def preflight(client: HubitatMcpClient, auto_backup: bool) -> None:
+def preflight(client: HubitatMcpClient, auto_backup: bool, auto_yes: bool = False) -> None:
     """
     Verify hub readiness before probing:
     - hubAdminWriteEnabled must be true
@@ -935,10 +952,11 @@ def preflight(client: HubitatMcpClient, auto_backup: bool) -> None:
             except Exception as exc:
                 print(f"  [WARN] Backup creation failed: {exc}", flush=True)
         else:
-            answer = input(
-                "  No recent backup detected. Create one now? [y/N] "
-            ).strip().lower()
-            if answer == "y":
+            if confirm_or_fail(
+                "  No recent backup detected. Create one now? [y/N] ",
+                auto_yes=auto_yes,
+                ci_hint="Pass --auto-backup to auto-create, or --yes to skip the prompt."
+            ):
                 try:
                     bk = client.call_tool("create_hub_backup", {"confirm": True})
                     bk_str = str(bk).encode("ascii", errors="replace").decode("ascii")
@@ -1387,6 +1405,8 @@ def main() -> None:
                         help="Scan for stale _PROBE_* rules and offer to delete them")
     parser.add_argument("--auto-backup", action="store_true",
                         help="Automatically create a hub backup if none exists recently")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="Auto-confirm interactive prompts (cleanup/backup). For CI/non-interactive use.")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show request/response details")
     args = parser.parse_args()
@@ -1425,10 +1445,10 @@ def main() -> None:
 
     # Cleanup mode
     if args.cleanup:
-        cleanup_stale_probes(client)
+        cleanup_stale_probes(client, auto_yes=args.yes)
 
     # Pre-flight
-    preflight(client, auto_backup=args.auto_backup)
+    preflight(client, auto_backup=args.auto_backup, auto_yes=args.yes)
 
     # Load matrix
     matrix = load_matrix(args.matrix)
