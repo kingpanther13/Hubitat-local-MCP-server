@@ -2476,18 +2476,18 @@ These tests exercise the Developer Mode self-administration surface — the `man
 ```json
 {
   "setup_prompt": "Developer Mode is enabled and Hub Admin Write is enabled.",
-  "test_prompt": "Use update_mcp_settings to set both enableHubAdminRead=true and enableBuiltinAppRead=true in a single call."
+  "test_prompt": "Use update_mcp_settings to set both enableHubAdminRead=true and enableBuiltinApp=true in a single call."
 }
 ```
 
-**Expected**: AI passes both keys in one `settings` map. Result: `{success:true, updated:{enableHubAdminRead:true, enableBuiltinAppRead:true}, message:"Updated 2 setting(s)..."}`. Both settings persist. The all-or-nothing pre-validation means a single bad key would have rejected the entire batch before any write — verifiable by re-running with one good and one bad key and confirming neither was applied.
+**Expected**: AI passes both keys in one `settings` map. Result: `{success:true, updated:{enableHubAdminRead:true, enableBuiltinApp:true}, message:"Updated 2 setting(s)..."}`. Both settings persist. The all-or-nothing pre-validation means a single bad key would have rejected the entire batch before any write — verifiable by re-running with one good and one bad key and confirming neither was applied.
 
 ### T223 — update_mcp_settings includes a reconnect hint after toggling enable* flags
 
 ```json
 {
   "setup_prompt": "Developer Mode is enabled.",
-  "test_prompt": "Use update_mcp_settings to flip enableRuleEngine to false, then back to true."
+  "test_prompt": "Use update_mcp_settings to flip enableCustomRuleEngine to false, then back to true."
 }
 ```
 
@@ -2524,7 +2524,7 @@ These tests exercise the Developer Mode self-administration surface — the `man
 }
 ```
 
-**Expected**: Tool throws `IllegalArgumentException` (-32602) about safety check requiring `confirm=true`. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+**Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter(s): confirm"` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
 
 ---
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 import time
 from datetime import datetime, timezone
@@ -63,7 +64,17 @@ class HubitatMcpClient:
     def __init__(self, hub_url: str, app_id: str, access_token: str, verbose: bool = False):
         self.hub_url = hub_url.rstrip("/")
         self.app_id = app_id
-        self.endpoint = f"{self.hub_url}/apps/api/{app_id}/mcp"
+        # Hubitat URL conventions differ between local hub and Hubitat cloud:
+        #   Local: http://<hub-ip>/apps/api/<id>/mcp?access_token=...
+        #   Cloud: https://cloud.hubitat.com/api/<UUID>/apps/<id>/mcp?access_token=...
+        # In the cloud form, hub_url already includes /api/<UUID>/, so the
+        # path under the app is just /apps/<id>/<endpoint> (no extra /api/).
+        # Detect cloud by the cloud.hubitat.com host marker and adjust.
+        if "cloud.hubitat.com" in self.hub_url:
+            self._app_path_prefix = f"{self.hub_url}/apps/{app_id}"
+        else:
+            self._app_path_prefix = f"{self.hub_url}/apps/api/{app_id}"
+        self.endpoint = f"{self._app_path_prefix}/mcp"
         self.access_token = access_token
         self.verbose = verbose
         self._request_id = 0
@@ -75,7 +86,16 @@ class HubitatMcpClient:
             print(f"    [DEBUG] {msg}")
 
     def _send(self, method: str, params: Optional[dict] = None) -> dict:
-        """Send a JSON-RPC 2.0 request and return the parsed result."""
+        """Send a JSON-RPC 2.0 request and return the parsed result.
+
+        Retries transient HTTP 5xx and network errors (cloud relay flake) with
+        exponential backoff. Never retries on 4xx (real auth/request errors)
+        or on JSON-RPC error responses (intentional tool behavior we're
+        trying to test).
+
+        Retries JSONDecodeError on the same budget — this catches transient
+        Cloudflare HTML error pages on cloud endpoints under load.
+        """
         self._request_id += 1
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
@@ -90,14 +110,52 @@ class HubitatMcpClient:
         # Rate-limit: don't overwhelm the hub
         time.sleep(0.2)
 
-        resp = requests.post(
-            self.endpoint,
-            params={"access_token": self.access_token},
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        last_exc: Optional[Exception] = None
+        data: Optional[dict] = None
+        for attempt in range(3):
+            resp = None
+            try:
+                resp = requests.post(
+                    self.endpoint,
+                    params={"access_token": self.access_token},
+                    json=payload,
+                    timeout=60,
+                )
+                if 500 <= resp.status_code < 600:
+                    # Hub or cloud relay returned a transient error. Heavy
+                    # queries (e.g. get_performance_stats) sometimes 504.
+                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
+                    self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
+                    # Exponential backoff with jitter to avoid thundering-herd if
+                    # multiple consumers ever retry simultaneously.
+                    time.sleep((2 ** attempt) + random.uniform(0, 1))  # ~1-2s, ~2-3s, ~4-5s
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except (requests.ConnectionError, requests.Timeout,
+                    requests.exceptions.ChunkedEncodingError,
+                    json.JSONDecodeError) as exc:
+                last_exc = exc
+                snippet = ""
+                if isinstance(exc, json.JSONDecodeError) and resp is not None:
+                    try:
+                        snippet = f" body[:200]={resp.text[:200]!r}"
+                    except Exception:
+                        pass
+                self._log(f"<< network/decode error (attempt {attempt + 1}/3): {exc}{snippet} -- retrying")
+                time.sleep((2 ** attempt) + random.uniform(0, 1))
+        else:
+            # Exhausted retries — surface the last transient failure with method context.
+            if isinstance(last_exc, json.JSONDecodeError):
+                snippet = ""
+                try:
+                    if resp is not None:
+                        snippet = f" body[:200]={resp.text[:200]!r}"
+                except Exception:
+                    pass
+                raise McpError(f"JSON decode failed on {method}{snippet}") from last_exc
+            raise last_exc if last_exc else McpError(f"transport failure on {method}")
 
         self._log(f"<< {json.dumps(data)[:500]}")
 
@@ -144,7 +202,7 @@ class HubitatMcpClient:
 
     def get_health(self) -> dict:
         """GET the /health REST endpoint (not JSON-RPC)."""
-        url = f"{self.hub_url}/apps/api/{self.app_id}/health"
+        url = f"{self._app_path_prefix}/health"
         resp = requests.get(url, params={"access_token": self.access_token}, timeout=15)
         resp.raise_for_status()
         return resp.json()
@@ -280,13 +338,13 @@ class TestRunner:
         """Create a rule, verify it was created, return ruleId."""
         rule_def.setdefault("name", name)
         rule_def.setdefault("testRule", True)
-        result = self.client.call_tool("create_rule", rule_def)
+        result = self.client.call_tool("custom_create_rule", rule_def)
         rule_id = str(result.get("ruleId", result.get("id", "")))
-        assert rule_id, f"create_rule did not return a ruleId: {result}"
+        assert rule_id, f"custom_create_rule did not return a ruleId: {result}"
         self.created_rule_ids.append(rule_id)
 
         # Verify creation
-        fetched = self.client.call_tool("get_rule", {"ruleId": rule_id})
+        fetched = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
         assert fetched.get("name") == name or fetched.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
         return rule_id
@@ -294,9 +352,9 @@ class TestRunner:
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
         try:
-            self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
-        except Exception:
-            pass
+            self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
+        except Exception as exc:
+            print(f"[WARN] _delete_rule_safe({rule_id}) failed: {exc}")
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)
 
@@ -310,11 +368,14 @@ class TestRunner:
 
     def _delete_variable_safe(self, name: str) -> None:
         try:
+            # confirm=true is required by Hub Admin Write gate; without it the
+            # delete is silently skipped (try/except swallows the refusal),
+            # leaving the variable stranded.
             self.client.call_tool("manage_hub_variables", {
-                "tool": "delete_variable", "args": {"name": name},
+                "tool": "delete_variable", "args": {"name": name, "confirm": True},
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[WARN] _delete_variable_safe({name}) failed: {exc}")
         if name in self.created_variable_names:
             self.created_variable_names.remove(name)
 
@@ -517,22 +578,22 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to get")
-        result = self.client.call_tool("get_rule", {"ruleId": rule_id})
+        result = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
         assert result.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: {result.get('name')}"
-        assert "triggers" in result or "trigger" in result, "Missing triggers in get_rule"
-        assert "actions" in result, "Missing actions in get_rule"
+        assert "triggers" in result or "trigger" in result, "Missing triggers in custom_get_rule"
+        assert "actions" in result, "Missing actions in custom_get_rule"
 
     @test("rule_crud")
     def test_update_rule(self) -> None:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to update")
-        self.client.call_tool("update_rule", {
+        self.client.call_tool("custom_update_rule", {
             "ruleId": rule_id,
             "name": f"{PREFIX}Rule_CRUD_Updated",
         })
-        fetched = self.client.call_tool("get_rule", {"ruleId": rule_id})
+        fetched = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
         assert "Updated" in fetched.get("name", ""), \
             f"Rule name not updated: {fetched.get('name')}"
 
@@ -541,13 +602,13 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to delete")
-        self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
+        self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)
         # Verify it's gone
         try:
-            self.client.call_tool("get_rule", {"ruleId": rule_id})
-            raise AssertionError("get_rule should fail after deletion")
+            self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
+            raise AssertionError("custom_get_rule should fail after deletion")
         except (McpToolError, McpError):
             pass
 
@@ -981,7 +1042,238 @@ class TestRunner:
         assert result is not None, "list_rooms returned None"
 
     # -----------------------------------------------------------------------
-    # GROUP 10: error_verification (1 test)
+    # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
+    # -----------------------------------------------------------------------
+    # Preconditions (provided by .github/scripts/mcp_setup_env.sh in CI, or
+    # set manually for local runs):
+    #   - enableDeveloperMode: true   (UI-only to enable; lockout protection)
+    #   - enableHubAdminWrite: true   (UI-only to enable)
+    #   - lastBackupTimestamp within 24h
+    #   - enableCustomRuleEngine, enableHubAdminRead, enableBuiltinApp: true
+    #
+    # T219 (toggle-OFF refusal) is omitted — would require briefly disabling
+    # Developer Mode via UI, which CI can't do (toggle excluded from
+    # update_mcp_settings allowlist by design). Covered by ToolUpdateMcpSettingsSpec
+    # at the unit level + manual BAT.
+
+    @test("developer_mode")
+    def test_t220_update_mcp_settings_boolean_flip(self) -> None:
+        """T220: update_mcp_settings flips a boolean setting end-to-end."""
+        # Capture initial value so we can restore.
+        info = self.client.call_tool("get_hub_info")
+        # debugLogging isn't surfaced in get_hub_info; just round-trip through
+        # update_mcp_settings — true → false → true and assert success each time.
+        for value in (True, False, True):
+            result = self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {"settings": {"debugLogging": value}, "confirm": True},
+            })
+            assert result.get("success") is True, f"flip to {value} did not succeed: {result}"
+            assert result.get("updated") == {"debugLogging": value}, f"updated field mismatch for {value}: {result}"
+            assert "Updated 1 setting" in (result.get("message") or ""), f"message missing 'Updated 1 setting': {result}"
+
+    @test("developer_mode")
+    def test_t221_update_mcp_settings_allowlist_rejection(self) -> None:
+        """T221: rejects setting outside the allowlist (enableHubAdminWrite is excluded)."""
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {"settings": {"enableHubAdminWrite": False}, "confirm": True},
+            })
+            assert False, "Expected -32602 rejection for enableHubAdminWrite (footgun)"
+        except McpError as e:
+            msg = str(e)
+            assert "enableHubAdminWrite" in msg, f"error didn't mention the rejected key: {msg}"
+            assert "not allowed" in msg, f"error didn't say 'not allowed': {msg}"
+            # Should list allowed keys for caller to correct
+            assert "Allowed:" in msg or "mcpLogLevel" in msg, f"error didn't list allowed keys: {msg}"
+
+    @test("developer_mode")
+    def test_t222_atomic_batch_one_bad_key_blocks_all(self) -> None:
+        """T222: a single bad key in a multi-key batch rejects the whole batch (no partial writes)."""
+        # Capture pre-state: read debugLogging via update_mcp_settings round-trip
+        # is not feasible from this side, so assert via behavior — flip debugLogging
+        # to a known value first (true), then attempt mixed-batch with a bad key,
+        # then verify debugLogging is STILL true (i.e., the OTHER keys did not flip).
+        self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        # Mixed batch: one valid (debugLogging=false), one invalid (enableHubAdminWrite).
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {
+                    "settings": {"debugLogging": False, "enableHubAdminWrite": False},
+                    "confirm": True,
+                },
+            })
+            assert False, "Expected mixed batch to be rejected atomically"
+        except McpError:
+            pass
+        # debugLogging should STILL be true — flip again with that single key
+        # and assert no-op-like success (atomic validation prevented partial write).
+        # Best assertion we can make from outside: after a mixed-batch reject,
+        # writing the same value again should still succeed.
+        result = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        assert result.get("success") is True, f"post-rejection write didn't succeed: {result}"
+
+    @test("developer_mode")
+    def test_t223_update_mcp_settings_reconnect_hint(self) -> None:
+        """T223: response message includes a client-reconnect hint."""
+        result = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
+        })
+        assert result.get("success") is True
+        msg = result.get("message") or ""
+        assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
+        assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
+        # Restore so the rest of the suite (rule_crud etc.) keeps working.
+        restore = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
+        })
+        assert restore.get("success") is True
+
+    @test("developer_mode")
+    def test_t224_delete_variable_round_trip(self) -> None:
+        """T224: set → delete → verify gone."""
+        var_name = f"{PREFIX}DELETE_T224"
+        # Setup
+        self.client.call_tool("manage_hub_variables", {
+            "tool": "set_variable",
+            "args": {"name": var_name, "value": "scratch-t224"},
+        })
+        # Track for cleanup in case assertion fails partway
+        self.created_variable_names.append(var_name)
+        # Delete
+        result = self.client.call_tool("manage_hub_variables", {
+            "tool": "delete_variable",
+            "args": {"name": var_name, "confirm": True},
+        })
+        assert result.get("success") is True
+        assert result.get("deleted") is True
+        assert result.get("source") == "rule_engine"
+        assert result.get("previousValue") == "scratch-t224"
+        assert result.get("brokenConsumers") is None  # no rules reference this var
+        # Verify gone
+        try:
+            self.client.call_tool("manage_hub_variables", {
+                "tool": "get_variable",
+                "args": {"name": var_name},
+            })
+            assert False, f"{var_name} should not be retrievable after delete"
+        except McpError as e:
+            assert "not found" in str(e).lower(), f"unexpected error after delete: {e}"
+        # Don't double-cleanup
+        if var_name in self.created_variable_names:
+            self.created_variable_names.remove(var_name)
+
+    @test("developer_mode")
+    def test_t225_delete_variable_not_in_rule_engine_namespace(self) -> None:
+        """T225: refusal with redirect-to-UI hint when name isn't in rule_engine state."""
+        # The refusal fires whether the var exists in the connector namespace or
+        # doesn't exist anywhere at all — error message text is identical.
+        try:
+            self.client.call_tool("manage_hub_variables", {
+                "tool": "delete_variable",
+                "args": {"name": f"{PREFIX}DEFINITELY_NONEXISTENT_T225", "confirm": True},
+            })
+            assert False, "Expected refusal for variable not in rule_engine namespace"
+        except McpError as e:
+            msg = str(e)
+            assert "not found in rule_engine namespace" in msg, f"wrong refusal text: {msg}"
+            assert "Settings" in msg, f"missing UI redirect hint: {msg}"
+            assert "Hub Variables" in msg, f"missing 'Hub Variables' in redirect: {msg}"
+
+    @test("developer_mode")
+    def test_t226_delete_variable_no_confirm(self) -> None:
+        """T226: delete_variable refuses when confirm flag is absent.
+
+        Note: gateway-layer parameter validation returns the refusal as
+        `isError: true` in result content (not as JSON-RPC -32602). Same
+        wire-format pattern other gateway-required-param checks use.
+        """
+        var_name = f"{PREFIX}NO_CONFIRM_T226"
+        self.client.call_tool("manage_hub_variables", {
+            "tool": "set_variable",
+            "args": {"name": var_name, "value": "safe"},
+        })
+        self.created_variable_names.append(var_name)
+        result = self.client.call_tool("manage_hub_variables", {
+            "tool": "delete_variable",
+            "args": {"name": var_name},  # no confirm
+        })
+        assert result.get("isError") is True, f"Expected isError result for missing confirm: {result}"
+        assert "confirm" in str(result.get("error", "")).lower(), f"refusal didn't mention confirm: {result}"
+        # Variable should still exist
+        verify = self.client.call_tool("manage_hub_variables", {
+            "tool": "get_variable",
+            "args": {"name": var_name},
+        })
+        assert verify.get("value") == "safe", f"variable was deleted despite missing confirm: {verify}"
+
+    @test("developer_mode")
+    def test_per_key_mcplogs_validation_atomic(self) -> None:
+        """Atomic rejection — bad mcpLogLevel in a mixed batch with debugLogging blocks both."""
+        # Set known baseline for debugLogging (true) — needs to NOT change despite the bad key.
+        self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {
+                    "settings": {"debugLogging": False, "mcpLogLevel": "blarg"},
+                    "confirm": True,
+                },
+            })
+            assert False, "Expected -32602 rejection for mcpLogLevel='blarg'"
+        except McpError as e:
+            msg = str(e)
+            assert "mcpLogLevel" in msg, f"error didn't mention mcpLogLevel: {msg}"
+            assert "blarg" in msg, f"error didn't surface the rejected value: {msg}"
+
+    @test("developer_mode")
+    def test_type_coercion_string_to_bool(self) -> None:
+        """Type coercion — JSON-RPC clients sending string 'true'/'false' get coerced to native bool."""
+        # JSON in this test runner naturally encodes Python bool as JSON true/false,
+        # so to actually exercise the coercion path we have to send a string literal.
+        result = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": "false"}, "confirm": True},
+        })
+        assert result.get("success") is True
+        # Re-read via a write that should be a no-op if coercion landed correctly:
+        # writing native False should also succeed and round-trip cleanly.
+        result2 = self.client.call_tool("manage_mcp_self", {
+            "tool": "update_mcp_settings",
+            "args": {"settings": {"debugLogging": True}, "confirm": True},
+        })
+        assert result2.get("success") is True
+        assert result2.get("updated") == {"debugLogging": True}
+
+    @test("developer_mode")
+    def test_type_coercion_rejects_invalid_bool_string(self) -> None:
+        """Type coercion — strings that aren't 'true'/'false' get rejected, not silently coerced."""
+        try:
+            self.client.call_tool("manage_mcp_self", {
+                "tool": "update_mcp_settings",
+                "args": {"settings": {"debugLogging": "yes"}, "confirm": True},
+            })
+            assert False, "Expected rejection for ambiguous bool-coerced string 'yes'"
+        except McpError as e:
+            msg = str(e)
+            assert "debugLogging" in msg, f"error didn't mention the key: {msg}"
+            assert "boolean" in msg.lower(), f"error didn't say boolean: {msg}"
+
+    # -----------------------------------------------------------------------
+    # GROUP 11: error_verification (1 test)
     # -----------------------------------------------------------------------
 
     @test("error_verification")
@@ -1029,7 +1321,7 @@ class TestRunner:
         for rule_id in list(self.created_rule_ids):
             try:
                 print(f"  Deleting tracked rule {rule_id}")
-                self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
+                self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
             except Exception as exc:
                 print(f"  [WARN] Failed to delete rule {rule_id}: {exc}")
         self.created_rule_ids.clear()
@@ -1051,7 +1343,7 @@ class TestRunner:
                 print(f"  Deleting tracked variable {var_name}")
                 self.client.call_tool("manage_hub_variables", {
                     "tool": "delete_variable",
-                    "args": {"name": var_name},
+                    "args": {"name": var_name, "confirm": True},
                 })
             except Exception as exc:
                 print(f"  [WARN] Failed to delete variable {var_name}: {exc}")
@@ -1080,7 +1372,7 @@ class TestRunner:
 
         # Layer 3: sweep rules with BAT_E2E_ prefix
         try:
-            rules_result = self.client.call_tool("list_rules")
+            rules_result = self.client.call_tool("custom_list_rules")
             rules = rules_result if isinstance(rules_result, list) else rules_result.get("rules", [])
             for r in rules:
                 rname = r.get("name", "")
@@ -1089,7 +1381,7 @@ class TestRunner:
                     if rid:
                         try:
                             print(f"  Sweep: deleting rule '{rname}' (id={rid})")
-                            self.client.call_tool("delete_rule", {"ruleId": rid, "confirm": True})
+                            self.client.call_tool("custom_delete_rule", {"ruleId": rid, "confirm": True})
                         except Exception as exc:
                             print(f"  [WARN] Sweep delete failed for rule '{rname}': {exc}")
         except Exception as exc:

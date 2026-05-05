@@ -20,10 +20,10 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `list_rules` | List all rules with status, last triggered. | None |
-| `get_rule` | Full rule details (triggers, conditions, actions). | None |
-| `create_rule` | Create a new automation rule. | None |
-| `update_rule` | Update rule triggers, conditions, or actions. Also handles enable/disable via `enabled=true/false`. | None |
+| `custom_list_rules` | List all rules with status, last triggered. | None |
+| `custom_get_rule` | Full rule details (triggers, conditions, actions). | None |
+| `custom_create_rule` | Create a new automation rule. | None |
+| `custom_update_rule` | Update rule triggers, conditions, or actions. Also handles enable/disable via `enabled=true/false`. | None |
 
 ### Device Management (1)
 
@@ -70,11 +70,11 @@ Rule administration: delete, test, export, import, and clone rules.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `delete_rule` | Delete a rule (auto-backs up first). | None |
-| `test_rule` | Dry-run: see what would happen without executing. | None |
-| `export_rule` | Export rule as portable JSON. | None |
-| `import_rule` | Import a rule from exported JSON. | None |
-| `clone_rule` | Duplicate an existing rule. | None |
+| `custom_delete_rule` | Delete a rule (auto-backs up first). | None |
+| `custom_test_rule` | Dry-run: see what would happen without executing. | None |
+| `custom_export_rule` | Export rule as portable JSON. | None |
+| `custom_import_rule` | Import a rule from exported JSON. | None |
+| `custom_clone_rule` | Duplicate an existing rule. | None |
 
 ### manage_hub_variables (4 tools)
 
@@ -209,4 +209,4 @@ Developer Mode self-administration: tools that let an LLM agent or CI/CD pipelin
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableHubAdminRead`, `enableBuiltinAppRead`, `enableRuleEngine`. After flipping any `enable*` toggle, MCP clients may need to reconnect to refresh their cached tool schema. | Developer Mode + Hub Admin Write + recent backup |
+| `update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableHubAdminRead`, `enableBuiltinApp`, `enableCustomRuleEngine`. After flipping any `enable*` toggle, MCP clients may need to reconnect to refresh their cached tool schema. | Developer Mode + Hub Admin Write + recent backup |
