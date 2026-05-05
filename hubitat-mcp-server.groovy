@@ -2293,7 +2293,7 @@ Capability families and the spec fields each accepts:
       capability='stopRepeat'    (no fields)
       capability='repeatWhile'   + expression={conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]} + optional hours/minutes/seconds/times/stoppable
       capability='waitExpression'+ expression={conditions:[...], operator?:..., operators?:[...]} + optional delay={hours,minutes,seconds} + useDuration=true|false
-      capability='waitEvents'    + events=[{capability, deviceIds, state, andStays?}, ...]
+      capability='waitEvents'    + events=[{capability, deviceIds, state, andStays?}, ...]   (LIMIT: only ONE waitEvents action per rule; RM 5.1 stores wait events in global per-rule settings, NOT per-action — adding a second waitEvents action would silently overwrite the first. Combine multiple waits into one action's events array, or split into chained sub-rules.)
       capability='ifThen'        + expression={conditions:[...], operator?:..., operators?:[...]}    (opens IF block; close with 'endIf')
       capability='elseIf'        + expression={...}                                                  (continues IF block; needs preceding 'ifThen')
       capability='else'          (no fields; needs preceding 'ifThen' or 'elseIf')
@@ -12138,6 +12138,44 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // Discover next action index by scanning existing actType.<N> settings.
     def existing = _rmCollectActionIndices(appId)
     def idx = (existing ? existing.max() + 1 : 1)
+
+    // RM 5.1 platform limitation: waitEvents actions share GLOBAL event-row
+    // settings (tCapab-N, tDev-N, tstate-N, stays-N) — there is no per-action
+    // event storage. Adding a second waitEvents action causes the wizard to
+    // inherit action 1's event configuration as defaults, and any field
+    // change overwrites action 1's events. The Hubitat web UI exhibits the
+    // same bug — verified live 2026-05-04 via Chrome XHR capture against
+    // rule 227 (test hub) plus manual UI walk: the rule rendered "Wait for
+    // event: <DeviceA>" twice for what was supposed to be two distinct
+    // waits, because setting action 2's device silently overwrote action 1's
+    // tDev-1. Settings dump confirmed: actType.1=delayActs, actType.2=delayActs,
+    // BUT only one tCapab-1/tDev-1/tstate-1 record shared by both actions.
+    //
+    // Until Hubitat fixes this at the platform level, fail-loud rather than
+    // silently corrupt the rule.
+    if (cap == "waitEvents" && existing) {
+        def status = _rmFetchStatusJson(appId)
+        def existingWaitIdx = (status?.appSettings ?: []).findResult { s ->
+            def n = s?.name?.toString()
+            if (!n) return null
+            def m = (n =~ /^actSubType\.(\d+)$/)
+            if (!m.matches()) return null
+            if (s?.value?.toString() != "getWaitEvents") return null
+            return (m[0][1] as Integer)
+        }
+        if (existingWaitIdx != null) {
+            throw new IllegalArgumentException(
+                "RM 5.1 platform limitation: only one Wait for Events action is supported per rule " +
+                "(an existing waitEvents action is at index ${existingWaitIdx}). RM stores wait-event " +
+                "capability/device/state in global per-rule settings (tCapab-N, tDev-N, tstate-N), NOT " +
+                "in per-action storage — adding a second waitEvents action would silently overwrite " +
+                "the first action's event configuration. Verified live 2026-05-04: the Hubitat web UI " +
+                "exhibits the same bug. Workarounds: (a) put all wait events into a SINGLE waitEvents " +
+                "action via the 'events' array (events=[{...}, {...}]); (b) split into two rules " +
+                "chained via Run Actions; (c) wait at the platform level via separate triggers."
+            )
+        }
+    }
 
     // Map (capability, action) → (actType, actSubType, fields)
     def actType = null
