@@ -1,0 +1,151 @@
+name: Hub E2E (test hub)
+
+# End-to-end tests against a real Hubitat hub provided by @level99
+# (see issue #77 + the GitHub secret LEVEL99_TEST_HUB_MCP_URL).
+#
+# Failure mode: ADVISORY only. Hub flakiness must not block PR merges,
+# so this workflow is intentionally not added to branch protection's
+# required-checks. Treat it as a signal, not a gate.
+
+on:
+  pull_request:
+    branches: [main]
+    # Skip when only docs / non-test files change. Cuts CI cost on
+    # README-only / SKILL-only PRs that can't break the hub-side surface.
+    paths:
+      - 'hubitat-mcp-server.groovy'
+      - 'hubitat-mcp-rule.groovy'
+      - 'tests/e2e_test.py'
+      - '.github/workflows/hub-e2e.yml'
+      - '.github/scripts/lease_acquire.sh'
+      - '.github/scripts/lease_release.sh'
+      - '.github/scripts/mcp_setup_env.sh'
+      - '.github/scripts/mcp_restore_env.sh'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to test (blank = current ref)'
+        required: false
+
+# Serialize concurrent runs against the shared test hub. Don't cancel
+# in-progress — they hold the lease and need to release it cleanly via
+# the `if: always()` cleanup step. A cancelled run that leaves a
+# stranded lease will eventually expire via the 30-min TTL, but it's
+# better to let things finish and release explicitly.
+concurrency:
+  group: hub-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # Must match the lease duration in lease_acquire.sh so the job can't
+    # outlive the lease and let another run trample state mid-test.
+    timeout-minutes: 30
+
+    env:
+      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
+
+      - name: Check secret availability + skip if absent
+        # Two cases where MCP_URL is empty (and we want to skip silently
+        # rather than fail red):
+        #   - PRs from forks: GitHub's security policy strips secrets from
+        #     fork-PR workflow runs, even when the secret is set on the
+        #     upstream repo. The job runs but the env var is empty.
+        #   - Secret intentionally not configured (no donated test hub,
+        #     maintainer-private fork without test infra).
+        # The fork-dispatch path (workflow_dispatch from level99's fork)
+        # DOES have access to the secret, so this gate doesn't block the
+        # intended "run via fork dispatch" use case.
+        # GitHub doesn't allow `secrets` in job-level `if:` conditions, so
+        # the check happens here as a step output and gates everything below.
+        id: gate
+        run: |
+          if [ -z "$MCP_URL" ]; then
+            echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on fork PRs and on repos without the test hub configured)"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v6
+        if: steps.gate.outputs.available == 'true'
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        if: steps.gate.outputs.available == 'true'
+        run: pip install requests
+
+      - name: Mask access token in subsequent log lines
+        if: steps.gate.outputs.available == 'true'
+        # Secrets are auto-masked, but the URL parsing below can split the
+        # token out into a separate string that isn't recognized as the
+        # original secret value. Force-mask.
+        run: |
+          TOKEN="$(echo "$MCP_URL" | sed -nE 's|.*access_token=(.*)|\1|p')"
+          if [ -n "$TOKEN" ]; then
+            echo "::add-mask::$TOKEN"
+          fi
+
+      - name: Parse MCP_URL into HUBITAT_* env vars
+        if: steps.gate.outputs.available == 'true'
+        # tests/e2e_test.py expects these three env vars (see its docstring).
+        # MCP_URL format: https://cloud.hubitat.com/api/<UUID>/apps/<APPID>/mcp?access_token=<TOKEN>
+        run: |
+          # Note: regional cloud endpoints (e.g. eu.cloud.hubitat.com) are not yet supported —
+          # update the regex if Hubitat adds them.
+          if [[ ! "$MCP_URL" =~ ^https://cloud\.hubitat\.com/api/[^/]+/apps/[0-9]+/mcp\?access_token=.+$ ]]; then
+            echo "::error::MCP_URL does not match the expected cloud-endpoint shape — refusing to parse a malformed value into HUBITAT_* env vars."
+            exit 1
+          fi
+          BASE=$(echo "$MCP_URL"  | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\1|')
+          APPID=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\2|')
+          TOKEN=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\3|')
+          {
+            echo "HUBITAT_HUB_URL=$BASE"
+            echo "HUBITAT_APP_ID=$APPID"
+            echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
+          } >> "$GITHUB_ENV"
+
+      - name: Acquire test hub lease
+        if: steps.gate.outputs.available == 'true'
+        run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
+
+      - name: Configure test environment (capture pre-state + enable toggles)
+        if: steps.gate.outputs.available == 'true'
+        # Captures enableRuleEngine / enableHubAdminRead / enableBuiltinAppRead
+        # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
+        # tests can exercise the rule engine + hub admin read paths regardless
+        # of the test hub's prior toggle state. Refuses if Developer Mode
+        # itself is off (UI-only to enable).
+        run: bash .github/scripts/mcp_setup_env.sh
+
+      - name: Run E2E tests
+        if: steps.gate.outputs.available == 'true'
+        run: python tests/e2e_test.py
+
+      - name: Cleanup BAT_E2E_ artifacts
+        if: always() && steps.gate.outputs.available == 'true'
+        # Defensive — e2e_test.py cleans up after itself in the happy path,
+        # but a crashed run can strand virtual devices / rules / variables
+        # under the BAT_E2E_ prefix. This sweeps anything left over.
+        run: python tests/e2e_test.py --cleanup-only
+
+      - name: Restore test environment (settings back to pre-run state)
+        if: always() && steps.gate.outputs.available == 'true'
+        # Tolerant of missing pre-state file (early-exit no-op) so a setup
+        # failure before capture doesn't propagate here.
+        run: bash .github/scripts/mcp_restore_env.sh
+
+      - name: Release test hub lease
+        if: always() && steps.gate.outputs.available == 'true'
+        run: bash .github/scripts/lease_release.sh
