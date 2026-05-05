@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 88 MCP tools (34 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 89 MCP tools (34 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 88 tools total — 22 core tools are always visible, while 66 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 89 tools total — 22 core tools are always visible, while 67 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (88 total — 34 on tools/list)
+### MCP Tools (89 total — 34 on tools/list)
 
-The server has 88 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **66 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 89 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **67 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (22) — Always visible on tools/list
 
@@ -308,7 +308,7 @@ The server has 88 tools total. To keep the MCP `tools/list` manageable, **22 cor
 
 </details>
 
-#### Gateway Tools (11) — Each gateway proxies multiple tools
+#### Gateway Tools (12) — Each gateway proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -460,7 +460,7 @@ Write/delete require Hub Admin Write + confirm.
 </details>
 
 <details>
-<summary><b>manage_native_rules_and_apps</b> (8) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
+<summary><b>manage_native_rules_and_apps</b> (9) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -469,8 +469,12 @@ Write/delete require Hub Admin Write + confirm.
 | `pause_rm_rule` | Pause an RM rule (reversible) |
 | `resume_rm_rule` | Resume a paused RM rule |
 | `set_rm_rule_boolean` | Set an RM rule's private boolean variable |
+| `create_native_app` | Create a new empty native automation app (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / etc.). Returns `appId`. |
+| `update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. |
+| `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
+| `check_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
 
-**Cannot create, modify, or delete** RM rules — Hubitat's platform blocks third-party apps from managing built-in app children. Use the native RM UI for configuration. Requires opt-in **Enable Built-in App Tools** setting.
+Requires opt-in **Enable Built-in App Tools** setting. Create/update/delete additionally requires Hub Admin Write.
 
 </details>
 

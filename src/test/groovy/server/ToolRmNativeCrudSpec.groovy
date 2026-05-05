@@ -772,7 +772,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // and the ghost ifThen N click (currentPage=selectActions) must appear.
 
     def "addRequiredExpression Step 4b fires ghost ifThen: N on selectActions, condActs+getIfThen, actionCancel, nav"() {
-        // Regression gate for issue #77.
+        // Regression gate: ghost IF/THEN wrap after Required Expression commit.
         // Verifies the exact wire sequence of the ghost ifThen clear:
         // N click (selectActions) -> actType=condActs -> actSubType=getIfThen
         // -> actionCancel (doActPage) -> nav doActPage->selectActions.
@@ -931,7 +931,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Step 4b ghost clear failure warns and still returns success"() {
         // If the ghost ifThen sequence throws (e.g. N click fails), addRequiredExpression
         // must still return success=true (the RE itself committed successfully).
-        // A warn mcpLog must fire so the operator can diagnose issue #77 risk.
+        // A warn mcpLog must fire so the operator can diagnose ghost IF/THEN wrap risk.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -1096,7 +1096,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
     }
 
-    // ---------- structured-shortcut coverage (issue #141 part A) ----------
+    // ---------- structured-shortcut coverage (addLocalVariable + related) ----------
 
     def "addLocalVariable golden path: walks moreVar, writes hbVar/varType/varValue, retries verify"() {
         given:
@@ -3888,8 +3888,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- Pattern 1: settingsLanded detection (wizard-consumed fields) ----------
     //
-    // Covers _rmWriteSettingOnPage's 4th detection mechanism (PR #134
-    // zero-context validation 2026-05-02).  Wizard-consumed fields (RelrDev_N,
+    // Covers _rmWriteSettingOnPage's 4th detection mechanism (zero-context
+    // validation 2026-05-02).  Wizard-consumed fields (RelrDev_N,
     // useLastDev.N, time1, etc.) have their value persist in the app's settings
     // map but the field's schema input descriptor does NOT reflect the value
     // back (either schema stays identical before/after OR the field disappears
@@ -4085,7 +4085,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- Pattern 2: addTrigger Mode capability writes modesX<N> ----------
     //
-    // Covers the Mode-trigger field routing fix (PR #134 zero-context
+    // Covers the Mode-trigger field routing fix (zero-context
     // validation 2026-05-02).  Before the fix, addTrigger{capability:"Mode",
     // state:"Night"} wrote tstate<N>="Night" -- silently ignored by RM, leaving
     // the trigger as Broken Trigger.  After the fix, the code resolves the mode

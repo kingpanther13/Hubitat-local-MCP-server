@@ -1,10 +1,10 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop architecture (22 core + 11 gateways = 33 on tools/list, 61 proxied, 83 total).
+Updated for the installed-apps + Rule Machine interop + native CRUD architecture (22 core + 12 gateways = 34 on tools/list, 67 proxied, 89 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
-> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the 139-scenario native-RM CRUD suite (T300–T452) — acceptance gate for issue #120 Phase 2. Those scenarios exercise tools that do not exist yet and will FAIL until Phase 2 lands.
+> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the 153-scenario native-RM CRUD suite (T300–T452) — acceptance gate for the `manage_native_rules_and_apps` CRUD tools (`create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health`). Those tools are shipped; all T300–T452 scenarios should pass against the current codebase.
 
 Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt`, and optional `teardown_prompt`. Run each prompt in the same AI session (setup → test → teardown). Each TEST SCENARIO starts a fresh session.
 
@@ -2173,10 +2173,10 @@ These operations are too destructive for automated testing. Test manually with e
 | Core tools on `tools/list` | 22 |
 | Gateways on `tools/list` | 12 |
 | Total visible on `tools/list` | 34 |
-| Tools proxied behind gateways | 66 |
-| Total tools in codebase | 88 |
+| Tools proxied behind gateways | 67 |
+| Total tools in codebase | 89 |
 
-**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (8), `manage_mcp_self` (1)
+**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (9), `manage_mcp_self` (1)
 
 ### Tool Coverage (non-destructive tools only)
 
@@ -2190,7 +2190,7 @@ Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests 
 
 ## Section 11: Built-in App Integration Tests
 
-Tools in this section have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the `Enable Built-in App Tools` toggle (`requireBuiltinApp`). `get_app_config` and `list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `manage_rule_machine` tools require `Enable Built-in App Tools`. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+Tools in this section have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the `Enable Built-in App Tools` toggle (`requireBuiltinApp`). `get_app_config` and `list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `manage_native_rules_and_apps` tools require `Enable Built-in App Tools`; CRUD tools additionally require Hub Admin Write. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
 
 ### Safety Rules for Section 11
 
@@ -2226,7 +2226,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: Calls `manage_rule_machine.list_rm_rules`. Returns list with ids and labels. AI reports count. If Rule Machine is not installed, AI gracefully reports "none found" or equivalent.
+**Expected**: Calls `manage_native_rules_and_apps.list_rm_rules`. Returns list with ids and labels. AI reports count. If Rule Machine is not installed, AI gracefully reports "none found" or equivalent.
 
 ### T203 — Find apps using a device
 
@@ -2259,7 +2259,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 
 **Expected**: AI calls `manage_installed_apps` with no args, sees catalog of 2 tools (`list_installed_apps`, `get_device_in_use_by`) with full parameter schemas.
 
-### T206 — Gateway catalog discovery (manage_rule_machine)
+### T206 — Gateway catalog discovery (manage_native_rules_and_apps)
 
 ```json
 {
@@ -2267,17 +2267,17 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine` with no args, sees 5 tools. AI describes them (list/run/pause/resume/set_boolean).
+**Expected**: AI calls `manage_native_rules_and_apps` with no args, sees 9 tools. AI describes them (list/run/pause/resume/set_boolean + create/update/delete native app + check_rule_health).
 
-### T207 — AI correctly refuses RM rule creation
+### T207 — AI uses native RM rule creation via manage_native_rules_and_apps
 
 ```json
 {
-  "test_prompt": "Create a new Rule Machine rule that turns on Kitchen Light when motion is detected."
+  "test_prompt": "Create a new Rule Machine rule named 'BAT-Motion-Light' that turns on Kitchen Light when motion is detected."
 }
 ```
 
-**Expected**: AI recognizes RM creation is not supported and either (a) creates an MCP rule via `custom_create_rule` instead (and explains the distinction), or (b) tells the user to use the native RM UI. Does NOT invent a fake RM create tool or pretend to call one.
+**Expected**: AI calls `manage_native_rules_and_apps.create_native_app` (appType=rule_machine) to create the rule, then `update_native_app` to add the motion trigger and switch action. Returns the new appId. Does NOT fall back to `custom_create_rule` (that creates an MCP-engine rule, not a native RM rule).
 
 ### T208 — AI correctly refuses Room Lighting creation
 
@@ -2287,7 +2287,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: AI explains Room Lighting cannot be created via MCP (platform blocks third-party apps from instantiating built-in app children). Suggests native RL UI. Does not fabricate a fake tool.
+**Expected**: AI attempts `manage_native_rules_and_apps.create_native_app` for Room Lighting. Since Room Lighting is not yet in the `_appTypeRegistry`, the tool returns an error listing supported appTypes. AI relays the error and suggests using the native UI. Does not fabricate a fake result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 
@@ -2532,7 +2532,7 @@ These tests exercise the Developer Mode self-administration surface — the `man
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 83 tools)** post installed-apps + RM interop + list_app_pages (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 12 gateways (34 total, 89 tools)** post installed-apps + RM interop + native CRUD + list_app_pages (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `custom_update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
@@ -2594,8 +2594,8 @@ uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
 ### Config
 
 Hub connection from `tests/e2e_config.json` (same format as `e2e_test.py`), with env var overrides:
-- `HUB_URL` (or `HUBITAT_HUB_URL`) -- default `http://10.2.50.151`
-- `MCP_APP_ID` (or `HUBITAT_APP_ID`) -- default `953`
+- `HUB_URL` (or `HUBITAT_HUB_URL`) -- required (no default; set via env var or e2e_config.json)
+- `MCP_APP_ID` (or `HUBITAT_APP_ID`) -- required (no default; set via env var or e2e_config.json)
 - `MCP_ACCESS_TOKEN` (or `HUBITAT_ACCESS_TOKEN`)
 
 ### Output

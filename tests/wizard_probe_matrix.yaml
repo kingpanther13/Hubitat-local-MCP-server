@@ -3,18 +3,22 @@
 # device_pool: named device IDs used as $key references in probe steps.
 # Each probe step resolver replaces $key with the integer ID below.
 #
-# Hub: 10.2.50.151
-# Device picks:
-#   switch    : 1063 = Test Plug (Generic Zigbee Outlet, confirmed online)
-#   switch_2  : 1080 = Goodmorning (virtual switch, confirmed online)
-#   contact   : 130  = Back Door Contact Sensor
-#   motion    : 151  = Garage Motion Sensor
+# Set hub connection via HUB_URL and MCP_APP_ID env vars or tests/e2e_config.json
+# (see wizard_probe.py load_config for details; no defaults to avoid leaking
+# private network addresses).
+#
+# Replace device IDs below with IDs from your hub before running.
+# Roles (device_pool keys) used in the probe matrix:
+#   switch    : a controllable switch device (e.g. a virtual switch or smart plug)
+#   switch_2  : a second controllable switch device
+#   contact   : a contact sensor device
+#   motion    : a motion sensor device
 
 device_pool:
-  switch: 1063       # Test Plug (Generic Zigbee Outlet)
-  switch_2: 1080     # Goodmorning (virtual switch)
-  contact: 130       # Back Door Contact Sensor
-  motion: 151        # Garage Motion Sensor
+  switch: 1063
+  switch_2: 1080
+  contact: 130
+  motion: 151
 
 
 probes:

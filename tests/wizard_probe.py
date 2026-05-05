@@ -187,10 +187,10 @@ def load_config() -> dict:
 
     config["hub_url"] = os.environ.get("HUB_URL",
                          os.environ.get("HUBITAT_HUB_URL",
-                         config.get("hub_url", "http://10.2.50.151")))
+                         config.get("hub_url", "")))
     config["app_id"] = os.environ.get("MCP_APP_ID",
                         os.environ.get("HUBITAT_APP_ID",
-                        config.get("app_id", "953")))
+                        config.get("app_id", "")))
     config["access_token"] = os.environ.get("MCP_ACCESS_TOKEN",
                               os.environ.get("HUBITAT_ACCESS_TOKEN",
                               config.get("access_token", "")))
@@ -198,7 +198,12 @@ def load_config() -> dict:
     missing = [k for k in ("hub_url", "app_id", "access_token") if not config.get(k)]
     if missing:
         print(f"ERROR: Missing config: {', '.join(missing)}")
-        print("  Set via tests/e2e_config.json or env vars HUB_URL, MCP_APP_ID, MCP_ACCESS_TOKEN")
+        if "hub_url" in missing:
+            print("  hub_url: set HUB_URL env var or hub_url in tests/e2e_config.json (no default to avoid leaking private network details)")
+        if "app_id" in missing:
+            print("  app_id: set MCP_APP_ID env var or app_id in tests/e2e_config.json (no default to avoid leaking private hub instance IDs)")
+        if "access_token" in missing:
+            print("  access_token: set MCP_ACCESS_TOKEN env var or access_token in tests/e2e_config.json")
         sys.exit(1)
 
     return config

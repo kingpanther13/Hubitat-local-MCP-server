@@ -76,10 +76,11 @@ def mainPage() {
             }
         }
 
-        section("Built-in App Integration") {
+        section("Built-in App Integration (beta)") {
             paragraph "<b>Built-in App Tools</b> let your AI list, run, pause, resume, create, update, and delete Hubitat's built-in apps including Rule Machine rules. Required for native Rule Machine CRUD via your AI."
             paragraph "<i>Creating, updating, and deleting rules (create_native_app / update_native_app / delete_native_app) ALSO requires Hub Admin Write -- both toggles must be on. Note: the separate Custom Rule Engine toggle below controls a legacy MCP-managed rule surface -- bug fixes only, no new features.</i>"
-            input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write)",
+            paragraph "<i><b>Beta status:</b> native rule CRUD is in active beta. Most rule patterns work cleanly: time/mode/event triggers, Run Custom Action with string and number params, nested IF/THEN, switch/dimmer/lock/log/delay/repeat/exitRule actions. Known cosmetic edge-cases under investigation: Custom Attribute conditions inside IF actions may not fully bake the attribute name + value (rule still creates structurally; the IF clause renders incomplete); Custom Attribute conditions in Required Expression and IF action contexts now throw a clear error if 'comparator' is omitted -- both 'attribute' and 'comparator' are required together; clearActions / replaceActions may report verification timeout while the underlying delete actually committed (response includes verifyHint to disambiguate). All non-blocking for normal use; tracked for follow-up.</i>"
+            input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write, beta)",
                   description: "Allows MCP to list all installed apps, find apps using a device, list/trigger/pause/resume Rule Machine rules, and create/update/delete native Rule Machine rules and other classic apps. Create/update/delete additionally requires Hub Admin Write.",
                   defaultValue: false, submitOnChange: true
         }
@@ -276,7 +277,7 @@ def updated() {
     state.remove("toolSearchCorpus")  // Invalidate BM25 search cache on app update
     initialize()
 
-    // ===== One-time custom-engine rename migration (PR #134) =====
+    // ===== One-time custom-engine rename migration =====
     // Legacy users had `enableRuleEngine: true` (default ON). When that setting
     // was renamed to `enableCustomRuleEngine` (default OFF), firmware upgrades
     // on 2.5.0.x re-evaluate the renamed Boolean against defaultValue and may
@@ -854,7 +855,7 @@ def getToolDefinitions() {
         def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "check_rule_health"]
         biTools.each { hideByName << it }
         // Sub-tool removal from gateways (when in gateway mode):
-        //   manage_native_rules_and_apps: ALL 8 sub-tools require enableBuiltinApp → empty gateway → drops entirely
+        //   manage_native_rules_and_apps: ALL 9 sub-tools require enableBuiltinApp → empty gateway → drops entirely
         //   manage_installed_apps: 2/4 sub-tools require enableBuiltinApp; the other 2 (get_app_config, list_app_pages) only need Hub Admin Read
         hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "check_rule_health"] as Set
         hideGatewaySubTools["manage_installed_apps"] = ["list_installed_apps", "get_device_in_use_by"] as Set
@@ -2068,7 +2069,7 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map matching the addRequiredExpression per-condition shape: {capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}. When provided, addTrigger drives the conditional-trigger sub-wizard (rCapab_<N> / rDev_<N> / state_<N> / hasAll) inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set.
+  - condition — Map matching the addRequiredExpression per-condition shape: {capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}. When provided, addTrigger drives the conditional-trigger sub-wizard (rCapab_<N> / rDev_<N> / state_<N> / hasAll) inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together.
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.)
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
@@ -2101,9 +2102,9 @@ Per-condition spec fields:
   - capability — required. RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.
   - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, time-based).
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
-  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!=').
+  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).
   - value — numeric threshold paired with comparator.
-  - attribute — for capability='Custom Attribute', the attribute name (e.g., 'humidity', 'energy', any attribute exposed by the device).
+  - attribute — for capability='Custom Attribute', the attribute name (e.g., 'humidity', 'energy', any attribute exposed by the device). REQUIRED when using Custom Attribute; must be paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
   - not — boolean (default false). Set true to invert this condition.
   - rawSettings — escape hatch dict {fieldName: value} for fields not yet mapped above.
 
@@ -3814,7 +3815,7 @@ def toolDeleteHubVariable(args) {
 def toolUpdateMcpSettings(args) {
     // IllegalArgumentException (not IllegalStateException) so the dispatcher routes this
     // through the clean -32602 Invalid params branch in handleToolsCall — same exception
-    // type all other gates throw (requireHubAdminWrite, requireBuiltinAppRead). Toggle-off
+    // type all other gates throw (requireHubAdminWrite, requireBuiltinApp). Toggle-off
     // is a config refusal, not an unexpected runtime error worth a stack trace + ERROR log.
     if (!settings.enableDeveloperMode) {
         throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use update_mcp_settings.")
@@ -10221,7 +10222,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     //   modeIds -- List<Integer or String> of mode IDs. Written directly as
     //              String values inside a List (e.g. ["3"] or ["3", "5"]).
     //
-    // Verified live (PR #134 zero-context validation 2026-05-02): two agents
+    // Verified live (zero-context validation 2026-05-02): two agents
     // hit this pattern (rules 1319, 1320), each spending 30+ extra tool calls
     // deleting and rebuilding the rule because tstate<N> silently no-ops.
     if (capCanonical == "Mode") {
@@ -10448,7 +10449,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         try {
             _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", false, applied, null, skipped)
         } catch (Exception finalizeExc) {
-            mcpLog("debug", "rm-native", "_rmAddTrigger: post-hasAll isCondTrig.${idx}=false finalize failed for app ${appId} (${finalizeExc.message}) — residual 'Conditional Trigger?' prompt may linger, can leave a phantom Broken Trigger N+1")
+            mcpLog("debug", "rm-native", "_rmAddTrigger: post-hasAll isCondTrig.${idx}=false finalize failed for app ${appId} (${finalizeExc.message}) -- residual 'Conditional Trigger?' prompt may linger, can leave a phantom Broken Trigger N+1")
             // Best-effort: if the prompt isn't there (clean exit), the
             // schema check inside _rmWriteSettingOnPage skips it.
         }
@@ -11681,7 +11682,7 @@ private List _rmClearActions(Integer appId) {
         stillThere = remaining.intersect(indices)
         if (!stillThere) return indices
     }
-    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying — the deletion may commit post-response. Roll back via restore_item_backup if the action(s) really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
+    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the action(s) really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
 }
 
 /**
@@ -12430,7 +12431,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 // Verified live in Chrome (2026-04-25): actionDone button
                 // doesn't appear in the schema until 'To this level (0..100)*'
                 // is filled. The * indicates required.
-                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.toggle requires 'level' (0-100) — the level to set when toggling from off to on. Verified live: actionDone never appears in the schema until level is set (the wizard input is marked required with *).")
+                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.toggle requires 'level' (0-100) -- the level to set when toggling from off to on. Verified live: actionDone never appears in the schema until level is set (the wizard input is marked required with *).")
                 actSubType = "getToggleDimmer"
                 fields = ["dimA.@N": deviceIds, "dimLA.@N": actionSpec.level]
                 if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
@@ -13291,6 +13292,22 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             // Canonical doActPage Custom Attribute wizard sequence:
             //   cond=a -> rCapab_N=Custom Attribute -> rDev_N=[ids]
             //   -> rCustomAttr_N=attrName -> RelrDev_N=comparator -> state_N=value
+            //
+            // Fail-loud validation: Custom Attribute requires BOTH attribute AND
+            // comparator. RM 5.1 silently accepts either half and renders the
+            // condition incomplete. Surface the error immediately so the caller
+            // doesn't discover a broken condition via get_app_config.
+            // Both directions are checked: attribute-only and comparator-only.
+            if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
+                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
+                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+            }
+            if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
+                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
+                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+            }
             if (cond.comparator != null) {
                 if (cond.attribute != null) {
                     _rmWriteSettingOnPage(appId, "doActPage", "rCustomAttr_${cIdx}", cond.attribute, applied, null, skipped)
@@ -13499,7 +13516,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     catch (Exception verifyExc) {
         finalConfig = null
         verificationFetchFailed = true
-        mcpLog("warn", "rm-native", "_rmAddAction: post-commit selectActions fetch failed for app ${appId} (${verifyExc.message}) — caller cannot verify the action baked, will mark response as verificationFetchFailed=true")
+        mcpLog("warn", "rm-native", "_rmAddAction: post-commit selectActions fetch failed for app ${appId} (${verifyExc.message}) -- caller cannot verify the action baked, will mark response as verificationFetchFailed=true")
     }
     def err = finalConfig?.configPage?.error
 
@@ -13527,7 +13544,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actionNotBaked = joinedParagraphs.contains("Define Actions")
     } catch (Exception verifyExc) {
         verificationFetchFailed = true
-        mcpLog("warn", "rm-native", "_rmAddAction: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) — action-baked check skipped")
+        mcpLog("warn", "rm-native", "_rmAddAction: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) -- action-baked check skipped")
     }
 
     // Partial-success signal: any skipped settings indicate a field the
@@ -13722,7 +13739,7 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
     try { afterCfg = _rmFetchConfigJson(appId, pageName) }
     catch (Exception fetchExc) {
         verifyFetchErr = fetchExc.message
-        mcpLog("warn", "rm-native", "_rmWriteSettingOnPage: post-write fetch on ${pageName} failed for app ${appId} key=${key} (${fetchExc.message}) — write status is unverified")
+        mcpLog("warn", "rm-native", "_rmWriteSettingOnPage: post-write fetch on ${pageName} failed for app ${appId} key=${key} (${fetchExc.message}) -- write status is unverified")
     }
     if (afterCfg == null) {
         // Verification fetch failed — we cannot confirm persistence. Surface
@@ -13771,7 +13788,7 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
     //   valueLanded:   key absent from afterSchema -> afterValueStr is null
     //   renderShifted: paragraphs may not shift for this specific write
     //
-    // WHICH field families this catches (verified live, PR #134 zero-context
+    // WHICH field families this catches (verified live, zero-context
     // validation 2026-05-02):
     //   RelrDev_N  -- Custom Attribute condition's comparator (=, !=, etc.),
     //                 written inside addRequiredExpression's STPage wizard walk.
@@ -14716,7 +14733,7 @@ def toolCreateNativeApp(args) {
                     triggerResults << _rmAddTrigger(newId, spec as Map)
                 } catch (Exception te) {
                     triggerResults << [success: false, error: te.message, specCapability: spec.capability]
-                    mcpLog("warn", "rm-native", "create_native_app: trigger ${i} (capability=${spec.capability}) failed — ${te.message}")
+                    mcpLog("warn", "rm-native", "create_native_app: trigger ${i} (capability=${spec.capability}) failed -- ${te.message}")
                 }
             }
             // Re-init once after all triggers are committed.
@@ -14739,7 +14756,7 @@ def toolCreateNativeApp(args) {
                     actionResults << _rmAddAction(newId, spec as Map)
                 } catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                    mcpLog("warn", "rm-native", "create_native_app: action ${i} (${spec.capability}/${spec.action}) failed — ${ae.message}")
+                    mcpLog("warn", "rm-native", "create_native_app: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                 }
             }
             // After bulk-add, navigate selectActions → mainPage via
@@ -14753,7 +14770,7 @@ def toolCreateNativeApp(args) {
             try {
                 _rmSubmitSubPageDone(newId, "selectActions", "mainPage", "name", null)
             } catch (Exception subPageDoneExc) {
-                mcpLog("warn", "rm-native", "create_native_app: trailing _rmSubmitSubPageDone(selectActions→mainPage) failed for app ${newId} (${subPageDoneExc.message}) — relying on updateRule below; lingering state.editAct markers may corrupt subsequent edits")
+                mcpLog("warn", "rm-native", "create_native_app: trailing _rmSubmitSubPageDone(selectActions->mainPage) failed for app ${newId} (${subPageDoneExc.message}) -- relying on updateRule below; lingering state.editAct markers may corrupt subsequent edits")
             }
             _rmClickAppButton(newId, "updateRule")
         }
@@ -14810,7 +14827,7 @@ def toolCreateNativeApp(args) {
         // Orphan cleanup: caller didn't get a usable app, so remove the
         // half-created shell rather than leaving it under the parent.
         // forcedelete/quiet is idempotent on already-gone ids.
-        mcpLog("error", "rm-native", "create_native_app setup failed after createchild for ${newId} (appType=${appType}): ${e.message} — cleaning up")
+        mcpLog("error", "rm-native", "create_native_app setup failed after createchild for ${newId} (appType=${appType}): ${e.message} -- cleaning up")
         try { _rmForceDeleteApp(newId) } catch (Exception ce) {
             mcpLog("warn", "rm-native", "Orphan cleanup failed for ${newId}: ${ce.message}")
         }
@@ -15268,15 +15285,27 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                     }
                     // Write order MATTERS: STPage (like doActPage) uses
                     // progressive disclosure. state_<N> does not appear in
-                    // the schema until RelrDev_<N> commits — empirically
+                    // the schema until RelrDev_<N> commits -- empirically
                     // confirmed live (rule 1377, 2026-04-28): after
                     // rCustomAttr_<N> the schema shows RelrDev_<N>; only
                     // after RelrDev_<N> commits does state_<N> appear.
                     // Writing state_<N> before RelrDev_<N> silently rejects.
-                    // Order: rCustomAttr_<N> → RelrDev_<N> → state_<N>.
+                    // Order: rCustomAttr_<N> -> RelrDev_<N> -> state_<N>.
                     // For enum capabilities (no comparator), state_<N> appears
                     // immediately after rDev_<N>, so the comparator block is
                     // a no-op and write order has no effect.
+                    //
+                    // Fail-loud validation: Custom Attribute requires BOTH attribute
+                    // AND comparator. RM 5.1 silently accepts either half but renders
+                    // the condition incomplete. Both directions are checked.
+                    if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
+                        cancelInFlightCondition()
+                        throw new IllegalArgumentException("conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+                    }
+                    if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
+                        cancelInFlightCondition()
+                        throw new IllegalArgumentException("conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+                    }
                     if (cond.comparator != null) {
                         if (cond.attribute != null) {
                             writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
@@ -15448,7 +15477,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         // Best-effort: if the ghost ifThen sequence fails, subsequent addAction
         // calls MAY produce IF(**Broken Condition**) wrapping. The RE itself
         // is fully committed -- this only affects the next addAction.
-        mcpLog("warn", "rm-native", "addRequiredExpression: ghost ifThen clear failed for app ${appId} (${ghostExc.message ?: ghostExc.toString()}) -- subsequent addAction may produce IF(**Broken Condition**) wrapper (issue #77 / Bug D); verify rule render or restore backup if needed")
+        mcpLog("warn", "rm-native", "addRequiredExpression: ghost ifThen clear failed for app ${appId} (${ghostExc.message ?: ghostExc.toString()}) -- subsequent addAction may produce IF(**Broken Condition**) wrapper (ghost IF/THEN wrap detected after Required Expression commit); verify rule render or restore backup if needed")
     }
 
     // Step 5. Post-commit validation. RM 5.1's STPage silently accepts
@@ -15464,7 +15493,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     def mainCfg = null
     try { mainCfg = _rmFetchConfigJson(appId, "mainPage") }
     catch (Exception verifyExc) {
-        mcpLog("warn", "rm-native", "addRequiredExpression: post-commit mainPage fetch failed for app ${appId} (${verifyExc.message}) — expression-baked check skipped")
+        mcpLog("warn", "rm-native", "addRequiredExpression: post-commit mainPage fetch failed for app ${appId} (${verifyExc.message}) -- expression-baked check skipped")
     }
     def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
         (sect?.body ?: []).findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
@@ -15667,20 +15696,27 @@ def toolUpdateNativeApp(args) {
                     try { addedResults << _rmAddAction(appId, spec as Map) }
                     catch (Exception ae) {
                         addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                        mcpLog("warn", "rm-native", "update_native_app: replaceActions[${i}] (${spec.capability}/${spec.action}) failed — ${ae.message}")
+                        mcpLog("warn", "rm-native", "update_native_app: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                     }
                 }
             }
             _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${e.message}")
-            return [
+            def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
+            def result = [
                 success: false,
                 appId: appId,
                 error: e.message,
                 backup: backup,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+                restoreHint: isRetryExhaustion ?
+                    "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}')." :
+                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
             ]
+            if (isRetryExhaustion) {
+                result.verifyHint = "Call get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call restore_item_backup."
+            }
+            return result
         }
         def addedOk = (addedResults ?: []).count { it?.success != false }
         def addedTotal = (replaceActionsList ?: []).size()
@@ -15742,13 +15778,20 @@ def toolUpdateNativeApp(args) {
             }
         } catch (Exception e) {
             mcpLog("error", "rm-native", "trigger mutation failed for app ${appId}: ${e.message}")
-            return [
+            def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
+            def trigResult = [
                 success: false,
                 appId: appId,
                 error: e.message,
                 backup: backup,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+                restoreHint: isRetryExhaustion ?
+                    "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}')." :
+                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
             ]
+            if (isRetryExhaustion) {
+                trigResult.verifyHint = "Call get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call restore_item_backup."
+            }
+            return trigResult
         }
     }
 
@@ -16079,7 +16122,7 @@ def toolUpdateNativeApp(args) {
                 try { triggerResults << _rmAddTrigger(appId, spec as Map) }
                 catch (Exception te) {
                     triggerResults << [success: false, error: te.message, specCapability: spec.capability]
-                    mcpLog("warn", "rm-native", "update_native_app: addTriggers[${i}] (${spec.capability}) failed — ${te.message}")
+                    mcpLog("warn", "rm-native", "update_native_app: addTriggers[${i}] (${spec.capability}) failed -- ${te.message}")
                 }
             }
             (addActionsList ?: []).eachWithIndex { spec, i ->
@@ -16090,7 +16133,7 @@ def toolUpdateNativeApp(args) {
                 try { actionResults << _rmAddAction(appId, spec as Map) }
                 catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                    mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed — ${ae.message}")
+                    mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                 }
             }
             // One updateRule fires after everything to populate
@@ -16213,7 +16256,7 @@ def toolUpdateNativeApp(args) {
                 try { afterClickConfig = _rmFetchConfigJson(appId, pageName) }
                 catch (Exception verifyExc) {
                     afterClickConfig = null
-                    mcpLog("warn", "rm-native", "walkStep: post-wizard-Done fetch on ${pageName} failed for app ${appId} (${verifyExc.message}) — residual condTrig prompt check skipped, may leave phantom trigger N+1")
+                    mcpLog("warn", "rm-native", "walkStep: post-wizard-Done fetch on ${pageName} failed for app ${appId} (${verifyExc.message}) -- residual condTrig prompt check skipped, may leave phantom trigger N+1")
                 }
                 def residualCondTrigName = _rmFindResidualCondTrig(afterClickConfig?.configPage)
                 if (residualCondTrigName) {
@@ -17022,7 +17065,7 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-**manage_native_rules_and_apps (8 tools) — read, trigger, AND full CRUD on native RM rules:**
+**manage_native_rules_and_apps (9 tools) — read, trigger, AND full CRUD on native RM rules:**
 
 RMUtils-based control surface (Built-in App Tools gate only):
 - **list_rm_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)

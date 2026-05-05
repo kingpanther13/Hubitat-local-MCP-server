@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 88 MCP tools. The server exposes **34 items on `tools/list`**: 22 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 89 MCP tools. The server exposes **34 items on `tools/list`**: 22 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -56,7 +56,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 88 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 89 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -191,17 +191,21 @@ Read-only visibility into all installed apps (built-in + user): enumerate with p
 | `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: list_installed_apps or list_rm_rules -> get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before get_app_config on multi-page apps. | Hub Admin Read |
 
-### manage_rule_machine (5 tools)
+### manage_native_rules_and_apps (9 tools)
 
-Rule Machine interop via the official `hubitat.helper.RMUtils` helper class: list, trigger, pause/resume, and set Private Boolean on existing RM rules. **Cannot create, modify, or delete RM rules** — Hubitat platform blocks third-party apps from mutating built-in app children; use the native RM UI for configuration. Requires Built-in App Tools enabled.
+Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause/resume) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). Requires Built-in App Tools enabled; CRUD operations additionally require Hub Admin Write.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `list_rm_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Built-in App Read |
-| `run_rm_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Read |
-| `pause_rm_rule` | Pause an RM rule (reversible; paused rules don't fire on triggers). | Built-in App Read |
-| `resume_rm_rule` | Resume a paused RM rule. | Built-in App Read |
-| `set_rm_rule_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`) — flips the flag that rules can reference in conditions. | Built-in App Read |
+| `list_rm_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Built-in App Tools |
+| `run_rm_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Tools |
+| `pause_rm_rule` | Pause an RM rule (reversible; paused rules don't fire on triggers). | Built-in App Tools |
+| `resume_rm_rule` | Resume a paused RM rule. | Built-in App Tools |
+| `set_rm_rule_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Built-in App Tools |
+| `create_native_app` | Create a new empty classic SmartApp (RM 5.1 by default; `appType` enum extends to other types). Returns `appId`. | Built-in App Tools + Hub Admin Write |
+| `update_native_app` | Modify any classic native app by appId. Structured shortcuts: addTrigger, addAction, addRequiredExpression, clearActions, replaceActions, patches, etc. Auto-snapshots before writing. | Built-in App Tools + Hub Admin Write |
+| `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Built-in App Tools + Hub Admin Write |
+| `check_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Built-in App Tools |
 
 ### manage_mcp_self (1 tool)
 

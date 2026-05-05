@@ -6,10 +6,10 @@ import support.ToolSpecBase
 
 /**
  * Spec for the one-time enableCustomRuleEngine rename migration that fires
- * inside updated() (PR #134).
+ * inside updated().
  *
  * Background: the legacy setting was `enableRuleEngine` (defaultValue: true).
- * PR #134 renamed it to `enableCustomRuleEngine` (defaultValue: false).
+ * The setting was renamed to `enableCustomRuleEngine` (defaultValue: false).
  * Hubitat firmware upgrades on 2.5.0.x re-evaluate renamed Boolean inputs
  * against their defaultValue and can silently flip a user-set `false` back
  * to `true`. The migration in updated() corrects that flip exactly once,

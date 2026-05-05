@@ -1,23 +1,25 @@
 # Bot Acceptance Test (BAT) Suite — Rule Machine Native CRUD
 
-Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the new native Rule Machine CRUD tools introduced by issue #120 Phase 2.
+Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the native Rule Machine CRUD tools in the `manage_native_rules_and_apps` gateway.
 
-**New tools exercised** (do not exist yet — FAIL until #120 Phase 2 lands):
+**New tools exercised** (native CRUD, shipped in the same PR as this file):
 
-- `manage_rule_machine.create_rm_rule`
-- `manage_rule_machine.update_rm_rule`
-- `manage_rule_machine.delete_rm_rule(ruleId, force?)`
-- `manage_rule_machine.get_rm_rule`
+- `manage_native_rules_and_apps.create_native_app` (appType=rule_machine)
+- `manage_native_rules_and_apps.update_native_app`
+- `manage_native_rules_and_apps.delete_native_app`
+- `manage_native_rules_and_apps.check_rule_health`
 
-**Existing tools also exercised** (already present in the repo, verified behavior — these SHOULD work today):
+**Existing tools also exercised** (already present in the repo, verified behavior):
 
-- `manage_rule_machine.list_rm_rules`
-- `manage_rule_machine.run_rm_rule(ruleId, action=...)` — supports `rule` / `actions` / `stop`
-- `manage_rule_machine.pause_rm_rule` / `resume_rm_rule`
-- `manage_rule_machine.set_rm_rule_boolean`
+- `manage_native_rules_and_apps.list_rm_rules`
+- `manage_native_rules_and_apps.run_rm_rule(ruleId, action=...)` -- supports `rule` / `actions` / `stop`
+- `manage_native_rules_and_apps.pause_rm_rule` / `resume_rm_rule`
+- `manage_native_rules_and_apps.set_rm_rule_boolean`
 - `manage_installed_apps.get_app_config` (used as fallback verification)
 
-**Status:** Every T### that calls a *new* tool will FAIL until #120 Phase 2 merges. Use this file as the acceptance bar for Phase 2 merge: every T### must pass before the implementation PR merges. The scope-expansion gateways (`manage_button_controllers`, `manage_basic_rules`, etc.) are tracked separately and not covered by these tests.
+**Note on legacy test-prompt tool names:** many individual test prompts in this file were written before the gateway was named and still reference `create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, and `get_rm_rule`. The actual implemented tool names are `create_native_app`, `update_native_app`, `delete_native_app` (no get_rm_rule -- use `get_app_config` from `manage_installed_apps` instead). When running these tests, map accordingly.
+
+**Status:** Use this file as the acceptance bar for the native CRUD tools: every T### must pass before declaring the feature stable.
 
 ## Test Format
 
@@ -48,12 +50,12 @@ Every test that creates or modifies a rule must assert, before tearing down. Ind
 
 Tests refer to these via the `[INV-N]` shorthand to keep terminology consistent across all 135 scenarios.
 
-Teardown prompts SHOULD explicitly `delete_rm_rule(<id>, force=true)` to clean up scratch rules. The `force=true` path uses the framework's `/installedapp/forcedelete/<id>/quiet` endpoint and succeeds regardless of child-app state — this is the BAT-standard cleanup pattern.
+Teardown prompts SHOULD explicitly call `delete_native_app(appId=<id>, force=true)` to clean up scratch rules. The `force=true` path uses the `/installedapp/forcedelete/<id>/quiet` endpoint and succeeds regardless of child-app state -- this is the BAT-standard cleanup pattern.
 
 ## Safety Rules
 
 - **All tests use the `BAT-RM-` prefix** for artifacts (rules, local variables). Cleanup grep targets that prefix.
-- **Teardown uses `delete_rm_rule(ruleId, force=true)`** to skip any mandatory-backup gate or child-app checks. The `force=true` flag is the BAT-standard cleanup; it uses the `/installedapp/forcedelete/<id>/quiet` endpoint which always succeeds.
+- **Teardown uses `delete_native_app(appId=ruleId, force=true)`** to skip any mandatory-backup gate or child-app checks. The `force=true` flag is the BAT-standard cleanup; it uses the `/installedapp/forcedelete/<id>/quiet` endpoint which always succeeds.
 - **Device commands only target BAT-created virtual devices** — never touch physical devices.
 - **No tests run against production RM rules** — agents must create their own scratch rule as the target.
 - Orphan-cleanup: every test SHOULD include a teardown that removes any rule it creates, even on assertion failure. Long-term orphans under RM parent are the #1 side-effect class for this surface.
@@ -1781,10 +1783,10 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Record the current state of the MCP 'Enable Built-in App Tools' setting AND any new 'Enable Native RM CRUD Tools' setting (if #120 Phase 2 adds one). Note: this test assumes the legacy-gating design from the #120 Phase 3 plan — if the gating setting doesn't exist yet, mark this test aspirational.",
-  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools (either 'Enable Built-in App Tools' or a new 'Enable Native RM CRUD Tools' flag introduced by #120). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, `get_rm_rule` are COMPLETELY ABSENT from the returned tool list — NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. This matches the #120 Phase 3 design: 'When the legacy toggle is off, the custom-engine tools must not appear in the MCP tool list at all.' Same gating semantic applies to the new native-RM tools. Then re-enable the setting and confirm the tools reappear in tools/list.",
+  "setup_prompt": "Record the current enabled/disabled state of the MCP app's 'Enable Built-in App Tools' setting (visible in the MCP Rule Server app settings page under Built-in App Integration). This is the gate that controls all manage_native_rules_and_apps sub-tools.",
+  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools ('Enable Built-in App Tools'). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health` are COMPLETELY ABSENT from the returned tool list -- NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. The gating design: when 'Enable Built-in App Tools' is off, all manage_native_rules_and_apps sub-tools disappear from the visible catalog entirely. Then re-enable the setting and confirm the tools reappear in tools/list.",
   "teardown_prompt": "Restore the MCP setting to its original state as recorded in setup."
 }
 ```
 
-**Expected**: With feature flag OFF, `tools/list` response does NOT include any of the four new native-RM tools. With feature flag ON, all four appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error — the tool surface must match the user's enablement state. **Aspirational** if the gating setting doesn't exist yet in Phase 2 — document in the output which gating mechanism is being tested.
+**Expected**: With 'Enable Built-in App Tools' OFF, `tools/list` does NOT include `create_native_app`, `update_native_app`, `delete_native_app`, or `check_rule_health`. With the setting ON, all four appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.
