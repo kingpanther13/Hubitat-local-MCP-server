@@ -4629,4 +4629,297 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def skipped = result?.settingsSkipped ?: []
         skipped.any { it?.key == "RelrDev_1" }
     }
+
+    // ---------- removeTrigger ----------
+
+    def "removeTrigger happy-path: deleteCon click fires, trigger disappears on first check"() {
+        given:
+        enableHubAdminWrite()
+        def deleteConFired = false
+        def verificationFetches = 0
+        def deletionConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (deleteConFired && !deletionConfirmed) {
+                verificationFetches++
+                // trigger 1 gone on the first post-click check
+                deletionConfirmed = true
+                statusJson(100, [[name: "tCapab2", value: "Switch"]])
+            } else if (!deleteConFired) {
+                // pre-click (backup + beforeIndices): both triggers present
+                statusJson(100, [[name: "tCapab1", value: "Motion"], [name: "tCapab2", value: "Switch"]])
+            } else {
+                // post-success health check and any subsequent fetches
+                statusJson(100, [[name: "tCapab2", value: "Switch"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "deleteCon") deleteConFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 1], confirm: true])
+
+        then: "success on the first verification check -- no retries needed"
+        result.success == true
+        result.removedIndex == 1
+        result.note?.contains("Removed trigger 1")
+
+        and: "only 1 verification fetch: attempt 0 sees trigger gone immediately"
+        verificationFetches == 1
+    }
+
+    def "removeTrigger returns success: false when triggerIdx not present in rule"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // only trigger 2 exists; caller asks to remove index 5
+            statusJson(100, [[name: "tCapab2", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 5], confirm: true])
+
+        then: "returns success: false with a descriptive error listing existing indices"
+        result.success == false
+        result.error?.contains("removeTrigger.index 5 not found")
+        result.error?.contains("2")
+    }
+
+    def "removeTrigger retry path: trigger disappears on second check after race recovery"() {
+        given:
+        enableHubAdminWrite()
+        def deleteConFired = false
+        def verificationFetches = 0
+        def deletionConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (deleteConFired && !deletionConfirmed) {
+                verificationFetches++
+                if (verificationFetches == 1) {
+                    // first post-click check: trigger still present (async dispatch race)
+                    statusJson(100, [[name: "tCapab1", value: "Motion"], [name: "tCapab2", value: "Switch"]])
+                } else {
+                    // second post-click check: trigger gone (race recovered)
+                    deletionConfirmed = true
+                    statusJson(100, [[name: "tCapab2", value: "Switch"]])
+                }
+            } else if (!deleteConFired) {
+                statusJson(100, [[name: "tCapab1", value: "Motion"], [name: "tCapab2", value: "Switch"]])
+            } else {
+                statusJson(100, [[name: "tCapab2", value: "Switch"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "deleteCon") deleteConFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 1], confirm: true])
+
+        then: "success after one retry -- race-recovery path"
+        result.success == true
+        result.removedIndex == 1
+
+        and: "at least 2 verification fetches: attempt 0 (still present) + attempt 1 (gone)"
+        verificationFetches >= 2
+    }
+
+    def "removeTrigger exhausts retries and returns success: false with diagnostic message"() {
+        given:
+        enableHubAdminWrite()
+        def deleteConFired = false
+        def verificationFetches = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (deleteConFired) {
+                verificationFetches++
+                // trigger never disappears -- all 4 retry attempts see it still present
+            }
+            statusJson(100, [[name: "tCapab1", value: "Motion"], [name: "tCapab2", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "deleteCon") deleteConFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 1], confirm: true])
+
+        then: "returns success: false after retry budget exhausted"
+        result.success == false
+        result.error?.contains("waited 10s")
+        result.error?.contains("get_app_config")
+        result.error?.contains("restore_item_backup")
+
+        and: "retry loop fired at least 4 times before exhausting"
+        verificationFetches >= 4
+    }
+
+    // ---------- modifyTrigger ----------
+
+    def "modifyTrigger happy-path: editCond click fires, tstate written, hasAll commits"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        // selectTriggers schema exposes tstate1 after editCond opens the wizard
+        def selectTriggersSchema = [
+            [name: "tstate1", type: "enum", options: ["on", "off"]]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", selectTriggersSchema)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            modifyTrigger: [index: 1, mods: [state: "on"]],
+            confirm: true
+        ])
+
+        then: "success"
+        result.success == true
+        result.modifiedIndex == 1
+        result.note?.contains("Modified trigger 1")
+
+        and: "editCond button click fired with correct stateAttribute"
+        posts.any { it.path == "/installedapp/btn" && it.body?.get("stateAttribute") == "editCond" && it.body?.name == "1" }
+
+        and: "tstate1 write was attempted"
+        posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[tstate1]") }
+
+        and: "hasAll commit fired"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+    }
+
+    def "modifyTrigger returns success: false when triggerIdx not present"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // only trigger 2 exists
+            statusJson(100, [[name: "tCapab2", value: "Motion"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            modifyTrigger: [index: 7, mods: [state: "active"]],
+            confirm: true
+        ])
+
+        then: "returns success: false with descriptive error listing existing indices"
+        result.success == false
+        result.error?.contains("modifyTrigger.index 7 not found")
+        result.error?.contains("2")
+    }
+
+    def "modifyTrigger returns success: false on unsupported mods fields (capability or deviceIds) with workaround hint"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            modifyTrigger: [index: 1, mods: [state: "on", capability: "Motion"]],
+            confirm: true
+        ])
+
+        then: "returns success: false with workaround guidance pointing to removeTrigger + addTrigger"
+        result.success == false
+        result.error?.contains("modifyTrigger currently only supports changing the trigger's state field")
+        result.error?.contains("removeTrigger + addTrigger")
+    }
+
+    def "modifyTrigger throws when mods is empty (no state field)"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            modifyTrigger: [index: 1, mods: [:]],
+            confirm: true
+        ])
+
+        then: "returns success: false because mods lacks the required 'state' key"
+        result.success == false
+        result.error?.contains("must include 'state'")
+    }
+
+    def "modifyTrigger returns success: false when trigger has no state field in schema (Time/Periodic trigger)"() {
+        given:
+        enableHubAdminWrite()
+        // selectTriggers schema does NOT include tstate1 -- simulating a Time or
+        // Periodic trigger whose wizard page only exposes scheduling fields.
+        def selectTriggersSchema = [
+            [name: "tCapab1", type: "enum", options: ["Time"]]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", selectTriggersSchema)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", value: "Time"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            modifyTrigger: [index: 1, mods: [state: "08:00"]],
+            confirm: true
+        ])
+
+        then: "returns success: false with explanation that Time triggers have no state field"
+        result.success == false
+        result.error?.contains("does not expose a 'state' field")
+
+        and: "hasAll was NOT clicked -- wizard was not committed after the skipped write"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+    }
 }

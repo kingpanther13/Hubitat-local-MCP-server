@@ -708,7 +708,7 @@ def getGatewayConfig() {
                 resume_rm_rule: "Resume a paused RM rule (RMUtils). Args: ruleId",
                 set_rm_rule_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
                 create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use update_native_app next to populate.",
-                update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic), click a page-transition button, or use a high-level structured shortcut (addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / walkStep). Auto-backs-up first. Args: appId, settings|button|<shortcut>, pageName (opt), stateAttribute (opt), confirm",
+                update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic), click a page-transition button, or use a high-level structured shortcut (addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / walkStep). Auto-backs-up first. Args: appId, settings|button|<shortcut>, pageName (opt), stateAttribute (opt), confirm",
                 delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 check_rule_health: "Inspect a rule for broken state (label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption). Args: appId. Returns {ok, issues, ...}. Auto-attached to update_native_app responses too."
             ],
@@ -2150,6 +2150,14 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     moveAction: [
                         type: "object",
                         description: "Move a single action up or down by one slot. Pass {index: <N>, direction: 'up'|'down'}. For arbitrary reorders, prefer replaceActions with the new order — that's a single atomic operation."
+                    ],
+                    removeTrigger: [
+                        type: "object",
+                        description: "Delete a single trigger by its index. Pass {index: <N>}. RM preserves remaining trigger indices (no renumbering on delete). updateRule fires after the deletion. Use addTrigger to add a replacement."
+                    ],
+                    modifyTrigger: [
+                        type: "object",
+                        description: "Change the state field of an existing trigger. Pass {index: <N>, mods: {state: '<new-state>'}}. Opens the editCond wizard for that trigger, writes tstate<N>, commits via hasAll, and fires updateRule. Scope: only the 'state' field is supported. To change a trigger's capability or deviceIds, use removeTrigger + addTrigger instead. Note: only device-state triggers (Switch, Motion, Contact, Lock, Presence, etc.) expose a state field. Time, Periodic Schedule, and Mode triggers don't have a state value -- attempting modifyTrigger on those will throw with a descriptive error suggesting removeTrigger + addTrigger as the workaround."
                     ],
                     walkStep: [
                         type: "object",
@@ -11477,6 +11485,135 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
 }
 
 /**
+ * Delete a single trigger at a specific index. The per-row delete button on
+ * selectTriggers has data-stateAttribute='deleteCon' (truncated, NOT 'deleteCond'
+ * — verified live 2026-05-05 via embeddedActions introspection on rule 289)
+ * and the form-input name is the trigger index as a digit (e.g. name='1'
+ * for trigger 1). RM's
+ * appButtonHandler dispatches on the stateAttribute and uses the name to
+ * identify which trigger to delete.
+ *
+ * After delete, RM does NOT renumber remaining triggers -- indices are
+ * preserved with gaps. Subsequent addTrigger picks the next free index
+ * via _rmCollectTriggerIndices.
+ *
+ * Post-click verification uses a retry loop identical to _rmDeleteAction's
+ * to absorb RM 5.1's asynchronous button-handler dispatch. The click returns
+ * HTTP 200 before the deletion has propagated to appSettings. Up to 4
+ * attempts are made with increasing delays (1s, 3s, 6s) for a max sleep
+ * budget of 10s. The 10s budget covers typical and slow hub propagation;
+ * on retry exhaustion the throw directs the caller to verify via
+ * get_app_config since the deletion may complete post-response.
+ */
+private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
+    def beforeIndices = _rmCollectTriggerIndices(appId)
+    if (!beforeIndices.contains(triggerIdx)) {
+        throw new IllegalArgumentException("removeTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
+    }
+    // The trigger-row Delete button on selectTriggers requires a TWO-POST
+    // sequence to actually delete (verified live 2026-05-05 via Chrome XHR
+    // capture against rule 290 + direct curl reproduction):
+    //
+    //   POST 1 — /installedapp/btn — minimal body: id, name=<idx>,
+    //            stateAttribute=deleteCon, settings[<idx>]=clicked,
+    //            <idx>.type=button. NO formAction/version/currentPage.
+    //            This registers the deletion intent. Returns 200
+    //            {"status":"success"} on its own but does NOT commit.
+    //
+    //   POST 2 — /installedapp/update/json — page-save with form context:
+    //            formAction=update, id, version, currentPage=selectTriggers,
+    //            pageBreadcrumbs=["mainPage"]. Triggers the button-handler
+    //            chain that processes the registered deletion intent.
+    //
+    // Including the form-context fields in POST 1 (the path
+    // _rmClickAppButton takes when pageName is provided) makes RM treat
+    // the click as a settings-save; the deletion intent gets dropped.
+    _rmClickAppButton(appId, triggerIdx.toString(), "deleteCon")
+    // POST 2: page-save commit. Pull version from the just-fetched config
+    // (cheap; we already have it locally if we want to reuse, but a fresh
+    // fetch keeps the helper self-contained).
+    def cfgForVersion = null
+    try { cfgForVersion = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception ignored) { /* best effort */ }
+    def commitBody = [
+        id: appId.toString(),
+        formAction: "update",
+        currentPage: "selectTriggers",
+        pageBreadcrumbs: '["mainPage"]'
+    ]
+    if (cfgForVersion?.app?.version != null) commitBody.version = cfgForVersion.app.version.toString()
+    try { hubInternalPostForm("/installedapp/update/json", commitBody) } catch (Exception postExc) {
+        mcpLog("warn", "rm-native", "_rmRemoveTrigger: page-save commit failed for app ${appId} trigger ${triggerIdx} (${postExc.message}) -- the deletion may not have committed; the verify retry loop below will catch it.")
+    }
+    // Verify the trigger actually disappeared. RM 5.1 processes the button
+    // click asynchronously; the click returns 200 OK before the deletion
+    // propagates to appSettings. Each attempt re-fetches the live index list;
+    // if the index is gone, we return immediately. Delays: 1s before attempt
+    // 2, 3s before attempt 3, 6s before attempt 4. Max additional wait ~10s
+    // on total failure. Faster hubs return on the first attempt with no delay.
+    def afterIndices = null
+    def retryDelaysMs = [1000, 3000, 6000]
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
+        afterIndices = _rmCollectTriggerIndices(appId)
+        if (!afterIndices.contains(triggerIdx)) {
+            return [success: true, removedIndex: triggerIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+        }
+    }
+    throw new IllegalStateException("removeTrigger(${triggerIdx}) waited 10s and trigger ${triggerIdx} is still present in rule ${appId}'s trigger list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. If the issue persists, use restore_item_backup to roll back to the pre-operation snapshot.")
+}
+
+/**
+ * Modify a single trigger's state field by opening the editCond wizard,
+ * writing the new tstate<N> value, and committing via hasAll.
+ *
+ * Wire format verified from RM 5.1's selectTriggers page: the per-row edit
+ * button has data-stateAttribute='editCond' and name=<idx>. After the click,
+ * the wizard exposes tstate<N> for device-state triggers (among other fields).
+ * The hasAll button commits the in-flight edit.
+ *
+ * Scope: only state-value changes (mods.state) are supported. Capability and
+ * deviceIds changes require removeTrigger + addTrigger because RM's wizard
+ * does not expose a capability-change path in an existing trigger slot.
+ */
+private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
+    def unsupported = mods.keySet() - ["state"]
+    if (unsupported) {
+        throw new IllegalArgumentException("modifyTrigger currently only supports changing the trigger's state field. Unsupported fields: ${unsupported.sort().join(', ')}. To change capability or deviceIds, use removeTrigger + addTrigger.")
+    }
+    if (!mods.containsKey("state")) {
+        throw new IllegalArgumentException("modifyTrigger.mods must include 'state'. Supported fields: state.")
+    }
+    def existingIndices = _rmCollectTriggerIndices(appId)
+    if (!existingIndices.contains(triggerIdx)) {
+        throw new IllegalArgumentException("modifyTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${existingIndices.sort().join(', ')}")
+    }
+    // Open the edit-condition wizard for this trigger.
+    _rmClickAppButton(appId, triggerIdx.toString(), "editCond", "selectTriggers")
+    // Write the modified state field through the schema-aware helper.
+    // applied/skipped track what was written vs. silently bypassed.
+    def applied = []
+    def skipped = []
+    _rmWriteSettingOnPage(appId, "selectTriggers", "tstate${triggerIdx}", mods.state, applied, null, skipped)
+    // Guard: if tstate<N> was not in the schema (e.g. Time or Periodic triggers
+    // have no state field), abort before committing via hasAll. Committing an
+    // empty wizard edit on a trigger that never accepted the write could leave
+    // the rule in an inconsistent state. The agent gets a descriptive error
+    // directing them to use removeTrigger + addTrigger instead.
+    def tstateName = "tstate${triggerIdx}".toString()
+    def schemaSkipped = skipped.find { it instanceof Map && it.key == tstateName && it.reason == "not_in_schema" }
+    if (schemaSkipped) {
+        throw new IllegalArgumentException(
+            "modifyTrigger: trigger ${triggerIdx} does not expose a 'state' field on selectTriggers schema. " +
+            "Time and Periodic triggers do not have a state value (they fire on schedule, not on a state change). " +
+            "Workaround: removeTrigger + addTrigger to reconfigure with the new shape."
+        )
+    }
+    // Commit the in-flight edit via hasAll on selectTriggers.
+    _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
+    return [success: true, modifiedIndex: triggerIdx, settingsApplied: applied, settingsSkipped: skipped]
+}
+
+/**
  * Delete every action on a rule via the trashAll → trashActs flow.
  * Verified live 2026-04-25:
  *
@@ -15421,9 +15558,11 @@ def toolUpdateNativeApp(args) {
     def replaceActionsList = args?.replaceActions instanceof List ? (args.replaceActions as List) : null
     def moveActionSpec = args?.moveAction instanceof Map ? args.moveAction : null
     def walkStepSpec = args?.walkStep instanceof Map ? args.walkStep : null
+    def removeTriggerSpec = args?.removeTrigger instanceof Map ? args.removeTrigger : null
+    def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
-            && !addRequiredExpressionSpec && !addLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) — none provided.")
+            && !addRequiredExpressionSpec && !addLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec) {
+        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -15439,7 +15578,9 @@ def toolUpdateNativeApp(args) {
         (clearActionsFlag ? "pre-clearActions" :
         (replaceActionsList != null ? "pre-replaceActions" :
         (moveActionSpec ? "pre-moveAction" :
-        (walkStepSpec ? "pre-walkStep" : "pre-update")))))))))))
+        (removeTriggerSpec ? "pre-removeTrigger" :
+        (modifyTriggerSpec ? "pre-modifyTrigger" :
+        (walkStepSpec ? "pre-walkStep" : "pre-update")))))))))))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
@@ -15557,6 +15698,58 @@ def toolUpdateNativeApp(args) {
                 : (moveActionSpec ? "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule fired."
                 : "Removed action ${removeActionSpec?.index}; updateRule fired."))
         ]
+    }
+
+    // Trigger mutation paths — single delete or single field-edit.
+    // updateRule fires after each so subscriptions bake from the
+    // updated trigger state.
+    if (removeTriggerSpec || modifyTriggerSpec) {
+        try {
+            if (removeTriggerSpec) {
+                if (removeTriggerSpec.index == null) throw new IllegalArgumentException("removeTrigger.index is required")
+                def trigIdx = (removeTriggerSpec.index as Integer)
+                def result = _rmRemoveTrigger(appId, trigIdx)
+                _rmClickAppButton(appId, "updateRule")
+                def health = _rmCheckRuleHealth(appId)
+                return [
+                    success: true,
+                    appId: appId,
+                    backup: backup,
+                    removedIndex: result.removedIndex,
+                    beforeIndices: result.beforeIndices,
+                    afterIndices: result.afterIndices,
+                    health: health,
+                    note: "Removed trigger ${trigIdx}; updateRule fired."
+                ]
+            }
+            if (modifyTriggerSpec) {
+                if (modifyTriggerSpec.index == null) throw new IllegalArgumentException("modifyTrigger.index is required")
+                if (!(modifyTriggerSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})")
+                def trigIdx = (modifyTriggerSpec.index as Integer)
+                def result = _rmModifyTrigger(appId, trigIdx, modifyTriggerSpec.mods as Map)
+                _rmClickAppButton(appId, "updateRule")
+                def health = _rmCheckRuleHealth(appId)
+                return [
+                    success: true,
+                    appId: appId,
+                    backup: backup,
+                    modifiedIndex: result.modifiedIndex,
+                    settingsApplied: result.settingsApplied,
+                    settingsSkipped: result.settingsSkipped,
+                    health: health,
+                    note: "Modified trigger ${trigIdx}; updateRule fired."
+                ]
+            }
+        } catch (Exception e) {
+            mcpLog("error", "rm-native", "trigger mutation failed for app ${appId}: ${e.message}")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                backup: backup,
+                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
+        }
     }
 
     if (addTriggerSpec) {
@@ -16842,7 +17035,7 @@ RMUtils-based control surface (Built-in App Tools gate only):
 
 Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
 - **create_native_app** — create a new empty classic SmartApp (RM 5.1 by default; appType enum covers rule_machine / button_controller / groups_scenes / notifier / visual_rule). Args: appType (default rule_machine), name, confirm. Returns appId. Call update_native_app afterward to populate; or pass triggers=[...] / actions=[...] arrays to populate in one call.
-- **update_native_app** — modify any classic SmartApp. Two raw modes (settings (Map) OR button (String)) plus 12 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically.
+- **update_native_app** — modify any classic SmartApp. Two raw modes (settings (Map) OR button (String)) plus 14 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).
 - **delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
 - **check_rule_health** — read-only health check on any installed app. Args: appId. Returns ok / configPageError / brokenMarkers / multipleFlagPoison / issues.
 
