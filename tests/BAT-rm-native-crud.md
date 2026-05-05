@@ -1,23 +1,25 @@
 # Bot Acceptance Test (BAT) Suite — Rule Machine Native CRUD
 
-Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the new native Rule Machine CRUD tools introduced by issue #120 Phase 2.
+Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the native Rule Machine CRUD tools in the `manage_native_rules_and_apps` gateway.
 
-**New tools exercised** (do not exist yet — FAIL until #120 Phase 2 lands):
+**New tools exercised** (native CRUD, shipped in the same PR as this file):
 
-- `manage_rule_machine.create_rm_rule`
-- `manage_rule_machine.update_rm_rule`
-- `manage_rule_machine.delete_rm_rule(ruleId, force?)`
-- `manage_rule_machine.get_rm_rule`
+- `manage_native_rules_and_apps.create_native_app` (appType=rule_machine)
+- `manage_native_rules_and_apps.update_native_app`
+- `manage_native_rules_and_apps.delete_native_app`
+- `manage_native_rules_and_apps.check_rule_health`
 
-**Existing tools also exercised** (already present in the repo, verified behavior — these SHOULD work today):
+**Existing tools also exercised** (already present in the repo, verified behavior):
 
-- `manage_rule_machine.list_rm_rules`
-- `manage_rule_machine.run_rm_rule(ruleId, action=...)` — supports `rule` / `actions` / `stop`
-- `manage_rule_machine.pause_rm_rule` / `resume_rm_rule`
-- `manage_rule_machine.set_rm_rule_boolean`
+- `manage_native_rules_and_apps.list_rm_rules`
+- `manage_native_rules_and_apps.run_rm_rule(ruleId, action=...)` -- supports `rule` / `actions` / `stop`
+- `manage_native_rules_and_apps.pause_rm_rule` / `resume_rm_rule`
+- `manage_native_rules_and_apps.set_rm_rule_boolean`
 - `manage_installed_apps.get_app_config` (used as fallback verification)
 
-**Status:** Every T### that calls a *new* tool will FAIL until #120 Phase 2 merges. Use this file as the acceptance bar for Phase 2 merge: every T### must pass before the implementation PR merges. The scope-expansion gateways (`manage_button_controllers`, `manage_basic_rules`, etc.) are tracked separately and not covered by these tests.
+**Note on legacy test-prompt tool names:** many individual test prompts in this file were written before the gateway was named and still reference `create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, and `get_rm_rule`. The actual implemented tool names are `create_native_app`, `update_native_app`, `delete_native_app` (no get_rm_rule -- use `get_app_config` from `manage_installed_apps` instead). When running these tests, map accordingly.
+
+**Status:** Use this file as the acceptance bar for the native CRUD tools: every T### must pass before declaring the feature stable.
 
 ## Test Format
 
@@ -48,12 +50,12 @@ Every test that creates or modifies a rule must assert, before tearing down. Ind
 
 Tests refer to these via the `[INV-N]` shorthand to keep terminology consistent across all 135 scenarios.
 
-Teardown prompts SHOULD explicitly `delete_rm_rule(<id>, force=true)` to clean up scratch rules. The `force=true` path uses the framework's `/installedapp/forcedelete/<id>/quiet` endpoint and succeeds regardless of child-app state — this is the BAT-standard cleanup pattern.
+Teardown prompts SHOULD explicitly call `delete_native_app(appId=<id>, force=true)` to clean up scratch rules. The `force=true` path uses the `/installedapp/forcedelete/<id>/quiet` endpoint and succeeds regardless of child-app state -- this is the BAT-standard cleanup pattern.
 
 ## Safety Rules
 
 - **All tests use the `BAT-RM-` prefix** for artifacts (rules, local variables). Cleanup grep targets that prefix.
-- **Teardown uses `delete_rm_rule(ruleId, force=true)`** to skip any mandatory-backup gate or child-app checks. The `force=true` flag is the BAT-standard cleanup; it uses the `/installedapp/forcedelete/<id>/quiet` endpoint which always succeeds.
+- **Teardown uses `delete_native_app(appId=ruleId, force=true)`** to skip any mandatory-backup gate or child-app checks. The `force=true` flag is the BAT-standard cleanup; it uses the `/installedapp/forcedelete/<id>/quiet` endpoint which always succeeds.
 - **Device commands only target BAT-created virtual devices** — never touch physical devices.
 - **No tests run against production RM rules** — agents must create their own scratch rule as the target.
 - Orphan-cleanup: every test SHOULD include a teardown that removes any rule it creates, even on assertion failure. Long-term orphans under RM parent are the #1 side-effect class for this surface.
@@ -146,16 +148,26 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: AI calls `update_rm_rule(ruleId, patch={logging: ['Events','Triggers','Actions'], dValues: true})`. `get_rm_rule(ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
 
-### T306 — Full round-trip: create with many fields at once
+### T306 — Full round-trip: many fields populated and surviving an updateRule re-init
 
 ```json
 {
-  "test_prompt": "Create a Rule Machine rule in a single call with ALL of these fields set at creation time: name='BAT-RM-Full Create', comments='Created in a single call with every rule-level field populated', useST=true, isFunction=false, logging=['Triggers','Actions'], dValues=true. Capture the returned ruleId. Then call get_rm_rule on that id and confirm every one of those fields round-trips. Report any field whose read value does not match what you sent.",
-  "teardown_prompt": "Delete the rule via delete_rm_rule(ruleId, force=true)."
+  "setup_prompt": "Create a scratch native RM rule via create_native_app(appType='rule_machine', name='BAT-RM-Full Create', confirm=true). Capture the returned appId.",
+  "test_prompt": "STEP 1 (populate in one update): Call update_native_app(appId=<id>, settings={comments: 'Created with every rule-level field populated', useST: true, isFunction: false, logging: ['Triggers','Actions'], dValues: true}, confirm=true). Verify the response reports configPageError=null and settingsApplied lists all five keys.\n\nSTEP 2 (read-back #1): Call get_app_config(appId=<id>, includeSettings=true). Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Call update_native_app(appId=<id>, button='updateRule', confirm=true). Verify configPageError is null.\n\nSTEP 4 (read-back #2, post re-init): Call get_app_config(appId=<id>, includeSettings=true). Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
+  "teardown_prompt": "Force-delete the rule via delete_native_app(appId=<id>, force=true, confirm=true)."
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine.create_rm_rule(name=..., comments=..., requiredExpression=true or useST=true, logging=[...], ...)` in one shot, then `get_rm_rule` confirms all six fields. Post-test invariants: [INV-1] `configPage.error == null`; logging remains an array of length 2; useST=true exposes required-expression editor section.
+**Expected**: AI calls `create_native_app` → `update_native_app(settings={...})` (single multi-field update) → `get_app_config` → `update_native_app(button='updateRule')` → `get_app_config` → `delete_native_app(force=true)`.
+
+**Pass criteria** (ALL must hold):
+- After STEP 2: `settings.comments`, `settings.useST`, `settings.isFunction`, `settings.logging`, `settings.dValues` all round-trip. `settings.logging` is a JSON array of exactly 2 strings `["Triggers","Actions"]` (NOT collapsed to the CSV string `"Triggers,Actions"`).
+- `app.label` round-trips as the rule name passed to `create_native_app`.
+- `useST=true` exposes the required-expression editor section (look for the 'Define Required Expression' paragraph on mainPage).
+- After STEP 4: every field from STEP 2 is still present with unchanged values; `logging` is still a 2-element array.
+- [INV-1] `configPage.error == null` in both read-backs.
+
+**Why two-step, not single-call**: `create_native_app` is deliberately minimal (appType + name). All rule-level fields (useST, logging, dValues, isFunction, comments) are written through `update_native_app`. The test still verifies the important round-trip property — five non-trivial fields applied in one `settings` map, persisting through an updateRule re-init — which is the regression surface that matters.
 
 ### T307 — Soft delete succeeds on childless rule
 
@@ -1121,6 +1133,8 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Calls `manage_rule_machine.create_rm_rule` with one required-expression condition, then `get_rm_rule` round-trips it. [INV-1] `configPage.error == null`. AI reports 1 condition, 1 trigger, and confirms the expression text matches.
 
+**LLM-discoverable path**: Use `update_native_app(addRequiredExpression={conditions: [{capability: 'Switch', deviceIds: [<id>], state: 'on'}]})`. The shortcut handles the full STPage walk (useST=true → navigate → cond=a → rCapab/rDev/state writes → hasAll → hasRule → done). Single-condition expressions don't need an `operator`. After commit, mainPage's paragraph renders the expression text and `cond=["<idx>"]` shows in settings (the cond counter is shared at the RM parent app, so idx may not start at 1 — that's expected, not a bug). Verified live 2026-04-26 — see `_rmAddRequiredExpression` in hubitat-mcp-server.groovy.
+
 ### T401 — Create rule with AND of two conditions in Required Expression
 
 ```json
@@ -1253,17 +1267,17 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Five distinct delay shapes (fixed, variable, per-mode, cancelable, cancel) all round-trip. Per-mode delay has entry per hub mode. Cancelable flag preserved on the 4th delay. [INV-1] `configPage.error == null`. **Diagnostic note**: this test intentionally bundles five delay variants. If it fails, re-run with only actions (1)+(6) (fixed + cancel) to isolate the canceling interaction, then (1)+(2) (fixed + variable) to isolate variable sourcing, then (3) alone (per-mode) to isolate per-mode encoding. A per-variant failure likely means one of those three sub-features broke; a joint failure likely means the action-list encoding / ordering is wrong.
 
-### T412 — Wait for Events: single, multiple-any, multiple-all, timeout, and-stays, elapsed-only
+### T412 — Wait for Events: single + multi-event-any (one waitEvents action; RM 5.1 platform limit)
 
 ```json
 {
-  "setup_prompt": "Create virtual contacts BAT-RM-WC1, BAT-RM-WC2, BAT-RM-WC3 and a virtual motion BAT-RM-WMo.",
-  "test_prompt": "Create rule 'BAT-RM-WaitEvents' triggered by BAT-RM-WMo becoming active. Actions: (1) Wait for Events: BAT-RM-WC1 opens (single); (2) Wait for Events: any of [BAT-RM-WC1 opens, BAT-RM-WC2 opens] with Timeout 0:00:30; (3) Wait for Events: All of these [BAT-RM-WC1 closes, BAT-RM-WC2 closes, BAT-RM-WC3 closes]; (4) Wait for Events: BAT-RM-WMo active And Stays 0:01:00 with Timeout 0:05:00; (5) Wait for Events — Elapsed Time only 0:00:10 (equivalent to cancelable delay). Read back and verify each wait variant preserves its option flags (any/all, timeout, and-stays duration, elapsed-only).",
-  "teardown_prompt": "Force-delete 'BAT-RM-WaitEvents'. Remove all four virtuals."
+  "setup_prompt": "Create virtual contacts BAT-RM-WC1, BAT-RM-WC2 and a virtual motion BAT-RM-WMo.",
+  "test_prompt": "Create rule 'BAT-RM-WaitEvents' triggered by BAT-RM-WMo becoming active. Action 1: Wait for Events with two events — BAT-RM-WC1 opens, BAT-RM-WC2 opens (any-of semantics). Then attempt to add a SECOND Wait for Events action: BAT-RM-WC1 closes. Verify: action 1 commits with both events bound; the second waitEvents addition fails-loud with an IllegalArgumentException whose message names the RM 5.1 platform limit and lists the workaround options (combine into one events array, split into chained sub-rules, wait at trigger layer).",
+  "teardown_prompt": "Force-delete 'BAT-RM-WaitEvents'. Remove all three virtuals."
 }
 ```
 
-**Expected**: Six distinct Wait for Events shapes. [INV-1] `configPage.error == null`. [INV-3] **CRITICAL**: Wait variants 2 and 3 bind multiple contact devices — assert `statusJson.appSettings[<wait-2-device-input>].multiple == true` AND `statusJson.appSettings[<wait-3-device-input>].multiple == true`. Wait-for-Events multi-device slots are a Phase 1 flag-poisoning vector on the action side (same bug class as tDev triggers). Timeout + and-stays durations preserved. **Diagnostic note**: this test bundles six Wait variants. If it fails, re-run with progressively fewer variants to isolate: start with (1) alone (single-event wait), add (2) (multi-any), add (3) (multi-all), add (4) (and-stays + timeout), add (5) (elapsed-only). The first variant whose addition breaks the test is the culprit encoding.
+**Expected**: Action 1 (single waitEvents with `events: [{capability: 'Contact', deviceIds: [<WC1>], state: 'open'}, {capability: 'Contact', deviceIds: [<WC2>], state: 'open'}]`) commits cleanly. [INV-1] `configPage.error == null`. [INV-3] **CRITICAL**: contact-sensor inputs preserve `multiple == true` flags (Wait-for-Events multi-device slots are a flag-poisoning vector on the action side, same bug class as tDev triggers). The second `addAction(waitEvents=...)` call returns `success: false` with `error` containing `"RM 5.1 platform limitation: only one Wait for Events action is supported per rule"` — verifying the fail-loud guard. **Why one action, not multiple**: RM 5.1 has no per-action storage for Wait for Events configuration; every waitEvents action shares global per-rule scratch settings (`tCapab-N`/`tDev-N`/`tstate-N`). Adding a second waitEvents action causes its wizard to inherit action 1's events as defaults, and any field change silently overwrites action 1's events. The Hubitat web UI exhibits the same bug — verified live 2026-05-04 via Chrome XHR capture. Until Hubitat fixes this at the platform level, the MCP tool refuses the second addition rather than corrupt the rule. **Variants NOT covered here** (timeout, And-Stays duration, Elapsed Time only, "All of these" semantics): each requires its own rule (one waitEvents action per rule, by RM 5.1 design), so cover them as separate scenarios T412a/T412b/etc. when needed.
 
 ### T413 — Wait for Expression: basic, timeout, Use Duration
 
@@ -1468,6 +1482,42 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `create_rm_rule` returns `{success:false}` with clear error about malformed expression OR missing device reference, OR hub returns [INV-1 violation: `configPage.error != null`]. No partial rule left behind. AI reports the validation failure without fabricating success.
+
+### T430b — Bug C: Required Expression formula assembled (no "(unused)" markers)
+
+```json
+{
+  "setup_prompt": "No setup.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T430b-BugC' with: (1) a Certain Time trigger at 3:00 AM, (2) a Required Expression with two Switch conditions joined by AND -- Condition A: switch device 1063 is on; Condition B: switch device 1080 is off. After creation, call get_app_config(appId=<ruleId>, includeSettings=true) and report ALL paragraph text from the mainPage. Confirm the render does NOT contain '(unused)' and does NOT contain 'Define Required Expression'.",
+  "teardown_prompt": "Force-delete BAT-RM-T430b-BugC."
+}
+```
+
+**Expected**: `create_rm_rule` (or the equivalent addRequiredExpression tool) bakes the expression formula via the Phase 2 expression-builder wizard. `get_app_config` mainPage paragraphs contain the baked condition text (e.g. "... is on AND ... is off") and do NOT contain "(unused)" or the "Define Required Expression" placeholder. Settings map contains `rCapab_2`, `useST='true'`. [INV-1] `configPage.error == null`.
+
+### T431b — Bug D: Action after Required Expression not wrapped in IF(**Broken Condition**)
+
+```json
+{
+  "setup_prompt": "No setup.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T431b-BugD' with: (1) a Certain Time trigger at 3:15 AM, (2) a Required Expression with Switch device 1063 is on AND Switch device 1080 is off, (3) a plain switch-on action on device 1063. After creation, call get_app_config(appId=<ruleId>) and report ALL paragraph text. Confirm the action renders as 'On: <device name>' NOT as 'IF (**Broken Condition**) ...'.",
+  "teardown_prompt": "Force-delete BAT-RM-T431b-BugD."
+}
+```
+
+**Expected**: After `addRequiredExpression` + `addAction`, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. This confirms `_rmClearPredCapabsViaGhostIfThen` fired after the expression-builder hasRule click and cleared the predCapabs leak. [INV-1] `configPage.error == null`.
+
+### T432b — Bug E: Sequential runCommand actions all render with parameters
+
+```json
+{
+  "setup_prompt": "No setup.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T432b-BugE' with: (1) a Certain Time trigger at 4:00 AM, (2) four sequential runCommand actions -- action 1: device 1072 setDisplay('on'), action 2: device 1121 setChildLock('on'), action 3: device 1072 setDisplay('off'), action 4: device 1121 setChildLock('off'). After creation, call get_app_config(appId=<ruleId>, includeSettings=true) and report ALL paragraph text from mainPage and the settingsApplied/settingsSkipped counts for each action. Confirm that all four actions render with their parameter (e.g., 'on' or 'off') and none show empty/missing parameter text.",
+  "teardown_prompt": "Force-delete BAT-RM-T432b-BugE."
+}
+```
+
+**Expected**: All four `addAction` calls complete with `settingsApplied` containing `cpType1.<N>` and `cpVal1.<N>` (or equivalent cpType slot). `get_app_config` paragraphs show each action rendering with its parameter value (e.g. "setDisplay(on)", "setChildLock(on)", etc.). No action shows a missing/empty parameter. This confirms the schema-aware cpType slot detection (Bug E fix): for actions 2+, the code correctly detects that `cpType1.N` is not in schema after `cCmd.N` write and falls through to the moreParams-click + discovery path. [INV-1] `configPage.error == null`.
 
 ## Section 5: HTTP endpoints + edge cases (T430–T449)
 
@@ -1733,10 +1783,10 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Record the current state of the MCP 'Enable Built-in App Tools' setting AND any new 'Enable Native RM CRUD Tools' setting (if #120 Phase 2 adds one). Note: this test assumes the legacy-gating design from the #120 Phase 3 plan — if the gating setting doesn't exist yet, mark this test aspirational.",
-  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools (either 'Enable Built-in App Tools' or a new 'Enable Native RM CRUD Tools' flag introduced by #120). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, `get_rm_rule` are COMPLETELY ABSENT from the returned tool list — NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. This matches the #120 Phase 3 design: 'When the legacy toggle is off, the custom-engine tools must not appear in the MCP tool list at all.' Same gating semantic applies to the new native-RM tools. Then re-enable the setting and confirm the tools reappear in tools/list.",
+  "setup_prompt": "Record the current enabled/disabled state of the MCP app's 'Enable Built-in App Tools' setting (visible in the MCP Rule Server app settings page under Built-in App Integration). This is the gate that controls all manage_native_rules_and_apps sub-tools.",
+  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools ('Enable Built-in App Tools'). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health` are COMPLETELY ABSENT from the returned tool list -- NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. The gating design: when 'Enable Built-in App Tools' is off, all manage_native_rules_and_apps sub-tools disappear from the visible catalog entirely. Then re-enable the setting and confirm the tools reappear in tools/list.",
   "teardown_prompt": "Restore the MCP setting to its original state as recorded in setup."
 }
 ```
 
-**Expected**: With feature flag OFF, `tools/list` response does NOT include any of the four new native-RM tools. With feature flag ON, all four appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error — the tool surface must match the user's enablement state. **Aspirational** if the gating setting doesn't exist yet in Phase 2 — document in the output which gating mechanism is being tested.
+**Expected**: With 'Enable Built-in App Tools' OFF, `tools/list` does NOT include `create_native_app`, `update_native_app`, `delete_native_app`, or `check_rule_health`. With the setting ON, all four appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.

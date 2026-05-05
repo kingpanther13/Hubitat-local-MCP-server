@@ -164,7 +164,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
         and: 'error lists allowed keys to help the caller correct'
         ex.message.contains('mcpLogLevel')
-        ex.message.contains('enableRuleEngine')
+        ex.message.contains('enableCustomRuleEngine')
 
         and: 'no settings were written when validation fails'
         sharedAppStub.settingsStore.isEmpty()
@@ -217,14 +217,14 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
         when:
         def result = script.toolUpdateMcpSettings([
-            settings: [enableRuleEngine: false],
+            settings: [enableCustomRuleEngine: false],
             confirm: true
         ])
 
         then:
         result.success == true
-        result.updated == [enableRuleEngine: false]
-        sharedAppStub.settingsStore['enableRuleEngine'] == [type: 'bool', value: false]
+        result.updated == [enableCustomRuleEngine: false]
+        sharedAppStub.settingsStore['enableCustomRuleEngine'] == [type: 'bool', value: false]
 
         and: 'the user-facing message warns about reconnecting to refresh schemas'
         result.message.contains('Updated 1 setting')
@@ -239,7 +239,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         def result = script.toolUpdateMcpSettings([
             settings: [
                 enableHubAdminRead: true,
-                enableBuiltinAppRead: true,
+                enableBuiltinApp: true,
                 debugLogging: false
             ],
             confirm: true
@@ -249,7 +249,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         result.success == true
         result.updated.size() == 3
         sharedAppStub.settingsStore['enableHubAdminRead'] == [type: 'bool', value: true]
-        sharedAppStub.settingsStore['enableBuiltinAppRead'] == [type: 'bool', value: true]
+        sharedAppStub.settingsStore['enableBuiltinApp'] == [type: 'bool', value: true]
         sharedAppStub.settingsStore['debugLogging'] == [type: 'bool', value: false]
         result.message.contains('Updated 3 setting')
     }

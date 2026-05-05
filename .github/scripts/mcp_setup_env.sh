@@ -8,9 +8,9 @@
 #         RUNNER_TEMP — GHA-provided temp dir; falls back to /tmp
 #
 # Toggles enabled (all in update_mcp_settings allowlist):
-#   - enableRuleEngine     (create_rule / update_rule / delete_rule paths)
-#   - enableHubAdminRead   (get_hub_info PII fields, list_hub_apps, etc.)
-#   - enableBuiltinAppRead (list_installed_apps, list_rm_rules)
+#   - enableCustomRuleEngine (custom_create_rule / custom_update_rule / custom_delete_rule paths)
+#   - enableHubAdminRead     (get_hub_info PII fields, list_hub_apps, etc.)
+#   - enableBuiltinApp       (list_installed_apps, list_rm_rules, native CRUD tools)
 #
 # Not touched here:
 #   - enableHubAdminWrite — excluded from update_mcp_settings allowlist by
@@ -44,15 +44,15 @@ if [ "$DEV_MODE" != "true" ]; then
   exit 1
 fi
 
-PRE_RULE_ENGINE="$(echo "$PRE_INFO_JSON"  | jq -r '.ruleEngineEnabled  // true')"
-PRE_HUB_READ="$(echo    "$PRE_INFO_JSON"  | jq -r '.hubAdminReadEnabled  // false')"
-PRE_BUILTIN_READ="$(echo "$PRE_INFO_JSON" | jq -r '.builtinAppReadEnabled // false')"
+PRE_RULE_ENGINE="$(echo "$PRE_INFO_JSON"  | jq -r '.customRuleEngineEnabled // false')"
+PRE_HUB_READ="$(echo    "$PRE_INFO_JSON"  | jq -r '.hubAdminReadEnabled    // false')"
+PRE_BUILTIN_READ="$(echo "$PRE_INFO_JSON" | jq -r '.builtinAppEnabled      // false')"
 
 jq -nc \
   --argjson re  "$PRE_RULE_ENGINE" \
   --argjson hr  "$PRE_HUB_READ" \
   --argjson br  "$PRE_BUILTIN_READ" \
-  '{enableRuleEngine: $re, enableHubAdminRead: $hr, enableBuiltinAppRead: $br}' \
+  '{enableCustomRuleEngine: $re, enableHubAdminRead: $hr, enableBuiltinApp: $br}' \
   > "$PRE_STATE_FILE"
 
 echo "Captured pre-run state -> $PRE_STATE_FILE"
@@ -60,7 +60,7 @@ cat "$PRE_STATE_FILE"
 
 # Enable everything E2E needs in a single batch. update_mcp_settings is
 # atomic — a single bad key would block the whole batch.
-mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"manage_mcp_self","arguments":{"tool":"update_mcp_settings","args":{"settings":{"enableRuleEngine":true,"enableHubAdminRead":true,"enableBuiltinAppRead":true},"confirm":true}}}}' \
+mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"manage_mcp_self","arguments":{"tool":"update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"enableHubAdminRead":true,"enableBuiltinApp":true},"confirm":true}}}}' \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
-echo "Test environment configured: enableRuleEngine=true, enableHubAdminRead=true, enableBuiltinAppRead=true"
+echo "Test environment configured: enableCustomRuleEngine=true, enableHubAdminRead=true, enableBuiltinApp=true"

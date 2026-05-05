@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolListRmRules (hubitat-mcp-server.groovy approx line 7644).
- * Gateway: manage_rule_machine -> list_rm_rules.
+ * Gateway: manage_native_rules_and_apps -> list_rm_rules.
  *
  * Covers: gate-throw, RM 5.x Map shape with Integer key coercion, RM 4.x
  * explicit-fields shape, dedup when same id in both, the "both-absent quiet
@@ -28,7 +28,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "throws when Built-in App Read is disabled"() {
         given:
-        settingsMap.enableBuiltinAppRead = false
+        settingsMap.enableBuiltinApp = false
 
         when:
         script.toolListRmRules([:])
@@ -40,7 +40,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "RM 5.x single-entry Map shape with mixed String/Integer keys coerces all ids to Integer"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'one entry has a String key, the other an Integer key'
         rmUtils.stubRuleList5 = [
@@ -60,7 +60,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "RM 4.x explicit-fields shape passes all fields through"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         rmUtils.stubRuleList4 = [
             [id: 100, label: 'Alpha', name: 'A', type: 'Rule-4.1']
@@ -80,7 +80,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "same rule id in both v4 and v5 appears exactly once (first-seen wins)"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         rmUtils.stubRuleList4 = [[id: 200, label: 'From v4', name: 'From v4', type: 'Rule-4.1']]
         rmUtils.stubRuleList5 = [[200: 'From v5']]
@@ -96,7 +96,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "both-absent quiet path: count=0, informational note, success NOT false"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'both versions throw NoClassDefFoundError (RM not installed)'
         rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
@@ -114,7 +114,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "both-absent via sandbox-wrapped 'Cannot get property helper' shape: quiet path"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         // The real Hubitat Groovy sandbox resolves unknown `hubitat.helper.X`
         // namespace lookups to null, and the subsequent property dereference
         // throws this shape -- verified via live probe during PR #79 review.
@@ -135,7 +135,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "both failed with mixed shapes returns success=false error mentioning both versions"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'v4 is class-missing but v5 is a hard RuntimeException -- not a quiet path'
         rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
@@ -152,7 +152,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "MissingMethodException mentioning getRuleList on one side is quiet (old firmware shape)"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'v4 throws an MME scoped to getRuleList (old firmware, no getRuleList overload)'
         rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method getRuleList() is applicable")
@@ -169,7 +169,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "MissingMethodException NOT scoped to getRuleList surfaces as a warning"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'v4 throws an MME for an unrelated method name (not getRuleList)'
         rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method setXYZ() is applicable")
@@ -186,7 +186,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "Cannot-get-property with 'helper' substring is quiet (hubitat.helper path)"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: "v4 throws the sandbox null-resolution error for hubitat.helper.RMUtils"
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
@@ -202,7 +202,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "Cannot-get-property WITHOUT 'helper' substring surfaces as a warning"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'v4 throws a Cannot-get-property error unrelated to the helper path'
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'label' on null object")
@@ -218,7 +218,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "hard RuntimeException on one side with other succeeding surfaces warning"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         rmUtils.throwOnGetRuleList4 = new RuntimeException("timeout")
         rmUtils.stubRuleList5 = [[900: 'My Rule']]
@@ -234,7 +234,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "registerRmRule skips entries with non-Integer-coercible keys and emits a sandbox-safe warn log"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'collect mcpLog calls via per-test metaClass override'
         // mcpLog is a script-local method (not inherited from AppExecutor /
@@ -280,11 +280,11 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to list_rm_rules"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         rmUtils.stubRuleList5 = [[10: 'Test Rule']]
 
         when:
-        def result = script.handleGateway('manage_rule_machine', 'list_rm_rules', [:])
+        def result = script.handleGateway('manage_native_rules_and_apps', 'list_rm_rules', [:])
 
         then:
         result.rules instanceof List

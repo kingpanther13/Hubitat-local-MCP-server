@@ -1,10 +1,10 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop architecture (22 core + 11 gateways = 33 on tools/list, 61 proxied, 83 total).
+Updated for the installed-apps + Rule Machine interop + native CRUD architecture (22 core + 12 gateways = 34 on tools/list, 67 proxied, 89 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
-> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the 139-scenario native-RM CRUD suite (T300–T452) — acceptance gate for issue #120 Phase 2. Those scenarios exercise tools that do not exist yet and will FAIL until Phase 2 lands.
+> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the 153-scenario native-RM CRUD suite (T300–T452) — acceptance gate for the `manage_native_rules_and_apps` CRUD tools (`create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health`). Those tools are shipped; all T300–T452 scenarios should pass against the current codebase.
 
 Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt`, and optional `teardown_prompt`. Run each prompt in the same AI session (setup → test → teardown). Each TEST SCENARIO starts a fresh session.
 
@@ -129,7 +129,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `get_device_events`. Returns recent on/off events.
 
-### T08 — list_rules
+### T08 — custom_list_rules
 
 ```json
 {
@@ -137,9 +137,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `list_rules`. Returns rule count, names, enabled/disabled status.
+**Expected**: Calls `custom_list_rules`. Returns rule count, names, enabled/disabled status.
 
-### T09 — get_rule
+### T09 — custom_get_rule
 
 ```json
 {
@@ -149,9 +149,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `get_rule` with rule ID. Returns full structure.
+**Expected**: Calls `custom_get_rule` with rule ID. Returns full structure.
 
-### T10 — create_rule
+### T10 — custom_create_rule
 
 ```json
 {
@@ -161,9 +161,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `create_rule` with proper structure and `testRule=true`.
+**Expected**: Calls `custom_create_rule` with proper structure and `testRule=true`.
 
-### T11 — update_rule
+### T11 — custom_update_rule
 
 ```json
 {
@@ -173,9 +173,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `update_rule` with modified trigger.
+**Expected**: Calls `custom_update_rule` with modified trigger.
 
-### T12 — update_rule enable/disable
+### T12 — custom_update_rule enable/disable
 
 ```json
 {
@@ -185,7 +185,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `update_rule` with `enabled=false`, verifies, calls `update_rule` with `enabled=true`, verifies.
+**Expected**: Calls `custom_update_rule` with `enabled=false`, verifies, calls `custom_update_rule` with `enabled=true`, verifies.
 
 ### T13 — update_device (label)
 
@@ -289,7 +289,7 @@ These ask the AI to do something that requires a **proxied tool** (behind a gate
 
 On v0.7.7 these tools are directly available — this section tests whether v0.8.0 gateway descriptions provide enough information for discovery.
 
-### T20 — Discover export_rule (manage_rules_admin)
+### T20 — Discover custom_export_rule (manage_rules_admin)
 
 ```json
 {
@@ -299,10 +299,10 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.7.7**: Calls `export_rule` directly.
-**Expected v0.8.0**: Finds `manage_rules_admin` → `export_rule`.
+**Expected v0.7.7**: Calls `export_rule` directly *(pre-custom_ rename; tool no longer exists on v0.8.0+)*.
+**Expected v0.8.0+**: Finds `manage_rules_admin` → `custom_export_rule`.
 
-### T21 — Discover clone_rule (manage_rules_admin)
+### T21 — Discover custom_clone_rule (manage_rules_admin)
 
 ```json
 {
@@ -312,9 +312,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_rules_admin` → `clone_rule`.
+**Expected v0.8.0**: Discovers `manage_rules_admin` → `custom_clone_rule`.
 
-### T22 — Discover test_rule (manage_rules_admin)
+### T22 — Discover custom_test_rule (manage_rules_admin)
 
 ```json
 {
@@ -324,9 +324,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_rules_admin` → `test_rule`.
+**Expected v0.8.0**: Discovers `manage_rules_admin` → `custom_test_rule`.
 
-### T23 — Discover import_rule round-trip (manage_rules_admin)
+### T23 — Discover custom_import_rule round-trip (manage_rules_admin)
 
 ```json
 {
@@ -336,7 +336,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_rules_admin` → `import_rule`.
+**Expected v0.8.0**: Discovers `manage_rules_admin` → `custom_import_rule`.
 
 ### T24 — Discover list_variables (manage_hub_variables)
 
@@ -609,7 +609,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_diagnostics` → `generate_bug_report`.
 
-### T53 — Discover get_rule_diagnostics (manage_diagnostics)
+### T53 — Discover custom_get_rule_diagnostics (manage_diagnostics)
 
 ```json
 {
@@ -619,7 +619,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_diagnostics` → `get_rule_diagnostics`.
+**Expected v0.8.0**: Discovers `manage_diagnostics` → `custom_get_rule_diagnostics`.
 
 ### T54 — Discover set_log_level (manage_logs)
 
@@ -735,12 +735,12 @@ These test gateway-specific behaviors: catalog mode, skip-catalog optimization, 
 ```json
 {
   "setup_prompt": "Create a test rule called 'BAT Proxy Test' with a time trigger and log action. Mark as test rule.",
-  "test_prompt": "Call the export_rule tool to export my rule 'BAT Proxy Test'.",
+  "test_prompt": "Call the custom_export_rule tool to export my rule 'BAT Proxy Test'.",
   "teardown_prompt": "Delete the rule 'BAT Proxy Test'."
 }
 ```
 
-**Expected**: AI recognizes `export_rule` is behind `manage_rules_admin` and routes correctly. Does NOT report "tool not found."
+**Expected**: AI recognizes `custom_export_rule` is behind `manage_rules_admin` and routes correctly. Does NOT report "tool not found."
 
 ### T65 — Wrong gateway for tool (error handling)
 
@@ -809,7 +809,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Uses `get_rule_diagnostics` or `get_rule`. Should notice the rule is disabled.
+**Expected**: Uses `custom_get_rule_diagnostics` or `custom_get_rule`. Should notice the rule is disabled.
 
 ### T75 — "What apps do I have installed?" → apps/drivers
 
@@ -841,7 +841,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `clone_rule`.
+**Expected**: Routes to `custom_clone_rule`.
 
 ### T78 — "Back up my rule" → rules admin
 
@@ -853,7 +853,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `export_rule`.
+**Expected**: Routes to `custom_export_rule`.
 
 ### T79 — "Show me the logs" → hub logs (not debug logs)
 
@@ -882,12 +882,12 @@ Complex scenarios spanning multiple tools and gateways.
 ```
 
 **Expected tools (v0.8.0)**:
-1. `create_rule` (core)
-2. `get_rule` (core)
-3. `manage_rules_admin(tool=test_rule)` (gateway)
-4. `update_rule` with `enabled=false` (core)
-5. `manage_rules_admin(tool=export_rule)` (gateway)
-6. `manage_rules_admin(tool=delete_rule)` (gateway)
+1. `custom_create_rule` (core)
+2. `custom_get_rule` (core)
+3. `manage_rules_admin(tool=custom_test_rule)` (gateway)
+4. `custom_update_rule` with `enabled=false` (core)
+5. `manage_rules_admin(tool=custom_export_rule)` (gateway)
+6. `manage_rules_admin(tool=custom_delete_rule)` (gateway)
 
 ### T81 — Virtual device workflow
 
@@ -938,7 +938,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: Core tools (`manage_virtual_device` x2, `create_rule`, `get_rule`) and `manage_rules_admin` (`test_rule`).
+**Expected**: Core tools (`manage_virtual_device` x2, `custom_create_rule`, `custom_get_rule`) and `manage_rules_admin` (`custom_test_rule`).
 
 ### T86 — Variable round-trip workflow
 
@@ -966,7 +966,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: Routes to `delete_rule`, not `delete_device`.
+**Expected**: Routes to `custom_delete_rule`, not `delete_device`.
 
 ### T91 — "Health" ambiguity (hub vs device)
 
@@ -1052,7 +1052,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `get_rule` returns error. AI reports rule not found.
+**Expected**: `custom_get_rule` returns error. AI reports rule not found.
 
 ### T102 — Send command to non-existent device
 
@@ -1073,7 +1073,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `create_rule` returns validation error.
+**Expected**: `custom_create_rule` returns validation error.
 
 ### T104 — Gateway anti-recursion (v0.8.0)
 
@@ -1125,6 +1125,37 @@ Run on hub with zero rooms. **Expected**: Returns empty list, not an error.
 
 Run with no devices selected for MCP access. **Expected**: Returns empty list or message about no devices.
 
+### T109 — addAction partial=true is not a failure (Finding #4)
+
+Tests that agents correctly interpret the `partial=true` flag from `update_native_app(addAction)`.
+Per Finding #4 (shipped in commit `95654ad`), `success` and `partial` are orthogonal:
+- `success: true, partial: false` -- all fields landed cleanly
+- `success: true, partial: true` -- action committed but some sidecar fields were silently rejected by RM's wizard schema (e.g. `onOff.1` after `onOffSwitch.1` writes). **This is cosmetic when `health.ok=true`.**
+- `success: false` -- primary commit failed; rule may be inconsistent
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Partial Test Switch'. Note its device ID.",
+  "test_prompt": "Using update_native_app with addAction, add a 'Switch: on' action targeting 'BAT Partial Test Switch' to a new RM rule called 'BAT Finding4 Rule'. The addAction response may return partial=true -- interpret this response correctly and report whether the action was successfully added to the rule.",
+  "teardown_prompt": "Delete the rule 'BAT Finding4 Rule'. Delete the virtual switch 'BAT Partial Test Switch'."
+}
+```
+
+**Expected**:
+- Agent calls `manage_native_rules_and_apps(tool=create_native_app)` to create the rule, then `manage_native_rules_and_apps(tool=update_native_app, args={addAction: ...})`.
+- The response returns `{success: true, partial: true, ...}` (empirically observed for Switch actions).
+- Agent does NOT panic, does NOT call `removeAction`, does NOT retry the `addAction` (which would create a duplicate).
+- Agent calls `manage_installed_apps(tool=get_app_config, args={appId: ..., includeSettings: true})` OR `manage_native_rules_and_apps(tool=update_native_app, args={walkStep: {page: "mainPage", operation: "introspect"}})` to verify the action rendered correctly in the rule.
+- Agent reports the action was added successfully, noting the partial flag was cosmetic.
+
+**What an agent must NOT do**:
+- Interpret `partial: true` as a failure requiring cleanup or retry.
+- Call `removeAction` to "undo" the partial action (it committed fully -- removing it deletes a working action).
+- Retry `addAction` for the same action (produces a duplicate row).
+- Report to the user that the operation failed when `health.ok=true` and the action paragraph renders correctly.
+
+**Acceptance criterion**: Agent reports success, the rule's mainPage render shows the action (e.g. "On: BAT Partial Test Switch"), and no duplicate action rows exist.
+
 ---
 
 ## Section 8: Comparison/Regression Tests
@@ -1173,7 +1204,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 }
 ```
 
-**v0.7.7**: Calls `export_rule` directly. **v0.8.0**: Via `manage_rules_admin`. Compare extra turns for discovery.
+**v0.7.7**: Calls `export_rule` directly *(pre-custom_ rename)*. **v0.8.0+**: Via `manage_rules_admin(tool=custom_export_rule)`. Compare extra turns for discovery.
 
 ### T114 — Hub logs (moved to gateway in v0.8.0)
 
@@ -1194,7 +1225,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 }
 ```
 
-**v0.7.7**: `delete_rule` directly. **v0.8.0**: Via `manage_rules_admin`. Did AI try direct call first and fail?
+**v0.7.7**: `delete_rule` directly *(pre-custom_ rename)*. **v0.8.0+**: Via `manage_rules_admin(tool=custom_delete_rule)`. Did AI try direct call first and fail?
 
 ### T116 — Multi-tool hub status (regression baseline)
 
@@ -1359,7 +1390,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `list_rules`.
+**Expected**: `custom_list_rules`.
 **Equivalent to**: T08
 
 #### T211 — Walk me through this automation
@@ -1372,7 +1403,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_rule`.
+**Expected**: `custom_get_rule`.
 **Equivalent to**: T09
 
 #### T212 — Build me an automation
@@ -1385,7 +1416,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `create_rule` with time trigger and log action, `testRule=true`.
+**Expected**: `custom_create_rule` with time trigger and log action, `testRule=true`.
 **Equivalent to**: T10
 
 #### T213 — Change when my automation runs
@@ -1398,7 +1429,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `update_rule` with modified trigger time.
+**Expected**: `custom_update_rule` with modified trigger time.
 **Equivalent to**: T11
 
 #### T214 — Pause and unpause an automation
@@ -1411,7 +1442,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `update_rule` with `enabled=false`, verify, `update_rule` with `enabled=true`, verify.
+**Expected**: `custom_update_rule` with `enabled=false`, verify, `custom_update_rule` with `enabled=true`, verify.
 **Equivalent to**: T12
 
 #### T215 — Save a backup of my automation
@@ -1424,7 +1455,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `export_rule`.
+**Expected**: `custom_export_rule`.
 **Equivalent to**: T20
 
 #### T216 — Duplicate an automation
@@ -1437,7 +1468,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `clone_rule`.
+**Expected**: `custom_clone_rule`.
 **Equivalent to**: T21
 
 #### T217 — Simulate an automation
@@ -1450,7 +1481,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `test_rule` (dry run).
+**Expected**: `custom_test_rule` (dry run).
 **Equivalent to**: T22
 
 #### T218 — Restore an automation from backup
@@ -1463,7 +1494,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `import_rule`.
+**Expected**: `custom_import_rule`.
 **Equivalent to**: T23
 
 #### T219 — Get rid of an automation
@@ -1475,7 +1506,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `delete_rule`.
+**Expected**: `custom_delete_rule`.
 **Equivalent to**: T115
 
 ---
@@ -1904,7 +1935,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_rule_diagnostics` or `get_rule`. Should notice the rule is disabled.
+**Expected**: `custom_get_rule_diagnostics` or `custom_get_rule`. Should notice the rule is disabled.
 **Equivalent to**: T53, T74
 
 #### T282 — Too much noise in the logs
@@ -1996,7 +2027,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected tools**: `create_rule` → `get_rule` → `test_rule` → `update_rule(enabled=false)` → `export_rule` → `delete_rule`.
+**Expected tools**: `custom_create_rule` → `custom_get_rule` → `custom_test_rule` → `custom_update_rule(enabled=false)` → `custom_export_rule` → `custom_delete_rule`.
 **Equivalent to**: T80
 
 #### T296 — Virtual device end-to-end
@@ -2052,7 +2083,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `manage_virtual_device` (x2) → `create_rule` → `get_rule` → `test_rule`.
+**Expected**: `manage_virtual_device` (x2) → `custom_create_rule` → `custom_get_rule` → `custom_test_rule`.
 **Equivalent to**: T85
 
 #### T301 — Variable round-trip
@@ -2142,14 +2173,14 @@ These operations are too destructive for automated testing. Test manually with e
 | Core tools on `tools/list` | 22 |
 | Gateways on `tools/list` | 12 |
 | Total visible on `tools/list` | 34 |
-| Tools proxied behind gateways | 63 |
-| Total tools in codebase | 85 |
+| Tools proxied behind gateways | 67 |
+| Total tools in codebase | 89 |
 
-**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_rule_machine` (5), `manage_mcp_self` (1)
+**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (9), `manage_mcp_self` (1)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 83 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 86 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2159,13 +2190,13 @@ Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests 
 
 ## Section 11: Built-in App Integration Tests
 
-Tools in this section have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the `Enable Built-in App Tools` toggle (`requireBuiltinAppRead`). `get_app_config` and `list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `manage_rule_machine` tools require `Enable Built-in App Tools`. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+Tools in this section have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the `Enable Built-in App Tools` toggle (`requireBuiltinApp`). `get_app_config` and `list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `manage_native_rules_and_apps` tools require `Enable Built-in App Tools`; CRUD tools additionally require Hub Admin Write. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
 
 ### Safety Rules for Section 11
 
 - Tests are **read-only or reversibly-trigger** — no create/modify/delete of RM rules or RL instances (platform blocks that anyway)
 - `run_rm_rule`, `pause_rm_rule`, `resume_rm_rule`, `set_rm_rule_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
-- Tests skip entirely if Built-in App Tools is disabled — that's the expected behavior of `requireBuiltinAppRead()`
+- Tests skip entirely if Built-in App Tools is disabled — that's the expected behavior of `requireBuiltinApp()`
 
 ### T200 — List installed apps (default)
 
@@ -2195,7 +2226,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: Calls `manage_rule_machine.list_rm_rules`. Returns list with ids and labels. AI reports count. If Rule Machine is not installed, AI gracefully reports "none found" or equivalent.
+**Expected**: Calls `manage_native_rules_and_apps.list_rm_rules`. Returns list with ids and labels. AI reports count. If Rule Machine is not installed, AI gracefully reports "none found" or equivalent.
 
 ### T203 — Find apps using a device
 
@@ -2228,7 +2259,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 
 **Expected**: AI calls `manage_installed_apps` with no args, sees catalog of 2 tools (`list_installed_apps`, `get_device_in_use_by`) with full parameter schemas.
 
-### T206 — Gateway catalog discovery (manage_rule_machine)
+### T206 — Gateway catalog discovery (manage_native_rules_and_apps)
 
 ```json
 {
@@ -2236,17 +2267,17 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: AI calls `manage_rule_machine` with no args, sees 5 tools. AI describes them (list/run/pause/resume/set_boolean).
+**Expected**: AI calls `manage_native_rules_and_apps` with no args, sees 9 tools. AI describes them (list/run/pause/resume/set_boolean + create/update/delete native app + check_rule_health).
 
-### T207 — AI correctly refuses RM rule creation
+### T207 — AI uses native RM rule creation via manage_native_rules_and_apps
 
 ```json
 {
-  "test_prompt": "Create a new Rule Machine rule that turns on Kitchen Light when motion is detected."
+  "test_prompt": "Create a new Rule Machine rule named 'BAT-Motion-Light' that turns on Kitchen Light when motion is detected."
 }
 ```
 
-**Expected**: AI recognizes RM creation is not supported and either (a) creates an MCP rule via `create_rule` instead (and explains the distinction), or (b) tells the user to use the native RM UI. Does NOT invent a fake RM create tool or pretend to call one.
+**Expected**: AI calls `manage_native_rules_and_apps.create_native_app` (appType=rule_machine) to create the rule, then `update_native_app` to add the motion trigger and switch action. Returns the new appId. Does NOT fall back to `custom_create_rule` (that creates an MCP-engine rule, not a native RM rule).
 
 ### T208 — AI correctly refuses Room Lighting creation
 
@@ -2256,7 +2287,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: AI explains Room Lighting cannot be created via MCP (platform blocks third-party apps from instantiating built-in app children). Suggests native RL UI. Does not fabricate a fake tool.
+**Expected**: AI attempts `manage_native_rules_and_apps.create_native_app` for Room Lighting. Since Room Lighting is not yet in the `_appTypeRegistry`, the tool returns an error listing supported appTypes. AI relays the error and suggests using the native UI. Does not fabricate a fake result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 
@@ -2445,18 +2476,18 @@ These tests exercise the Developer Mode self-administration surface — the `man
 ```json
 {
   "setup_prompt": "Developer Mode is enabled and Hub Admin Write is enabled.",
-  "test_prompt": "Use update_mcp_settings to set both enableHubAdminRead=true and enableBuiltinAppRead=true in a single call."
+  "test_prompt": "Use update_mcp_settings to set both enableHubAdminRead=true and enableBuiltinApp=true in a single call."
 }
 ```
 
-**Expected**: AI passes both keys in one `settings` map. Result: `{success:true, updated:{enableHubAdminRead:true, enableBuiltinAppRead:true}, message:"Updated 2 setting(s)..."}`. Both settings persist. The all-or-nothing pre-validation means a single bad key would have rejected the entire batch before any write — verifiable by re-running with one good and one bad key and confirming neither was applied.
+**Expected**: AI passes both keys in one `settings` map. Result: `{success:true, updated:{enableHubAdminRead:true, enableBuiltinApp:true}, message:"Updated 2 setting(s)..."}`. Both settings persist. The all-or-nothing pre-validation means a single bad key would have rejected the entire batch before any write — verifiable by re-running with one good and one bad key and confirming neither was applied.
 
 ### T223 — update_mcp_settings includes a reconnect hint after toggling enable* flags
 
 ```json
 {
   "setup_prompt": "Developer Mode is enabled.",
-  "test_prompt": "Use update_mcp_settings to flip enableRuleEngine to false, then back to true."
+  "test_prompt": "Use update_mcp_settings to flip enableCustomRuleEngine to false, then back to true."
 }
 ```
 
@@ -2501,8 +2532,8 @@ These tests exercise the Developer Mode self-administration surface — the `man
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 11 gateways (33 total, 83 tools)** post installed-apps + RM interop + list_app_pages (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
-2. **Merged tools**: `enable_rule`/`disable_rule` → `update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **22 core + 12 gateways (34 total, 89 tools)** post installed-apps + RM interop + native CRUD + list_app_pages (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+2. **Merged tools**: `enable_rule`/`disable_rule` → `custom_update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
 5. **Gateway renames**: `manage_hub_maintenance` → `manage_destructive_hub_ops` (3 tools); `manage_code_changes` → `manage_app_driver_code` (7 tools)
@@ -2511,3 +2542,215 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
 10. **Corrected test count**: 159 → 172 (was undercounted in v1)
+
+---
+
+## Appendix: RM Wizard-State Leak Probe (wizard_probe.py)
+
+See [`tests/wizard_probe.py`](./wizard_probe.py) and [`tests/wizard_probe_matrix.yaml`](./wizard_probe_matrix.yaml).
+
+These are not BAT scenarios (they run autonomously, not via AI session prompts), but they test the same system surface and are documented here for discoverability.
+
+### What the probe does
+
+The wizard probe systematically tests RM 5.1 wizard sub-flow sequences that have historically produced "**Broken Condition**" markers, silent setting rejections, or mis-labeled action rows when wizard accumulator state leaks across operations.
+
+For each probe:
+1. Creates a fresh RM rule via `manage_native_rules_and_apps create_native_app`
+2. Executes a sequence of `update_native_app` calls (addTrigger, addRequiredExpression, addAction, etc.)
+3. Snapshots the rule's `mainPage` render via `manage_installed_apps get_app_config` after each step
+4. Evaluates expectations against the final render (e.g. `Broken Condition` must NOT be present)
+5. Deletes the test rule in a `try/finally` block regardless of outcome
+
+### How to run
+
+```bash
+# Full matrix (all 25 probes)
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml
+
+# Single probe
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --probe A1_addRE_then_addAction
+
+# Group only
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --group A
+
+# With baseline comparison (regression check after firmware upgrade)
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml \
+  --baseline tests/wizard_probe_results/20260501_231240.json
+
+# Clean up stale _PROBE_* rules from failed prior runs
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --cleanup
+
+# Auto-create a hub backup if none exists (skips interactive prompt)
+uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
+  --matrix tests/wizard_probe_matrix.yaml --auto-backup
+```
+
+### Config
+
+Hub connection from `tests/e2e_config.json` (same format as `e2e_test.py`), with env var overrides:
+- `HUB_URL` (or `HUBITAT_HUB_URL`) -- required (no default; set via env var or e2e_config.json)
+- `MCP_APP_ID` (or `HUBITAT_APP_ID`) -- required (no default; set via env var or e2e_config.json)
+- `MCP_ACCESS_TOKEN` (or `HUBITAT_ACCESS_TOKEN`)
+
+### Output
+
+Results written to `tests/wizard_probe_results/<timestamp>.json` and `.md`.
+Non-zero exit code if any probe fails (useful as CI gate).
+
+### How to add new probes
+
+1. Add an entry to `tests/wizard_probe_matrix.yaml` under `probes:`.
+2. Choose a `group` (A/B/C/D or a new letter), a unique `name`, and a `description`.
+3. List `steps:` as a sequence of single-key operation dicts (see existing probes for shapes).
+4. Declare `expect:` assertions -- at minimum `final_render_NOT_contains: "Broken Condition"`.
+5. Use `$switch`, `$contact`, etc. to reference devices from `device_pool` (resolved to integer IDs at runtime).
+6. If the step shape is not yet known, set `expect: { skip: true, todo: "<note>" }` to mark it as TODO without failing.
+
+**Available step ops:**
+
+| Step key | Description |
+|---|---|
+| `addTrigger` | High-level addTrigger spec (capability + fields) |
+| `addAction` | High-level addAction spec (capability + fields) |
+| `addRequiredExpression` | High-level RE spec (conditions list) |
+| `addTriggers` | Bulk list of trigger specs |
+| `addActions` | Bulk list of action specs |
+| `replaceActions` | Replace entire action list atomically |
+| `clearActions: true` | Delete all actions |
+| `removeAction` | Delete action at `{index: N}` |
+| `moveAction` | Move action at `{index: N, direction: up/down}` |
+| `addLocalVar` | Add local variable `{name, type, value}` |
+| `settings` | Raw settings map write |
+| `button` | Page-transition button click by name |
+| `setLabel` | Set rule title (shorthand for `settings: {ruleTitle: ...}`) |
+| `pauseRule: true` | Click pausRule button |
+| `resumeRule: true` | Click resRule button |
+| `updateRule: true` | Click updateRule button |
+| `getAppConfig: true` | Read-only snapshot (no mutation) |
+
+**Available expect keys:**
+
+| Key | Assertion |
+|---|---|
+| `final_render_NOT_contains` | String must NOT appear in concatenated paragraph text |
+| `final_render_contains` | String must appear in paragraph text |
+| `final_settings_contains_key` | Key must be present in settings map |
+| `final_settings_value` | Dict of `{key: expected_value}` equality assertions |
+| `no_step_errors` | No step returned an error |
+| `health_ok` | Rule health check embedded in snapshot must be ok |
+| `skip: true` | Mark probe as TODO (always passes, noted as skipped) |
+| `todo` | Narrative reason for the skip |
+
+### Baseline mode (regression checks)
+
+After a baseline run, save the JSON output path. On the next run (e.g., after a firmware upgrade), pass `--baseline <path>` to emit a diff showing which probes newly fail, newly pass, or have changed render output. This catches silent RM behavior regressions.
+
+### Current probe status (as of 2026-05-02)
+
+**All 25 probes: PASS** -- Bug #77 fix (ghost ifThen predCapabs clear) deployed and verified. Full 25-probe matrix run recorded in `tests/wizard_probe_results/20260502_014427.md`.
+
+### Known false positives / probe quirks
+
+- **A6** (STPage sub-expression): uses a simplified 3-condition RE rather than a true sub-expression because the sub-expression `{subExpression: ...}` shape has not been validated live. The simplified form is still a useful regression gate for multi-condition RE behavior.
+- **A10** (walkStep introspect): uses `getAppConfig: true` as a read-only substitute for the walkStep introspect path, because the exact mid-edit walkStep shape is not yet validated live. The probe still covers the primary concern (read-only snapshot does not corrupt actNdx).
+- The "Local Variables" HTML table paragraph in the render text is long and present in all rules; it does not indicate a bug.
+
+### Diag mode -- `quick_probe()` importable API
+
+The matrix runner is for regression -- enumerate known patterns and assert outcomes.
+When investigating a *new* suspected bug or verifying a fix hypothesis, the same
+plumbing is available as a one-liner Python call via `quick_probe()`.
+
+**When to use diag mode vs the matrix:**
+
+| Scenario | Use |
+|---|---|
+| Firmware upgrade regression check | `--matrix` runner |
+| After a code deploy (issue #77 class) | `--matrix` runner |
+| Investigating a new suspected state leak | `quick_probe()` diag mode |
+| Verifying a single step's side-effect (e.g. cancel vs done) | `quick_probe()` diag mode |
+| Reproducing a specific wizard-state hypothesis live | `quick_probe()` diag mode |
+
+**Import and basic usage:**
+
+```python
+from tests.wizard_probe import HubitatMcpClient, load_config, quick_probe
+
+config = load_config()
+client = HubitatMcpClient(
+    config["hub_url"], config["app_id"], config["access_token"], verbose=True
+)
+client.initialize()
+
+result = quick_probe(client, "my_hypothesis", steps=[
+    {"addRequiredExpression": {"conditions": [
+        {"capability": "Switch", "deviceIds": [1063], "state": "on"}
+    ]}},
+    {"addAction": {"capability": "Switch", "deviceIds": [1063], "command": "on"}},
+])
+
+print(result["final"]["render"])    # joined paragraph text from mainPage
+print(result["final"]["broken"])    # True if "Broken Condition" present
+print(result["errors"])             # list of step errors; [] = all steps succeeded
+```
+
+**Return shape:**
+
+| Field | Type | Description |
+|---|---|---|
+| `app_id` | `int \| None` | Created rule's appId (None on create failure) |
+| `snapshots` | `list[dict]` | Per-step snapshots (`{step_index, op, paragraphs, settings, error}`) |
+| `final` | `dict` | Convenience: `{render, broken, paragraphs, settings, error}` |
+| `errors` | `list[str]` | Step-level errors (empty = all OK) |
+| `status` | `str` | `"pass"` (no step errors), `"fail"` (step errors), or `"error"` (exception) |
+| `duration_s` | `float` | Wall-clock seconds |
+
+Always cleans up the test rule via `try/finally` -- a crashed diag script will not leave stale `_PROBE_*` rules. Use `--cleanup` flag as a backstop if a process-kill interrupts before the finally block.
+
+**Escape-hatch step types (diag mode only):**
+
+The matrix YAML step ops cover the high-level `update_native_app` arguments. For low-level investigation you sometimes need to fire a raw button click or raw settings write on a specific page mid-sequence. Two escape hatches exist:
+
+`raw_button` -- direct button click on a named page:
+
+```python
+{"raw_button": {"page": "doActPage", "name": "actionCancel"}}
+# Optional: state_attribute for stateAttribute body field
+{"raw_button": {"page": "selectActions", "name": "N", "state_attribute": "doActN"}}
+```
+
+`raw_setting` -- direct settings write on a named page:
+
+```python
+{"raw_setting": {"page": "doActPage",
+                 "settings": {"actType.1": "condActs", "actSubType.1": "getIfThen"}}}
+```
+
+These map to `walkStep` calls (the MCP tool's single-step wizard walker):
+- `raw_button` uses `operation: "click"` with the named button
+- `raw_setting` uses `operation: "write"` once per key (walkStep.write allows exactly one key per call)
+
+Use sparingly -- direct page manipulation can leave the hub app in states that the
+high-level tools don't expect.
+
+**Demo script:**
+
+`tests/wizard_probe_examples/diag_demo.py` is a worked example that reproduces the
+Variant Y finding from the Issue #77 investigation (actionCancel vs actionDone after
+condActs+getIfThen write). Run it against the live hub to verify the ghost ifThen
+sequence behaves as documented:
+
+```bash
+cd Hubitat-local-MCP-server
+uv run --python 3.12 --with pyyaml tests/wizard_probe_examples/diag_demo.py
+# Expected: broken: False, errors: [], status: pass
+```
+
+Set `DEVICE_ID=<id>` to override the default switch device ID (1063).
+- The warning paragraph about "Do not use back button" is also normal and does not indicate a bug.

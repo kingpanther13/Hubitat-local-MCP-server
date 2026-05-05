@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 85 MCP tools (34 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 89 MCP tools (34 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 85 tools total — 22 core tools are always visible, while 63 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 89 tools total — 22 core tools are always visible, while 67 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable.
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (85 total — 34 on tools/list)
+### MCP Tools (89 total — 34 on tools/list)
 
-The server has 85 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **63 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 89 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **67 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (22) — Always visible on tools/list
 
@@ -245,10 +245,13 @@ The server has 85 tools total. To keep the MCP `tools/list` manageable, **22 cor
 
 | Tool | Description |
 |------|-------------|
-| `list_rules` | List all rules with status |
-| `get_rule` | Full rule details (triggers, conditions, actions) |
-| `create_rule` | Create a new automation rule |
-| `update_rule` | Update rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
+| `custom_list_rules` | List all custom-engine rules with status |
+| `custom_get_rule` | Full custom-engine rule details (triggers, conditions, actions) |
+| `custom_create_rule` | Create a new custom-engine automation rule (separate from native Rule Machine) |
+| `custom_update_rule` | Update custom-engine rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
+| `create_native_app` | Create a NATIVE classic SmartApp (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / Basic Rules / etc.). Appears under Apps / Automations like a normally-created app. |
+| `update_native_app` | Modify any classic native app by appId (multiple=true contract automatic, snapshot-before-write) |
+| `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager) |
 
 </details>
 
@@ -305,7 +308,7 @@ The server has 85 tools total. To keep the MCP `tools/list` manageable, **22 cor
 
 </details>
 
-#### Gateway Tools (11) — Each gateway proxies multiple tools
+#### Gateway Tools (12) — Each gateway proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -314,11 +317,11 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 
 | Tool | Description |
 |------|-------------|
-| `delete_rule` | Permanently delete a rule (auto-backs up first) |
-| `test_rule` | Dry-run a rule without executing actions |
-| `export_rule` | Export rule to JSON for backup/sharing |
-| `import_rule` | Import rule from exported JSON |
-| `clone_rule` | Clone an existing rule (starts disabled) |
+| `custom_delete_rule` | Permanently delete a custom-engine rule (auto-backs up first) |
+| `custom_test_rule` | Dry-run a custom-engine rule without executing actions |
+| `custom_export_rule` | Export custom-engine rule to JSON for backup/sharing |
+| `custom_import_rule` | Import custom-engine rule from exported JSON |
+| `custom_clone_rule` | Clone an existing custom-engine rule (starts disabled) |
 
 </details>
 
@@ -457,7 +460,7 @@ Write/delete require Hub Admin Write + confirm.
 </details>
 
 <details>
-<summary><b>manage_rule_machine</b> (5) — Rule Machine interop via RMUtils</summary>
+<summary><b>manage_native_rules_and_apps</b> (9) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -466,8 +469,12 @@ Write/delete require Hub Admin Write + confirm.
 | `pause_rm_rule` | Pause an RM rule (reversible) |
 | `resume_rm_rule` | Resume a paused RM rule |
 | `set_rm_rule_boolean` | Set an RM rule's private boolean variable |
+| `create_native_app` | Create a new empty native automation app (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / etc.). Returns `appId`. |
+| `update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. |
+| `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
+| `check_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
 
-**Cannot create, modify, or delete** RM rules — Hubitat's platform blocks third-party apps from managing built-in app children. Use the native RM UI for configuration. Requires opt-in **Enable Built-in App Tools** setting.
+Requires opt-in **Enable Built-in App Tools** setting. Create/update/delete additionally requires Hub Admin Write.
 
 </details>
 
@@ -864,7 +871,7 @@ For easier bug reporting:
   > 1. Define tree data structure with `operator` and `operands` fields
   > 2. Implement recursive `evaluateConditionTree()` method
   > 3. Support both legacy flat format and new tree format (migration path)
-  > 4. Update `create_rule`/`update_rule` tool schemas
+  > 4. Update `custom_create_rule`/`custom_update_rule` tool schemas
   > 5. Update `describeCondition()` for recursive formatting
 
 - [ ] **Private Boolean per rule** — `Difficulty: 2 | Effort: S`
@@ -1026,19 +1033,19 @@ For easier bug reporting:
 
 > **Philosophy: prefer native Hubitat apps.** The MCP server was built to complement Hubitat, not replace it. These native apps (Room Lighting, Mode Manager, Button Controller, etc.) are well-maintained, have proper UIs, and are battle-tested. The MCP can already interact with the *effects* of these apps — it can read/set modes, control devices, trigger on device events, and see virtual devices they create.
 >
-> **The AI assistant is the wizard.** Rather than building dedicated wizard tools that generate MCP rules to replicate what native apps already do, the AI can compose rules on the fly using existing `create_rule` and the full rule engine. Dedicated MCP tooling for these patterns is **low priority** and would only be implemented if the MCP genuinely cannot interact with the native app's functionality in some way. Each item will be reviewed on a case-by-case basis.
+> **The AI assistant is the wizard.** Rather than building dedicated wizard tools that generate MCP rules to replicate what native apps already do, the AI can compose rules on the fly using existing `custom_create_rule` and the full custom rule engine — or, for native automations, via `create_rm_rule` / `update_rm_rule` (the new admin-layer Rule Machine path). Dedicated MCP tooling for these patterns is **low priority** and would only be implemented if the MCP genuinely cannot interact with the native app's functionality in some way. Each item will be reviewed on a case-by-case basis.
 
 - [ ] **Room Lighting (room-centric lighting with vacancy mode)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Room Lighting app handles this well. The MCP can already control all the same devices, trigger on motion events, and use `if_then_else` / `delay` / `cancel_delayed` to build equivalent logic via `create_rule` if needed. No dedicated MCP tool required unless a gap is identified where MCP cannot interact with Room Lighting's behavior.
+  > *Native app preferred.* Hubitat's built-in Room Lighting app handles this well. The MCP can already control all the same devices, trigger on motion events, and use `if_then_else` / `delay` / `cancel_delayed` to build equivalent logic via `custom_create_rule` if needed. No dedicated MCP tool required unless a gap is identified where MCP cannot interact with Room Lighting's behavior.
 
 - [ ] **Zone Motion Controller (multi-sensor zones)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
+  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `custom_create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
 
 - [ ] **Mode Manager (automated mode changes)** — `Low priority`
   > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `get_modes`/`set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
 
 - [ ] **Button Controller (streamlined button-to-action mapping)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Button Controller handles this natively. The MCP rule engine already has `button_event` triggers with full support for button numbers (1–20) and action types (pushed/held/doubleTapped/released). The AI can create these rules directly via `create_rule`. No dedicated tool needed.
+  > *Native app preferred.* Hubitat's built-in Button Controller handles this natively. The MCP rule engine already has `button_event` triggers with full support for button numbers (1–20) and action types (pushed/held/doubleTapped/released). The AI can create these rules directly via `custom_create_rule`. No dedicated tool needed.
 
 - [ ] **Thermostat Scheduler (schedule-based setpoints)** — `Low priority`
   > *Native app preferred.* Hubitat's built-in Thermostat Scheduler handles schedule-based setpoints. The MCP rule engine already has `time` triggers, `set_thermostat` actions, `mode` and `days_of_week` conditions — the AI can compose schedule rules directly. No dedicated tool needed unless MCP cannot interact with the native scheduler's effects.
@@ -1224,10 +1231,10 @@ For easier bug reporting:
 
 ### Advanced Automation Patterns
 
-> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `create_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
+> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `custom_create_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
 
 - [ ] **Occupancy / room state machine** — `No new tools needed`
-  > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `create_rule` and `set_variable`.
+  > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `custom_create_rule` and `set_variable`.
 
 - [ ] **Presence-based automation (first-to-arrive, last-to-leave)** — `No new tools needed`
   > *Already achievable.* The AI can compose this: a hub variable `homeCount` tracks present people. `device_event` triggers on presence sensors increment/decrement via `variable_math`. Rules with `variable` conditions fire when `homeCount` transitions 0→1 (first arrive) or 1→0 (last leave). All building blocks exist today.
@@ -1620,19 +1627,25 @@ For easier bug reporting:
 
 ## Testing
 
-Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper:
+The `tests/` directory contains:
+
+- **`tests/BAT-v2.md`** — Behavior Acceptance Tests (BAT): scripted scenarios for hand-run validation against a live hub. Includes the `wizard_probe` usage docs and the wizard-state regression appendix.
+- **`tests/sandbox_lint.py`** — fast structural lint of the Groovy sandbox patterns (forbidden calls, version-string consistency). Run via `uv run --python 3.12 tests/sandbox_lint.py`.
+- **`tests/e2e_test.py`** — end-to-end smoke test against a live hub. Requires `tests/e2e_config.json` (gitignored). Run via `uv run --python 3.12 --with requests tests/e2e_test.py`.
+- **`tests/wizard_probe.py`** — systematic Rule Machine wizard-state regression probe. Runs a 25-probe matrix that exercises suspected wizard-state-leak paths, and exposes a `quick_probe()` helper for one-off diagnostic investigation. See the wizard_probe appendix in `tests/BAT-v2.md` for full usage.
+- **Spock unit tests** under `src/test/groovy/` — run via the Gradle wrapper:
 
 ```bash
 ./gradlew test
 ```
 
-See [docs/testing.md](docs/testing.md) for the full harness overview, how to add new specs, and the RMUtils mocking recipe for `manage_rule_machine` tools.
+See [docs/testing.md](docs/testing.md) for the full Spock harness overview, how to add new specs, and the RMUtils mocking recipe for `manage_native_rules_and_apps` tools.
 
 ## Contributing
 
 Contributions welcome! Fork the repo, create a feature branch, make your changes, and submit a pull request.
 
-**New MCP tools must ship with unit tests** — both golden-path and error-path coverage. Tool handler tests go under `src/test/groovy/server/`; rule-engine tests under `src/test/groovy/rules/`. See [docs/testing.md](docs/testing.md) for the harness overview, the recipe for adding a new tool spec, and the RMUtils mocking pattern for `manage_rule_machine`-style tools.
+**New MCP tools must ship with unit tests** — both golden-path and error-path coverage. Tool handler tests go under `src/test/groovy/server/`; rule-engine tests under `src/test/groovy/rules/`. See [docs/testing.md](docs/testing.md) for the harness overview, the recipe for adding a new tool spec, and the RMUtils mocking pattern for `manage_native_rules_and_apps`-style tools.
 
 PRs that add tools without tests will be asked to add them before merge. CI (`./gradlew test`) runs on every PR via `.github/workflows/unit-tests.yml`.
 

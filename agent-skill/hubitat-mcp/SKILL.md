@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 85 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, and Developer Mode self-administration. The tools are organized as **22 core tools** (always visible) plus **12 domain-named gateways** that proxy 63 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 89 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, and Developer Mode self-administration. The tools are organized as **22 core tools** (always visible) plus **12 domain-named gateways** that proxy 67 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -49,7 +49,7 @@ Rules are the core automation primitive. Each rule has **triggers** (what starts
 
 ### Creating Rules
 
-Use `create_rule` with a JSON structure. For the complete rule structure reference including all trigger types, condition types, action types, and JSON syntax examples, see [rule-patterns.md](rule-patterns.md).
+Use `custom_create_rule` with a JSON structure. For the complete rule structure reference including all trigger types, condition types, action types, and JSON syntax examples, see [rule-patterns.md](rule-patterns.md).
 
 ### Key Rule Patterns
 
@@ -100,13 +100,13 @@ Use `create_rule` with a JSON structure. For the complete rule structure referen
 ### Rule Management
 
 Core tools (always visible):
-- `list_rules` / `get_rule` - View rules and their configuration
-- `update_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
+- `custom_list_rules` / `custom_get_rule` - View rules and their configuration
+- `custom_update_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
 
 Via `manage_rules_admin` gateway:
-- `test_rule` - Dry-run to see what would happen without executing
-- `export_rule` / `import_rule` / `clone_rule` - Portability operations
-- `delete_rule` - Removes a rule (auto-backs up to File Manager first)
+- `custom_test_rule` - Dry-run to see what would happen without executing
+- `custom_export_rule` / `custom_import_rule` / `custom_clone_rule` - Portability operations
+- `custom_delete_rule` - Removes a rule (auto-backs up to File Manager first)
 
 Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
