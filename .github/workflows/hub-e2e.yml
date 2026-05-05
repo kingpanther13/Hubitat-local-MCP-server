@@ -21,7 +21,11 @@ on:
       - '.github/scripts/lease_release.sh'
       - '.github/scripts/mcp_setup_env.sh'
       - '.github/scripts/mcp_restore_env.sh'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to test (blank = current ref)'
+        required: false
 
 # Serialize concurrent runs against the shared test hub. Don't cancel
 # in-progress — they hold the lease and need to release it cleanly via
@@ -47,6 +51,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
 
       - name: Check secret availability + skip if absent
         # Two cases where MCP_URL is empty (and we want to skip silently
@@ -95,6 +101,12 @@ jobs:
         # tests/e2e_test.py expects these three env vars (see its docstring).
         # MCP_URL format: https://cloud.hubitat.com/api/<UUID>/apps/<APPID>/mcp?access_token=<TOKEN>
         run: |
+          # Note: regional cloud endpoints (e.g. eu.cloud.hubitat.com) are not yet supported —
+          # update the regex if Hubitat adds them.
+          if [[ ! "$MCP_URL" =~ ^https://cloud\.hubitat\.com/api/[^/]+/apps/[0-9]+/mcp\?access_token=.+$ ]]; then
+            echo "::error::MCP_URL does not match the expected cloud-endpoint shape — refusing to parse a malformed value into HUBITAT_* env vars."
+            exit 1
+          fi
           BASE=$(echo "$MCP_URL"  | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\1|')
           APPID=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\2|')
           TOKEN=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\3|')

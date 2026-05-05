@@ -46,7 +46,9 @@ if [ -n "$CURRENT" ]; then
   CURRENT_BY="$(echo "$CURRENT" | jq -r '.by // ""' 2>/dev/null || echo "")"
   CURRENT_UNTIL="$(echo "$CURRENT" | jq -r '.until // 0' 2>/dev/null || echo 0)"
   if [ "$CURRENT_UNTIL" -gt "$NOW_MS" ] && [ "$CURRENT_BY" != "$BY" ]; then
-    echo "::error::Test hub leased by '$CURRENT_BY' until $(date -u -d "@$((CURRENT_UNTIL / 1000))" +%FT%TZ). Aborting."
+    UNTIL_EPOCH=$((CURRENT_UNTIL / 1000))
+    UNTIL_TS=$(python3 -c "import datetime; print(datetime.datetime.utcfromtimestamp(${UNTIL_EPOCH}).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+    echo "::error::Test hub leased by '$CURRENT_BY' until ${UNTIL_TS}. Aborting."
     exit 1
   fi
 fi
@@ -72,4 +74,6 @@ if [ "$AFTER_BY" != "$BY" ]; then
   exit 1
 fi
 
-echo "Lease acquired: by=$BY, until=$(date -u -d "@$((EXPIRES_MS / 1000))" +%FT%TZ) (${LEASE_DURATION_MIN} min TTL)"
+EXPIRES_EPOCH=$((EXPIRES_MS / 1000))
+EXPIRES_TS=$(python3 -c "import datetime; print(datetime.datetime.utcfromtimestamp(${EXPIRES_EPOCH}).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+echo "Lease acquired: by=$BY, until=${EXPIRES_TS} (${LEASE_DURATION_MIN} min TTL)"

@@ -92,6 +92,9 @@ class HubitatMcpClient:
         exponential backoff. Never retries on 4xx (real auth/request errors)
         or on JSON-RPC error responses (intentional tool behavior we're
         trying to test).
+
+        Retries JSONDecodeError on the same budget — this catches transient
+        Cloudflare HTML error pages on cloud endpoints under load.
         """
         self._request_id += 1
         payload: dict[str, Any] = {
@@ -110,6 +113,7 @@ class HubitatMcpClient:
         last_exc: Optional[Exception] = None
         data: Optional[dict] = None
         for attempt in range(3):
+            resp = None
             try:
                 resp = requests.post(
                     self.endpoint,
@@ -129,12 +133,28 @@ class HubitatMcpClient:
                 resp.raise_for_status()
                 data = resp.json()
                 break
-            except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
+            except (requests.ConnectionError, requests.Timeout,
+                    requests.exceptions.ChunkedEncodingError,
+                    json.JSONDecodeError) as exc:
                 last_exc = exc
-                self._log(f"<< network error (attempt {attempt + 1}/3): {exc} — retrying")
+                snippet = ""
+                if isinstance(exc, json.JSONDecodeError) and resp is not None:
+                    try:
+                        snippet = f" body[:200]={resp.text[:200]!r}"
+                    except Exception:
+                        pass
+                self._log(f"<< network/decode error (attempt {attempt + 1}/3): {exc}{snippet} -- retrying")
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
         else:
-            # Exhausted retries — surface the last transient failure.
+            # Exhausted retries — surface the last transient failure with method context.
+            if isinstance(last_exc, json.JSONDecodeError):
+                snippet = ""
+                try:
+                    if resp is not None:
+                        snippet = f" body[:200]={resp.text[:200]!r}"
+                except Exception:
+                    pass
+                raise McpError(f"JSON decode failed on {method}{snippet}") from last_exc
             raise last_exc if last_exc else McpError(f"transport failure on {method}")
 
         self._log(f"<< {json.dumps(data)[:500]}")
@@ -333,8 +353,8 @@ class TestRunner:
         """Delete a rule, swallowing errors."""
         try:
             self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[WARN] _delete_rule_safe({rule_id}) failed: {exc}")
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)
 
@@ -354,8 +374,8 @@ class TestRunner:
             self.client.call_tool("manage_hub_variables", {
                 "tool": "delete_variable", "args": {"name": name, "confirm": True},
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[WARN] _delete_variable_safe({name}) failed: {exc}")
         if name in self.created_variable_names:
             self.created_variable_names.remove(name)
 
