@@ -11522,16 +11522,29 @@ private List _rmClearActions(Integer appId) {
     def stringIndices = indices.collect { it.toString() }
     _rmUpdateAppSettings(appId, ["trashActs": stringIndices], schema)
     // Post-condition check — verify the actions actually disappeared from
-    // the rule. RM 5.1 has been observed to no-op the trashActs write if
-    // state.editAct is set, leaving the actions on the rule while the
-    // schema looks "trash-confirmed". Fail loud rather than silently
-    // returning [].
-    def remaining = _rmCollectActionIndices(appId)
-    def stillThere = remaining.intersect(indices)
-    if (stillThere) {
-        throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId}. Roll back via restore_item_backup using the backup key in this response. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
+    // the rule. Two distinct failure modes share this path:
+    //   (a) RM has been observed to no-op the trashActs write entirely
+    //       when state.editAct is set, leaving the rule fully unchanged.
+    //   (b) RM applies the delete asynchronously: the write returns 200
+    //       before the deletion has propagated to appSettings, and an
+    //       immediate fetch reads stale state. Empirically the GC settles
+    //       within ~1-3s on the test hub, occasionally up to ~6s.
+    // Distinguish via retry: 4 attempts with progressive backoff (immediate,
+    // 1s, 3s, 6s — total ~10s on the failure path, zero added latency on
+    // the common success path). Mirrors _rmDeleteAction's retry pattern.
+    // If the first fetch shows clean, return immediately; if not, RM may
+    // still be settling, and the retry catches it. Only after 4 attempts
+    // do we throw (real (a)-class failure or extreme propagation lag).
+    def remaining = null
+    def stillThere = null
+    def retryDelaysMs = [1000, 3000, 6000]
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
+        remaining = _rmCollectActionIndices(appId)
+        stillThere = remaining.intersect(indices)
+        if (!stillThere) return indices
     }
-    return indices
+    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying — the deletion may commit post-response. Roll back via restore_item_backup if the action(s) really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
 }
 
 /**

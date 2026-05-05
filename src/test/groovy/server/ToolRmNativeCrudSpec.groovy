@@ -1342,6 +1342,92 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         verificationFetches == 3
     }
 
+    def "clearActions succeeds on second check when trashActs propagation lags (race-recovery path)"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def verificationFetches = 0
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (trashActsWritten) {
+                verificationFetches++
+                if (verificationFetches < 2) {
+                    // attempt 0: action still present (race — RM applied write but GC hasn't propagated)
+                    statusJson(100, [[name: "actType.1", value: "switchActs"]])
+                } else {
+                    // attempt 1: action gone (post-backoff, recovered)
+                    statusJson(100, [])
+                }
+            } else {
+                // pre-write: action present
+                statusJson(100, [[name: "actType.1", value: "switchActs"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "success after one retry — race-recovery path mirroring _rmDeleteAction"
+        result.success == true
+        result.removedIndices?.contains(1) || result.removedIndices?.contains("1")
+
+        and: "retry loop fired at least twice (attempt 0 saw stale state; attempt 1 confirmed clear)"
+        verificationFetches >= 2
+    }
+
+    def "clearActions throws after 4 retry attempts when actions never disappear (10s budget exhausted)"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def verificationFetches = 0
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (trashActsWritten) {
+                verificationFetches++
+                // never propagates — all 4 fetches return action still present
+            }
+            statusJson(100, [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "throws after retries exhaust"
+        result.success == false
+        result.error?.contains("after 10s of retries")
+
+        and: "retry loop fired at least 4 times (the budget) before throwing"
+        verificationFetches >= 4
+
+        and: "error directs caller to verify via get_app_config and points at restore_item_backup for rollback"
+        result.error?.contains("get_app_config")
+        result.error?.contains("restore_item_backup")
+    }
+
     def "clearActions throws when trashActs never enters schema after trashAll click"() {
         given:
         enableHubAdminWrite()
