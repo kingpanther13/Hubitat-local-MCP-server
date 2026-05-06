@@ -1469,6 +1469,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.0.2** - docs: add AGENTS.md for AI contributors; PR #91. PRs: [#149](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/149)
 - **v1.0.1** - feat: optional flat tool-list mode (toggle off category gateways). PRs: [#136](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/136)
 - **v1.0.0** - ci(hub-e2e): self-configuring CI workflow against test hub (closes #77); feat(rm-native): native Rule Machine tools and classic-app CRUD + custom_ rename of MCP rule engine tools. PRs: [#148](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/148), [#134](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/134)
 - **v0.11.1** - build(deps): bump gradle-wrapper from 9.4.1 to 9.5.0 in the gradle-dependencies group ([#143](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/143), @app/dependabot); feat(release): author-curated, minor-scoped HPM release notes + PR review tooling. PRs: [#143](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/143), [#146](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/146)
