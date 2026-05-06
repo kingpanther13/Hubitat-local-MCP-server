@@ -85,6 +85,36 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         }
     }
 
+    def "tools/list with useGateways=false returns the flat catalog through the JSON-RPC envelope"() {
+        given: 'feature toggles on so the JSON-RPC envelope returns the full flat catalog'
+        settingsMap.useGateways = false
+        settingsMap.enableBuiltinApp = true
+        settingsMap.enableCustomRuleEngine = true
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 50, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.jsonrpc == '2.0'
+        response.id == 50
+        def names = response.result.tools*.name as Set
+
+        and: 'gateway entries gone, sub-tools surface, search_tools suppressed'
+        !names.contains('manage_rooms')
+        !names.contains('manage_files')
+        !names.contains('search_tools')
+        names.contains('list_rooms')
+        names.contains('list_files')
+        names.contains('list_devices')
+
+        and: 'feature-toggle-gated tools also surface (proves the envelope returns the full flat catalog, not just the cores)'
+        names.contains('list_rm_rules')
+        names.contains('list_installed_apps')
+        names.contains('custom_create_rule')
+    }
+
     def "tools/call list_rooms flows through render with an MCP content envelope"() {
         given: 'a stubbed getRooms returning a deterministic list'
         script.metaClass.getRooms = { ->
