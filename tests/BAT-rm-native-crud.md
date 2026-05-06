@@ -48,7 +48,7 @@ Every test that creates or modifies a rule must assert, before tearing down. Ind
 3. **[INV-3]** For every multi-device capability setting touched (trigger-side OR action-side), `statusJson.appSettings[<name>].multiple == true`. This is the flag-poisoning regression guard — applies to `tDev<N>` trigger inputs, multi-device action inputs (`Capture Devices`, `Restore Devices`, `Refresh devices`, etc.), multi-device Wait-for-Events slots, and any other `multiple=true` capability input.
 4. **[INV-4]** No stale `state.editCond` (absent or null in appState).
 
-Tests refer to these via the `[INV-N]` shorthand to keep terminology consistent across all 135 scenarios.
+Tests refer to these via the `[INV-N]` shorthand to keep terminology consistent.
 
 Teardown prompts SHOULD explicitly call `delete_native_app(appId=<id>, force=true)` to clean up scratch rules. The `force=true` path uses the `/installedapp/forcedelete/<id>/quiet` endpoint and succeeds regardless of child-app state -- this is the BAT-standard cleanup pattern.
 

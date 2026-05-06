@@ -4,7 +4,7 @@ Updated for the installed-apps + Rule Machine interop + native CRUD architecture
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
-> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the 153-scenario native-RM CRUD suite (T300–T452) — acceptance gate for the `manage_native_rules_and_apps` CRUD tools (`create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health`). Those tools are shipped; all T300–T452 scenarios should pass against the current codebase.
+> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the native-RM CRUD suite (T300+) -- acceptance gate for the `manage_native_rules_and_apps` CRUD tools (`create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health`). Those tools are shipped; all scenarios in that file should pass against the current codebase.
 
 Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt`, and optional `teardown_prompt`. Run each prompt in the same AI session (setup → test → teardown). Each TEST SCENARIO starts a fresh session.
 

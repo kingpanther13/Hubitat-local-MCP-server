@@ -78,11 +78,11 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     // 1. Golden path: migration fires and forces enableCustomRuleEngine OFF
     // -----------------------------------------------------------------------
 
-    def "updated() forces enableCustomRuleEngine OFF when legacy enableRuleEngine is present and not yet migrated"() {
-        given: 'pre-rename install: legacy setting present, new setting was flipped to true by firmware upgrade, migration not yet run'
+    def "updated() forces enableCustomRuleEngine OFF when legacy enableRuleEngine is present and new setting was never set"() {
+        given: 'pre-rename install: legacy setting present, new setting absent (null -- never touched by user or firmware)'
         def mcpLogCalls = stubUpdatedDeps()
         settingsMap.enableRuleEngine = true          // legacy setting present
-        settingsMap.enableCustomRuleEngine = true    // firmware-upgrade flip victim
+        // enableCustomRuleEngine deliberately NOT set: migration condition is == null
 
         when:
         script.updated()
@@ -95,6 +95,25 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         and: 'an info log line was emitted for the migration'
         mcpLogCalls.any { it.level == 'info' && it.component == 'engine-migration' && it.msg.contains('one-time rename migration') }
+    }
+
+    def "updated() does not overwrite enableCustomRuleEngine when it is already explicitly set to true"() {
+        given: 'pre-rename install: legacy setting present, new setting is already explicitly true (user set, not null)'
+        def mcpLogCalls = stubUpdatedDeps()
+        settingsMap.enableRuleEngine = true          // legacy setting present
+        settingsMap.enableCustomRuleEngine = true    // explicitly set -- not null -- migration must not fire
+
+        when:
+        script.updated()
+
+        then: 'app.updateSetting was NOT called -- explicitly-set true is preserved'
+        sharedAppStub.settingsStore['enableCustomRuleEngine'] == null
+
+        and: 'no migration log line emitted'
+        !mcpLogCalls.any { it.component == 'engine-migration' }
+
+        and: 'migration marker is set'
+        stateMap.customEngineMigrated == true
     }
 
     // -----------------------------------------------------------------------

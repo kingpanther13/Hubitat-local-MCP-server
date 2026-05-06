@@ -278,6 +278,37 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         }
     }
 
+    def "list_rm_rules filters out RMUtils ghosts and reports them in ghostsFiltered"() {
+        given: 'two rules in RMUtils; only one is live in /hub2/appsList'
+        settingsMap.enableBuiltinApp = true
+        // RMUtils reports rule 300 and rule 301
+        rmUtils.stubRuleList5 = [
+            [300: 'Live Rule'],
+            [301: 'Ghost Rule']
+        ]
+        // /hub2/appsList only contains the RM parent (id=21) and rule 300 as a child
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [
+                [data: [id: 21, name: "Rule Machine", type: "Rule Machine", user: false, hidden: false],
+                 children: [
+                    [data: [id: 300, name: "Live Rule", type: "Rule Machine", user: true, hidden: false], children: []]
+                    // rule 301 deliberately absent -- simulates a ghost entry in RMUtils cache
+                ]]
+            ]])
+        }
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then: 'only the live rule is returned; ghost is removed from the rules array'
+        result.rules.size() == 1
+        result.rules[0].id == 300
+
+        and: 'the ghost id is recorded in ghostsFiltered with an explanatory note'
+        result.ghostsFiltered == [301]
+        result.ghostNote?.contains("no longer exist")
+    }
+
     def "gateway dispatch via handleGateway routes to list_rm_rules"() {
         given:
         settingsMap.enableBuiltinApp = true

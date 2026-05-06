@@ -219,7 +219,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when:
         script.toolCreateNativeApp([name: "BAT-RM-demo", confirm: true])
-        def cached = stateMap.parentAppIds?.rule_machine
+        def cached = atomicStateMap.parentAppIds?.rule_machine
 
         then:
         cached == 21
@@ -402,7 +402,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.backup?.type == "rm-rule"
 
         and: "the snapshot is registered in the unified item-backup manifest so list_item_backups picks it up"
-        stateMap.itemBackupManifest?.values()?.any { it.type == "rm-rule" && it.ruleId == 200 }
+        atomicStateMap.itemBackupManifest?.values()?.any { it.type == "rm-rule" && it.ruleId == 200 }
     }
 
     def "delete_rm_rule soft-delete surfaces hubMessage on refusal"() {
@@ -430,7 +430,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "list_item_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {
         given:
         enableReadOnly()
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             "app_50": [type: "app", id: "50", fileName: "mcp-backup-app-50.groovy", version: 12, timestamp: 1000, sourceLength: 100],
             "rm-rule_100_20260101-000001": [type: "rm-rule", id: 100, ruleId: 100, fileName: "mcp-rm-backup-100-20260101-000001.json",
                                             reason: "pre-update", appLabel: "rule A", timestamp: 2000, sourceLength: 500],
@@ -476,7 +476,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             "rm-rule_300_x": [type: "rm-rule", id: 300, ruleId: 300,
                               fileName: "mcp-rm-backup-300-x.json", reason: "pre-update",
                               appLabel: "restored", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -528,7 +528,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             "rm-rule_400_y": [type: "rm-rule", id: 400, ruleId: 400,
                               fileName: "mcp-rm-backup-400-y.json", reason: "pre-delete",
                               appLabel: "gone-rule", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -558,6 +558,104 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.recreated == true
         result.ruleId == 401
         result.originalRuleId == 400
+    }
+
+    def "restore_item_backup uses rule_machine default when snapshot has no appType field (legacy snapshot)"() {
+        given: 'a legacy rm-rule snapshot captured before the appType field was added'
+        enableHubAdminWrite()
+        def snapshot = [
+            schemaVersion: 1,
+            ruleId: 350,
+            reason: "pre-delete",
+            timestamp: 1000,
+            timestampIso: "2026-01-01T00:00:00Z",
+            appLabel: "legacy-rule",
+            // no appType field: _rmRestoreFromBackup must default to "rule_machine"
+            configJson: [
+                app: [id: 350, label: "legacy-rule"],
+                configPage: [sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]],
+                settings: [origLabel: "legacy-rule"]
+            ],
+            statusJson: [:]
+        ]
+        def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_350_z": [type: "rm-rule", id: 350, ruleId: 350,
+                              fileName: "mcp-rm-backup-350-z.json", reason: "pre-delete",
+                              appLabel: "legacy-rule", timestamp: 1000, sourceLength: snapshotBytes.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/installedapp/configure/json/350') { params ->
+            throw new RuntimeException("404 -- rule gone")
+        }
+        hubGet.register('/installedapp/configure/json/351') { params ->
+            ruleConfigJson(351, "legacy-rule", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/351') { params -> statusJson(351) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/351", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: "rm-rule_350_z", confirm: true])
+
+        then: 'succeeds -- the missing appType field defaults to rule_machine so _appTypeRegistry lookup works'
+        result.success == true
+        result.type == "rm-rule"
+        result.recreated == true
+        result.ruleId == 351
+        result.originalRuleId == 350
+    }
+
+    def "restore_item_backup surfaces success:false when settings replay throws mid-flow"() {
+        given: 'rule still exists in-place; _rmUpdateAppSettings will throw mid-replay'
+        enableHubAdminWrite()
+        def snapshot = [
+            schemaVersion: 1,
+            ruleId: 360,
+            reason: "pre-update",
+            timestamp: 1000,
+            timestampIso: "2026-01-01T00:00:00Z",
+            appLabel: "replay-err",
+            configJson: [
+                app: [id: 360, label: "replay-err"],
+                configPage: [sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]],
+                settings: [origLabel: "replay-err"]
+            ],
+            statusJson: [:]
+        ]
+        def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_360_w": [type: "rm-rule", id: 360, ruleId: 360,
+                              fileName: "mcp-rm-backup-360-w.json", reason: "pre-update",
+                              appLabel: "replay-err", timestamp: 1000, sourceLength: snapshotBytes.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
+        hubGet.register('/installedapp/configure/json/360') { params ->
+            ruleConfigJson(360, "replay-err", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/360') { params -> statusJson(360) }
+        // hubInternalPostForm throws on the settings replay POST
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json")
+                throw new RuntimeException("hub returned 500 during settings replay")
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: "rm-rule_360_w", confirm: true])
+
+        then: 'success is false with a message that includes the restore-partially-applied note'
+        result.success == false
+        result.type == "rm-rule"
+        result.ruleId == 360
+        result.error?.contains("failed during settings replay")
+        result.note?.contains("incomplete settings")
     }
 
     // ---------- wire-format invariants ----------
@@ -744,7 +842,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body["settings[cond]"]?.toString()?.contains("sub-expression") }
     }
 
-    // ---------- Issue #77 -- ghost ifThen predCapabs clear (Step 4b) ----------
+    // ---------- ghost ifThen predCapabs clear (Step 4b) ----------
     //
     // After addRequiredExpression completes, RM's atomicState.predCapabs retains
     // the RE's condition context. A subsequent addAction for a plain (non-expression)
@@ -1094,6 +1192,59 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the user-visible result.success is also false"
         result.success == false
+    }
+
+    def "patches dispatches every supported sub-operation and reports unrecognized ops as failures"() {
+        given: 'minimal rule with no inputs; patch batch exercises all recognized op keys'
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [],
+                appState: [:],
+                actions: [:],
+                stateAttribute: null
+            ])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Switch 8"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when: 'batch with addTrigger, addAction, addRequiredExpression, addLocalVariable, bogusOp'
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [
+                [addTrigger: [capability: "Switch", deviceIds: [8], state: "on"]],
+                [addAction: [action: "delayedAction", actions: [[action: "deviceControl",
+                    capability: "Switch", deviceIds: [8], command: "on"]],
+                    delay: [value: 1, unit: "Seconds"]]],
+                // 'conditions' (not 'exprs') is the required field name in _rmAddRequiredExpression
+                [addRequiredExpression: [conditions: [
+                    [capability: "Switch", deviceIds: [8], state: "on"]
+                ]]],
+                [addLocalVariable: [name: "myVar", type: "Number", value: "42"]],
+                [bogusOp: "should not be recognized"]
+            ],
+            confirm: true
+        ])
+
+        then: 'each op is dispatched to its handler (op key present); bogusOp surfaces the unrecognized-key error'
+        result.patches.size() == 5
+        result.patches[0].op == "addTrigger"
+        result.patches[1].op == "addAction"
+        // addRequiredExpression reached its handler (not rejected as unrecognized).
+        // Handler may fail on hub stubs (complex wizard) but must NOT throw the
+        // "conditions is required" IAE that the old wrong field name 'exprs' caused.
+        result.patches[2].op == "addRequiredExpression"
+        !result.patches[2].error?.contains("conditions is required")
+        result.patches[3].op == "addLocalVariable"
+        result.patches[4].success == false
+        result.patches[4].error?.contains("no recognized operation key")
     }
 
     // ---------- structured-shortcut coverage (addLocalVariable + related) ----------
@@ -1507,6 +1658,125 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         failedItem != null
     }
 
+    // ---------- addActions bulk shortcut ----------
+
+    def "addActions happy path: three specs each call _rmAddAction and updateRule fires once"() {
+        given:
+        enableHubAdminWrite()
+        def doActPageSchema = [
+            [name: "actType.1", type: "enum"],
+            [name: "actSubType.1", type: "enum"],
+            [name: "actionDone", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActPageSchema) }
+        def callCount = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, callCount > 0 ? [[name: "actType.${callCount}", value: "switchActs"]] : [])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "actionDone") callCount++
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addActions: [
+                [capability: "switch", action: "on", deviceIds: [8]],
+                [capability: "switch", action: "off", deviceIds: [9]],
+                [capability: "log", message: "done"]
+            ],
+            confirm: true
+        ])
+
+        then: "result carries actions list with 3 items and overall success"
+        result.actions?.size() == 3
+
+        and: "updateRule fires exactly once (not once per action)"
+        def updateRuleClicks = posts.count { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+        updateRuleClicks == 1
+    }
+
+    def "addActions partial failure: bogus deviceId fails inline, other specs succeed"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/99999') { params -> "" }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addActions: [
+                [capability: "switch", action: "on", deviceIds: [8]],
+                [capability: "switch", action: "on", deviceIds: [99999]]
+            ],
+            confirm: true
+        ])
+
+        then: "overall success is false because one sub-spec failed"
+        result.success == false
+
+        and: "actions list has 2 items: first succeeds, second carries the error"
+        result.actions?.size() == 2
+        result.actions[1].success == false
+        result.actions[1].error?.contains("99999")
+    }
+
+    def "addActions mixed-type path: switch and log specs in one call"() {
+        given:
+        enableHubAdminWrite()
+        def doActSchema = [
+            [name: "actType.1", type: "enum"],
+            [name: "actSubType.1", type: "enum"],
+            [name: "logmsg.1", type: "textarea"],
+            [name: "actionDone", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addActions: [
+                [capability: "switch", action: "on", deviceIds: [8]],
+                [capability: "log", message: "test message"]
+            ],
+            confirm: true
+        ])
+
+        then: "both action specs are dispatched"
+        result.actions?.size() == 2
+
+        and: "the log message write lands (switch actType + log message both appear in POSTs)"
+        posts.any { it.body?.containsKey("settings[actType.1]") || it.body?.containsKey("settings[logmsg.1]") }
+    }
+
     def "moveAction rejects unknown direction at the dispatcher"() {
         given:
         enableHubAdminWrite()
@@ -1525,10 +1795,104 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("up") || result.error?.toLowerCase()?.contains("direction")
     }
 
-    // ---------- Finding #11: state.editAct pre-flight detection ----------
+    // ---------- moveAction happy path ----------
+
+    def "moveAction arrowDn: action moves forward one position and tier-1 ordering path is exercised"() {
+        // Before: actions in display order [1, 2, 3]. Move index 1 down.
+        // After:  actions in display order [2, 1, 3]. Position shifts from 0 to 1.
+        // statusJson.actions map (tier-1 path) drives ordering for both before and
+        // after fetches -- exercises the lexical-sort fix from _rmCollectActionIndices.
+        given:
+        enableHubAdminWrite()
+        def clickFired = false
+        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
+        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
+        def makeStatus = { Map actMap ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "actType.1", value: "switchActs"],
+                    [name: "actType.2", value: "delayActs"],
+                    [name: "actType.3", value: "switchActs"]
+                ],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [:],
+                actions: actMap,
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            clickFired ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.stateAttribute == "arrowDn") clickFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+
+        then: "arrowDn click fires and result reports success"
+        clickFired == true
+        result.success == true
+
+        and: "note confirms the move direction"
+        result.note?.contains("down")
+    }
+
+    def "moveAction arrowUp: action moves back one position using tier-1 ordering"() {
+        // Before: actions in display order [1, 2, 3]. Move index 2 up.
+        // After:  actions in display order [2, 1, 3]. Position shifts from 1 to 0.
+        given:
+        enableHubAdminWrite()
+        def clickFired = false
+        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
+        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
+        def makeStatus = { Map actMap ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "actType.1", value: "switchActs"],
+                    [name: "actType.2", value: "delayActs"],
+                    [name: "actType.3", value: "switchActs"]
+                ],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [:],
+                actions: actMap,
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            clickFired ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.stateAttribute == "arrowUp") clickFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 2, direction: "up"], confirm: true])
+
+        then: "arrowUp click fires and result reports success"
+        clickFired == true
+        result.success == true
+
+        and: "note confirms the move direction"
+        result.note?.contains("up")
+    }
+
+    // ---------- state.editAct pre-flight guard (applies to removeAction AND moveAction) ----------
 
     def "removeAction pre-flight detects stuck state.editAct and throws immediately"() {
-        // Finding #11: when state.editAct is set, RM silently no-ops delAct
+        // state.editAct pre-flight invariant: when state.editAct is set, RM silently no-ops delAct
         // clicks. Without pre-flight detection the caller would burn 10s of
         // retries before hitting a confusing generic timeout message.
         // With pre-flight detection, _rmDeleteAction should throw
@@ -1571,7 +1935,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "moveAction pre-flight detects stuck state.editAct and throws immediately"() {
-        // Finding #11 (moveAction site): same pre-flight guard as removeAction.
+        // Same state.editAct pre-flight guard as removeAction, applied at the moveAction site.
         // state.editAct set => moveAction should throw immediately with a
         // descriptive message rather than proceeding to the click and
         // silently producing a position-unchanged result.
@@ -1610,7 +1974,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "removeAction proceeds normally when state.editAct is not set"() {
-        // Finding #11 no-false-positive: when appState has no editAct entry,
+        // No-false-positive guard: when appState has no editAct entry,
         // pre-flight must pass through silently and the normal delete flow runs.
         // This guards against regressions where pre-flight incorrectly blocks
         // a clean delete. Uses a single-retry success scenario (delAct fires,
@@ -1809,7 +2173,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // canonical wizard-consumed picker case (schema unchanged, paragraph
     // shifts to show "("). A regression that breaks renderShift detection
     // would surface there as the cond=b POST still going out (test passes)
-    // but the live BAT T404 scenario rendering as "Broken Condition" again.
+    // but a live scenario rendering as "Broken Condition" again.
     // Direct unit-testing the heuristic through the public API requires
     // progressively-stubbed schema across many fetches that diverge from
     // the actual hub behavior, which would test the stub more than the
@@ -2103,7 +2467,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.capabilities instanceof List
     }
 
-    // ---------- Finding #4: success/partial semantic matrix for _rmAddTrigger ----------
+    // ---------- addTrigger success/partial semantic matrix ----------
 
     /**
      * Helper: builds a selectTriggers schema JSON with an incrementing paragraph
@@ -2145,9 +2509,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger returns success=true partial=false on full success"() {
-        // Finding #4 matrix case 1: all settings land, trigger bakes,
-        // no broken label. The prior code returned success=false here
-        // because health.ok was gated on !partial; after the fix,
+        // Matrix case 1: all settings land, trigger bakes, no broken label.
         // success decouples from partial and reflects only "did API write happen."
         given:
         enableHubAdminWrite()
@@ -2179,10 +2541,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger returns success=true partial=true when trigger does not bake (triggerNotBaked)"() {
-        // Finding #4 matrix case 2 (variant): settings land (applied non-empty)
-        // but mainPage still shows "Define Triggers" -- the trigger skeleton was
-        // written but the row didn't commit. New contract: success=true (something
-        // happened), partial=true (needs repair). Old contract was success=false.
+        // Matrix case 2: settings land (applied non-empty) but mainPage still shows
+        // "Define Triggers" -- trigger skeleton written but row didn't commit.
+        // Contract: success=true (something happened), partial=true (needs repair).
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2214,10 +2575,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger returns success=true partial=true when rule label has BROKEN marker"() {
-        // Finding #4 matrix case 3: settings land but health check returns
-        // hasBrokenLabel=true (label contains *BROKEN*). New contract:
-        // success=true (something was written), partial=true (needs repair).
-        // Old contract was success=false because health.ok was false.
+        // Matrix case 3: settings land but health check returns hasBrokenLabel=true
+        // (label contains *BROKEN*). Contract: success=true (something written),
+        // partial=true (needs repair).
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2252,11 +2612,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger returns success=true partial=true when rule has pre-existing brokenMarkers"() {
-        // Finding #4 matrix (Fix 2): a PRIOR trigger on the rule is already broken
-        // (health check returns brokenMarkers=["**Broken Trigger**"]). The new
-        // trigger commits successfully (applied non-empty, new trigger bakes), but
-        // the overall rule is in a known-bad state -- surface as partial=true so
-        // the LLM sees it without a separate check_rule_health call.
+        // Matrix case (pre-existing broken state): a prior trigger on the rule is
+        // already broken (health check returns brokenMarkers=["**Broken Trigger**"]).
+        // The new trigger commits successfully, but the overall rule is in a known-bad
+        // state -- surface as partial=true so the LLM sees it without a separate
+        // check_rule_health call.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2309,11 +2669,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger returns success=false when selectTriggers finalConfig has configPage error"() {
-        // Finding #4 matrix case 4: hard failure -- API error present in the
-        // selectTriggers configPage.error field. err != null -> success=false
-        // regardless of how many settings may have landed in applied.
+        // Matrix case 4: hard failure -- API error present in the selectTriggers
+        // configPage.error field. err != null -> success=false regardless of applied.
         // Uses a static schema (no render shift) so applied stays empty; the
-        // test verifies that the err path alone drives success=false.
+        // test verifies that err alone drives success=false.
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -2356,13 +2715,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger returns success=false when nothing was written (all settings silently rejected)"() {
-        // Finding #4 matrix case 5: hard failure -- applied stays empty because
-        // every _rmWriteSettingOnPage call produces no render-hash shift (the
-        // hub ignores all writes). success=!err && !applied.isEmpty() => false.
-        // This scenario uses a no-deviceIds capability (Mode) with a fully
-        // static schema -- no schema shift, no value landing, no render shift
-        // means every write routes to skipped. The flow still navigates normally,
-        // but nothing accumulates in applied.
+        // Matrix case 5: hard failure -- applied stays empty because every write
+        // produces no render-hash shift (hub ignores all writes).
+        // success=!err && !applied.isEmpty() => false. Uses a no-deviceIds
+        // capability (Mode) with a static schema -- no shift means every write
+        // routes to skipped. The flow navigates normally but nothing accumulates
+        // in applied.
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -2404,12 +2762,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
     }
 
-    // ---------- Finding #10: addTrigger auto-updateRule parity with addAction ----------
+    // ---------- addTrigger auto-updateRule parity with addAction ----------
 
     def "addTrigger single-trigger path auto-fires updateRule after successful commit"() {
-        // Finding #10: single addTrigger call should fire updateRule automatically
-        // so subscriptions populate without a separate tool call. Mirrors the
-        // addAction pattern where the wrapper fires updateRule after the commit.
+        // Single addTrigger should fire updateRule automatically so subscriptions
+        // populate without a separate tool call. Mirrors the addAction pattern.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2444,10 +2801,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger single-trigger path skips updateRule on hard failure (success=false)"() {
-        // Finding #10: when _rmAddTrigger returns success=false (hard failure --
-        // API error or nothing written), the wrapper should NOT fire updateRule.
-        // Nothing committed, so the extra hub round-trip is wasteful.
-        // Uses a static (non-shifting) schema so applied stays empty -> success=false.
+        // When _rmAddTrigger returns success=false (nothing committed), the wrapper
+        // must NOT fire updateRule -- the extra hub round-trip is wasteful and
+        // misleading. Uses a static (non-shifting) schema so applied stays empty.
         given:
         enableHubAdminWrite()
         def posts = []
@@ -2491,11 +2847,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger auto-fires updateRule even on partial success"() {
-        // Finding #10: when success=true but partial=true (trigger row exists
-        // but not all fields landed), the wrapper SHOULD still fire updateRule.
-        // The trigger IS in the rule and subscriptions should bake from whatever
-        // committed -- matching the addAction ergonomics. Uses triggerNotBaked
-        // scenario (mainPage shows "Define Triggers") to produce partial=true.
+        // When success=true but partial=true (trigger row exists but not all
+        // fields landed), the wrapper SHOULD still fire updateRule. The trigger
+        // IS in the rule and subscriptions should bake from whatever committed.
+        // Uses triggerNotBaked scenario (mainPage shows "Define Triggers") to
+        // produce partial=true.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2531,12 +2887,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTriggers bulk path fires updateRule exactly once (not per-trigger)"() {
-        // Finding #10: addTriggers[] (bulk path) must NOT fire updateRule per
-        // item -- that would cause N reinits. The bulk wrapper fires one
-        // updateRule after all triggers commit. The single-trigger auto-fire
-        // must NOT activate on the bulk path (it lives only in the addTrigger
-        // wrapper, which the bulk path bypasses). Two-trigger bulk: updateRule
-        // count should be exactly 1.
+        // addTriggers[] bulk path must NOT fire updateRule per item -- that
+        // would cause N reinits. The bulk wrapper fires one updateRule after all
+        // triggers commit. The single-trigger auto-fire must NOT activate on the
+        // bulk path (it lives only in the addTrigger wrapper). Two-trigger bulk:
+        // updateRule count must be exactly 1.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2574,12 +2929,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger conditional=true auto-fires updateRule after successful commit"() {
-        // Finding #10 coverage: conditional=true sets isCondTrig.<N>=true on the
-        // trigger row and _rmBuildCondition drives the condition sub-wizard
-        // internally, but _rmAddTrigger still commits and returns success=true
-        // before handing back. The auto-updateRule guard (`trigResult?.success != false`)
-        // does NOT inspect `conditional` -- so updateRule fires for conditional
-        // triggers just as it does for plain ones. This test pins that behavior.
+        // conditional=true sets isCondTrig.<N>=true on the trigger row and
+        // _rmBuildCondition drives the condition sub-wizard internally, but
+        // _rmAddTrigger still commits and returns success=true before handing back.
+        // The auto-updateRule guard (`trigResult?.success != false`) does NOT inspect
+        // `conditional` -- updateRule fires for conditional triggers just as for
+        // plain ones. This test pins that behavior.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2612,7 +2967,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
     }
 
-    // ---------- Finding #4: success/partial semantic matrix for _rmAddAction ----------
+    // ---------- addAction success/partial semantic matrix ----------
 
     /**
      * Helper: builds a doActPage schema JSON with an incrementing paragraph
@@ -2638,7 +2993,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction returns success=true partial=false on full success"() {
-        // Finding #4 matrix case 1 (action): all settings land, action bakes.
+        // Matrix case 1: all settings land, action bakes.
         // success=!err && !applied.isEmpty() => true; partial=false.
         given:
         enableHubAdminWrite()
@@ -2682,9 +3037,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction returns success=true partial=true when action does not bake (actionNotBaked)"() {
-        // Finding #4 matrix case 2 (action): settings land (applied non-empty)
-        // but mainPage still shows "Define Actions". New contract: success=true,
-        // partial=true. Old contract was success=false.
+        // Matrix case 2: settings land (applied non-empty) but mainPage still shows
+        // "Define Actions". Contract: success=true, partial=true.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -2728,10 +3082,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction returns success=false when selectActions finalConfig has configPage error"() {
-        // Finding #4 matrix case 4 (action): hard failure -- API error present in
-        // the selectActions configPage.error field. err != null -> success=false.
-        // Uses a static doActPage schema so writes silently reject; the test
-        // verifies that err alone drives success=false.
+        // Matrix case 4: hard failure -- API error present in the selectActions
+        // configPage.error field. err != null -> success=false. Uses a static
+        // doActPage schema so writes silently reject; err alone drives success=false.
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -2781,11 +3134,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction returns success=false when nothing was written (all settings silently rejected)"() {
-        // Finding #4 matrix case 5 (action): hard failure -- applied stays empty
-        // because every write produces no observable schema shift. The 'log'
-        // capability has no field writes beyond actType/actSubType; using a
-        // static doActPage schema with no render shift causes both to route to
-        // skipped rather than applied.
+        // Matrix case 5: hard failure -- applied stays empty because every write
+        // produces no observable schema shift. The 'log' capability has no field
+        // writes beyond actType/actSubType; a static doActPage schema with no
+        // render shift causes both to route to skipped rather than applied.
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -2878,12 +3230,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction ifThen condition: Custom Attribute comparator writes RelrDev_N (not compareCond_N)"() {
-        // Finding #12: on doActPage the comparator field is RelrDev_<N> ("Relr",
-        // condition-wizard naming), NOT compareCond_<N> (selectTriggers-only) and
-        // NOT ReltDev_<N> (trigger-row numeric comparator on selectTriggers).
-        // Before the fix, compareCond_1 silently rejected and the condition rendered
-        // as "wickFilterLife null" (broken). After the fix, RelrDev_1 lands in
-        // settingsApplied and compareCond_1 is absent.
+        // On doActPage the comparator field is RelrDev_<N> ("Relr", condition-wizard
+        // naming), NOT compareCond_<N> (selectTriggers-only) and NOT ReltDev_<N>
+        // (trigger-row numeric comparator on selectTriggers). Using the wrong field
+        // name causes compareCond_1 to silently reject and the condition to render
+        // as "wickFilterLife null" (broken). RelrDev_1 must land in settingsApplied.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -3416,8 +3767,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // moreParams click, the schema should expose cpType2.1/cpVal2.1 as new fields.
         // Exactly ONE moreParams click should be recorded.
         //
-        // BUG E refactor context: the old code always clicked moreParams for param>=1;
-        // the new code (Bug E) checks whether cpType1.N is already in schema and writes
+        // Param-slot refactor context: the old code always clicked moreParams for param>=1;
+        // the new code checks whether cpType1.N is already in schema and writes
         // directly if so. The mock must reflect RM's actual wizard progression:
         //   - cpType1.1 is present until the FIRST cpType1.1 write commits (param 0).
         //   - After that write, cpType1.1 disappears (wizard advanced past slot 1).
@@ -3722,7 +4073,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     // -----------------------------------------------------------------------
-    // Bug A regression: addTrigger with atTime but no time field
+    // Regression: addTrigger with atTime but no time field
     // -----------------------------------------------------------------------
     //
     // Before the fix, the entire time block was guarded on
@@ -3735,7 +4086,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // as "A specific time".  Both time${idx} and atTime${idx} then write.
 
     def "addTrigger with atTime but no time infers time='A specific time' and writes both fields"() {
-        // Verifies Bug A fix: the inference path writes settings[time1]="A specific time"
+        // Verifies the atTime-inference fix: the inference path writes settings[time1]="A specific time"
         // AND settings[atTime1]="17:00" when the spec has atTime but omits time.
         // The schema includes tCapab1 (with "Certain Time" option), time1, and atTime1
         // so _rmWriteSettingOnPage doesn't skip them as "not in schema".
@@ -3800,15 +4151,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     // -----------------------------------------------------------------------
-    // Bug B regression: addRequiredExpression ghost ifThen leaves app at
-    //                   selectActions, not mainPage
+    // Regression: addRequiredExpression ghost ifThen leaves app at
+    //             selectActions, not mainPage
     // -----------------------------------------------------------------------
     //
     // After the ghost ifThen sequence (_rmAddRequiredExpression Step 4b):
     //   N click (selectActions) -> condActs/getIfThen writes -> actionCancel
     //   -> nav doActPage->selectActions
     //
-    // Before the Bug B fix, the sequence ended at selectActions. When the
+    // Before the fix, the sequence ended at selectActions. When the
     // browser user subsequently navigated to "Manage Conditions" (STPage href
     // on mainPage), RM saw the selectActions routing context and showed
     // "Required Fields missing or not passing validation".
@@ -3817,8 +4168,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // This mirrors addTrigger's pattern (selectTriggers->mainPage nav at end)
     // and leaves the app in mainPage context for the browser's next visit.
 
-    def "addRequiredExpression Step 4b ends with selectActions->mainPage nav (Bug B fix)"() {
-        // Verifies the Bug B fix: after the doActPage->selectActions nav, a
+    def "addRequiredExpression Step 4b ends with selectActions->mainPage nav"() {
+        // Verifies the RE nav fix: after the doActPage->selectActions nav, a
         // second selectActions->mainPage nav fires, leaving the app in mainPage
         // context so browser STPage visits don't see a conflicting editAct context.
         given:
@@ -3876,7 +4227,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                                            } }
         doActToSelectActionsIdx != -1
 
-        and: "selectActions->mainPage nav fires AFTER doActPage->selectActions nav (Bug B fix)"
+        and: "selectActions->mainPage nav fires AFTER doActPage->selectActions nav"
         def selectActionsToMainPageIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
                                                               it.body?.currentPage == "selectActions" &&
                                                               it.body?.any { k, v ->
@@ -4777,8 +5128,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "tstate1", type: "enum", options: ["on", "off"]]
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectTriggers configPage response includes settings.tstate1="on" so the
+        // _rmWriteSettingOnPage post-write verification (settingsLanded mechanism)
+        // classifies the write as 'applied' rather than 'silent_rejection'. Without
+        // this echo, all four detection mechanisms (schemaShifted / valueLanded /
+        // renderShifted / settingsLanded) return false and applied stays empty,
+        // making _rmModifyTrigger's success = !applied.isEmpty() = false.
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            ruleConfigJson(100, "r", selectTriggersSchema)
+            groovy.json.JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "Triggers", install: true, error: null,
+                             sections: [[title: "", input: selectTriggersSchema]]],
+                settings: [tstate1: "on"],  // echo back the written value -- settingsLanded fires
+                childApps: []
+            ])
         }
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusJson(100, [[name: "tCapab1", value: "Switch"]])

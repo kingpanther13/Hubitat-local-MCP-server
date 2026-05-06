@@ -266,7 +266,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "list_item_backups returns all manifest entries sorted newest first"() {
         given: 'two manifest entries with different timestamps'
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'app_10'   : [type: 'app',    id: '10', fileName: 'mcp-backup-app-10.groovy',
                           version: 5, timestamp: 1_000_000_000_000L, sourceLength: 100],
             'driver_20': [type: 'driver', id: '20', fileName: 'mcp-backup-driver-20.groovy',
@@ -298,7 +298,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "get_item_backup returns helpful error when the key is unknown"() {
         given:
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
                       version: 1, timestamp: 1_000_000_000_000L, sourceLength: 0]
         ]
@@ -314,7 +314,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "get_item_backup reads the backup source from File Manager"() {
         given:
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'app_5': [type: 'app', id: '5', fileName: 'mcp-backup-app-5.groovy',
                       version: 2, timestamp: 1_234_000_000_000L, sourceLength: 123]
         ]
@@ -339,7 +339,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "get_item_backup reports error when the backup file cannot be read"() {
         given:
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'app_6': [type: 'app', id: '6', fileName: 'mcp-backup-app-6.groovy',
                       version: 1, timestamp: 1_234_000_000_000L, sourceLength: 0]
         ]
@@ -356,7 +356,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "get_item_backup omits inline source when the file exceeds the MCP response limit"() {
         given:
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'driver_9': [type: 'driver', id: '9', fileName: 'mcp-backup-driver-9.groovy',
                          version: 1, timestamp: 1_234_000_000_000L, sourceLength: 0]
         ]

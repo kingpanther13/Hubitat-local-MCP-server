@@ -294,7 +294,7 @@ def updated() {
     // the new settings value, and we'd race with user-driven toggle events.
     if (state.customEngineMigrated != true
             && settings.enableRuleEngine != null
-            && settings.enableCustomRuleEngine != false) {
+            && settings.enableCustomRuleEngine == null) {
         app.updateSetting("enableCustomRuleEngine", [type: "bool", value: false])
         mcpLog("info", "engine-migration", "Forced enableCustomRuleEngine=false (one-time rename migration; legacy enableRuleEngine present)")
     }
@@ -2132,7 +2132,7 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     patches: [
                         type: "array",
-                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Use this for the T425-style "change RE + add action + edit local var" atomic update pattern. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
+                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Useful for combined "change RE + add action + edit local var" patterns. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -2145,7 +2145,7 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions, then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Use this for the T377 (update existing actions) and T381 (reorder by passing actions in the new order) patterns. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).",
+                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions, then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).",
                         items: [type: "object"]
                     ],
                     moveAction: [
@@ -3760,7 +3760,7 @@ def toolDeleteHubVariable(args) {
     // variables (Settings → Hub Variables) live in a separate namespace not yet
     // accessible from this app.
     if (!state.ruleVariables?.containsKey(name)) {
-        throw new IllegalArgumentException("Variable '${name}' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP — use Settings → Hub Variables UI.)")
+        throw new IllegalArgumentException("Variable '${name}' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP -- use Settings > Hub Variables UI.)")
     }
 
     // Pre-deletion safety scan: child rule apps that reference this variable will silently
@@ -4991,16 +4991,18 @@ def requireHubAdminWrite(Boolean confirmParam) {
 /**
  * Automatically back up an individual item's source code before modifying or deleting it.
  * Saves the source code as a .groovy file in the hub's local File Manager using uploadHubFile().
- * Metadata (timestamp, version, etc.) is stored in state.itemBackupManifest.
+ * Metadata (timestamp, version, etc.) is stored in atomicState.itemBackupManifest.
  * Files are accessible at http://<HUB_IP>/local/<filename> even if MCP fails.
  * If a backup of this item already exists within the last hour, skips (preserves the pre-edit original).
  * Returns the manifest entry on success, or throws if the source cannot be retrieved.
  */
 def backupItemSource(String type, String id) {
-    if (!state.itemBackupManifest) state.itemBackupManifest = [:]
+    // atomicState read-modify-write: read the full manifest map, mutate locally,
+    // write back atomically. Direct nested writes to state silently fail on Hubitat.
+    def manifest = atomicState.itemBackupManifest ?: [:]
 
     def key = "${type}_${id}"
-    def existing = state.itemBackupManifest[key]
+    def existing = manifest[key]
 
     // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
@@ -5029,7 +5031,7 @@ def backupItemSource(String type, String id) {
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: file upload failed -- ${e.message}")
     }
 
-    def manifest = [
+    def entry = [
         type: type,
         id: id,
         fileName: fileName,
@@ -5037,33 +5039,34 @@ def backupItemSource(String type, String id) {
         timestamp: now(),
         sourceLength: parsed.source.length()
     ]
-    state.itemBackupManifest[key] = manifest
+    manifest[key] = entry
 
-    // Prune old backups — keep at most 20 entries, remove oldest if over limit
-    if (state.itemBackupManifest.size() > 20) {
-        def oldest = state.itemBackupManifest.min { it.value.timestamp }
+    // Prune old backups -- keep at most 20 entries, remove oldest if over limit
+    if (manifest.size() > 20) {
+        def oldest = manifest.min { it.value.timestamp }
         if (oldest) {
             mcpLog("debug", "hub-admin", "Pruning oldest backup: ${oldest.key} (${oldest.value.fileName}, from ${formatTimestamp(oldest.value.timestamp)})")
             try { deleteHubFile(oldest.value.fileName) } catch (Exception e) {
                 mcpLog("warn", "hub-admin", "Could not delete pruned backup file '${oldest.value.fileName}': ${e.message}")
             }
-            state.itemBackupManifest.remove(oldest.key)
+            manifest.remove(oldest.key)
         }
     }
 
+    atomicState.itemBackupManifest = manifest
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
-    return manifest
+    return entry
 }
 
 // ==================== ITEM BACKUP TOOLS ====================
 
 /**
  * Lists all item backups stored in the hub's local File Manager.
- * Metadata is in state.itemBackupManifest; actual source files are in File Manager.
+ * Metadata is in atomicState.itemBackupManifest; actual source files are in File Manager.
  * Does not require Hub Admin Read/Write — always available.
  */
 def toolListItemBackups() {
-    def manifest = state.itemBackupManifest ?: [:]
+    def manifest = atomicState.itemBackupManifest ?: [:]
 
     if (manifest.isEmpty()) {
         return [
@@ -5120,7 +5123,7 @@ def toolListItemBackups() {
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
 
-    def manifest = state.itemBackupManifest ?: [:]
+    def manifest = atomicState.itemBackupManifest ?: [:]
     def entry = manifest[args.backupKey]
 
     if (!entry) {
@@ -5189,7 +5192,7 @@ def toolRestoreItemBackup(args) {
 
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'rm-rule_<id>_<ts>')")
 
-    def manifest = state.itemBackupManifest ?: [:]
+    def manifest = atomicState.itemBackupManifest ?: [:]
     def entry = manifest[args.backupKey]
 
     if (!entry) {
@@ -5254,11 +5257,13 @@ def toolRestoreItemBackup(args) {
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
             if (parsed.source) {
                 uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
-                if (!state.itemBackupManifest) state.itemBackupManifest = [:]
-                state.itemBackupManifest[preRestoreBackupKey] = [
+                // atomicState read-modify-write: read full map, mutate locally, write back.
+                def mfst = atomicState.itemBackupManifest ?: [:]
+                mfst[preRestoreBackupKey] = [
                     type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
                     version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
                 ]
+                atomicState.itemBackupManifest = mfst
                 mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
             }
         }
@@ -7839,7 +7844,7 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
         if (success) {
             mcpLog("info", "hub-admin", "${type.capitalize()} ID ${itemId} deleted successfully")
             // .toString() because the stored key is a String but Map.get(GString) does not coerce (hashCode mismatch → silent null).
-            def backupEntry = state.itemBackupManifest?.get("${type}_${itemId}".toString())
+            def backupEntry = (atomicState.itemBackupManifest ?: [:])?.get("${type}_${itemId}".toString())
             def installTool = (type == "app") ? "install_app" : "install_driver"
             def result = [
                 success: true,
@@ -9561,11 +9566,12 @@ private Map _appTypeRegistry() {
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers"],
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
+        // visual_rule is registered for completeness; not probe-validated against a
+        // live hub yet -- file an issue if firmware behavior differs from rule_machine.
         visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"]
-        // Verified child appName values 2026-04-26 by listing parent
-        // apps' children on the live hub. Basic Rule / Room Lighting
-        // parents exist (ids 4 / 51) but have no children to model from
-        // yet — add when needed once probed.
+        // button_controller, groups_scenes, notifier child appName values were
+        // verified on the live hub. Basic Rule / Room Lighting parents exist
+        // but have no probed children yet -- add when needed.
     ]
 }
 
@@ -9729,27 +9735,31 @@ private Set _collectLiveAppIds() {
  * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
  * parent id is per-hub.
  *
- * Cache in state.parentAppIds[<appType>] — one network call per type per
+ * Cache in atomicState.parentAppIds[<appType>] -- one network call per type per
  * fresh install. Throws user-actionable error if the app type's parent
  * is not installed (e.g., RM was never enabled on this hub).
  */
 private Integer _discoverParentAppId(String appType) {
-    if (!state.parentAppIds) state.parentAppIds = [:]
-    // Backward-compat shim: pre-rename code wrote state.parentAppIds.rm.
-    // Migrate it to the new key name on first read so cached values keep
-    // working after this PR ships. If both keys exist, prefer the newer
-    // one and drop the legacy entry.
-    if (appType == "rule_machine" && state.parentAppIds.rm != null && state.parentAppIds.rule_machine == null) {
-        state.parentAppIds.rule_machine = state.parentAppIds.rm
+    // atomicState read-modify-write: direct nested-map writes to state silently
+    // fail on Hubitat because state serializes/deserializes the whole map on each
+    // access. Always read the full map, mutate the local copy, then write back.
+    def ids = atomicState.parentAppIds ?: [:]
+    // Backward-compat shim: pre-rename code wrote parentAppIds.rm.
+    // Migrate to the new key name on first read so cached values survive.
+    // If both keys exist, prefer the newer one and drop the legacy entry.
+    if (appType == "rule_machine" && ids.rm != null && ids.rule_machine == null) {
+        ids.rule_machine = ids.rm
     }
-    if (state.parentAppIds.rm != null && state.parentAppIds.rule_machine != null) {
-        state.parentAppIds.remove("rm")
+    if (ids.rm != null && ids.rule_machine != null) {
+        ids.remove("rm")
+        atomicState.parentAppIds = ids
     }
-    def cached = state.parentAppIds[appType]
+    def cached = ids[appType]
     if (cached != null) {
         try { return cached.toString().toInteger() } catch (NumberFormatException e) {
             mcpLog("warn", "rm-native", "Invalid cached parentAppId for '${appType}' ('${cached}') -- rediscovering")
-            state.parentAppIds.remove(appType)
+            ids.remove(appType)
+            atomicState.parentAppIds = ids
         }
     }
 
@@ -9779,10 +9789,11 @@ private Integer _discoverParentAppId(String appType) {
 
     if (parentNode?.id == null) {
         throw new IllegalArgumentException(
-            "'${parentTypeName}' parent not found on this hub. Install it via Apps → Add Built-In App before using create_native_app with appType=${appType}.")
+            "'${parentTypeName}' parent not found on this hub. Install it via Apps --> Add Built-In App before using create_native_app with appType=${appType}.")
     }
     def id = parentNode.id.toString().toInteger()
-    state.parentAppIds[appType] = id
+    ids[appType] = id
+    atomicState.parentAppIds = ids
     mcpLog("info", "rm-native", "Discovered ${parentTypeName} parent app id: ${id} (appType=${appType})")
     return id
 }
@@ -9858,6 +9869,11 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
     if (pageName) {
         body.formAction = "update"
         body.currentPage = pageName
+        // FUTURE-FIRMWARE-RISK: breadcrumb depth is hardcoded to a single
+        // mainPage ancestor. If RM adds multi-level sub-pages (e.g. a
+        // sub-wizard nested under selectTriggers), the correct breadcrumb
+        // would be '["mainPage","selectTriggers"]' or deeper. Verify against
+        // a Chrome network capture if a new wizard level starts rejecting clicks.
         body.pageBreadcrumbs = '["mainPage"]'
         // The hub uses `version` to detect concurrent edits. Fetch the
         // current value so we replay the exact one the UI would send.
@@ -9981,7 +9997,10 @@ String _rmNormalizeAtTime(String raw) {
     // Attempt each known input form. The output format is always canonical.
     // Order: most-specific first so the correct parser wins without ambiguity.
     def UTC = TimeZone.getTimeZone("UTC")
-    def hubTz = location.timeZone ?: TimeZone.default
+    def hubTz = location.timeZone
+    if (!hubTz) {
+        throw new IllegalStateException("_rmNormalizeAtTime: location.timeZone is null -- hub timezone is not configured. Set the hub timezone in Settings > Location and Modes before using time-based triggers.")
+    }
     def parsers = [
         // Millis + explicit numeric offset (e.g. -0500 / +0000) -- normalize to UTC
         [fmt: "yyyy-MM-dd'T'HH:mm:ss.SSSZ",    tz: UTC],
@@ -10115,7 +10134,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // The condition wizard advanced the trigger index by one, so the
         // actual conditional trigger now lives at idx+1. The isCondTrig
         // and condTrig writes are deferred to the post-tCapab finalize
-        // block below — verified live 2026-04-25 that schema doesn't
+        // block below — verified live that schema doesn't
         // expose isCondTrig.<idx+1>/condTrig.<idx+1> until tCapab<idx+1>
         // is set + tDev<idx+1>/tstate<idx+1> populated. Writing them
         // early gets silently dropped (settingsSkipped reveals
@@ -10413,8 +10432,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     }
 
     // Conditional-trigger binding MUST be written BEFORE hasAll while the
-    // trigger-edit form is still open. Verified live 2026-04-26 via T323
-    // probe: after hasAll, selectTriggers' schema is empty (the wizard
+    // trigger-edit form is still open. Verified live: after hasAll,
+    // selectTriggers' schema is empty (the wizard
     // returned to the trigger-list view, no edit fields exposed), so
     // condTrig.<idx> writes silently fail with available=[] (a hub-render
     // error pattern). The earlier comment claiming condTrig.<idx> only
@@ -10484,7 +10503,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // addTrigger would return success=true on a rule whose trigger
     // didn't actually commit. The hub isn't doing anything wrong —
     // it's permissive by design — but the LLM needs the signal so it
-    // can self-correct. Verified 2026-04-26: this check catches the
+    // can self-correct. Verified: this check catches the
     // "expression silently didn't bake" class of failures that
     // configPageError + brokenMarkers don't catch.
     def triggerNotBaked = false
@@ -11404,12 +11423,37 @@ private List _rmCollectTriggerIndices(Integer appId) {
 
 /**
  * Scan an RM rule's appSettings for actType.<N> entries and return the
- * Set of action indices currently in use. Used by _rmAddAction to pick
- * the next free index. Note action keys use a dot-N suffix (actType.1)
- * vs trigger keys without (tCapab1).
+ * list of action indices in DISPLAY ORDER. Used by _rmAddAction to pick
+ * the next free index and by _rmMoveAction to verify position shifts.
+ *
+ * Ordering strategy (two-tier):
+ *   1. If statusJson.actions is a Map with integer keys, use its key
+ *      iteration order (Hubitat serializes this in display order).
+ *      This is immune to the JSON key lexical-sort bug (actType.1,
+ *      actType.10, actType.2) that appSettings scanning suffers from.
+ *   2. Fall back to the appSettings actType.<N> scan with lexical sort
+ *      when statusJson.actions is absent. Lexical order matches display
+ *      order at small action counts but may diverge above 10 actions
+ *      (actType.10 sorts before actType.2 lexically); the tier-1
+ *      statusJson.actions path is the authoritative source when available.
+ *
+ * Note action keys use a dot-N suffix (actType.1) vs trigger keys
+ * without dot (tCapab1).
  */
 private List _rmCollectActionIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
+
+    // Tier 1: statusJson.actions map (integer-keyed, display-ordered).
+    def actionsMap = status?.actions
+    if (actionsMap instanceof Map && !actionsMap.isEmpty()) {
+        def ordered = []
+        actionsMap.keySet().each { k ->
+            try { ordered << k.toString().toInteger() } catch (NumberFormatException ignored) {}
+        }
+        return ordered
+    }
+
+    // Tier 2: lexical appSettings scan.
     def out = []
     (status?.appSettings ?: []).each { s ->
         def n = s?.name?.toString()
@@ -11422,7 +11466,7 @@ private List _rmCollectActionIndices(Integer appId) {
 }
 
 /**
- * Delete a single action at a specific index. Verified live 2026-04-25
+ * Delete a single action at a specific index. Verified live
  * by inspecting the live UI HTML on selectActions: the per-row trash
  * button has data-stateAttribute='delAct' and the form-input name is
  * just the action index as a digit (e.g. name='2' for action 2). RM's
@@ -11488,7 +11532,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
 /**
  * Delete a single trigger at a specific index. The per-row delete button on
  * selectTriggers has data-stateAttribute='deleteCon' (truncated, NOT 'deleteCond'
- * — verified live 2026-05-05 via embeddedActions introspection on rule 289)
+ * — verified live via embeddedActions introspection on rule 289)
  * and the form-input name is the trigger index as a digit (e.g. name='1'
  * for trigger 1). RM's
  * appButtonHandler dispatches on the stateAttribute and uses the name to
@@ -11512,7 +11556,7 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
         throw new IllegalArgumentException("removeTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
     }
     // The trigger-row Delete button on selectTriggers requires a TWO-POST
-    // sequence to actually delete (verified live 2026-05-05 via Chrome XHR
+    // sequence to actually delete (verified live via Chrome XHR
     // capture against rule 290 + direct curl reproduction):
     //
     //   POST 1 — /installedapp/btn — minimal body: id, name=<idx>,
@@ -11534,7 +11578,9 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     // (cheap; we already have it locally if we want to reuse, but a fresh
     // fetch keeps the helper self-contained).
     def cfgForVersion = null
-    try { cfgForVersion = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception ignored) { /* best effort */ }
+    try { cfgForVersion = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception verExc) {
+        mcpLog("warn", "rm-native", "_rmRemoveTrigger: version fetch for app ${appId} failed (${verExc.message}) -- POSTing commit without version field; hub may reject with a version-conflict error on concurrent edits")
+    }
     def commitBody = [
         id: appId.toString(),
         formAction: "update",
@@ -11611,12 +11657,35 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     }
     // Commit the in-flight edit via hasAll on selectTriggers.
     _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
-    return [success: true, modifiedIndex: triggerIdx, settingsApplied: applied, settingsSkipped: skipped]
+    // Post-commit verification: re-fetch selectTriggers to confirm the
+    // new state value echoes back. Mirrors the _rmAddTrigger pattern --
+    // RM may silently accept the write but not persist it if the wizard
+    // is in an unexpected state. verificationFetchFailed lets the caller
+    // check via get_app_config rather than assuming success.
+    def verifiedState = null
+    def verificationFetchFailed = false
+    try {
+        def verifyCfg = _rmFetchConfigJson(appId, "selectTriggers")
+        def verifySchema = _rmCollectInputSchema(verifyCfg?.configPage)
+        verifiedState = verifySchema?.get("tstate${triggerIdx}")?.value?.toString()
+    } catch (Exception verifyExc) {
+        verificationFetchFailed = true
+        mcpLog("warn", "rm-native", "_rmModifyTrigger: post-commit selectTriggers fetch failed for app ${appId} (${verifyExc.message}) -- cannot echo-verify new state; returning verificationFetchFailed=true")
+    }
+    def success = verificationFetchFailed ? false : (verifiedState != null ? verifiedState == mods.state?.toString() : !applied.isEmpty())
+    return [
+        success: success,
+        modifiedIndex: triggerIdx,
+        verifiedState: verifiedState,
+        verificationFetchFailed: verificationFetchFailed,
+        settingsApplied: applied,
+        settingsSkipped: skipped
+    ]
 }
 
 /**
  * Delete every action on a rule via the trashAll → trashActs flow.
- * Verified live 2026-04-25:
+ * Verified live:
  *
  *   1. Click button name='trashAll' stateAttribute='trash'. RM enters
  *      trash-confirmation mode and exposes a `trashActs` multi-enum
@@ -11776,7 +11845,7 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     // The hub reads `params_for_action_href_*` to set state.<paramKey>
     // before rendering the target page. Without it, the target page
     // renders with `Cannot get property '<paramKey>' on null object`.
-    // Verified live 2026-04-25 by capturing the periodic1 button's
+    // Verified live by capturing the periodic1 button's
     // XHR body via Chrome devtools (body field count = 20, including
     // params_for_action_href_periodic1|periodic|4 = {"n":1}).
     //
@@ -11897,7 +11966,7 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
  * be incomplete (state.<...> markers from in-flight edits not cleaned
  * up, subscriptions/scheduledJobs may not fully re-init).
  *
- * Verified live 2026-04-26 by capturing the working UI's Done click on
+ * Verified live by capturing the working UI's Done click on
  * a rule's mainPage: body carries _action_update=Done plus all mainPage
  * input fields echoed with their type + multiple sidecars + (where
  * applicable) checkbox/hours/minutes/amPm markers. After Done, the
@@ -11941,15 +12010,16 @@ private void _rmSubmitMainPageDone(Integer appId) {
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception ignored) { /* best effort */ }
+    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception e) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: final Done POST for app ${appId} failed (${e.message}) -- state.editAct / state.editCond markers from in-flight edits may not have been cleared; next edit session should verify via get_app_config")
+    }
 }
 
 /**
  * Write a single field on a sub-page. Posts settings[key]=value with
  * pageBreadcrumbs=[] and NO `_action_href_*` markers — re-firing the
- * navigation marker on a write resets RM's in-flight wizard state (the
- * T404 sub-expression bug that surfaces as "**Broken Condition**" on
- * STPage). When hrefParams carries non-null values (e.g. periodic
+ * navigation marker on a write resets RM's in-flight wizard state and
+ * produces "**Broken Condition**" on STPage. When hrefParams carries non-null values (e.g. periodic
  * schedule's state.n), the helper navigates first to set state in scope,
  * then writes.
  *
@@ -11990,8 +12060,8 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // state.n), schema requires the navigate response to set state in scope.
     // For pages with placeholder hrefParams (STPage uses [unUsed: null]),
     // re-firing the action_href on each write RESETS RM's in-flight wizard
-    // accumulator (cond-builder, etc.) and breaks multi-step flows like
-    // T404's sub-expression. Detect "no real params" via all-null values
+    // accumulator (cond-builder, etc.) and breaks multi-step flows that
+    // use sub-expressions. Detect "no real params" via all-null values
     // and use a plain GET in that case.
     def hasRealParams = (hrefParams != null) && hrefParams.values().any { it != null }
     def cfg
@@ -12014,9 +12084,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // markers — those are exclusively for the navigation POST. Including
     // `_action_href_*` in the write re-fires the navigation handler, which
     // resets in-flight wizard state (state.<paramKey>, condition-builder
-    // accumulators) and corrupts subsequent renders. The "Broken Condition"
-    // render on STPage cond=b (T404) was caused by this re-init wiping the
-    // open-paren state mid-wizard. Periodic schedule writes keep state.n
+    // accumulators) and corrupts subsequent renders. Periodic schedule writes keep state.n
     // alive via paramsForPage on the Done back-nav (see _rmSubmitSubPageDone),
     // not via re-firing the action_href on every write.
     body.pageBreadcrumbs = '[]'
@@ -12187,59 +12255,15 @@ private void _rmInitSelectActionsPage(Integer appId) {
     ]
     def v = cfg?.app?.version
     if (v != null) body.version = v.toString()
-    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception ignored) { /* idempotent */ }
+    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception e) {
+        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: selectActions tickle POST for app ${appId} failed (${e.message}) -- state.actNdx may not initialize; first +N click may throw 'Cannot invoke method startsWith() on null object'")
+    }
 }
 
 /**
  * High-level structured action creation for Rule Machine 5.1.
- *
- * Replaces the 6-7 wizard calls (init selectActions → click N with
- * stateAttribute=doActN → set actType → set actSubType → set type-specific
- * fields → wait for actionDone to appear → click actionDone) with one
- * orchestrated call. Discovers the next action index, opens the wizard,
- * walks the schema-aware writes, and commits via actionDone.
- *
- * Important wire-format quirks discovered live (2026-04-25, firmware
- * 2.5.0.123 via Chrome DevTools + curl):
- *
- *   1. The "Create New Action" button (name=N) requires
- *      stateAttribute=**doActN** — the literal concatenation of "doAct"
- *      and the button name "N". Sending stateAttribute=doAct alone sets
- *      state.doAct='N' but NOT state.doActN, and doActPage then errors
- *      with "Cannot invoke method startsWith() on null object".
- *
- *   2. doActPage's schema is incremental: actionDone only appears AFTER
- *      all required type-specific fields are set. _rmWriteSettingOnPage
- *      re-fetches the schema before each write, so calling it for every
- *      field guarantees actionDone is present by the final click.
- *
- *   3. selectActions' page hook initializes state.actNdx. On a freshly
- *      created rule with zero actions, state.actNdx is null and the
- *      doActPage renders with actType.null (broken). Fire an empty POST
- *      to selectActions FIRST to initialize actNdx — _rmInitSelectActionsPage
- *      handles this idempotently.
- *
- * Capability families and the spec fields each accepts:
- *
- *   Switch family — capability=switch:
- *     action='on'      → onOffSwitch.<N>=devices, onOff.<N>=true
- *     action='off'     → onOffSwitch.<N>=devices, onOff.<N>=false
- *     action='toggle'  → toggleSwitch.<N>=devices
- *     action='flash'   → flashSwitch.<N>=devices
- *
- * Optional modifier fields on every spec:
- *   delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>=
- *     'hrs:min:sec' + duration sub-fields
- *   rawSettings { fieldName: value } — escape hatch (use @N as a literal
- *     placeholder in the field name to substitute the action index)
- *
- * The helper navigates doActPage→selectActions at the end so the action
- * is fully baked into actions[] and state.actNdx is advanced before the
- * next addAction can land — it does NOT click updateRule (that's the
- * caller's responsibility, fired ONCE after a batch via addActions /
- * replaceActions / patches, or the trailing update_native_app dispatch).
- * Verified live (2026-04-26): the navigation marker drives the action
- * bake; firing updateRule per-action would 100ms-each-cost a batch.
+ * Replaces the 6-7 manual wizard calls with one orchestrated call.
+ * Wire-format quirks and capability families: docs/rm_wire_format.md#_rmAddAction.
  *
  * Returns: [success, actionIndex, capability, action, settingsApplied,
  * configPageError]
@@ -12297,7 +12321,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // event storage. Adding a second waitEvents action causes the wizard to
     // inherit action 1's event configuration as defaults, and any field
     // change overwrites action 1's events. The Hubitat web UI exhibits the
-    // same bug — verified live 2026-05-04 via Chrome XHR capture against
+    // same bug — verified live via Chrome XHR capture against
     // rule 227 (test hub) plus manual UI walk: the rule rendered "Wait for
     // event: <DeviceA>" twice for what was supposed to be two distinct
     // waits, because setting action 2's device silently overwrote action 1's
@@ -12322,7 +12346,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 "(an existing waitEvents action is at index ${existingWaitIdx}). RM stores wait-event " +
                 "capability/device/state in global per-rule settings (tCapab-N, tDev-N, tstate-N), NOT " +
                 "in per-action storage — adding a second waitEvents action would silently overwrite " +
-                "the first action's event configuration. Verified live 2026-05-04: the Hubitat web UI " +
+                "the first action's event configuration. Verified live: the Hubitat web UI " +
                 "exhibits the same bug. Workarounds: (a) put all wait events into a SINGLE waitEvents " +
                 "action via the 'events' array (events=[{...}, {...}]); (b) split into two rules " +
                 "chained via Run Actions; (c) wait at the platform level via separate triggers."
@@ -12354,7 +12378,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             case "flash":
                 actSubType = "getFlashSwitch"
                 fields = ["flashSwitch.@N": deviceIds]
-                // FOLLOW-UP (verified live 2026-04-25): RM 5.1's switchActs
+                // FOLLOW-UP (verified live): RM 5.1's switchActs
                 // category exposes getFlashSwitch (start flashing) but NO
                 // matching "stop flashing" subtype. Calling switch.on/.off
                 // afterward DOES NOT cancel the flash schedule — the device
@@ -12371,7 +12395,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 break
             case "setPerMode":
                 // switchActs/getModeSwitch — same device list, per-mode on/off.
-                // Wire format (verified live 2026-04-25):
+                // Wire format (verified live):
                 //   switchM.<N>      = devices (capability.switch multi)
                 //   switchModes.<N>  = mode IDs (enum multi, JSON-array)
                 //   switch<modeID>.<N> = "on" | "off" for each selected mode
@@ -12457,8 +12481,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 actSubType = "getStopFade"; fields = [:]
                 break
             case "startRaiseLower":
-                // dimRL.<N>: true=LOWER, false=Raise (verified live 2026-04-25
-                // via T355 sweep — the boolean is inverted relative to the
+                // dimRL.<N>: true=LOWER, false=Raise (verified live
+                // sweep — the boolean is inverted relative to the
                 // intuition the field name suggests).
                 actSubType = "getRLDimmer"
                 fields = ["dimRL.@N": (actionSpec.direction != "raise"), "dimRaiseLower.@N": deviceIds]
@@ -12468,7 +12492,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 break
             case "setLevelPerMode":
                 // dimmerActs/getDimmersPerMode — same dimmer device list, per-mode level.
-                // Field naming (verified live 2026-04-25):
+                // Field naming (verified live):
                 //   dimM.<N>           = devices (capability.switchLevel multi)
                 //   dimmerModes.<N>    = mode IDs
                 //   level<modeID>.<N>  = number 0-100 for each mode
@@ -12500,7 +12524,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 // For custom HSV: pass hue/saturation/level via rawSettings (colorH.<N> takes a JSON-encoded color picker value)
                 break
             case "toggleColor":
-                // Verified live 2026-04-26: getToggleColor's actionDone button
+                // Verified live: getToggleColor's actionDone button
                 // doesn't render until colorName AND level are set. Without
                 // them the action never bakes — the row stays in atomicState
                 // but actions[] doesn't advance, so the next addAction's
@@ -12588,8 +12612,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 throw new IllegalArgumentException("Unknown colorTemp action '${action}' -- supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade, setColorTempPerMode")
         }
     } else if (cap == "lock") {
-        // lockRL.<N>: true=UNLOCK, false=Lock (verified live 2026-04-25 via
-        // T362 sweep — boolean is inverted relative to field-name intuition).
+        // lockRL.<N>: true=UNLOCK, false=Lock (verified live --
+        // boolean is inverted relative to field-name intuition).
         actType = "lockActs"
         actSubType = "getLULock"
         switch (action) {
@@ -12609,8 +12633,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (actionSpec.coolingSetpoint != null)   fields["thermoSetCool.@N"] = actionSpec.coolingSetpoint
         if (actionSpec.adjustCooling != null)     fields["thermoAdjCool.@N"] = actionSpec.adjustCooling
     } else if (cap == "shade") {
-        // shadeRL.<N>: true=CLOSE, false=Open (verified live 2026-04-25 via
-        // T358 sweep — boolean is inverted relative to field-name intuition).
+        // shadeRL.<N>: true=CLOSE, false=Open (verified live --
+        // boolean is inverted relative to field-name intuition).
         actType = "sceneActs"
         switch (action) {
             case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
@@ -12690,7 +12714,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             "devices.@N": deviceIds,
             "cCmd.@N": actionSpec.command
         ]
-        // Parameter slot allocation (verified live 2026-04-27):
+        // Parameter slot allocation (verified live):
         // cpType1/cpVal1 are present in the schema after cCmd is written
         // (or are always present). The FIRST parameter must be written
         // directly to cpType1/cpVal1 -- do NOT click moreParams first or
@@ -12743,7 +12767,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         switch (action) {
             case "push":
                 // switchActs/getPushButton — push a specific button on a button device.
-                // Verified live 2026-04-26 by capturing the working UI's
+                // Verified live by capturing the working UI's
                 // settings after a manual walkthrough:
                 //   pushButton.<N>  = devices (capability.pushableButton, multiple=false)
                 //   pushButNo.<N>   = button number (e.g. "1")
@@ -12848,8 +12872,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         fields = ["siren.@N": deviceIds]
         if (actionSpec.sirenAction != null) fields["sirenAct.@N"] = actionSpec.sirenAction
     } else if (cap == "privateBoolean") {
-        // pvTF.<N>: true=FALSE, false=True (verified live 2026-04-25 via
-        // T370 sweep — boolean is inverted relative to its field name).
+        // pvTF.<N>: true=FALSE, false=True (verified live --
+        // boolean is inverted relative to its field name).
         actType = "rulesActs"
         actSubType = "getSetPrivateBoolean"
         fields = [
@@ -12872,8 +12896,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             "stopAct.@N": (actionSpec.ruleIds ?: deviceIds)
         ]
     } else if (cap == "pauseRule") {
-        // pR.<N>: true=RESUME, false=Pause (verified live 2026-04-25 via
-        // T371 sweep — boolean is inverted relative to its field name).
+        // pR.<N>: true=RESUME, false=Pause (verified live --
+        // boolean is inverted relative to its field name).
         actType = "rulesActs"
         actSubType = "getPauseResumeRules"
         switch (action) {
@@ -12898,8 +12922,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actSubType = "getPollSwitch"
         fields = ["poll.@N": deviceIds]
     } else if (cap == "disableDevice") {
-        // disEn.<N>: true=ENABLE, false=Disable (verified live 2026-04-25 via
-        // T373 sweep — boolean is inverted relative to its field name).
+        // disEn.<N>: true=ENABLE, false=Disable (verified live --
+        // boolean is inverted relative to its field name).
         actType = "deviceActs"
         actSubType = "getDisable"
         fields = ["disEn.@N": (action != "disable"), "devDisable.@N": deviceIds]
@@ -12971,7 +12995,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     } else if (cap == "repeatWhile") {
         // Repeat While Expression — repeatActs/getWhile. Embeds an
         // expression (same wizard as ifThen) PLUS interval/Stoppable
-        // fields (same as basic repeat). Verified live 2026-04-26 the
+        // fields (same as basic repeat). Verified live the
         // doActPage schema after actSubType=getWhile exposes:
         //   cond (expression builder)
         //   uVar.<idx> (Variable repeat interval? bool)
@@ -12998,7 +13022,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // tstate-<eventIdx>. After actSubType=getWaitEvents the wizard
         // exposes tCapab-1; writing it reveals tDev-1; writing devices
         // reveals tstate-1; writing state advances to next event slot
-        // OR exposes timeout/done. Verified live 2026-04-26.
+        // OR exposes timeout/done. Verified live.
         actType = "delayActs"
         actSubType = "getWaitEvents"
         fields = [:]
@@ -13010,7 +13034,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // expression PLUS optional timeout (uses delayAct.<idx> +
         // delayHor/Min/Sec.<idx> — same fields as the regular Delay
         // modifier on actions) and durChoice.<idx> for Use Duration mode.
-        // Verified live 2026-04-26.
+        // Verified live.
         actType = "delayActs"
         actSubType = "getWaitRule"
         fields = [:]
@@ -13054,7 +13078,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // Re-read the index RM actually allocated. RM keeps a high-water mark
     // (state.actNdx) — even after clearActions deletes all actions, the
     // next "Create New Action" click allocates idx = high_water + 1,
-    // not idx = 1. Verified live 2026-04-25: a rule that had actions
+    // not idx = 1. Verified live: a rule that had actions
     // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
     // Use the schema's freshly-exposed actType.<N> as ground truth.
     def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
@@ -13115,7 +13139,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // a hasAll button appears ("Done with this Wait Event"). Click it
     // to commit the event and reveal tCapab-<N+1> for the next event.
     // Without the hasAll click, multi-event rules fail because tCapab-2
-    // never appears in schema. Verified live 2026-04-26.
+    // never appears in schema. Verified live.
     // Optional timeout via the existing delay-modifier path.
     if (actSubType == "getWaitEvents") {
         def events = actionSpec.events as List
@@ -13162,7 +13186,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             if (ev.andStays == true) {
                 _rmWriteSettingOnPage(appId, "doActPage", "stays-${n}", true, applied, "bool", skipped)
             }
-            // Click hasAll to commit this event. Verified live 2026-04-26:
+            // Click hasAll to commit this event. Verified live:
             // after hasAll, the schema replaces tCapab-<N>/tDev/tstate
             // with two new buttons:
             //   - anotherWait  ("Add another Wait Event")
@@ -13356,7 +13380,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // we just walked to actType.<idx>'s expression scope). Without
         // it, RM's paragraph render conflates conds across multiple
         // IF/ELSE-IF actions because there's no per-action expression
-        // binding in the settings (verified live 2026-04-26: rule with
+        // binding in the settings (verified live: rule with
         // ifThen + elseIf both rendered as "(Sw1 is on Sw2 is on)" —
         // both conds appearing in BOTH branches because hasRule was
         // skipped on single-cond expressions).
@@ -13377,7 +13401,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // expression walk above — see pre-expression block.)
     }
 
-    // Optional Delay? modifier on an action. Verified live 2026-04-25:
+    // Optional Delay? modifier on an action. Verified live:
     //   delayAct.<N> options: ["none", "hrs:min:sec", "variable"]
     //   After delayAct=hrs:min:sec the schema exposes:
     //     delayHor.<N>  (number)  Hours
@@ -13408,7 +13432,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // needed). For SUBSEQUENT actions (action 2, 3...), only the moreParams button
     // appears after cCmd -- cpType1.N is absent. The code below checks schema first
     // and falls through to the moreParams-click path if cpType1.N is missing.
-    // Verified live 2026-04-27: always clicking moreParams first causes the first
+    // Verified live: always clicking moreParams first causes the first
     // param to land at cpType2, leaving cpType1 empty and producing
     // "IF (**Broken Condition**)" in RM.
     if (actionSpec.__runCommandExtraParams instanceof List && !actionSpec.__runCommandExtraParams.isEmpty()) {
@@ -13484,7 +13508,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         }
     }
 
-    // Issue #77 context: the predCapabs condition-context leak from a preceding
+    // The predCapabs condition-context leak from a preceding
     // addRequiredExpression is cleared by _rmClearPredCapabsViaGhostIfThen
     // (called from _rmAddRequiredExpression after the expression-builder hasRule
     // click) before control returns here. By the time _rmAddAction runs,
@@ -13527,7 +13551,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // accepts invalid inputs at the field-write level without erroring,
     // and the action row may not bake — leaving mainPage's "Define
     // Actions" placeholder. The hub itself isn't erroring, so the LLM
-    // needs the signal to self-correct. Verified 2026-04-26.
+    // needs the signal to self-correct. Verified.
     def actionNotBaked = false
     try {
         def mainCfg = _rmFetchConfigJson(appId, "mainPage")
@@ -13718,7 +13742,7 @@ private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, O
     // periodic sub-page writes) RM needs `formAction=update`,
     // `currentPage=<page>`, and `pageBreadcrumbs=["mainPage"]` in the
     // body — without those, transient wizard fields like `cond` are
-    // silently rejected (verified live 2026-04-26: writing cond=a on
+    // silently rejected (verified live: writing cond=a on
     // doActPage without page context returned silentRejection=true,
     // schema unchanged; same write WITH page context committed).
     // Include the context whenever pageName is non-null and isn't the
@@ -13883,7 +13907,7 @@ private Map _rmFetchStatusJson(Integer appId) {
 /**
  * Inspect a rule's current state and return a structured health report.
  * Surfaces problems an LLM caller needs to see and act on without having
- * to re-investigate via curl. Verified live 2026-04-25:
+ * to re-investigate via curl. Verified live:
  *
  *   - Rules with malformed triggers get a label suffix '*BROKEN*' and
  *     paragraphs containing literal text '**Broken Trigger**' /
@@ -14074,7 +14098,7 @@ private Map _rmWalkStep(Integer appId, Map spec) {
 
     // hrefContext lets the LLM keep state alive across multiple walkStep
     // calls on a sub-page that needs `state.<paramKey>` set every request.
-    // Verified live 2026-04-25: periodic schedule's `state.n` only exists
+    // Verified live: periodic schedule's `state.n` only exists
     // for the duration of a request that carries the action marker, so
     // every fetch/write to the periodic page must re-send it.
     //
@@ -14161,7 +14185,9 @@ private Map _rmWalkStep(Integer appId, Map spec) {
             try {
                 def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
                 if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-            } catch (Exception ignored) { /* best effort */ }
+            } catch (Exception verExc) {
+                mcpLog("warn", "rm-native", "walkStep: href-context version fetch for app ${appId} on page '${hrefContext.fromPage ?: page}' failed (${verExc.message}) -- POSTing write without version field; hub may reject on concurrent-edit conflict")
+            }
             hubInternalPostForm("/installedapp/update/json", body)
         } else {
             _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap)
@@ -14414,7 +14440,7 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         // which broke single-device pickers (e.g. pushButton.1 schema says
         // multiple=false; passing deviceIds=["288"] flipped it to true and
         // mismatch crashed RM's render with the opaque "Command 'hasCapability'
-        // is not supported" error). Verified live 2026-04-26.
+        // is not supported" error). Verified live.
         def isMulti = meta?.multiple == true
 
         // Serialize value: branch by input type for multi-value writes.
@@ -14436,7 +14462,7 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
 
         // Sidecar fields. `.type` always needed for non-bool inputs so the
         // hub knows how to marshal the update; `.multiple` MUST always be
-        // explicit (true OR false) — verified live 2026-04-26 from the UI's
+        // explicit (true OR false) — verified live from the UI's
         // capture of a button-push action: omitting `.multiple=false` on
         // non-multi capability writes triggered RM's "Command 'hasCapability'
         // is not supported" render error on doActPage. The render path RM
@@ -14525,7 +14551,7 @@ private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = nu
 /**
  * Snapshot the current state of an RM rule into the hub's File Manager
  * as a single JSON file (configure/json + statusJson combined), recorded
- * in the unified state.itemBackupManifest alongside app/driver backups.
+ * in the unified atomicState.itemBackupManifest alongside app/driver backups.
  *
  * Entries get type="rm-rule" so list_item_backups + restore_item_backup
  * (the existing tools) handle them too — no separate RM-only backup
@@ -14588,7 +14614,8 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         throw new IllegalArgumentException("Cannot save backup file '${fileName}' for rule ${ruleId}: ${e.message}")
     }
 
-    if (!state.itemBackupManifest) state.itemBackupManifest = [:]
+    // atomicState read-modify-write: read the full manifest, mutate locally, write back.
+    def mfst = atomicState.itemBackupManifest ?: [:]
     def backupKey = "rm-rule_${ruleId}_${ts}"
     def entry = [
         type: "rm-rule",
@@ -14600,19 +14627,20 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         timestamp: snapshot.timestamp,
         sourceLength: jsonBytes.length  // reusing the existing field name for byte size
     ]
-    state.itemBackupManifest[backupKey] = entry
+    mfst[backupKey] = entry
 
     // Reuse backupItemSource's prune budget (20 entries total across all
-    // backup types). Oldest pruned first — same policy as app/driver.
-    if (state.itemBackupManifest.size() > 20) {
-        def oldest = state.itemBackupManifest.min { it.value.timestamp }
+    // backup types). Oldest pruned first -- same policy as app/driver.
+    if (mfst.size() > 20) {
+        def oldest = mfst.min { it.value.timestamp }
         if (oldest) {
             try { deleteHubFile(oldest.value.fileName) } catch (Exception e) {
                 mcpLog("warn", "rm-native", "Could not prune backup ${oldest.value.fileName}: ${e.message}")
             }
-            state.itemBackupManifest.remove(oldest.key)
+            mfst.remove(oldest.key)
         }
     }
+    atomicState.itemBackupManifest = mfst
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     return [backupKey: backupKey] + entry
@@ -14762,7 +14790,7 @@ def toolCreateNativeApp(args) {
             // After bulk-add, navigate selectActions → mainPage via
             // _action_previous=Done — mirrors the live UI's "Done with
             // Actions" click. _rmAddAction leaves us on selectActions; the
-            // updateRule button lives on mainPage. Verified live 2026-04-26
+            // updateRule button lives on mainPage. Verified live
             // by capturing the working UI flow's XHR sequence: every action
             // commit ends with a Done navigation up to mainPage before
             // updateRule fires. Without this, state.editAct can linger
@@ -14777,7 +14805,7 @@ def toolCreateNativeApp(args) {
 
         // Final commit: click the Done button on mainPage. The live UI
         // ALWAYS fires this as the last step of every create/modify session
-        // (verified 2026-04-26). Without it, the rule's session-end state
+        // (verified). Without it, the rule's session-end state
         // can be incomplete and subsequent reads/edits may behave oddly.
         _rmSubmitMainPageDone(newId)
 
@@ -14848,7 +14876,7 @@ def toolCreateNativeApp(args) {
  *      state.allLocalVars and the wizard fields disappear, ready for
  *      the next variable. No explicit commit button.
  *
- * Verified live 2026-04-26 via probe on rule 1348:
+ * Verified live via probe on rule 1348:
  *   state.allLocalVars = {myCounter: {type:'integer', value:42}}
  *
  * Spec:
@@ -15018,9 +15046,9 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // routing context stays at selectActions. When the user later opens
     // the browser and clicks "Manage Conditions" (STPage href on mainPage),
     // RM sees a conflicting editAct context and renders "Required Fields
-    // missing or not passing validation" on STPage. (Bug B fix -- verified
-    // live: without this nav, Browser STPage shows validation error after
-    // addRequiredExpression completes; with it, STPage opens cleanly.)
+    // missing or not passing validation" on STPage. Without this nav,
+    // STPage shows a validation error after addRequiredExpression completes;
+    // with it, STPage opens cleanly.
     _rmNavigateToPage(appId, "doActPage", "selectActions")
     _rmNavigateToPage(appId, "selectActions", "mainPage")
 
@@ -15029,74 +15057,8 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 
 /**
  * High-level structured Required Expression creation for Rule Machine 5.1.
- *
- * Replaces the 7+ wizard calls (useST=true on mainPage → navigate STPage →
- * cond=a → rCapab_<N> → rDev_<N> → state_<N> → hasAll → optional oper for
- * multi-cond → hasRule → done) with one orchestrated call. Lets callers
- * (LLMs) build a Required Expression without knowing any of the STPage
- * internals.
- *
- * Spec shape (LLM-friendly):
- *   {
- *     conditions: [
- *       {capability: "Switch", deviceIds: [282], state: "on"},
- *       {capability: "Motion", deviceIds: [284], state: "active", not: false}
- *     ],
- *     operator: "AND" | "OR" | "XOR"  // required when conditions.size() > 1
- *   }
- *
- * Per-condition fields:
- *   capability   — "Switch" / "Motion" / "Contact" / "Lock" / "Presence" /
- *                  "Temperature" / "Humidity" / "Custom Attribute" / "Mode" /
- *                  "Private Boolean" / etc. (RM's STPage capability list).
- *   deviceIds    — required for capability.* device types. Omit for Mode /
- *                  Private Boolean / time-based capabilities.
- *   state        — enum value ("on", "active", "open", "locked", "present",
- *                  "true"/"false" for Private Boolean). Omit for numeric
- *                  comparator path.
- *   comparator   — for numeric capabilities ("<=", "=", ">", "<", ">=", etc.)
- *   value        — numeric threshold (paired with comparator)
- *   attribute    — for Custom Attribute capability, the attribute name
- *   not          — true to invert this condition (NOT)
- *   rawSettings  — escape hatch {fieldName: value} for fields not yet mapped
- *
- * After commit, settings show:
- *   useST=true
- *   rCapab_<idxN>, rDev_<idxN>, state_<idxN> per condition
- *   oper=<operator> if multi-condition (ephemeral -- may not persist after commit)
- *
- * mainPage paragraph renders e.g. "Switch1 is on" or "Switch1 is on AND
- * Motion1 is active" -- verified live 2026-04-26 via T400.
- *
- * STPage internals discovered live (firmware 2.5.0.123):
- *
- *   Phase 1 -- condition building (one pass per condition, STPage build-wizard):
- *   1. mainPage.useST=true exposes the "Define Required Expression" href
- *   2. STPage's hrefParams is {unUsed: null} -- placeholder only
- *   3. STPage shows enum `cond` with options a (new condition) / b (sub-
- *      expression) / c (NOT) -- write "a" to start a new condition
- *   4. After cond=a, schema reveals rCapab_<N> where N is the live cond
- *      counter (NOT 1 -- RM increments globally; 2nd rule on the parent
- *      may start at _2)
- *   5. After rCapab_<N>=Switch, rDev_<N> appears (capability.switch)
- *   6. After rDev_<N>=[id], state_<N> appears (on/off enum)
- *   7. After state_<N>=on, hasAll button appears -- click to commit this slot
- *   8. Repeat 3-7 for each condition. Write oper=<AND|OR|XOR> between
- *      conditions (the oper picker shown after hasAll IS the expression-
- *      builder state machine -- it assembles the formula inline as each
- *      condition is added, so the formula is complete when walkConds returns).
- *      No separate post-walkConds assembly loop is needed.
- *
- *   9. hasRule is a submitOnChange button (HTML value="button"). Writing
- *      it as a settings write to /installedapp/update/json SEALS the
- *      assembled formula: conditions move from "(unused)" to committed, and
- *      the "Edit/Delete Required Expression" buttons appear. Using
- *      /installedapp/btn (the normal button-click endpoint) does NOT trigger
- *      the commit handler -- verified live 2026-05-02: /installedapp/btn
- *      left both conditions as "(unused)"; writeST(hrefParams, "hasRule",
- *      "button") committed correctly in the same rule state.
- *   10. After hasRule, the doneST button is a no-op (verified 2026-04-26).
- *      The proper exit is via the back-nav _action_previous=Done.
+ * Replaces the 7+ manual wizard calls with one orchestrated call.
+ * STPage wire-format internals and spec shape: docs/rm_wire_format.md#_rmAddRequiredExpression.
  *
  * Returns: [success, conditionIndices, settingsApplied, settingsSkipped]
  */
@@ -15111,7 +15073,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // Accept either:
     //   - operator: "AND" | "OR" | "XOR"  (single, applied between every pair)
     //   - operators: ["AND", "OR", "XOR", ...]  (one per gap, length = conditions.size()-1)
-    // Operators-list path supports T427-style mixed expressions like
+    // Operators-list path supports mixed expressions like
     // "P1 AND P2 OR P3 XOR P4" where each gap has a different operator.
     // RM 5.1's spec: AND/OR/XOR have equal precedence, evaluated
     // left-to-right.
@@ -15143,7 +15105,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // {<bogusId>: null} in rDev_<N>) but the resulting expression doesn't
     // bake — paragraph stays placeholder. Catch this before writing so
     // callers see a clear error instead of a phantom in-flight rule.
-    // Verified live 2026-04-26 via T429: rDev_1={99999: null} written but
+    // Verified live: rDev_1={99999: null} written but
     // expression didn't commit.
     conditions.eachWithIndex { condRaw, i ->
         if (!(condRaw instanceof Map)) return  // shape errors caught later
@@ -15241,8 +15203,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 // condList.size()-1), so do NOT pre-write an oper before
                 // recursing — RM has no inner condition to operate on yet
                 // and that pre-write corrupts state, leaving the open-paren
-                // rendered as "**Broken Condition**" (T404 prior-self
-                // misdiagnosis). Likewise sending the label "--> ( sub-
+                // rendered as "**Broken Condition**" (pre-writing oper
+                // before a sub-expression condition corrupts the accumulator). Likewise sending the label "--> ( sub-
                 // expression" instead of the value "b" stores the literal
                 // label in settings.cond and breaks downstream schema
                 // fetches (next GET returns oper-enum, walkConds aborts).
@@ -15378,7 +15340,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     //     not a separate post-processing step).
     //   - By the time walkConds returns, the formula is fully assembled.
     //     Writing additional cond=<idx>/oper pairs AFTER walkConds DUPLICATES
-    //     conditions in the formula -- verified live 2026-05-02: a 2-condition
+    //     conditions in the formula -- verified live: a 2-condition
     //     AND rule produced "(2 AND 3 AND 3)" when Phase 2 assembly writes were
     //     added after walkConds.
     //
@@ -15389,7 +15351,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     //   hasRule SEALS the assembled formula -- without it, conditions render
     //   as "(unused)" in Manage Conditions and the RE evaluates false forever.
     //
-    //   WIRE FORMAT (verified live 2026-05-02, appUI.js source inspection):
+    //   WIRE FORMAT (verified live, appUI.js source inspection):
     //   The DOM "Done with Expression" button uses a two-step flow:
     //     1. POST /installedapp/btn  settings[hasRule]=clicked (notify)
     //     2. POST /installedapp/update/json  hasRule=button  (actual commit,
@@ -15398,7 +15360,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     //   with settings[hasRule]=button, which is step 2 -- the actual commit
     //   handler.  The /installedapp/btn notify step (step 1) is not needed
     //   because the commit is driven entirely by /installedapp/update/json.
-    //   Verified live 2026-05-02 (app 1779): writeST alone produced
+    //   Verified live (app 1779): writeST alone produced
     //   state="complete" with params.unUsed=null on mainPage.
     //
     //   NOTE: STPage's completion button in the JSON schema is named "doneST"
@@ -15426,7 +15388,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     //     - editST / cancelST / stopOnST / evalOnBoot appear
     //     - doneST is idempotent once in Done mode
     //
-    //   Verified live 2026-05-02 (app 1782):
+    //   Verified live (app 1782):
     //     Before doneST: s0i0 cond required=true
     //     After doneST:  s0i0 cancelST, s0i1 editST, s0i2 stopOnST, ...
     //     (no required fields anywhere)
@@ -15452,8 +15414,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // evalOnBoot fields, which is correct for the Done-mode back-nav.
     _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams)
 
-    // Step 4b. Issue #77 + Bug D fix -- clear RM's residual condition-builder
-    // atomicState after the expression-builder hasRule click.
+    // Step 4b. Clear RM's residual condition-builder atomicState after
+    // the expression-builder hasRule click.
     //
     // BACKGROUND:
     //   The walkConds writes + hasRule seal leave atomicState.predCapabs in a
@@ -15464,13 +15426,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     //
     //   See _rmClearPredCapabsViaGhostIfThen Groovydoc for the full mechanistic
     //   rationale.  DO NOT remove this call without re-running the full probe
-    //   matrix (probes A1, A4, A6, and A15-A19 are the regression gates).
-    //
-    //   Probe matrix evidence:
-    //     - A1, A4, A6 (walkConds-only + hasRule seal leak): pass with this
-    //       call in place.
-    //     - A15-A19 (hasRule-seal-specifically leak, Bug D): FAIL without this
-    //       call, PASS with it.
+    //   matrix (probes in groups A, A-seal, and A-extended are the regression
+    //   gates).
     try {
         _rmClearPredCapabsViaGhostIfThen(appId, "addRequiredExpression")
     } catch (Exception ghostExc) {
@@ -15488,12 +15445,26 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // Expression" placeholder, the wizard didn't commit. Reporting this
     // as success would leave the LLM thinking the rule is good when
     // it's not — surface it as a hub-render-style failure with hints.
-    // Verified 2026-04-26 via T429: deviceIds=[99999] (nonexistent)
-    // wrote rDev_<N>={99999: null} but paragraph stayed placeholder.
+    // When the post-commit fetch itself throws (cookie expiry, hub 503),
+    // joinedParagraphs would be empty and !contains(...) would evaluate
+    // true, incorrectly returning success=true on an unverifiable result.
+    // Set verificationFetchFailed=true and return success=false instead.
     def mainCfg = null
+    def verificationFetchFailed = false
     try { mainCfg = _rmFetchConfigJson(appId, "mainPage") }
     catch (Exception verifyExc) {
-        mcpLog("warn", "rm-native", "addRequiredExpression: post-commit mainPage fetch failed for app ${appId} (${verifyExc.message}) -- expression-baked check skipped")
+        verificationFetchFailed = true
+        mcpLog("warn", "rm-native", "addRequiredExpression: post-commit mainPage fetch failed for app ${appId} (${verifyExc.message}) -- cannot verify expression baked; returning verificationFetchFailed=true")
+    }
+    if (verificationFetchFailed) {
+        return [
+            success: false,
+            verificationFetchFailed: true,
+            conditionIndices: conditionIndices,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            error: "Post-commit verification fetch failed (hub may be under load or session expired). The Required Expression write commands were sent but the result cannot be confirmed. Retry get_app_config(appId=${appId}) -- if the expression paragraph appears, the operation succeeded; if not, re-run addRequiredExpression or restore_item_backup."
+        ]
     }
     def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
         (sect?.body ?: []).findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
@@ -15748,7 +15719,7 @@ def toolUpdateNativeApp(args) {
                 _rmClickAppButton(appId, "updateRule")
                 def health = _rmCheckRuleHealth(appId)
                 return [
-                    success: true,
+                    success: result.success != false && health.ok,
                     appId: appId,
                     backup: backup,
                     removedIndex: result.removedIndex,
@@ -15766,10 +15737,12 @@ def toolUpdateNativeApp(args) {
                 _rmClickAppButton(appId, "updateRule")
                 def health = _rmCheckRuleHealth(appId)
                 return [
-                    success: true,
+                    success: result.success != false && health.ok,
                     appId: appId,
                     backup: backup,
                     modifiedIndex: result.modifiedIndex,
+                    verifiedState: result.verifiedState,
+                    verificationFetchFailed: result.verificationFetchFailed,
                     settingsApplied: result.settingsApplied,
                     settingsSkipped: result.settingsSkipped,
                     health: health,
@@ -15886,7 +15859,7 @@ def toolUpdateNativeApp(args) {
     }
 
     if (patchesList != null) {
-        // Multi-mutation atomic patch (T425). Each item in the patches
+        // Multi-mutation atomic patch. Each item in the patches
         // list is a dict with one of the supported sub-operations:
         //   {addRequiredExpression: {...}}
         //   {addTrigger: {...}} | {addTriggers: [...]}
@@ -15899,7 +15872,7 @@ def toolUpdateNativeApp(args) {
         // Operations apply sequentially. updateRule fires ONCE at the end
         // — not after each sub-op — so the rule's actions[] map and
         // subscriptions bake from a fully-loaded state. This mirrors
-        // the BAT T425 spec's "atomic patch" expectation.
+        // Operations are atomic from the rule's perspective.
         def patchResults = []
         def patchErr = null
         try {
@@ -16018,7 +15991,7 @@ def toolUpdateNativeApp(args) {
     if (addLocalVariableSpec) {
         // Local variable creation. Walks selectActions' moreVar wizard:
         // click moreVar → write hbVar (name) → write varType → write
-        // varValue (auto-commits). Verified live 2026-04-26.
+        // varValue (auto-commits). Verified live.
         def varResult
         try {
             varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
@@ -16247,7 +16220,7 @@ def toolUpdateNativeApp(args) {
             //   - 1 hasAll click commits the trigger
             //   - Residual isCondTrig.<N> gets auto-finalized to false
             //   - Editor closes, no phantom trigger
-            // Multi-trigger flows (T322, etc.) now use sequential trigger
+            // Multi-trigger flows now use sequential trigger
             // indices 1, 2, 3 instead of 1, 3, 5.
             def buttonIsWizardDone = ["hasAll", "actionDone", "doneCond", "doneAct"].contains(button)
             def isSubPage = pageName && pageName != "mainPage"
@@ -16465,7 +16438,9 @@ private Map _rmRestoreFromBackup(Map entry) {
             hubInternalPostForm("/installedapp/update/json", seedBody)
             _rmClickAppButton(ruleId, "updateRule")
         } catch (Exception e) {
-            try { _rmForceDeleteApp(ruleId) } catch (Exception ce) { /* best effort */ }
+            try { _rmForceDeleteApp(ruleId) } catch (Exception ce) {
+                mcpLog("warn", "rm-native", "_rmRestoreFromBackup: orphan cleanup of newly-created app ${ruleId} failed after recreate error (${ce.message}) -- app may be left in an empty-label state; clean up manually via delete_native_app(appId=${ruleId})")
+            }
             throw new IllegalArgumentException("Restore failed during app recreate (appType=${savedAppType}): ${e.message}")
         }
     }
@@ -16523,9 +16498,13 @@ def currentVersion() {
 }
 
 def isNewerVersion(String remote, String local) {
+    // Null guard: callers may pass null when the remote manifest fetch
+    // returns no version field. Treat as "not newer" so update prompts
+    // are suppressed rather than NPE-crashing the version-check path.
+    if (remote == null || local == null) return false
     // Strict semver only. Non-numeric or suffixed versions (e.g., "0.10.0-rc1",
     // "v0.10.0", whitespace) would otherwise throw NumberFormatException inside
-    // the tokenize/collect below — caught but silently returning false, which
+    // the tokenize/collect below -- caught but silently returning false, which
     // means users stop getting update prompts without knowing why.
     def semverPattern = ~/^\d+\.\d+\.\d+$/
     if (!(remote ==~ semverPattern)) {
