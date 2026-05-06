@@ -179,14 +179,8 @@
   > 2. Reuse `rampValue()` utility from fade actions
   > 3. For devices with `startLevelChange`/`stopLevelChange`, offer a hardware ramp option
 
-- [ ] **Ping IP address (ICMP)** — `Difficulty: 1 | Effort: S`
-  > *Feasible — native ICMP supported from apps.* Hubitat exposes `hubitat.helper.NetworkUtils.ping(String ipAddress, Integer count)` to both apps and drivers per the [NetworkUtils docs](https://docs2.hubitat.com/en/developer/networkutils-object). Returns a `PingData` object with `rttAvg/rttMin/rttMax` (ms), `packetsTransmitted`, `packetsReceived`, and `packetLoss`. The earlier "no ICMP in the sandbox" framing was incorrect — no driver, `HubAction`, or `Runtime.exec()` needed. Default count is 3, max is 5.
-  >
-  > **Implementation plan:**
-  > 1. Add a `ping_host` MCP tool that accepts `ipAddress` and optional `count`, returns the full PingData map
-  > 2. Add a `ping_host` rule action type that stores result fields (`reachable`, `rttAvg`, `packetLoss`) into rule/local variables for use in conditions
-  > 3. Add `host_reachable` / `host_unreachable` as `ping_host` shortcut conditions (or just rely on variable conditions)
-  > 4. Validate `ipAddress` as a string before the call; surface platform errors as tool/action failure messages
+- [x] **Ping IP address (ICMP)** — folded into `device_health_check` (issue #91).
+  > Rather than a standalone `ping_host` tool, ICMP ping was integrated into the existing `device_health_check` tool via `pingHosts` (max 5 IPv4) and `pingCount` (1–5) parameters. Each host is pinged through `hubitat.helper.NetworkUtils.ping()` and reported under `pingResults` with `reachable`, `rttAvg`, `rttMin`, `rttMax`, `packetsTransmitted`, `packetsReceived`, `packetLoss`. The custom MCP rule engine is legacy-only, so no rule-action half was added.
 
 - [ ] **HTTP reachability check** — `Difficulty: 3 | Effort: M`
   > *Feasible — complementary to ICMP ping above.* An HTTP GET against a target URL still has value for hosts that don't respond to ICMP or when you need to verify HTTP-layer health, not just network reachability. Keep as a secondary action type alongside the native ping.
@@ -614,7 +608,7 @@
 ### Phase 1: Quick Wins (Small effort, high value)
 1. **Rule Machine Interoperability** (list, control, trigger, booleans) — All use `RMUtils`, implement as 1–2 tools
 2. **Native hub variable change triggers** — `subscribe(location, "variable:<name>", handler)` + `addInUseGlobalVar()` registration
-3. **ICMP ping tool + rule action** — `hubitat.helper.NetworkUtils.ping(ip, count)` returns PingData directly
+3. **ICMP ping** — done; folded into `device_health_check` via `pingHosts`/`pingCount` (issue #91)
 4. **Search HPM repositories** — Public GraphQL API, immediate discovery value
 5. **Rate limiting / throttling** — Pure in-app logic, enables safer notifications
 6. **System start trigger** — Single `subscribe()` call

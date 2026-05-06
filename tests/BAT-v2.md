@@ -831,6 +831,26 @@ Casual natural language prompts that must route to the correct tool/gateway.
 
 **Expected**: Routes to `device_health_check`.
 
+### T227 — "Ping my router" → device_health_check
+
+```json
+{
+  "test_prompt": "Can you ICMP-ping 192.168.1.1 and tell me whether it's reachable, plus the average RTT?"
+}
+```
+
+**Expected**: AI calls `manage_diagnostics(tool='device_health_check', args={pingHosts:['192.168.1.1']})` (any `pingCount` from 1-5 is fine; default 3). Result includes a `pingResults` entry for `192.168.1.1` with `reachable`, `rttAvg`, `rttMin`, `rttMax`, `packetsTransmitted`, `packetsReceived`, `packetLoss`. AI reports reachability and avg RTT in milliseconds.
+
+### T228 — "Ping an unreachable IP" → device_health_check (failure path)
+
+```json
+{
+  "test_prompt": "Ping 192.0.2.1 (RFC 5737 TEST-NET-1, guaranteed unreachable) and report whether it's up."
+}
+```
+
+**Expected**: AI calls `manage_diagnostics(tool='device_health_check', args={pingHosts:['192.0.2.1']})`. Result `pingResults[0]` has `reachable: false`, `packetsReceived: 0`, `packetLoss: 100`. AI reports the host as unreachable.
+
 ### T77 — "Duplicate my rule" → rules admin
 
 ```json

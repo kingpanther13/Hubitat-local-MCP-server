@@ -28,6 +28,10 @@ Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare 
 
 **Comments**: only when the WHY is non-obvious. No multi-paragraph docblocks. Don't reference the current PR/issue/caller.
 
+## The custom MCP rule engine is legacy
+
+`hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `create_native_app` / `update_native_app` / `delete_native_app` and the rest of the `manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. If a feature request lands on the child app, propose it for the native side instead.
+
 ## PR workflow
 
 Use `.github/pull_request_template.md` — keep every section.

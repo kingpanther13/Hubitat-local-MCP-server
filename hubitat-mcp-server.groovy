@@ -647,7 +647,7 @@ def getGatewayConfig() {
                 get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
                 get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
                 force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
-                device_health_check: "Check all devices for stale/offline status",
+                device_health_check: "Check device staleness and/or ICMP-ping arbitrary IPs (router, NAS, server). Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5)",
                 custom_get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
                 get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
                 get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count). Requires Hub Admin Read",
@@ -660,7 +660,7 @@ def getGatewayConfig() {
                 get_set_hub_metrics: "temperature database size trending monitoring over time",
                 get_memory_history: "ram free used leak trending over time java heap nio",
                 force_garbage_collection: "free reclaim ram cleanup java heap",
-                device_health_check: "stale offline dead unresponsive battery not reporting",
+                device_health_check: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway",
                 custom_get_rule_diagnostics: "automation troubleshoot broken not working debug why",
                 get_zwave_details: "zwave mesh network frequency firmware 908mhz 700 800 series",
                 get_zigbee_details: "zigbee mesh network channel pan coordinator 2400mhz",
@@ -1403,12 +1403,14 @@ Verify rule after creation.""",
         ],
         [
             name: "device_health_check",
-            description: "Check all MCP devices for stale/offline status based on last activity threshold.",
+            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call.",
             inputSchema: [
                 type: "object",
                 properties: [
                     staleHours: [type: "integer", description: "Flag devices with no activity in this many hours. Default: 24.", default: 24],
-                    includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false]
+                    includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
+                    pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call). Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only."],
+                    pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3]
                 ]
             ]
         ],
@@ -6935,12 +6937,30 @@ def toolForceGarbageCollection(args) {
 }
 
 def toolDeviceHealthCheck(args) {
-    if (!settings.selectedDevices) {
-        return [message: "No devices selected for MCP access", summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]]
-    }
-
     def staleHours = args.staleHours ?: 24
     def includeHealthy = args.includeHealthy ?: false
+    def pingHosts = (args.pingHosts ?: []) as List
+    // ?: treats explicit 0 as absent, so distinguish null from 0 here.
+    def pingCount = (args.pingCount == null ? 3 : args.pingCount) as Integer
+
+    if (pingHosts.size() > 5) {
+        throw new IllegalArgumentException("pingHosts is limited to 5 entries per call (got ${pingHosts.size()})")
+    }
+    if (pingCount < 1 || pingCount > 5) {
+        throw new IllegalArgumentException("pingCount must be between 1 and 5 (got ${pingCount})")
+    }
+
+    def pingResults = pingHosts ? runPingChecks(pingHosts, pingCount) : null
+
+    if (!settings.selectedDevices) {
+        def emptyResult = [
+            message: "No devices selected for MCP access",
+            summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]
+        ]
+        if (pingResults != null) emptyResult.pingResults = pingResults
+        return emptyResult
+    }
+
     def staleThreshold = now() - (staleHours * 3600000L)
 
     def healthy = []
@@ -7014,8 +7034,43 @@ def toolDeviceHealthCheck(args) {
             "Use 'get_device' on individual devices for more details."
     }
 
+    if (pingResults != null) {
+        result.pingResults = pingResults
+    }
+
     mcpLog("info", "monitoring", "Device health check: ${healthy.size()} healthy, ${stale.size()} stale, ${unknown.size()} unknown (threshold: ${staleHours}h)")
     return result
+}
+
+def runPingChecks(List rawHosts, Integer count) {
+    def results = []
+    rawHosts.each { rawHost ->
+        def host = rawHost?.toString()?.trim()
+        // IPv4 dotted-quad shape only; NetworkUtils.ping rejects out-of-range itself, hostnames not supported by the API.
+        if (!host || !(host ==~ /^(?:\d{1,3}\.){3}\d{1,3}$/)) {
+            results << [ipAddress: rawHost, reachable: false, error: "invalid IPv4 address"]
+            return
+        }
+        try {
+            def pd = hubitat.helper.NetworkUtils.ping(host, count)
+            def transmitted = (pd?.packetsTransmitted ?: count) as Integer
+            def received = (pd?.packetsReceived ?: 0) as Integer
+            results << [
+                ipAddress: host,
+                reachable: received > 0,
+                packetsTransmitted: transmitted,
+                packetsReceived: received,
+                packetLoss: pd?.packetLoss,
+                rttAvg: pd?.rttAvg,
+                rttMin: pd?.rttMin,
+                rttMax: pd?.rttMax
+            ]
+        } catch (Exception e) {
+            mcpLog("warn", "monitoring", "ping failed for ${host}: ${e.message}")
+            results << [ipAddress: host, reachable: false, error: e.message ?: e.toString()]
+        }
+    }
+    return results
 }
 
 // ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
