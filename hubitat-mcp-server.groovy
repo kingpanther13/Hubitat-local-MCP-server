@@ -1355,11 +1355,12 @@ Verify rule after creation.""",
         ],
         [
             name: "create_connector",
-            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. Connector type is selected by Hubitat from the variable's type. No-op if a connector already exists.",
+            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass connectorType to pick, default 'Variable'. For String/Boolean/DateTime vars, the chooser is skipped. No-op if a connector already exists.",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Existing hub-variable name"],
+                    connectorType: [type: "string", description: "Optional connector type for Number/Decimal vars (e.g. 'Dimmer', 'Variable', 'Volume', 'ColorTemp', 'Humidity', 'Illuminance'). Defaults to 'Variable'. Ignored for vars that don't show a chooser."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
@@ -4070,11 +4071,23 @@ private String _validateHubVarType(String type) {
 /**
  * Discover and cache the installed-app id for the system "Hub Variables"
  * app (namespace=hubitat, classLocation=hubVariables, exactly one instance,
- * always installed on every hub). The id varies per hub, so we walk
- * /hub2/appsList once on first need and cache in atomicState.
+ * always installed on every hub). The id varies per hub, so we discover
+ * once on first need and cache in atomicState.
+ *
+ * Discovery is two-stage because /hub2/appsList omits hidden system apps
+ * on at least some firmware versions (verified on 2.5.0.x: Hub Variables
+ * is reachable at /installedapp/configure/json/<id> but not listed in
+ * /hub2/appsList -- same gap that hides it from list_installed_apps):
+ *   1. Walk /hub2/appsList (cheap, single GET) -- catches hubs that DO
+ *      list it.
+ *   2. If miss, fall back to scanning installed-app config endpoints up
+ *      to a bounded ceiling above the highest id we saw in step 1. Each
+ *      404 returns immediately; matches return on appType.name. Result
+ *      caches in atomicState so the scan only happens once per fresh
+ *      install.
  *
  * Used by create_variable, delete_variable's hub-namespace branch, and
- * create_connector — all of which drive that app's wizard via
+ * create_connector -- all of which drive that app's wizard via
  * update_native_app's settings/button POST machinery.
  */
 private Integer _findHubVariablesAppId() {
@@ -4086,32 +4099,71 @@ private Integer _findHubVariablesAppId() {
         }
     }
 
-    def responseText = hubInternalGet("/hub2/appsList")
-    if (!responseText) {
-        throw new IllegalStateException("Cannot discover Hub Variables app: empty response from /hub2/appsList")
-    }
-    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-    def found = null
-    def recurse
-    recurse = { node ->
-        if (found != null) return
-        def d = node?.data
-        if (d?.type == "Hub Variables" && d?.id != null) {
-            found = d
-            return
+    // Stage 1: /hub2/appsList walk
+    def maxSeenId = 0
+    try {
+        def responseText = hubInternalGet("/hub2/appsList")
+        if (responseText) {
+            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            def found = null
+            def recurse
+            recurse = { node ->
+                def d = node?.data
+                if (d?.id != null) {
+                    def idVal = d.id.toString().isInteger() ? d.id.toString().toInteger() : 0
+                    if (idVal > maxSeenId) maxSeenId = idVal
+                }
+                if (found == null && d?.type == "Hub Variables" && d?.id != null) {
+                    found = d
+                }
+                node?.children?.each { c -> recurse(c) }
+            }
+            (parsed?.apps ?: []).each { a -> recurse(a) }
+            if (found?.id != null) {
+                def id = found.id.toString().toInteger()
+                atomicState.hubVarsAppId = id
+                mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id} (via /hub2/appsList)")
+                return id
+            }
         }
-        node?.children?.each { c -> recurse(c) }
+    } catch (Exception e) {
+        logDebug("_findHubVariablesAppId: /hub2/appsList walk threw ${e.class.simpleName}: ${e.message}")
     }
-    (parsed?.apps ?: []).each { a -> recurse(a) }
 
-    if (found?.id == null) {
-        throw new IllegalStateException(
-            "Hub Variables system app not found in /hub2/appsList. This should not happen on a normally-functioning hub -- the app is system-installed.")
+    // Stage 2: bounded scan of installed-app config endpoints.
+    // Hubitat sometimes hides the Hub Variables singleton from the
+    // appsList feed even though /installedapp/configure/json/<id> works.
+    // Scan from 1 to maxSeen+500, capped at 3000 to avoid runaway work.
+    // First-time cost is ~5-10s on a typical hub; result is cached so
+    // subsequent calls are free.
+    def upperBound = Math.min(3000, Math.max(maxSeenId + 500, 1500))
+    mcpLog("info", "hub-vars", "Hub Variables not in /hub2/appsList; falling back to id scan 1..${upperBound}")
+    for (int id = 1; id <= upperBound; id++) {
+        def cfgText = null
+        try {
+            cfgText = hubInternalGet("/installedapp/configure/json/${id}")
+        } catch (Exception e) {
+            // 404s are expected for unused ids; only log unusual failures
+            continue
+        }
+        if (!cfgText) continue
+        try {
+            def cfg = new groovy.json.JsonSlurper().parseText(cfgText)
+            def typeName = cfg?.app?.appType?.name
+            if (typeName == "Hub Variables") {
+                atomicState.hubVarsAppId = id
+                mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id} (via id scan)")
+                return id
+            }
+        } catch (Exception e) {
+            // Malformed response on this id -- ignore and continue
+        }
     }
-    def id = found.id.toString().toInteger()
-    atomicState.hubVarsAppId = id
-    mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id}")
-    return id
+
+    throw new IllegalStateException(
+        "Hub Variables system app not found via /hub2/appsList walk OR id scan up to ${upperBound}. " +
+        "This should not happen on a normally-functioning hub -- the app is system-installed. " +
+        "Try increasing the scan ceiling or check that Hub Variables is enabled (Settings > Hub Variables).")
 }
 
 /**
@@ -4193,17 +4245,21 @@ def toolCreateVariable(args) {
 
 /**
  * create_connector: bind a virtual device to an existing hub variable so
- * apps that only consume devices can read/write it. Single-button
- * wizard: btn <varName> with stateAttribute=createCon on page hubVar.
+ * apps that only consume devices can read/write it. Wizard sequence:
+ *   1. btn <varName> with stateAttribute=createCon on page hubVar
+ *   2. For Number/Decimal vars, page renders a `capab` enum chooser
+ *      (ColorTemp/Dimmer/Humidity/Illuminance/Volume/Variable). Write
+ *      `capab` to commit. For String/Boolean/DateTime vars, single
+ *      click suffices (no chooser).
  *
- * Connector type is determined by the variable's type (Boolean -> Switch,
- * Number/Decimal -> Dimmer-or-Variable, String/DateTime -> Variable). The
- * Hub Variables app handles that mapping internally; we just trigger it.
+ * Optional args.connectorType selects the chooser option when present.
+ * Defaults to "Variable" (the neutral option that exists for every type).
  */
 def toolCreateConnector(args) {
     requireHubAdminWrite(args.confirm)
     def name = args.name?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("Variable name is required")
+    def requestedType = args.connectorType?.toString()?.trim()
 
     def existing
     try { existing = getGlobalVar(name) }
@@ -4225,20 +4281,50 @@ def toolCreateConnector(args) {
     def appId = _findHubVariablesAppId()
     _rmClickAppButton(appId, name, "createCon", "hubVar")
 
+    // Check whether the wizard advanced to a connector-type chooser
+    // (Number/Decimal vars render `capab` enum; others auto-commit).
+    def cfgText = hubInternalGet("/installedapp/configure/json/${appId}")
+    def capabOptions = null
+    def chosenType = null
+    if (cfgText) {
+        def cfg = new groovy.json.JsonSlurper().parseText(cfgText)
+        cfg?.configPage?.sections?.each { section ->
+            section?.inputs?.each { input ->
+                if (input?.name == "capab" && input?.options instanceof List) {
+                    capabOptions = input.options
+                }
+            }
+        }
+    }
+    if (capabOptions) {
+        chosenType = (requestedType && capabOptions.find { it?.toString()?.equalsIgnoreCase(requestedType) })
+            ? capabOptions.find { it?.toString()?.equalsIgnoreCase(requestedType) }
+            : (capabOptions.contains("Variable") ? "Variable" : capabOptions[0])
+        if (requestedType && chosenType?.toString()?.equalsIgnoreCase(requestedType) != true) {
+            mcpLog("warn", "hub-vars", "create_connector: requested connectorType='${requestedType}' not in ${capabOptions}; using '${chosenType}'")
+        }
+        def applied = []
+        def skipped = []
+        _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
+    }
+
     def after
     try { after = getGlobalVar(name) } catch (Exception e) { after = null }
     if (after?.deviceId == null) {
         throw new IllegalStateException(
-            "create_connector: wizard completed but '${name}' still has no deviceId. " +
-            "The connector may need a follow-up type selection in Hubitat that we did not handle.")
+            "create_connector: wizard completed but '${name}' still has no deviceId" +
+            (capabOptions ? " (chooser='${chosenType}', options=${capabOptions})" : "") +
+            ". The connector did not bake.")
     }
 
-    mcpLog("info", "hub-vars", "Created connector for '${name}' (deviceId=${after.deviceId}, attribute=${after.attribute})")
+    def capabSuffix = chosenType ? ", capab=${chosenType}" : ""
+    mcpLog("info", "hub-vars", "Created connector for '${name}' (deviceId=${after.deviceId}, attribute=${after.attribute}${capabSuffix})")
     return [
         success: true,
         name: name,
         deviceId: after.deviceId,
         attribute: after.attribute,
+        connectorType: chosenType,
         message: "Connector created for '${name}' (deviceId=${after.deviceId})."
     ]
 }
