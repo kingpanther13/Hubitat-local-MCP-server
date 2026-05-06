@@ -28,13 +28,13 @@ The PR template at `.github/pull_request_template.md` is the source of truth. Ev
 - `## Testing` — how you verified
 - `## Checklist` — tick everything that applies
 
-Verify before claiming a PR is ready:
+Verify before claiming a PR is ready (where `<N>` is the pull request number):
 
 ```bash
-gh pr view <N> --json body --jq '.body' | grep -E "^## (Type of change|Release Notes)"
+gh pr view <N> --json body --jq '.body' | grep -iE "^#+ (Type of change|Release Notes):?\s*"
 ```
 
-Both lines must appear, and the Release Notes section must contain at least one `- ` bullet. Run this every time, including when rebasing or editing an existing PR — older PRs may pre-date the template.
+The grep matches the lenient form `.gemini/styleguide.md` defines: case-insensitive, any heading level (h1–h6), optional trailing colon. Both lines must appear, and the Release Notes section must contain at least one `- ` bullet. Run this every time, including when rebasing or editing an existing PR — older PRs may pre-date the template.
 
 ### Title prefix ↔ checkbox congruence
 
