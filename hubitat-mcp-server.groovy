@@ -1168,13 +1168,17 @@ Verify rule after creation.""",
         ],
         [
             name: "set_hsm",
-            description: "Set HSM mode (armAway, armHome, armNight, disarm). Always verify HSM changed after.",
+            description: "Set HSM mode OR fire an arbitrary location event. Two shapes:\n\n**HSM (default)** — pass `mode`: armAway, armHome, armNight, disarm. Internally fires the `hsmSetArm` location event. Always verify HSM changed after.\n\n**Custom location event** — pass `event` (and optional `value` / `descriptionText` / `data`). Broadcasts a generic location event that other apps and Rule Machine rules can subscribe to via `subscribe(location, \"<event>\", handler)`. Use this for app-to-app messaging — announce a custom condition (e.g. `event: \"vacation_started\"`, `event: \"pizza_arrived\"`), trigger automations from MCP without needing a device, or signal multiple consumers at once. Prefix custom names (e.g. `mcp_*`) to avoid collisions with Hubitat built-ins (`mode`, `hsmStatus`, `hsmAlerts`, `systemStart`). Map values for `data` are JSON-serialized server-side so subscribers can `parseJson(evt.data)`. Custom-event mode requires `confirm: true` and Hub Admin Write.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", description: "HSM mode: armAway, armHome, armNight, disarm"]
-                ],
-                required: ["mode"]
+                    mode: [type: "string", description: "HSM mode (armAway/armHome/armNight/disarm). Mutually exclusive with `event`."],
+                    event: [type: "string", description: "Custom location event name. Mutually exclusive with `mode`. Subscribers reach this via subscribe(location, \"<event>\", handler)."],
+                    value: [type: "string", description: "Event value for custom-event mode (optional). Subscribers receive evt.value as a String."],
+                    descriptionText: [type: "string", description: "Human-readable description shown in event logs (custom-event mode only, optional)."],
+                    data: [type: "object", description: "Arbitrary key/value payload (custom-event mode only, optional). Maps are JSON-serialized to evt.data; strings pass through unchanged."],
+                    confirm: [type: "boolean", description: "REQUIRED for custom-event mode (when `event` is provided). HSM mode does not require confirm."]
+                ]
             ]
         ],
         // Captured State Management
@@ -2458,7 +2462,7 @@ def executeTool(toolName, args) {
         case "delete_variable": return toolDeleteHubVariable(args)
         case "update_mcp_settings": return toolUpdateMcpSettings(args)
         case "get_hsm_status": return toolGetHsmStatus()
-        case "set_hsm": return toolSetHsm(args.mode)
+        case "set_hsm": return toolSetHsm(args)
 
         // Captured State Management
         case "list_captured_states": return toolListCapturedStates()
@@ -4093,7 +4097,16 @@ def toolGetHsmStatus() {
     ]
 }
 
-def toolSetHsm(mode) {
+def toolSetHsm(args) {
+    if (args.event && args.mode) {
+        throw new IllegalArgumentException("Pass either 'mode' (HSM) or 'event' (custom location event), not both.")
+    }
+
+    if (args.event) {
+        return _fireCustomLocationEvent(args)
+    }
+
+    def mode = args.mode
     def validModes = ["armAway", "armHome", "armNight", "disarm"]
     if (!validModes.contains(mode)) {
         throw new IllegalArgumentException("Invalid HSM mode: ${mode}. Valid modes: ${validModes}")
@@ -4107,6 +4120,39 @@ def toolSetHsm(mode) {
         success: true,
         previousStatus: previousStatus,
         newMode: mode
+    ]
+}
+
+// Fires an arbitrary location event on behalf of set_hsm's custom-event mode.
+// Hub Admin Write gated because subscribers may take action on the event (lights,
+// locks, notifications) — same blast radius as set_mode / set_hsm.
+def _fireCustomLocationEvent(args) {
+    requireHubAdminWrite(args.confirm)
+    def name = args.event?.toString()?.trim()
+    if (!name) {
+        throw new IllegalArgumentException("event name is required and must be non-empty")
+    }
+
+    def payload = [name: name]
+    if (args.value != null) payload.value = args.value.toString()
+    if (args.descriptionText != null) payload.descriptionText = args.descriptionText.toString()
+    if (args.data != null) {
+        // Hubitat's location-event data field is conventionally a String (subscribers
+        // call parseJson(evt.data) to read structured payloads). Serialize Maps/Lists
+        // server-side so callers can pass native JSON objects without a stringify step.
+        payload.data = (args.data instanceof Map || args.data instanceof List)
+            ? groovy.json.JsonOutput.toJson(args.data)
+            : args.data.toString()
+    }
+
+    sendLocationEvent(payload)
+
+    return [
+        success: true,
+        event: name,
+        value: payload.value,
+        descriptionText: payload.descriptionText,
+        data: payload.data
     ]
 }
 
