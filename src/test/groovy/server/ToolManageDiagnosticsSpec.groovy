@@ -400,7 +400,25 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         network.pingCalls.isEmpty()
         result.pingResults.size() == 3
-        result.pingResults.every { it.reachable == false && it.error == 'invalid IPv4 address' }
+        result.pingResults.every { it.reachable == false }
+        result.pingResults.every { it.error.contains('dotted-quad') && it.error.contains('hostnames not supported') }
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: null and non-string entries report a distinct error"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: [null, 12345, ['nested']]])
+
+        then:
+        network.pingCalls.isEmpty()
+        result.pingResults.size() == 3
+        result.pingResults.every { it.reachable == false && it.error == 'missing or non-string host' }
 
         cleanup:
         network.uninstall()
@@ -434,6 +452,99 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.pingResults.size() == 1
         result.pingResults[0].reachable == false
         result.pingResults[0].error == 'boom'
+        result.pingResults[0].errorType == 'other'
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: errorType discriminates UnknownHostException, SocketException, SecurityException"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = new java.net.UnknownHostException('no dns')
+        network.pingResponses['10.0.0.2'] = new java.net.SocketException('Network is unreachable')
+        network.pingResponses['10.0.0.3'] = new SecurityException('blocked')
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1', '10.0.0.2', '10.0.0.3']])
+
+        then:
+        result.pingResults*.errorType == ['unknown_host', 'socket', 'security']
+        result.pingResults.every { it.reachable == false }
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: omitted pingCount forwards 3 to NetworkUtils"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.install()
+
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1']])
+
+        then:
+        network.pingCalls == [[ipAddress: '10.0.0.1', count: 3]]
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: mixed valid and invalid hosts preserve input order"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.0, rttMin: 1.0, rttMax: 1.0]
+        network.pingResponses['10.0.0.2'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 2.0, rttMin: 2.0, rttMax: 2.0]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1', 'garbage', '10.0.0.2']])
+
+        then:
+        network.pingCalls*.ipAddress == ['10.0.0.1', '10.0.0.2']
+        result.pingResults*.ipAddress == ['10.0.0.1', 'garbage', '10.0.0.2']
+        result.pingResults[0].reachable == true
+        result.pingResults[1].reachable == false
+        result.pingResults[1].error.contains('dotted-quad')
+        result.pingResults[2].reachable == true
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: null PingData is treated as unreachable with transmitted defaulted to count"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = { ip, n -> null }
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1'], pingCount: 4])
+
+        then:
+        result.pingResults.size() == 1
+        result.pingResults[0].reachable == false
+        result.pingResults[0].packetsTransmitted == 4
+        result.pingResults[0].packetsReceived == 0
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: zero packetsTransmitted from platform is preserved (not coerced to count)"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = [packetsTransmitted: 0, packetsReceived: 0, packetLoss: 100]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1'], pingCount: 5])
+
+        then:
+        result.pingResults[0].packetsTransmitted == 0
+        result.pingResults[0].reachable == false
 
         cleanup:
         network.uninstall()
@@ -447,12 +558,15 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def tooMany = thrown(IllegalArgumentException)
         tooMany.message.contains('5 entries')
 
+        // Locks in the null-vs-0 distinction: with the prior `?: 3` bug, 0 would silently
+        // become 3 and skip this check.
         when:
         script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 0])
 
         then:
         def low = thrown(IllegalArgumentException)
         low.message.contains('between 1 and 5')
+        low.message.contains('got 0')
 
         when:
         script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 6])
@@ -460,6 +574,16 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         def high = thrown(IllegalArgumentException)
         high.message.contains('between 1 and 5')
+    }
+
+    def "device_health_check pingHosts: non-numeric pingCount surfaces friendly IllegalArgumentException"() {
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 'three'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('integer between 1 and 5')
+        ex.message.contains('three')
     }
 
     def "device_health_check pingHosts work even when no devices are selected"() {

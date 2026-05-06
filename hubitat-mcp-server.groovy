@@ -6940,8 +6940,16 @@ def toolDeviceHealthCheck(args) {
     def staleHours = args.staleHours ?: 24
     def includeHealthy = args.includeHealthy ?: false
     def pingHosts = (args.pingHosts ?: []) as List
-    // ?: treats explicit 0 as absent, so distinguish null from 0 here.
-    def pingCount = (args.pingCount == null ? 3 : args.pingCount) as Integer
+    // ?: treats explicit 0 as absent, so distinguish null from 0 here. Accept Number to keep
+    // the friendly "between 1 and 5" message for non-numeric input instead of a cast exception.
+    def pingCount
+    if (args.pingCount == null) {
+        pingCount = 3
+    } else if (args.pingCount instanceof Number) {
+        pingCount = ((Number) args.pingCount).intValue()
+    } else {
+        throw new IllegalArgumentException("pingCount must be an integer between 1 and 5 (got ${args.pingCount})")
+    }
 
     if (pingHosts.size() > 5) {
         throw new IllegalArgumentException("pingHosts is limited to 5 entries per call (got ${pingHosts.size()})")
@@ -7045,19 +7053,24 @@ def toolDeviceHealthCheck(args) {
 def runPingChecks(List rawHosts, Integer count) {
     def results = []
     rawHosts.each { rawHost ->
-        def host = rawHost?.toString()?.trim()
+        if (rawHost == null || !(rawHost instanceof CharSequence)) {
+            results << [ipAddress: rawHost, reachable: false, error: "missing or non-string host"]
+            return
+        }
+        def host = rawHost.toString().trim()
         // IPv4 dotted-quad shape only; NetworkUtils.ping rejects out-of-range itself, hostnames not supported by the API.
-        if (!host || !(host ==~ /^(?:\d{1,3}\.){3}\d{1,3}$/)) {
-            results << [ipAddress: rawHost, reachable: false, error: "invalid IPv4 address"]
+        if (!(host ==~ /^(?:\d{1,3}\.){3}\d{1,3}$/)) {
+            results << [ipAddress: rawHost, reachable: false, error: "not a dotted-quad IPv4 literal (hostnames not supported, pass an IP)"]
             return
         }
         try {
             def pd = hubitat.helper.NetworkUtils.ping(host, count)
-            def transmitted = (pd?.packetsTransmitted ?: count) as Integer
-            def received = (pd?.packetsReceived ?: 0) as Integer
+            // Explicit null guards (not ?:) so a real platform-reported 0 is preserved.
+            def transmitted = (pd?.packetsTransmitted == null ? count : pd.packetsTransmitted) as Integer
+            def received = (pd?.packetsReceived == null ? 0 : pd.packetsReceived) as Integer
             results << [
                 ipAddress: host,
-                reachable: received > 0,
+                reachable: transmitted > 0 && received > 0,
                 packetsTransmitted: transmitted,
                 packetsReceived: received,
                 packetLoss: pd?.packetLoss,
@@ -7066,8 +7079,13 @@ def runPingChecks(List rawHosts, Integer count) {
                 rttMax: pd?.rttMax
             ]
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "ping failed for ${host}: ${e.message}")
-            results << [ipAddress: host, reachable: false, error: e.message ?: e.toString()]
+            def errorType
+            if (e instanceof java.net.UnknownHostException) errorType = "unknown_host"
+            else if (e instanceof java.net.SocketException) errorType = "socket"
+            else if (e instanceof SecurityException) errorType = "security"
+            else errorType = "other"
+            mcpLog("warn", "monitoring", "ping failed for ${host} (count=${count}, type=${errorType}): ${e.message}")
+            results << [ipAddress: host, reachable: false, errorType: errorType, error: e.message ?: e.toString()]
         }
     }
     return results
