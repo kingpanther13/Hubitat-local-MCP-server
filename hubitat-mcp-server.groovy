@@ -7058,9 +7058,9 @@ def runPingChecks(List rawHosts, Integer count) {
             return
         }
         def host = rawHost.toString().trim()
-        // IPv4 dotted-quad shape only; NetworkUtils.ping rejects out-of-range itself, hostnames not supported by the API.
-        if (!(host ==~ /^(?:\d{1,3}\.){3}\d{1,3}$/)) {
-            results << [ipAddress: rawHost, reachable: false, error: "not a dotted-quad IPv4 literal (hostnames not supported, pass an IP)"]
+        // Range-validated IPv4 dotted-quad. Hostnames are not supported by NetworkUtils.ping.
+        if (!(host ==~ /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/)) {
+            results << [ipAddress: host, reachable: false, error: "not a dotted-quad IPv4 literal (hostnames not supported, pass an IP)"]
             return
         }
         try {

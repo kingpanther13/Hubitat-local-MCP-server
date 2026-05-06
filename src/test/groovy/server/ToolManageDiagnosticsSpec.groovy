@@ -395,13 +395,30 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.install()
 
         when:
-        def result = script.toolDeviceHealthCheck([pingHosts: ['not-an-ip', '1.2.3', '999.999.999.999.x']])
+        def result = script.toolDeviceHealthCheck([pingHosts: ['not-an-ip', '1.2.3', '999.999.999.999.x', '999.999.999.999', '256.0.0.1']])
 
         then:
         network.pingCalls.isEmpty()
-        result.pingResults.size() == 3
+        result.pingResults.size() == 5
         result.pingResults.every { it.reachable == false }
         result.pingResults.every { it.error.contains('dotted-quad') && it.error.contains('hostnames not supported') }
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: trims whitespace before validation and echo"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['  10.0.0.1  ', '  bad host  ']])
+
+        then:
+        network.pingCalls*.ipAddress == ['10.0.0.1']
+        result.pingResults*.ipAddress == ['10.0.0.1', 'bad host']
 
         cleanup:
         network.uninstall()
