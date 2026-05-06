@@ -168,7 +168,7 @@ def mainPage() {
                   description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_list_rules, custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
-                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and search_tools is hidden. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer.",
+                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other toggles (Built-in App Tools, Custom Rule Engine) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -827,25 +827,11 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     return executeTool(toolName, safeArgs)
 }
 
-// Returns tool definitions visible to the MCP client. Default: 22 core tools + gateway
-// entries. When useGateways is explicitly false, every tool is advertised individually
-// and search_tools is dropped — it only helps navigate gateway-hidden tools.
-//
-// Toggle-based hides (apply in BOTH flat and gateway modes — when a feature toggle is off,
-// its tools are completely REMOVED from tools/list, not just gated at call time):
-//   enableBuiltinApp=false  → hides list_installed_apps, get_device_in_use_by, list_rm_rules,
-//                              run_rm_rule, pause_rm_rule, resume_rm_rule, set_rm_rule_boolean,
-//                              create_native_app, update_native_app, delete_native_app
-//   enableCustomRuleEngine=false AND enableBuiltinApp=false → hides all 10 custom_* tools
-//   enableCustomRuleEngine=false AND enableBuiltinApp=true  → read-only subset shown:
-//     visible: custom_list_rules, custom_get_rule, custom_update_rule (enabled only),
-//              custom_test_rule, custom_get_rule_diagnostics
-//     hidden:  custom_create_rule, custom_delete_rule, custom_export_rule,
-//              custom_import_rule, custom_clone_rule
-//   enableCustomRuleEngine=true → all 10 custom_* tools shown (full mode)
-//   useGateways=false → tools/list is flat (every tool individually) and search_tools is hidden.
-//                        Null (never saved) means existing installs keep gateway behavior; only
-//                        an explicit false flips to flat mode.
+// When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
+// at call time. The hide rules live in the biTools / customEngineMode blocks below;
+// useGateways=false additionally flattens the catalog (every tool individually) and
+// hides search_tools, whose only purpose is finding gateway-hidden tools. Null/unset
+// useGateways preserves gateway behavior so existing installs are unaffected on update.
 def getToolDefinitions() {
     def builtinAppOn = settings.enableBuiltinApp == true
     def customEngineOn = settings.enableCustomRuleEngine == true
@@ -887,9 +873,17 @@ def getToolDefinitions() {
     // Flat mode: every tool advertised individually under its real name; search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
     if (settings.useGateways == false) {
-        return getAllToolDefinitions().findAll {
-            it.name != 'search_tools' && !hideByName.contains(it.name)
+        def all = getAllToolDefinitions()
+        def filtered = all.findAll { it.name != 'search_tools' && !hideByName.contains(it.name) }
+        // Loud guard: if search_tools is ever renamed/removed, the prose ("search_tools is
+        // hidden in flat mode") becomes a lie and the filter silently no-ops. Fail visibly.
+        if (!all.any { it.name == 'search_tools' }) {
+            throw new IllegalStateException(
+                "Flat-mode filter expected to drop 'search_tools' but it was not found in " +
+                "getAllToolDefinitions(). Update getToolDefinitions() if the tool was renamed."
+            )
         }
+        return filtered
     }
 
     def gatewayConfig = getGatewayConfig()
@@ -2586,6 +2580,24 @@ def executeTool(toolName, args) {
         case "manage_installed_apps":
         case "manage_native_rules_and_apps":
         case "manage_mcp_self":
+            // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
+            // so a gateway-name call here is almost certainly a stale/cached client. Returning
+            // the gateway catalog would silently contradict the user's intent — fail loud with
+            // a hint pointing at the real sub-tools instead.
+            if (settings.useGateways == false) {
+                // Filter the hint against the live flat catalog so we don't recommend tools
+                // that other toggles (Built-in App / Custom Rule Engine) have also hidden.
+                def visibleNames = getToolDefinitions()*.name as Set
+                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
+                def hint = subTools
+                    ? "Call the underlying tool directly: ${subTools.join(', ')}. Refresh tools/list to see the flat catalog."
+                    : "All sub-tools of this gateway are also disabled by other server toggles (Built-in App Tools / Custom Rule Engine). Enable those toggles or refresh tools/list."
+                return [
+                    isError: true,
+                    error: "Gateway tool '${toolName}' is disabled — useGateways is OFF in this server's preferences.",
+                    hint: hint
+                ]
+            }
             return handleGateway(toolName, args.tool, args.args)
 
         default:
