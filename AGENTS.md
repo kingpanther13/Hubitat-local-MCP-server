@@ -1,131 +1,67 @@
-# AGENTS.md — instructions for AI contributors
+# AGENTS.md
 
-This file is the contract for any AI agent (Claude Code, Codex, Cursor, Aider, Copilot, Gemini Code Assist, web-based Claude with the HA-MCP connector, etc.) opening or modifying a PR against this repo. Read it once at the start of a session and follow it.
+Conventions for AI coding agents working on this repo (OpenAI Codex, Cursor, GitHub Copilot, Aider, Windsurf, Zed, etc.). Claude Code reads `CLAUDE.md` instead — symlink it to this file if you use Claude Code.
 
-Humans: this is an AI-only contract. The equivalent rules for human contributors are encoded in `.github/pull_request_template.md` and `.gemini/styleguide.md`.
+This file is for AI agents. Human contributors follow `.github/pull_request_template.md` and `.gemini/styleguide.md`.
 
-## TL;DR
-
-1. **Use the PR template.** `.github/pull_request_template.md` is mandatory — don't strip its sections.
-2. **Title prefix matches the ticked "Type of change" checkbox.** `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:`. (`build:` is reserved for Dependabot.)
-3. **Mandatory `## Release Notes` section with bullets.** This is what HPM users see in the update prompt. Write for end users, not developers.
-4. **Don't bump versions, don't edit `packageManifest.json` `releaseNotes`/`dateReleased`, don't edit `CHANGELOG.md`, don't edit `README.md` Version History.** All bookkeeping is bot-only and `pr_guard.py` will block your PR if you touch any of it.
-5. **Open PRs as drafts.** The maintainer (kingpanther13) flips ready-for-review themselves.
-6. **Sign commits with the noreply email** (`kingpanther13@users.noreply.github.com`) when committing on the maintainer's behalf — GitHub blocks pushes signed with the private email.
-
-If any of this conflicts with the maintainer's direct instructions in your session, follow the maintainer.
-
-## PR conventions
-
-### Required body sections
-
-The PR template at `.github/pull_request_template.md` is the source of truth. Every non-Dependabot PR body MUST contain:
-
-- `## Summary` — 1–3 bullets: what + why
-- `## Type of change` — checklist; tick exactly one prefix
-- `## Changes` — key changes; reference issue numbers (Closes #N / Fixes #N / Part of #N)
-- `## Release Notes` — **bulleted, user-facing notes**. This section feeds HPM's `packageManifest.json` `releaseNotes` field via `.github/scripts/release_bump.py`. End users see these bullets in the HPM update prompt. Sub-bullets are supported (2-space indent). Prose is silently skipped; sections with no bullets emit a `::warning::` at release time.
-- `## Testing` — how you verified
-- `## Checklist` — tick everything that applies
-
-Verify before claiming a PR is ready (where `<N>` is the pull request number):
+## Commands
 
 ```bash
-gh pr view <N> --json body --jq '.body' | grep -iE "^#+ (Type of change|Release Notes):?\s*"
+./gradlew test                     # full Spock suite (~10 min)
+./gradlew test --tests "<spec>"    # single spec
+python tests/sandbox_lint.py       # Groovy sandbox lint
 ```
 
-The grep matches the lenient form `.gemini/styleguide.md` defines: case-insensitive, any heading level (h1–h6), optional trailing colon. Both lines must appear, and the Release Notes section must contain at least one `- ` bullet. Run this every time, including when rebasing or editing an existing PR — older PRs may pre-date the template.
+Run both before pushing. CI runs the same.
 
-### Title prefix ↔ checkbox congruence
+## Code style
 
-The prefix on the PR title and the box ticked under `## Type of change` must agree (`feat:` ↔ feat, `fix:` ↔ fix, etc.). Gemini Code Assist requests this on every review. Both should also reflect what the diff actually does — a `feat:` whose diff is purely an internal refactor should be relabeled.
+**Hubitat Groovy sandbox** (`hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`) blocks several JVM features the runtime would otherwise expose. Lint enforces them; runtime crashes if you slip past:
 
-### What `## Release Notes` should and shouldn't contain
+- `Eval.*`, `GroovyShell` — not allowed
+- `getClass()` — reflection blocked
+- `log.isDebugEnabled()` — not exposed
+- `Date.format(String, Locale)` — only the no-Locale overload works
+- Filesystem reads/writes — only via `manage_files` (hub File Manager API), never direct disk
 
-| ✅ Write this | ❌ Skip this |
-|---|---|
-| New tools / new behaviour / opt-in flags | Internal refactors |
-| Default changes that affect existing installs | Test additions |
-| Migration steps / things to do after updating | Line-count metrics |
-| User-visible bug fixes | PR/issue numbers (the bot adds them) |
-| Compatibility notes | Implementation file names |
+Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare device IDs as strings (`.toString()`).
 
-End users updating via HPM see exactly what's in this section. Write short, scannable, jargon-free.
+**Comments**: only when the WHY is non-obvious. No multi-paragraph docblocks. Don't reference the current PR/issue/caller.
 
-## Bookkeeping is bot-only
+## PR workflow
 
-`pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) blocks contributor PRs that modify any of:
+Use `.github/pull_request_template.md` — keep every section.
 
-- Version strings in `hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`, `packageManifest.json`, `README.md`, or anywhere else (the post-merge release bot bumps every location atomically)
-- `packageManifest.json` `releaseNotes` field — bot derives this from your PR's `## Release Notes` section at release time
-- `packageManifest.json` `dateReleased` field — bot sets this at release time
-- `README.md` `## Version History` section — bot prepends entries at release time
-- `CHANGELOG.md` — bot generates entries from merged PR titles + bodies at release time
+- **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` (`build:` reserved for Dependabot).
+- **`## Release Notes`** is mandatory and must contain bullets. `.github/scripts/release_bump.py` parses this section into `packageManifest.json` `releaseNotes` — what HPM users see in the update prompt. Write for end users, not developers.
+- **Open as draft** (`gh pr create --draft`); the maintainer flips to ready-for-review.
+- **Verify before claiming a PR is ready** (`<N>` = PR number):
 
-If you need to communicate something to end users, the path is your PR's `## Release Notes` section, not direct edits to the bookkeeping files. See [docs/release-automation-design.md](docs/release-automation-design.md) for the full design.
+  ```bash
+  gh pr view <N> --json body --jq '.body' | grep -iE "^#+ (Type of change|Release Notes):?\s*"
+  ```
 
-## Code conventions
+  Both lines must appear and the Release Notes section must contain at least one bullet. Run this when rebasing/editing too — pre-#146 PRs may not satisfy the template.
 
-### Comments
+**Git identity**: commit with your GitHub noreply email (`<your-username>@users.noreply.github.com`), never your private email — GitHub push protection will block the push. Set both `--author` and `GIT_COMMITTER_EMAIL` when amending.
 
-- Default to none. Add a comment only when the **WHY** is non-obvious.
-- No multi-paragraph docblocks above functions. One short line maximum.
-- Don't reference the current PR / issue / fix / caller (`# added for #136`, `# used by handleX`) — those rot.
-- Don't restate WHAT the code does — well-named identifiers do that.
+## Boundaries
 
-### Hubitat sandbox limits (`hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`)
+**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) fails the check on any of these:
+- Version strings anywhere (`.groovy`, `packageManifest.json`, `README.md`, etc.)
+- `packageManifest.json` `releaseNotes` or `dateReleased`
+- `README.md` `## Version History` section
+- `CHANGELOG.md`
 
-The Hubitat hub runs Groovy under a restrictive sandbox. Do NOT use:
+All bookkeeping is bot-only. Communicate user-facing changes through your PR's `## Release Notes` section; the post-merge bot handles every file. See [docs/release-automation-design.md](docs/release-automation-design.md).
 
-- `eval()`, `Eval.*`, `GroovyShell`
-- Filesystem reads/writes outside `manage_files` (which goes through the hub's File Manager API, not direct disk)
-- `getClass()` (sandbox blocks reflection)
-- `log.isDebugEnabled()` (not exposed)
-- `Date.format(String, Locale)` — only the no-Locale overload is allowed
+**⚠️ Ask first** — destructive ops (force-push, branch deletion, hook bypass with `--no-verify` / `--no-gpg-sign`), edits to other contributors' PR descriptions, anything that touches Z-Wave or Zigbee radios on a live test hub.
 
-Use `atomicState` for thread-safe persistence and `state` for UI/counter values. Always compare device IDs as strings (`.toString()`).
+**✅ Default-OK** — local edits, running tests, opening draft PRs, updating your own PR's description, refactors and bug fixes covered by tests.
 
-### Tests
+## Reference
 
-- Spock 2.3 + `eighty20results/hubitat_ci` v0.28.6 via JitPack. JDK 11+.
-- `./gradlew test` runs the suite. Specs live under `src/test/groovy/`.
-- See [docs/testing.md](docs/testing.md) for the harness contract — `HarnessSpec` does the sandbox compile-once-per-class, and the three method-class dispatch mechanisms are easy to get wrong.
-- New MCP tools require unit tests (the PR template's first checklist item).
-
-### Lint
-
-```
-python tests/sandbox_lint.py
-```
-
-Catches sandbox violations the JVM compiler accepts but the Hubitat runtime rejects. Run before pushing.
-
-## Git hygiene
-
-- **Always use the noreply email**: `kingpanther13@users.noreply.github.com`. The private email triggers a GitHub push protection block.
-- Set BOTH author AND committer email when amending: `GIT_COMMITTER_EMAIL=kingpanther13@users.noreply.github.com git commit --amend --author="kingpanther13 <kingpanther13@users.noreply.github.com>"`
-- **Do not skip hooks** (`--no-verify`, `--no-gpg-sign`, etc.) without explicit authorization from the maintainer. If a hook fails, fix the underlying issue.
-- **Open PRs as drafts** by default (`gh pr create --draft`). The maintainer owns the ready-for-review flip.
-- **Don't edit other contributors' PR descriptions.** Mention requested changes in your review instead.
-
-## Pre-merge checklist for AI contributors
-
-Before claiming a PR is ready, verify all of:
-
-- [ ] `## Type of change` and `## Release Notes` sections present in PR body (run the grep above)
-- [ ] Title prefix matches the ticked checkbox
-- [ ] Release Notes bullets describe user-visible impact, not internal mechanics
-- [ ] `./gradlew test` passes locally (or CI is green)
-- [ ] `python tests/sandbox_lint.py` passes
-- [ ] No version strings, `releaseNotes`, `dateReleased`, README Version History, or `CHANGELOG.md` edits in the diff
-- [ ] All commits authored with the noreply email
-- [ ] PR is in draft state unless the maintainer asked otherwise
-
-## Reference docs
-
-- [`.github/pull_request_template.md`](.github/pull_request_template.md) — the template (source of truth for body structure)
-- [`.gemini/styleguide.md`](.gemini/styleguide.md) — Gemini Code Assist's review checks (matches this file's conventions)
-- [`docs/release-automation-design.md`](docs/release-automation-design.md) — full design of the release pipeline and why bookkeeping is bot-only
+- [`.github/pull_request_template.md`](.github/pull_request_template.md) — PR body structure (source of truth)
+- [`.gemini/styleguide.md`](.gemini/styleguide.md) — Gemini Code Assist's review checks
+- [`docs/release-automation-design.md`](docs/release-automation-design.md) — full release-pipeline design and the bookkeeping rule
 - [`docs/testing.md`](docs/testing.md) — Spock + hubitat_ci harness, dispatch interception cheat sheet
-- [`README.md`](README.md) — project overview, installed-tool catalog
-- [`TOOL_GUIDE.md`](TOOL_GUIDE.md) — per-tool reference for the MCP server
