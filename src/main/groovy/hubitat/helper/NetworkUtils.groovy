@@ -15,4 +15,8 @@ class NetworkUtils {
     static Object sendHubitatCommand(Map params) {
         return null
     }
+
+    static Object ping(String ipAddress, Integer count) {
+        return null
+    }
 }

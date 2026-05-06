@@ -2,6 +2,7 @@ package server
 
 import groovy.json.JsonOutput
 import spock.lang.Shared
+import support.NetworkUtilsMock
 import support.TestChildApp
 import support.TestDevice
 import support.TestHub
@@ -361,6 +362,263 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.healthyDevices.size() == 1
         result.healthyDevices[0].name == 'Fresh Sensor'
+    }
+
+    def "device_health_check pingHosts: happy + failure paths populate pingResults"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['192.168.1.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.2, rttMin: 1.0, rttMax: 1.5]
+        network.pingResponses['192.0.2.1'] = [packetsTransmitted: 3, packetsReceived: 0, packetLoss: 100, rttAvg: 0.0, rttMin: 0.0, rttMax: 0.0]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['192.168.1.1', '192.0.2.1']])
+
+        then:
+        network.pingCalls == [[ipAddress: '192.168.1.1', count: 3], [ipAddress: '192.0.2.1', count: 3]]
+        result.pingResults.size() == 2
+        result.pingResults[0].ipAddress == '192.168.1.1'
+        result.pingResults[0].reachable == true
+        result.pingResults[0].rttAvg == 1.2
+        result.pingResults[0].packetLoss == 0
+        result.pingResults[1].ipAddress == '192.0.2.1'
+        result.pingResults[1].reachable == false
+        result.pingResults[1].packetLoss == 100
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: invalid IPv4 strings short-circuit without calling NetworkUtils"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['not-an-ip', '1.2.3', '999.999.999.999.x', '999.999.999.999', '256.0.0.1']])
+
+        then:
+        network.pingCalls.isEmpty()
+        result.pingResults.size() == 5
+        result.pingResults.every { it.reachable == false }
+        result.pingResults.every { it.error.contains('dotted-quad') && it.error.contains('hostnames not supported') }
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: trims whitespace before validation and echo"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['  10.0.0.1  ', '  bad host  ']])
+
+        then:
+        network.pingCalls*.ipAddress == ['10.0.0.1']
+        result.pingResults*.ipAddress == ['10.0.0.1', 'bad host']
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: null and non-string entries report a distinct error"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: [null, 12345, ['nested']]])
+
+        then:
+        network.pingCalls.isEmpty()
+        result.pingResults.size() == 3
+        result.pingResults.every { it.reachable == false && it.error == 'missing or non-string host' }
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: pingCount is forwarded to NetworkUtils"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.install()
+
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1'], pingCount: 5])
+
+        then:
+        network.pingCalls == [[ipAddress: '10.0.0.1', count: 5]]
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: NetworkUtils exception is captured in pingResults"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = new RuntimeException('boom')
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1']])
+
+        then:
+        result.pingResults.size() == 1
+        result.pingResults[0].reachable == false
+        result.pingResults[0].error == 'boom'
+        result.pingResults[0].errorType == 'other'
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: errorType discriminates UnknownHostException, SocketException, SecurityException"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = new java.net.UnknownHostException('no dns')
+        network.pingResponses['10.0.0.2'] = new java.net.SocketException('Network is unreachable')
+        network.pingResponses['10.0.0.3'] = new SecurityException('blocked')
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1', '10.0.0.2', '10.0.0.3']])
+
+        then:
+        result.pingResults*.errorType == ['unknown_host', 'socket', 'security']
+        result.pingResults.every { it.reachable == false }
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: omitted pingCount forwards 3 to NetworkUtils"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.install()
+
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1']])
+
+        then:
+        network.pingCalls == [[ipAddress: '10.0.0.1', count: 3]]
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: mixed valid and invalid hosts preserve input order"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.0, rttMin: 1.0, rttMax: 1.0]
+        network.pingResponses['10.0.0.2'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 2.0, rttMin: 2.0, rttMax: 2.0]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1', 'garbage', '10.0.0.2']])
+
+        then:
+        network.pingCalls*.ipAddress == ['10.0.0.1', '10.0.0.2']
+        result.pingResults*.ipAddress == ['10.0.0.1', 'garbage', '10.0.0.2']
+        result.pingResults[0].reachable == true
+        result.pingResults[1].reachable == false
+        result.pingResults[1].error.contains('dotted-quad')
+        result.pingResults[2].reachable == true
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: null PingData is treated as unreachable with transmitted defaulted to count"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = { ip, n -> null }
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1'], pingCount: 4])
+
+        then:
+        result.pingResults.size() == 1
+        result.pingResults[0].reachable == false
+        result.pingResults[0].packetsTransmitted == 4
+        result.pingResults[0].packetsReceived == 0
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: zero packetsTransmitted from platform is preserved (not coerced to count)"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = [packetsTransmitted: 0, packetsReceived: 0, packetLoss: 100]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['10.0.0.1'], pingCount: 5])
+
+        then:
+        result.pingResults[0].packetsTransmitted == 0
+        result.pingResults[0].reachable == false
+
+        cleanup:
+        network.uninstall()
+    }
+
+    def "device_health_check pingHosts: rejects more than 5 hosts and pingCount out of range"() {
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1','2.2.2.2','3.3.3.3','4.4.4.4','5.5.5.5','6.6.6.6']])
+
+        then:
+        def tooMany = thrown(IllegalArgumentException)
+        tooMany.message.contains('5 entries')
+
+        // Locks in the null-vs-0 distinction: with the prior `?: 3` bug, 0 would silently
+        // become 3 and skip this check.
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 0])
+
+        then:
+        def low = thrown(IllegalArgumentException)
+        low.message.contains('between 1 and 5')
+        low.message.contains('got 0')
+
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 6])
+
+        then:
+        def high = thrown(IllegalArgumentException)
+        high.message.contains('between 1 and 5')
+    }
+
+    def "device_health_check pingHosts: non-numeric pingCount surfaces friendly IllegalArgumentException"() {
+        when:
+        script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 'three'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('integer between 1 and 5')
+        ex.message.contains('three')
+    }
+
+    def "device_health_check pingHosts work even when no devices are selected"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['192.168.1.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.0, rttMin: 1.0, rttMax: 1.0]
+        network.install()
+
+        when:
+        def result = script.toolDeviceHealthCheck([pingHosts: ['192.168.1.1']])
+
+        then:
+        result.message.contains('No devices selected')
+        result.pingResults.size() == 1
+        result.pingResults[0].reachable == true
+
+        cleanup:
+        network.uninstall()
     }
 
     // -------- toolGetRuleDiagnostics --------
