@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Conventions for AI coding agents working on this repo (OpenAI Codex, Cursor, GitHub Copilot, Aider, Windsurf, Zed, etc.). Claude Code reads `CLAUDE.md`, which is kept byte-identical to this file — `.github/scripts/pr_guard.py` fails CI on drift. Edit AGENTS.md, then `cp AGENTS.md CLAUDE.md` before committing.
+Conventions for AI coding agents working on this repo (OpenAI Codex, Cursor, Aider, Windsurf, Zed, etc.). Claude Code reads `CLAUDE.md`, which is kept byte-identical to this file — the PR Guard CI workflow flags drift. **AGENTS.md is the source of truth.** Edit it, then `cp AGENTS.md CLAUDE.md` before committing. (GitHub Copilot uses `.github/copilot-instructions.md`; Gemini Code Assist uses `.gemini/styleguide.md`.)
 
 This file is for AI agents. Human contributors follow `.github/pull_request_template.md` and `.gemini/styleguide.md`.
 
@@ -16,13 +16,13 @@ Run both before pushing. CI runs the same.
 
 ## Code style
 
-**Hubitat Groovy sandbox** (`hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`) blocks several JVM features the runtime would otherwise expose. Lint enforces them; runtime crashes if you slip past:
+**Hubitat Groovy sandbox** (`hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`) blocks several JVM features the runtime would otherwise expose. Highlights — see `tests/sandbox_lint.py` for the full set:
 
-- `Eval.*`, `GroovyShell` — not allowed
+- `Eval.*`, `GroovyShell`, `Class.forName`, `Runtime.exec`, `new Thread`, `new File` / `java.io.File` — not allowed
 - `getClass()` — reflection blocked
 - `log.isDebugEnabled()` — not exposed
 - `Date.format(String, Locale)` — only the no-Locale overload works
-- Filesystem reads/writes — only via `manage_files` (hub File Manager API), never direct disk
+- Filesystem only via the hub File Manager API (`/hub/fileManager`); MCP-tool surface is `list_files` / `read_file` / `write_file` / `delete_file`
 
 Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare device IDs as strings (`.toString()`).
 
@@ -33,22 +33,22 @@ Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare 
 Use `.github/pull_request_template.md` — keep every section.
 
 - **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` (`build:` reserved for Dependabot).
-- **`## Release Notes`** is mandatory and must contain bullets. `.github/scripts/release_bump.py` parses this section into `packageManifest.json` `releaseNotes` — what HPM users see in the update prompt. Write for end users, not developers.
+- **`## Release Notes`** drives `packageManifest.json` `releaseNotes` (what HPM users see in the update prompt) via `.github/scripts/release_bump.py`. Strongly recommended; write user-facing bullets. If you skip the section the PR title is the fallback. The bot warns on a present-but-unbulleted section.
 - **Open as draft** (`gh pr create --draft`); the maintainer flips to ready-for-review.
-- **Verify before claiming a PR is ready** (`<N>` = PR number):
+- **Verify the PR body has both required headings** before claiming the PR is ready (`<N>` = PR number):
 
   ```bash
-  gh pr view <N> --json body --jq '.body' | grep -iE "^#+ (Type of change|Release Notes):?\s*"
+  gh pr view <N> --json body --jq '.body' | grep -iE "^#+\s*(Type of change|Release Notes)\s*:?\s*$"
   ```
 
-  Both lines must appear and the Release Notes section must contain at least one bullet. Run this when rebasing/editing too — pre-#146 PRs may not satisfy the template.
+  Lenient match (case-insensitive, any heading level, optional trailing colon) — same shape `release_bump.py` parses with. Run on rebase/edit too; pre-#146 PRs may not satisfy the template.
 
 **Git identity**: commit with your GitHub noreply email (`<your-username>@users.noreply.github.com`), never your private email — GitHub push protection will block the push. Set both `--author` and `GIT_COMMITTER_EMAIL` when amending.
 
 ## Boundaries
 
-**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) fails the check on any of these:
-- Version strings anywhere (`.groovy`, `packageManifest.json`, `README.md`, etc.)
+**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on contributor PRs:
+- Version strings in tracked locations (server header comment, `currentVersion()`, rule header, manifest `version`)
 - `packageManifest.json` `releaseNotes` or `dateReleased`
 - `README.md` `## Version History` section
 - `CHANGELOG.md`

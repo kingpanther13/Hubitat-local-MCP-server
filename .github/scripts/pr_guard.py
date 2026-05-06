@@ -121,27 +121,42 @@ def check_bookkeeping(base_ref: str) -> list[str]:
 
 
 def check_agents_claude_sync() -> list[str]:
-    """AGENTS.md and CLAUDE.md must be byte-identical.
+    """AGENTS.md and CLAUDE.md must coexist and be byte-identical.
 
-    Most agent harnesses (Codex, Cursor, Copilot, Aider, etc.) auto-load
-    AGENTS.md; Claude Code auto-loads CLAUDE.md. Symlinks don't ride
-    cleanly through Windows checkouts (core.symlinks=false silently
-    materializes the symlink as a 10-byte text file containing the target
-    path), so we keep two real files in sync via this guard rather than a
-    symlink. Contributors update AGENTS.md and run `cp AGENTS.md CLAUDE.md`
-    before committing.
+    Most agent harnesses (Codex, Cursor, Aider, etc.) auto-load AGENTS.md;
+    Claude Code auto-loads CLAUDE.md. Symlinks don't ride cleanly through
+    Windows checkouts (core.symlinks=false silently materializes the symlink
+    as a 10-byte text file containing the target path), so we ship two real
+    files and enforce sync here. Contributors edit AGENTS.md (the source of
+    truth) and run `cp AGENTS.md CLAUDE.md` before committing.
+
+    Skip rule: if NEITHER file exists (e.g. fork that hasn't adopted the
+    convention), pass silently. If exactly ONE exists, that's the drift case
+    we want to catch — fail.
     """
     errors: list[str] = []
     agents = ROOT / "AGENTS.md"
     claude = ROOT / "CLAUDE.md"
-    if not agents.exists() or not claude.exists():
-        # Neither file is required to exist; only enforce sync when both do.
+    if not agents.exists() and not claude.exists():
+        return errors
+    if not agents.exists():
+        errors.append(
+            "CLAUDE.md exists but AGENTS.md is missing. AGENTS.md is the source "
+            "of truth — restore it (or `cp CLAUDE.md AGENTS.md` if your edits "
+            "are in CLAUDE.md) and commit both."
+        )
+        return errors
+    if not claude.exists():
+        errors.append(
+            "AGENTS.md exists but CLAUDE.md is missing. Run `cp AGENTS.md CLAUDE.md` "
+            "and commit both — Claude Code reads CLAUDE.md, the rest read AGENTS.md."
+        )
         return errors
     if agents.read_bytes() != claude.read_bytes():
         errors.append(
-            "AGENTS.md and CLAUDE.md have drifted. They must be byte-identical "
-            "so Claude Code (CLAUDE.md) and the rest of the AI tooling (AGENTS.md) "
-            "see the same conventions. Fix: `cp AGENTS.md CLAUDE.md` and commit both."
+            "AGENTS.md and CLAUDE.md have drifted. AGENTS.md is the source of truth — "
+            "if you edited CLAUDE.md, port the change back to AGENTS.md first, then "
+            "run `cp AGENTS.md CLAUDE.md` and commit both."
         )
     return errors
 

@@ -591,19 +591,57 @@ def test_check_agents_claude_sync_flags_drift(monkeypatch, tmp_path):
     monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
     errors = pr_guard.check_agents_claude_sync()
     assert len(errors) == 1
-    assert "AGENTS.md and CLAUDE.md have drifted" in errors[0]
+    assert "drifted" in errors[0]
+    assert "AGENTS.md is the source of truth" in errors[0]
     assert "cp AGENTS.md CLAUDE.md" in errors[0]
 
 
-def test_check_agents_claude_sync_skips_when_either_missing(monkeypatch, tmp_path):
-    """Repos without one or both files don't get a spurious failure."""
+def test_check_agents_claude_sync_flags_lineending_drift(monkeypatch, tmp_path):
+    """LF vs CRLF on otherwise-identical content is the failure mode this
+    check exists for — Windows checkouts can re-save with CRLF on one side
+    only. Pin that read_bytes() (not read_text()) is the load-bearing choice."""
+    (tmp_path / "AGENTS.md").write_bytes(b"# AGENTS\nshared\n")
+    (tmp_path / "CLAUDE.md").write_bytes(b"# AGENTS\r\nshared\r\n")
     monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
-    # Both missing
+    assert len(pr_guard.check_agents_claude_sync()) == 1
+
+
+def test_check_agents_claude_sync_skips_when_neither_present(monkeypatch, tmp_path):
+    """Repos that haven't adopted the convention pass silently."""
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
     assert pr_guard.check_agents_claude_sync() == []
-    # Only AGENTS.md present
+
+
+def test_check_agents_claude_sync_flags_only_agents_present(monkeypatch, tmp_path):
+    """AGENTS.md exists but CLAUDE.md is missing — the actual drift case."""
     (tmp_path / "AGENTS.md").write_text("# AGENTS\n")
-    assert pr_guard.check_agents_claude_sync() == []
-    # Only CLAUDE.md present
-    (tmp_path / "AGENTS.md").unlink()
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
+    errors = pr_guard.check_agents_claude_sync()
+    assert len(errors) == 1
+    assert "CLAUDE.md is missing" in errors[0]
+    assert "cp AGENTS.md CLAUDE.md" in errors[0]
+
+
+def test_check_agents_claude_sync_flags_only_claude_present(monkeypatch, tmp_path):
+    """CLAUDE.md exists but AGENTS.md is missing — also drift."""
     (tmp_path / "CLAUDE.md").write_text("# CLAUDE\n")
-    assert pr_guard.check_agents_claude_sync() == []
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
+    errors = pr_guard.check_agents_claude_sync()
+    assert len(errors) == 1
+    assert "AGENTS.md is missing" in errors[0]
+    assert "AGENTS.md is the source of truth" in errors[0]
+
+
+def test_main_returns_nonzero_when_only_sync_check_fails(monkeypatch, tmp_path, capsys):
+    """Pin that main() actually invokes check_agents_claude_sync() and prints
+    its errors. A regression dropping the `+ check_agents_claude_sync()` term
+    in main() would silently disable the guard; this test catches that."""
+    monkeypatch.setattr(pr_guard, "check_bookkeeping", lambda _ref: [])
+    (tmp_path / "AGENTS.md").write_text("a\n")
+    (tmp_path / "CLAUDE.md").write_text("b\n")
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
+    rc = pr_guard.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "drifted" in out
+    assert "::error::" in out
