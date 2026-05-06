@@ -319,6 +319,201 @@ def initialize() {
     // Schedule daily version update check at 3am and run immediately
     schedule("0 0 3 ? * *", "checkForUpdate")
     checkForUpdate()
+
+    // Issue #92: subscribe to every hub variable's location event
+    // ("variable:NAME") so the AI can see what changed and when via
+    // get_variable_history. Re-runs on every updated() because Hubitat
+    // calls unsubscribe() implicitly between updated() invocations.
+    _subscribeToAllHubVariables()
+
+    // Issue #96 gap 1: register addInUseGlobalVar for every hub variable
+    // referenced by any child rule. Hubitat then warns users before they
+    // delete/rename a variable that would break a rule. Diff against the
+    // previously-tracked set so we removeInUseGlobalVar for vars no
+    // longer referenced (rule edited away from the var, rule deleted).
+    _refreshHubVarInUseRegistrations()
+}
+
+/**
+ * Issue #96 gap 1: walk every child rule's serialized ruleData, collect
+ * hub-variable names that appear in it (via the same heuristic
+ * delete_variable's safety scan uses), then add/remove the in-use
+ * registration so Hubitat's UI surfaces a warning before a user can
+ * delete/rename a variable a rule depends on.
+ *
+ * Pure parent-side bookkeeping — does not modify any child app code or
+ * data. Tracks the previously-registered set in atomicState.inUseHubVars
+ * so subsequent calls can diff and removeInUseGlobalVar for vars that
+ * stopped being referenced.
+ */
+private void _refreshHubVarInUseRegistrations() {
+    Set<String> currentVars = []
+    Set<String> hubVarNames
+    try {
+        hubVarNames = (getAllGlobalVars()?.keySet() ?: []) as Set<String>
+    } catch (Exception e) {
+        logDebug("_refreshHubVarInUseRegistrations: getAllGlobalVars threw ${e.class.simpleName}: ${e.message}")
+        return
+    }
+    if (!hubVarNames) {
+        // No hub vars at all — clear any stale registrations and bail.
+        def previous = (atomicState.inUseHubVars ?: []) as List<String>
+        previous.each { name ->
+            try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
+        }
+        atomicState.inUseHubVars = []
+        return
+    }
+    try {
+        getChildApps()?.each { child ->
+            def ruleData = null
+            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
+            if (ruleData) {
+                def serialized = groovy.json.JsonOutput.toJson(ruleData)
+                hubVarNames.each { varName ->
+                    if (serialized?.contains(varName)) {
+                        currentVars << varName
+                    }
+                }
+            }
+        }
+    } catch (Exception e) {
+        logDebug("_refreshHubVarInUseRegistrations: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
+        return
+    }
+
+    def previous = ((atomicState.inUseHubVars ?: []) as List<String>) as Set<String>
+    def toAdd = currentVars - previous
+    def toRemove = previous - currentVars
+
+    toAdd.each { name ->
+        try { addInUseGlobalVar(name) }
+        catch (Exception e) { mcpLog("warn", "hub-vars", "addInUseGlobalVar('${name}') failed: ${e.message}") }
+    }
+    toRemove.each { name ->
+        try { removeInUseGlobalVar(name) }
+        catch (Exception e) { mcpLog("warn", "hub-vars", "removeInUseGlobalVar('${name}') failed: ${e.message}") }
+    }
+
+    atomicState.inUseHubVars = (currentVars as List).sort()
+    if (toAdd || toRemove) {
+        mcpLog("info", "hub-vars", "in-use registrations refreshed: added=${toAdd.sort()}, removed=${toRemove.sort()}, total=${currentVars.size()}")
+    }
+}
+
+/**
+ * Issue #92: subscribe to every existing hub variable so location events
+ * land in handleHubVariableEvent and accumulate in atomicState.variableHistory.
+ *
+ * Called from initialize() (so installed/updated re-wire) and from
+ * toolCreateVariable / renameVariable (so newly-created or renamed vars
+ * become observable without requiring an updated() round-trip).
+ */
+private void _subscribeToAllHubVariables() {
+    def vars
+    try { vars = getAllGlobalVars() }
+    catch (Exception e) {
+        logDebug("_subscribeToAllHubVariables: getAllGlobalVars threw ${e.class.simpleName}: ${e.message}")
+        return
+    }
+    vars?.keySet()?.each { varName ->
+        try {
+            subscribe(location, "variable:${varName}", "handleHubVariableEvent")
+        } catch (Exception e) {
+            // Don't let one bad subscribe break the whole loop. The hub
+            // sometimes rejects names with characters that getAllGlobalVars
+            // returned but subscribe() refuses; log and continue.
+            mcpLog("warn", "hub-vars", "subscribe to variable:${varName} failed: ${e.message}")
+        }
+    }
+}
+
+/**
+ * Hubitat fires this app callback when a hub variable is renamed via the
+ * Settings UI. Issue #92: rewrite history entries to the new name and
+ * re-subscribe (the old "variable:OLD" subscription is now stale).
+ */
+def renameVariable(String oldName, String newName) {
+    mcpLog("info", "hub-vars", "renameVariable callback: '${oldName}' -> '${newName}'")
+    def history = atomicState.variableHistory ?: []
+    def rewrote = false
+    history = history.collect { entry ->
+        if (entry?.name == oldName) {
+            rewrote = true
+            return [name: newName] + (entry.findAll { k, v -> k != "name" })
+        }
+        return entry
+    }
+    if (rewrote) atomicState.variableHistory = history
+    // Re-subscribe to the new name. The old "variable:OLD" event will
+    // never fire again since the variable is gone, but Hubitat's
+    // unsubscribe semantics mean it's harmless to leave it in place.
+    try { subscribe(location, "variable:${newName}", "handleHubVariableEvent") }
+    catch (Exception e) {
+        mcpLog("warn", "hub-vars", "post-rename subscribe to variable:${newName} failed: ${e.message}")
+    }
+}
+
+/**
+ * Issue #92: location-event handler for "variable:*" events. Each event
+ * shape (per Hubitat docs): evt.name is the event name with the "variable:"
+ * prefix; evt.value is the new value. We strip the prefix so callers see
+ * the bare variable name and append a {name, value, timestamp} entry to
+ * atomicState.variableHistory (cap 200; oldest dropped).
+ */
+def handleHubVariableEvent(evt) {
+    if (evt == null) return
+    def varName = evt.name?.toString()
+    if (varName?.startsWith("variable:")) {
+        varName = varName.substring("variable:".length())
+    }
+    if (!varName) return
+
+    def entry = [
+        name: varName,
+        value: evt.value,
+        timestamp: now(),
+        descriptionText: evt.descriptionText?.toString()
+    ]
+    def history = atomicState.variableHistory ?: []
+    history << entry
+    // Cap the buffer. 200 entries is enough to survive an MCP-tool
+    // round-trip plus a few minutes of bursty change activity without
+    // blowing up state size on hubs with many vars.
+    def cap = 200
+    if (history.size() > cap) {
+        history = history[(history.size() - cap)..-1]
+    }
+    atomicState.variableHistory = history
+}
+
+/**
+ * get_variable_history: return a window of recent hub-variable changes,
+ * optionally filtered by name and a since-timestamp. Issue #92: lets the
+ * AI catch up on "what variables changed since I last looked" without
+ * polling each one by name.
+ */
+def toolGetVariableHistory(args) {
+    def history = atomicState.variableHistory ?: []
+    def filtered = history
+    if (args?.name) {
+        def n = args.name.toString()
+        filtered = filtered.findAll { it?.name == n }
+    }
+    if (args?.sinceMs != null) {
+        def since = args.sinceMs as Long
+        filtered = filtered.findAll { (it?.timestamp ?: 0L) >= since }
+    }
+    def limit = (args?.limit != null) ? (args.limit as Integer) : 50
+    if (limit < 1) limit = 1
+    // Most-recent first; cap at limit.
+    def recent = filtered.reverse().take(limit)
+    return [
+        entries: recent,
+        total: recent.size(),
+        bufferSize: history.size(),
+        bufferCap: 200
+    ]
 }
 
 // ==================== MCP REQUEST HANDLERS ====================
@@ -522,19 +717,27 @@ def getGatewayConfig() {
             ]
         ],
         manage_hub_variables: [
-            description: "Manage hub connector and rule engine variables.",
-            tools: ["list_variables", "get_variable", "set_variable", "delete_variable"],
+            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Issue #92: full read/write CRUD via the modern Hub Variable API + wizard; observe changes via get_variable_history.",
+            tools: ["list_variables", "get_variable", "set_variable", "create_variable", "delete_variable", "create_connector", "remove_connector", "get_variable_history"],
             summaries: [
-                list_variables: "List all hub connector and rule engine variables",
-                get_variable: "Get a variable value. Args: name",
-                set_variable: "Set a variable value (creates if doesn't exist). Args: name, value",
-                delete_variable: "Permanently delete a rule engine variable (DESTRUCTIVE). Args: name, confirm=true, [force=true if rules reference it]"
+                list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
+                get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
+                set_variable: "Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. Args: name, value",
+                create_variable: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true",
+                delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
+                create_connector: "Create a virtual-device connector for an existing hub variable. Args: name, confirm=true",
+                remove_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
+                get_variable_history: "Recent hub-variable changes since the MCP app last started. Args: name (optional filter), sinceMs (optional), limit (optional)"
             ],
             searchHints: [
                 list_variables: "show all global state connector",
                 get_variable: "read fetch lookup global state",
                 set_variable: "write update change store global state",
-                delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable"
+                create_variable: "add new hub variable global",
+                delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable",
+                create_connector: "expose hub variable as virtual device switch dimmer",
+                remove_connector: "unlink delete connector device variable",
+                get_variable_history: "watch observe changes events recent variable timeline"
             ]
         ],
         manage_rooms: [
@@ -1110,12 +1313,12 @@ Verify rule after creation.""",
         ],
         [
             name: "list_variables",
-            description: "List all hub connector and rule engine variables",
+            description: "List all hub variables (every type, including ones without connectors) and rule-engine variables. Each hub-variable entry includes type (Number/Decimal/String/Boolean/DateTime), value, and connector linkage (deviceId/attribute) when present.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
             name: "get_variable",
-            description: "Get a variable value",
+            description: "Get a variable's current value plus metadata (type, deviceId, attribute) if it's a hub variable.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1126,7 +1329,7 @@ Verify rule after creation.""",
         ],
         [
             name: "set_variable",
-            description: "Set a variable value (creates if doesn't exist). Always verify value after.",
+            description: "Set an existing variable's value. For hub variables, value type must match the variable's declared type (creating new hub variables requires create_variable — Hubitat does not allow setGlobalVar to create). Falls back to the rule_engine namespace when no hub variable matches.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1137,8 +1340,58 @@ Verify rule after creation.""",
             ]
         ],
         [
+            name: "create_variable",
+            description: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm. Drives Settings → Hub Variables wizard (Hubitat does not expose creation via the public app API). Forbidden chars in name: ' \" \\ ~ [ : ] < >.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Variable name"],
+                    type: [type: "string", description: "One of: Number, Decimal, String, Boolean, DateTime"],
+                    value: [description: "Initial value (must match the chosen type)"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
+                ],
+                required: ["name", "type", "value", "confirm"]
+            ]
+        ],
+        [
+            name: "create_connector",
+            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. Connector type is selected by Hubitat from the variable's type. No-op if a connector already exists.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Existing hub-variable name"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
+                ],
+                required: ["name", "confirm"]
+            ]
+        ],
+        [
+            name: "remove_connector",
+            description: "Delete the connector device backing a hub variable. The variable itself is unchanged. No-op if no connector exists.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Hub-variable name whose connector to remove"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
+                ],
+                required: ["name", "confirm"]
+            ]
+        ],
+        [
+            name: "get_variable_history",
+            description: "Recent hub-variable changes captured by the MCP app's location-event subscription. Buffer caps at 200 most recent changes (oldest dropped). Cleared on app restart.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Optional: filter to changes for this variable name only"],
+                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis"],
+                    limit: [type: "integer", description: "Optional: max entries to return (default: 50)"]
+                ]
+            ]
+        ],
+        [
             name: "delete_variable",
-            description: "Permanently delete a rule engine variable (DESTRUCTIVE — no undo). Variable must exist. Use the Settings → Hub Variables UI for connector-namespace variable deletion (separate namespace, not yet exposed via MCP).\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2453,7 +2706,11 @@ def executeTool(toolName, args) {
         case "list_variables": return toolListVariables()
         case "get_variable": return toolGetVariable(args.name)
         case "set_variable": return toolSetVariable(args.name, args.value)
+        case "create_variable": return toolCreateVariable(args)
         case "delete_variable": return toolDeleteHubVariable(args)
+        case "create_connector": return toolCreateConnector(args)
+        case "remove_connector": return toolRemoveConnector(args)
+        case "get_variable_history": return toolGetVariableHistory(args)
         case "update_mcp_settings": return toolUpdateMcpSettings(args)
         case "get_hsm_status": return toolGetHsmStatus()
         case "set_hsm": return toolSetHsm(args.mode)
@@ -3717,16 +3974,28 @@ def toolSetMode(modeName) {
 }
 
 def toolListVariables() {
+    // Modern Hub Variable API (issue #92): getAllGlobalVars() sees every hub
+    // variable, not just the connector-exposed subset that the legacy
+    // getAllGlobalConnectorVariables() returned. Each entry is shaped like
+    // [name, type, value, deviceId, attribute] — deviceId/attribute populated
+    // when the variable has a Connector device, null otherwise.
     def hubVariables = []
     try {
-        def allVars = getAllGlobalConnectorVariables()
+        def allVars = getAllGlobalVars()
         if (allVars) {
             hubVariables = allVars.collect { name, var ->
-                [name: name, value: var?.value, type: var?.type, source: "hub"]
+                [
+                    name: name,
+                    value: var?.value,
+                    type: var?.type,
+                    deviceId: var?.deviceId,
+                    attribute: var?.attribute,
+                    source: "hub"
+                ]
             }
         }
     } catch (Exception e) {
-        logDebug("Hub connector variables not available: ${e.message}")
+        logDebug("Hub variable API not available: ${e.message}")
     }
 
     def ruleVariables = state.ruleVariables?.collect { name, value ->
@@ -3742,12 +4011,19 @@ def toolListVariables() {
 
 def toolGetVariable(name) {
     try {
-        def hubVar = getGlobalConnectorVariable(name)
+        def hubVar = getGlobalVar(name)
         if (hubVar != null) {
-            return [name: name, value: hubVar, source: "hub"]
+            return [
+                name: name,
+                value: hubVar.value,
+                type: hubVar.type,
+                deviceId: hubVar.deviceId,
+                attribute: hubVar.attribute,
+                source: "hub"
+            ]
         }
     } catch (Exception e) {
-        logDebug("Hub connector variable '${name}' not found or not accessible: ${e.message}")
+        logDebug("Hub variable '${name}' lookup threw ${e.class.simpleName}: ${e.message}")
     }
 
     def ruleVar = state.ruleVariables?.get(name)
@@ -3758,27 +4034,292 @@ def toolGetVariable(name) {
     throw new IllegalArgumentException("Variable not found: ${name}")
 }
 
-def toolSetVariable(name, value) {
-    try {
-        setGlobalConnectorVariable(name, value)
-        return [success: true, name: name, value: value, source: "hub"]
-    } catch (Exception e) {
-        if (!state.ruleVariables) state.ruleVariables = [:]
-        state.ruleVariables[name] = value
-        return [success: true, name: name, value: value, source: "rule_engine"]
+// Hub variable name validation. Hubitat's UI rejects ' " \ ~ [ : ] < > and
+// blank names. Reproduced here so the create tool fails fast with a clean
+// error before we touch the wizard.
+private static final List<Character> HUB_VAR_FORBIDDEN_CHARS =
+    ["'", '"', '\\', '~', '[', ':', ']', '<', '>'] as List<Character>
+private static final List<String> HUB_VAR_TYPES =
+    ["Number", "Decimal", "String", "Boolean", "DateTime"]
+
+private void _validateHubVarName(String name) {
+    if (!name?.trim()) {
+        throw new IllegalArgumentException("Variable name is required")
     }
+    def bad = HUB_VAR_FORBIDDEN_CHARS.findAll { c -> name.contains(c.toString()) }
+    if (bad) {
+        throw new IllegalArgumentException(
+            "Variable name '${name}' contains forbidden character(s): ${bad.join(' ')}. " +
+            "Hubitat rejects: ' \" \\ ~ [ : ] < >")
+    }
+}
+
+private String _validateHubVarType(String type) {
+    def match = HUB_VAR_TYPES.find { it.equalsIgnoreCase(type) }
+    if (!match) {
+        throw new IllegalArgumentException(
+            "Variable type '${type}' is invalid. Must be one of: ${HUB_VAR_TYPES.join(', ')}")
+    }
+    return match  // canonical casing
+}
+
+/**
+ * Discover and cache the installed-app id for the system "Hub Variables"
+ * app (namespace=hubitat, classLocation=hubVariables, exactly one instance,
+ * always installed on every hub). The id varies per hub, so we walk
+ * /hub2/appsList once on first need and cache in atomicState.
+ *
+ * Used by create_variable, delete_variable's hub-namespace branch, and
+ * create_connector — all of which drive that app's wizard via
+ * update_native_app's settings/button POST machinery.
+ */
+private Integer _findHubVariablesAppId() {
+    def cached = atomicState.hubVarsAppId
+    if (cached != null) {
+        try { return cached.toString().toInteger() } catch (NumberFormatException e) {
+            mcpLog("warn", "hub-vars", "Invalid cached hubVarsAppId '${cached}' -- rediscovering")
+            atomicState.remove("hubVarsAppId")
+        }
+    }
+
+    def responseText = hubInternalGet("/hub2/appsList")
+    if (!responseText) {
+        throw new IllegalStateException("Cannot discover Hub Variables app: empty response from /hub2/appsList")
+    }
+    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    def found = null
+    def recurse
+    recurse = { node ->
+        if (found != null) return
+        def d = node?.data
+        if (d?.type == "Hub Variables" && d?.id != null) {
+            found = d
+            return
+        }
+        node?.children?.each { c -> recurse(c) }
+    }
+    (parsed?.apps ?: []).each { a -> recurse(a) }
+
+    if (found?.id == null) {
+        throw new IllegalStateException(
+            "Hub Variables system app not found in /hub2/appsList. This should not happen on a normally-functioning hub -- the app is system-installed.")
+    }
+    def id = found.id.toString().toInteger()
+    atomicState.hubVarsAppId = id
+    mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id}")
+    return id
+}
+
+/**
+ * create_variable: drive the Hub Variables system app's wizard to create a
+ * new hub variable. Sequence (probed live 2026-05-06):
+ *   1. btn moreVar (stateAttribute=moreVar) on page hubVar -- opens wizard
+ *   2. set hbVar  = name      -- wizard advances; varType field appears
+ *   3. set varType = type      -- wizard advances; varValue field appears
+ *   4. set varValue = initial  -- wizard auto-commits, var enters the table
+ *
+ * Hubitat does NOT expose creation via the public app API
+ * (setGlobalVar can only modify existing vars, not create), so this tool
+ * fills the gap by automating the same UI flow the user would perform
+ * manually under Settings > Hub Variables.
+ */
+def toolCreateVariable(args) {
+    requireHubAdminWrite(args.confirm)
+    def name = args.name?.toString()?.trim()
+    _validateHubVarName(name)
+    def type = _validateHubVarType(args.type?.toString())
+    def value = args.value
+    if (value == null) {
+        throw new IllegalArgumentException("Initial value is required")
+    }
+    // Refuse to silently overwrite an existing variable — the UI's "Create"
+    // path can't either; the wizard only progresses when the name is novel.
+    try {
+        def existing = getGlobalVar(name)
+        if (existing != null) {
+            throw new IllegalArgumentException(
+                "Hub variable '${name}' already exists (type=${existing.type}, value=${existing.value}). " +
+                "Use set_variable to change the value, or pick a different name.")
+        }
+    } catch (IllegalArgumentException reraise) { throw reraise }
+    catch (Exception e) {
+        logDebug("create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+    }
+
+    def appId = _findHubVariablesAppId()
+    def applied = []
+    def skipped = []
+
+    _rmClickAppButton(appId, "moreVar", "moreVar", "hubVar")
+    _rmWriteSettingOnPage(appId, "hubVar", "hbVar",    name,  applied, "text",     skipped)
+    _rmWriteSettingOnPage(appId, "hubVar", "varType",  type,  applied, "enum",     skipped)
+    _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
+
+    // Verify the variable landed. The wizard auto-commits on varValue write,
+    // so the new var should be visible via getGlobalVar immediately. If it
+    // isn't, something went sideways in the wizard walk — fail loud rather
+    // than reporting a false success.
+    def created = null
+    try { created = getGlobalVar(name) } catch (Exception e) {
+        logDebug("create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+    }
+    if (created == null) {
+        throw new IllegalStateException(
+            "create_variable: wizard completed but '${name}' is not visible via getGlobalVar. " +
+            "Settings applied: ${applied.join(', ')}. Skipped: ${skipped}")
+    }
+
+    // Subscribe to the new variable's location event so changes show up in
+    // get_variable_history without waiting for the next updated() pass.
+    try { subscribe(location, "variable:${name}", "handleHubVariableEvent") }
+    catch (Exception e) {
+        mcpLog("warn", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message}")
+    }
+
+    mcpLog("info", "hub-vars", "Created hub variable '${name}' type=${type} value=${value}")
+    return [
+        success: true,
+        name: name,
+        type: type,
+        value: created.value,
+        source: "hub",
+        message: "Variable '${name}' (${type}) created with initial value ${created.value}."
+    ]
+}
+
+/**
+ * create_connector: bind a virtual device to an existing hub variable so
+ * apps that only consume devices can read/write it. Single-button
+ * wizard: btn <varName> with stateAttribute=createCon on page hubVar.
+ *
+ * Connector type is determined by the variable's type (Boolean -> Switch,
+ * Number/Decimal -> Dimmer-or-Variable, String/DateTime -> Variable). The
+ * Hub Variables app handles that mapping internally; we just trigger it.
+ */
+def toolCreateConnector(args) {
+    requireHubAdminWrite(args.confirm)
+    def name = args.name?.toString()?.trim()
+    if (!name) throw new IllegalArgumentException("Variable name is required")
+
+    def existing
+    try { existing = getGlobalVar(name) }
+    catch (Exception e) { existing = null }
+    if (existing == null) {
+        throw new IllegalArgumentException("Hub variable '${name}' does not exist. Create it first with create_variable.")
+    }
+    if (existing.deviceId != null) {
+        return [
+            success: true,
+            name: name,
+            deviceId: existing.deviceId,
+            attribute: existing.attribute,
+            alreadyExists: true,
+            message: "Connector for '${name}' already exists (deviceId=${existing.deviceId})."
+        ]
+    }
+
+    def appId = _findHubVariablesAppId()
+    _rmClickAppButton(appId, name, "createCon", "hubVar")
+
+    def after
+    try { after = getGlobalVar(name) } catch (Exception e) { after = null }
+    if (after?.deviceId == null) {
+        throw new IllegalStateException(
+            "create_connector: wizard completed but '${name}' still has no deviceId. " +
+            "The connector may need a follow-up type selection in Hubitat that we did not handle.")
+    }
+
+    mcpLog("info", "hub-vars", "Created connector for '${name}' (deviceId=${after.deviceId}, attribute=${after.attribute})")
+    return [
+        success: true,
+        name: name,
+        deviceId: after.deviceId,
+        attribute: after.attribute,
+        message: "Connector created for '${name}' (deviceId=${after.deviceId})."
+    ]
+}
+
+/**
+ * remove_connector: delete the connector device that backs a hub variable.
+ * Reuses the existing delete_device path (the connector is a regular hub
+ * device once created) -- Hubitat's UI does the same: open the connector
+ * device's page, click Remove Device.
+ *
+ * The hub variable itself is NOT deleted; only the connector linkage.
+ */
+def toolRemoveConnector(args) {
+    requireHubAdminWrite(args.confirm)
+    def name = args.name?.toString()?.trim()
+    if (!name) throw new IllegalArgumentException("Variable name is required")
+
+    def existing
+    try { existing = getGlobalVar(name) }
+    catch (Exception e) { existing = null }
+    if (existing == null) {
+        throw new IllegalArgumentException("Hub variable '${name}' does not exist.")
+    }
+    if (existing.deviceId == null) {
+        return [
+            success: true,
+            name: name,
+            alreadyRemoved: true,
+            message: "Variable '${name}' has no connector to remove."
+        ]
+    }
+
+    def deviceId = existing.deviceId
+    def res = toolDeleteDevice([deviceId: deviceId.toString(), confirm: true])
+
+    mcpLog("info", "hub-vars", "Removed connector for '${name}' (deviceId=${deviceId})")
+    return [
+        success: true,
+        name: name,
+        deviceId: deviceId,
+        deviceDeleted: res?.success == true,
+        message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
+    ]
+}
+
+def toolSetVariable(name, value) {
+    // setGlobalVar returns true on success, false when the variable doesn't
+    // exist (Hubitat will not auto-create vars from setGlobalVar — creation
+    // requires the Hub Variables UI or our toolCreateVariable tool). Falling
+    // back to rule_engine namespace on false OR exception preserves the
+    // legacy behavior callers depend on.
+    try {
+        if (setGlobalVar(name, value)) {
+            return [success: true, name: name, value: value, source: "hub"]
+        }
+    } catch (Exception e) {
+        logDebug("setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+    }
+    if (!state.ruleVariables) state.ruleVariables = [:]
+    state.ruleVariables[name] = value
+    return [success: true, name: name, value: value, source: "rule_engine"]
 }
 
 def toolDeleteHubVariable(args) {
     requireHubAdminWrite(args.confirm)
     def name = args.name
     if (!name) throw new IllegalArgumentException("name is required")
+    def force = args.force == true
 
-    // Currently only rule_engine variables are addressable from this MCP — connector
-    // variables (Settings → Hub Variables) live in a separate namespace not yet
-    // accessible from this app.
-    if (!state.ruleVariables?.containsKey(name)) {
-        throw new IllegalArgumentException("Variable '${name}' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP -- use Settings > Hub Variables UI.)")
+    // Source detection: hub vs rule_engine namespace. Hub vars are deleted
+    // through the Hub Variables system app's wizard; rule_engine vars are a
+    // map in state we can rewrite directly. Same in-use safety scan applies
+    // to both — child rules can reference a hub var by name in their
+    // triggers/conditions/actions JSON.
+    def hubVar = null
+    try { hubVar = getGlobalVar(name) }
+    catch (Exception e) {
+        logDebug("delete_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+    }
+    def isHubVar = (hubVar != null)
+    def isRuleVar = state.ruleVariables?.containsKey(name) ?: false
+
+    if (!isHubVar && !isRuleVar) {
+        throw new IllegalArgumentException(
+            "Variable '${name}' not found in either the hub-variables namespace or the rule_engine namespace.")
     }
 
     // Pre-deletion safety scan: child rule apps that reference this variable will silently
@@ -3786,7 +4327,6 @@ def toolDeleteHubVariable(args) {
     // leaves literal text). Block by default — caller must opt in via force=true after
     // acknowledging the breakage. Match heuristic: variable name appears in the rule's
     // serialized triggers/conditions/actions JSON.
-    def force = args.force == true
     def consumers = []
     try {
         getChildApps()?.each { child ->
@@ -3815,11 +4355,51 @@ def toolDeleteHubVariable(args) {
         )
     }
 
+    if (isHubVar) {
+        // Hub-namespace deletion: drive the Hub Variables system app's
+        // wizard. Two clicks: deleteGV opens the confirm prompt, delConfirm
+        // commits. Hubitat also deletes the connector device when one
+        // exists, surfacing the resulting deviceId in the audit log so the
+        // caller knows what else just disappeared.
+        def previousValue = hubVar.value
+        def previousType  = hubVar.type
+        def hadConnector  = hubVar.deviceId != null
+        def appId = _findHubVariablesAppId()
+        _rmClickAppButton(appId, name, "deleteGV", "hubVar")
+        _rmClickAppButton(appId, "delConfirm", null, "hubVar")
+
+        // Verify the variable is gone. If it isn't, the wizard didn't
+        // commit — surface that loudly so callers don't think the delete
+        // succeeded when it didn't.
+        def stillThere = null
+        try { stillThere = getGlobalVar(name) } catch (Exception e) { stillThere = null }
+        if (stillThere != null) {
+            throw new IllegalStateException(
+                "delete_variable: wizard completed but '${name}' still exists in getGlobalVar.")
+        }
+
+        def prevStr = previousValue?.toString()
+        def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
+        def connectorNote = hadConnector ? " (connector deviceId=${hubVar.deviceId} also deleted)" : ""
+        def consumerNote  = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
+        mcpLog("warn", "developer-mode", "delete_variable: removed hub var '${name}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
+        return [
+            success: true,
+            name: name,
+            deleted: true,
+            source: "hub",
+            type: previousType,
+            previousValue: previousValue,
+            connectorDeleted: hadConnector,
+            brokenConsumers: consumers ?: null
+        ]
+    }
+
+    // rule_engine fallback (legacy MCP-managed rule variables). Same
+    // top-level reassignment pattern: nested-map mutations on state silently
+    // fail to persist across hub reboot / app restart unless the top-level
+    // key is reassigned. Read-modify-write the whole map.
     def previousValue = state.ruleVariables[name]
-    // Hubitat-sandbox quirk: nested-map mutations on state are not persisted across
-    // hub reboot / app restart unless the top-level key is reassigned. Same pattern
-    // used by toolSetLogLevel for state.debugLogs.config. Read-modify-write the whole
-    // map to force serialization.
     def updated = state.ruleVariables.findAll { k, v -> k != name }
     state.ruleVariables = updated
 
@@ -3958,16 +4538,18 @@ private coerceSettingValue(String key, value, String type) {
     }
 }
 
-// Helper method for child apps to get variable values
+// Helper method for child apps to get variable values. Issue #92: switched
+// to the modern getGlobalVar API so this sees every hub variable, not just
+// connector-exposed ones.
 def getVariableValue(name) {
     try {
-        def hubVar = getGlobalConnectorVariable(name)
-        if (hubVar != null) return hubVar
+        def hubVar = getGlobalVar(name)
+        if (hubVar != null) return hubVar.value
     } catch (Exception e) {
-        // Hub connector variable not found — fall through to rule_engine namespace.
-        // Logged at DEBUG so investigators can tell whether the connector lookup
+        // Hub variable lookup failed — fall through to rule_engine namespace.
+        // Logged at DEBUG so investigators can tell whether the lookup
         // genuinely missed (no such variable) or errored for some other reason.
-        logDebug("getVariableValue: connector lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
+        logDebug("getVariableValue: hub lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
     }
     return state.ruleVariables?.get(name)
 }

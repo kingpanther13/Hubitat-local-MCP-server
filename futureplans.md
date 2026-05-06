@@ -31,14 +31,8 @@
   > 3. Parent dispatches to matching child rule via key lookup
   > 4. Package request body, headers, and query params into pseudo-event for variable substitution
 
-- [ ] **Hub variable change triggers** — `Difficulty: 2 | Effort: S`
-  > *Feasible — native subscription supported.* Per the [Hub Variable API docs](https://docs2.hubitat.com/en/developer/interfaces/hub-variable-api), hub variable changes fire Location Events named `variable:<name>`. Apps can subscribe directly with `subscribe(location, "variable:<name>", handler)` for all changes of a variable, or `subscribe(location, "variable:<name>.<value>", handler)` to fire only when the variable becomes a specific value (for example, `"variable:myVar.on"` fires only when `myVar` becomes `"on"`). No polling, no Variable Connector workaround required. The earlier "not natively subscribable" framing was incorrect.
-  >
-  > **Implementation plan:**
-  > 1. Add `variable_change` trigger type with `variableName` and optional `value` filter
-  > 2. In `subscribeToTriggers()`, call `subscribe(location, "variable:${varName}", handler)` (or `"variable:${varName}.${value}"` if a value filter is set)
-  > 3. Register interest via `addInUseGlobalVar(varName)` so users cannot accidentally delete a variable a rule depends on; call `removeInUseGlobalVar()` on rule delete/update
-  > 4. Implement the `globalVarRenamed(oldName, newName)` app callback to auto-update trigger definitions when a variable is renamed
+- [x] **Hub variable change triggers** — *Closed differently than originally planned (issue #92).*
+  > Originally scoped as a `variable_change` trigger type for the legacy MCP rule engine. With the legacy engine now frozen and native Rule Machine providing variable triggers natively, the equivalent capability for MCP/AI consumers ships as observation tooling instead: the parent app subscribes to `variable:*` location events on install/update, buffers the last 200 changes in `atomicState.variableHistory`, and exposes them via `get_variable_history`. The `renameVariable(oldName, newName)` callback keeps the buffer consistent across UI renames. See PR closing #92 / #96.
 
 - [ ] **System start trigger** — `Difficulty: 2 | Effort: S`
   > *Feasible.* Hubitat supports `subscribe(location, "systemStart", handler)`. Add a `system_start` trigger type. After hub reboot, the app restores, `initialize()` → `subscribeToTriggers()` runs, and the systemStart event fires the rule. Minor edge case: the event may fire before all apps finish restoring — needs testing on hardware.
@@ -213,14 +207,8 @@
   > 4. Add driver to HPM package manifest
   > 5. Document that hub variables should use Hubitat's built-in connectors instead
 
-- [ ] **Variable change events** — `Difficulty: 2 | Effort: S`
-  > *Feasible.* For MCP rule engine variables: extend `setRuleVariable()` to fire `sendLocationEvent(name: "ruleVariableChanged", value: varName, data: newValue)`. Child rules with a `variable_change` trigger subscribe to this event. For Hubitat hub variables: use the native `subscribe(location, "variable:<name>", handler)` pattern described under "Hub variable change triggers" above — no polling or Variable Connector needed.
-  >
-  > **Implementation plan:**
-  > 1. Add `sendLocationEvent()` call to parent's `setRuleVariable()`
-  > 2. Add `variable_change` trigger type to child app
-  > 3. Child subscribes to `location "ruleVariableChanged"` event
-  > 4. Filter by variable name in the handler
+- [~] **Variable change events** — *Hub-variable half closed under issue #92; MCP-rule-engine half deferred (legacy engine frozen).*
+  > Hub-variable change observation now ships via `get_variable_history` (see "Hub variable change triggers" above). The MCP-rule-engine half — sending a `ruleVariableChanged` location event when `setRuleVariable()` writes — would require new code in the legacy child app, which is no longer being extended. New rule-variable consumers should use native Rule Machine, which has variable triggers built in.
 
 - [ ] **Local variable triggers** — `Difficulty: 2 | Effort: S`
   > *Feasible.* After `set_local_variable` or `variable_math` modifies a local variable, check for matching `local_variable_change` triggers and re-trigger asynchronously via `runIn(0, handler)`. High risk of infinite loops if a rule triggers itself — recommend only firing from external changes (another rule setting this rule's local variable via rule-to-rule control). The loop guard provides a safety net.
