@@ -570,3 +570,40 @@ def test_check_bookkeeping_manifest_releaseNotes_changed(monkeypatch, tmp_path):
     errors = pr_guard.check_bookkeeping("origin/main")
     assert any("'releaseNotes'" in e for e in errors), \
         f"releaseNotes error missing from: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# check_agents_claude_sync
+# ---------------------------------------------------------------------------
+
+def test_check_agents_claude_sync_passes_when_identical(monkeypatch, tmp_path):
+    """Both files exist with identical bytes → no errors."""
+    (tmp_path / "AGENTS.md").write_text("# AGENTS\n\nshared content\n")
+    (tmp_path / "CLAUDE.md").write_text("# AGENTS\n\nshared content\n")
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
+    assert pr_guard.check_agents_claude_sync() == []
+
+
+def test_check_agents_claude_sync_flags_drift(monkeypatch, tmp_path):
+    """Files diverge by even a single byte → one error pointing at the fix."""
+    (tmp_path / "AGENTS.md").write_text("# AGENTS\n\nshared content\n")
+    (tmp_path / "CLAUDE.md").write_text("# AGENTS\n\nshared content edited\n")
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
+    errors = pr_guard.check_agents_claude_sync()
+    assert len(errors) == 1
+    assert "AGENTS.md and CLAUDE.md have drifted" in errors[0]
+    assert "cp AGENTS.md CLAUDE.md" in errors[0]
+
+
+def test_check_agents_claude_sync_skips_when_either_missing(monkeypatch, tmp_path):
+    """Repos without one or both files don't get a spurious failure."""
+    monkeypatch.setattr(pr_guard, "ROOT", tmp_path)
+    # Both missing
+    assert pr_guard.check_agents_claude_sync() == []
+    # Only AGENTS.md present
+    (tmp_path / "AGENTS.md").write_text("# AGENTS\n")
+    assert pr_guard.check_agents_claude_sync() == []
+    # Only CLAUDE.md present
+    (tmp_path / "AGENTS.md").unlink()
+    (tmp_path / "CLAUDE.md").write_text("# CLAUDE\n")
+    assert pr_guard.check_agents_claude_sync() == []

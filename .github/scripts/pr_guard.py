@@ -120,9 +120,35 @@ def check_bookkeeping(base_ref: str) -> list[str]:
     return errors
 
 
+def check_agents_claude_sync() -> list[str]:
+    """AGENTS.md and CLAUDE.md must be byte-identical.
+
+    Most agent harnesses (Codex, Cursor, Copilot, Aider, etc.) auto-load
+    AGENTS.md; Claude Code auto-loads CLAUDE.md. Symlinks don't ride
+    cleanly through Windows checkouts (core.symlinks=false silently
+    materializes the symlink as a 10-byte text file containing the target
+    path), so we keep two real files in sync via this guard rather than a
+    symlink. Contributors update AGENTS.md and run `cp AGENTS.md CLAUDE.md`
+    before committing.
+    """
+    errors: list[str] = []
+    agents = ROOT / "AGENTS.md"
+    claude = ROOT / "CLAUDE.md"
+    if not agents.exists() or not claude.exists():
+        # Neither file is required to exist; only enforce sync when both do.
+        return errors
+    if agents.read_bytes() != claude.read_bytes():
+        errors.append(
+            "AGENTS.md and CLAUDE.md have drifted. They must be byte-identical "
+            "so Claude Code (CLAUDE.md) and the rest of the AI tooling (AGENTS.md) "
+            "see the same conventions. Fix: `cp AGENTS.md CLAUDE.md` and commit both."
+        )
+    return errors
+
+
 def main() -> int:
     base_ref = os.environ.get("BASE_REF", "origin/main")
-    errors = check_bookkeeping(base_ref)
+    errors = check_bookkeeping(base_ref) + check_agents_claude_sync()
     for e in errors:
         print(f"::error::{e}")
     if errors:
