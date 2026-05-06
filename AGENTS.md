@@ -1,0 +1,67 @@
+# AGENTS.md
+
+Conventions for AI coding agents working on this repo (OpenAI Codex, Cursor, Aider, Windsurf, Zed, etc.). Claude Code reads `CLAUDE.md`, which is kept byte-identical to this file — the PR Guard CI workflow flags drift. **AGENTS.md is the source of truth.** Edit it, then `cp AGENTS.md CLAUDE.md` before committing. (GitHub Copilot uses `.github/copilot-instructions.md`; Gemini Code Assist uses `.gemini/styleguide.md`.)
+
+This file is for AI agents. Human contributors follow `.github/pull_request_template.md` and `.gemini/styleguide.md`.
+
+## Commands
+
+```bash
+./gradlew test                     # full Spock suite (~10 min)
+./gradlew test --tests "<spec>"    # single spec
+python tests/sandbox_lint.py       # Groovy sandbox lint
+```
+
+Run both before pushing. CI runs the same.
+
+## Code style
+
+**Hubitat Groovy sandbox** (`hubitat-mcp-server.groovy`, `hubitat-mcp-rule.groovy`) blocks several JVM features the runtime would otherwise expose. Highlights — see `tests/sandbox_lint.py` for the full set:
+
+- `Eval.*`, `GroovyShell`, `Class.forName`, `Runtime.exec`, `new Thread`, `new File` / `java.io.File` — not allowed
+- `getClass()` — reflection blocked
+- `log.isDebugEnabled()` — not exposed
+- `Date.format(String, Locale)` — only the no-Locale overload works
+- Filesystem only via the hub File Manager API (`/hub/fileManager`); MCP-tool surface is `list_files` / `read_file` / `write_file` / `delete_file`
+
+Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare device IDs as strings (`.toString()`).
+
+**Comments**: only when the WHY is non-obvious. No multi-paragraph docblocks. Don't reference the current PR/issue/caller.
+
+## PR workflow
+
+Use `.github/pull_request_template.md` — keep every section.
+
+- **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` (`build:` reserved for Dependabot).
+- **`## Release Notes`** drives `packageManifest.json` `releaseNotes` (what HPM users see in the update prompt) via `.github/scripts/release_bump.py`. Strongly recommended; write user-facing bullets. If you skip the section the PR title is the fallback. The bot warns on a present-but-unbulleted section.
+- **Open as draft** (`gh pr create --draft`); the maintainer flips to ready-for-review.
+- **Verify the PR body has both required headings** before claiming the PR is ready (`<N>` = PR number):
+
+  ```bash
+  gh pr view <N> --json body --jq '.body' | grep -iE "^#+\s*(Type of change|Release Notes)\s*:?\s*$"
+  ```
+
+  Lenient match (case-insensitive, any heading level, optional trailing colon) — same shape `release_bump.py` parses with. Run on rebase/edit too; pre-#146 PRs may not satisfy the template.
+
+**Git identity**: commit with your GitHub noreply email (`<your-username>@users.noreply.github.com`), never your private email — GitHub push protection will block the push. Set both `--author` and `GIT_COMMITTER_EMAIL` when amending.
+
+## Boundaries
+
+**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on contributor PRs:
+- Version strings in tracked locations (server header comment, `currentVersion()`, rule header, manifest `version`)
+- `packageManifest.json` `releaseNotes` or `dateReleased`
+- `README.md` `## Version History` section
+- `CHANGELOG.md`
+
+All bookkeeping is bot-only. Communicate user-facing changes through your PR's `## Release Notes` section; the post-merge bot handles every file. See [docs/release-automation-design.md](docs/release-automation-design.md).
+
+**⚠️ Ask first** — destructive ops (force-push, branch deletion, hook bypass with `--no-verify` / `--no-gpg-sign`), edits to other contributors' PR descriptions, anything that touches Z-Wave or Zigbee radios on a live test hub.
+
+**✅ Default-OK** — local edits, running tests, opening draft PRs, updating your own PR's description, refactors and bug fixes covered by tests.
+
+## Reference
+
+- [`.github/pull_request_template.md`](.github/pull_request_template.md) — PR body structure (source of truth)
+- [`.gemini/styleguide.md`](.gemini/styleguide.md) — Gemini Code Assist's review checks
+- [`docs/release-automation-design.md`](docs/release-automation-design.md) — full release-pipeline design and the bookkeeping rule
+- [`docs/testing.md`](docs/testing.md) — Spock + hubitat_ci harness, dispatch interception cheat sheet
