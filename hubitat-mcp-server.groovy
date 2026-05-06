@@ -4036,17 +4036,20 @@ def toolGetVariable(name) {
 
 // Hub variable name validation. Hubitat's UI rejects ' " \ ~ [ : ] < > and
 // blank names. Reproduced here so the create tool fails fast with a clean
-// error before we touch the wizard.
-private static final List<Character> HUB_VAR_FORBIDDEN_CHARS =
-    ["'", '"', '\\', '~', '[', ':', ']', '<', '>'] as List<Character>
-private static final List<String> HUB_VAR_TYPES =
-    ["Number", "Decimal", "String", "Boolean", "DateTime"]
+// error before we touch the wizard. Returned via getters because the
+// Hubitat sandbox rejects `private static final` at script scope.
+private List getHubVarForbiddenChars() {
+    return ["'", '"', '\\', '~', '[', ':', ']', '<', '>']
+}
+private List getHubVarTypes() {
+    return ["Number", "Decimal", "String", "Boolean", "DateTime"]
+}
 
 private void _validateHubVarName(String name) {
     if (!name?.trim()) {
         throw new IllegalArgumentException("Variable name is required")
     }
-    def bad = HUB_VAR_FORBIDDEN_CHARS.findAll { c -> name.contains(c.toString()) }
+    def bad = getHubVarForbiddenChars().findAll { c -> name.contains(c) }
     if (bad) {
         throw new IllegalArgumentException(
             "Variable name '${name}' contains forbidden character(s): ${bad.join(' ')}. " +
@@ -4055,10 +4058,11 @@ private void _validateHubVarName(String name) {
 }
 
 private String _validateHubVarType(String type) {
-    def match = HUB_VAR_TYPES.find { it.equalsIgnoreCase(type) }
+    def types = getHubVarTypes()
+    def match = types.find { it.equalsIgnoreCase(type) }
     if (!match) {
         throw new IllegalArgumentException(
-            "Variable type '${type}' is invalid. Must be one of: ${HUB_VAR_TYPES.join(', ')}")
+            "Variable type '${type}' is invalid. Must be one of: ${types.join(', ')}")
     }
     return match  // canonical casing
 }
