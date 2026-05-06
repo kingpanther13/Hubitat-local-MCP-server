@@ -122,7 +122,7 @@ jobs:
 
       - name: Configure test environment (capture pre-state + enable toggles)
         if: steps.gate.outputs.available == 'true'
-        # Captures enableRuleEngine / enableHubAdminRead / enableBuiltinAppRead
+        # Captures enableCustomRuleEngine / enableHubAdminRead / enableBuiltinApp
         # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
         # tests can exercise the rule engine + hub admin read paths regardless
         # of the test hub's prior toggle state. Refuses if Developer Mode

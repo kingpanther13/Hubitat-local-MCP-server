@@ -7,8 +7,10 @@ import support.ToolSpecBase
  *
  * Covers catalog mode (no toolName), unknown-gateway and unknown-tool
  * errors, the effective rejection of gateway-as-tool, missing-required
- * soft error (Option D: isError response, not an exception), and valid
- * dispatch delegating to executeTool.
+ * soft error (Option D: isError response, not an exception), valid
+ * dispatch delegating to executeTool, and the defensive JSON-string parse
+ * for inner {@code args} (some MCP clients, e.g. Sonnet subagents, serialize
+ * {@code args} as a JSON-encoded string rather than a Map object).
  */
 class HandleGatewaySpec extends ToolSpecBase {
 
@@ -93,5 +95,94 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.rooms.size() == 2
         result.rooms*.name.containsAll(['Kitchen', 'Living Room'])
         result.count == 2
+    }
+
+    // ---- Defensive JSON-string parse for inner args ----
+    // Some MCP clients (Sonnet subagents in particular) serialize the inner
+    // `args` value as a JSON-encoded string rather than a Map object. Without
+    // the defensive parse, any Map operation on that String (containsKey,
+    // property access) throws MissingMethodException / MissingPropertyException
+    // deep in the dispatch chain, producing an opaque Groovy stack trace.
+
+    def "JSON-encoded string args containing a valid object is parsed and dispatch proceeds"() {
+        given: 'list_rooms needs getRooms() stubbed'
+        script.metaClass.getRooms = { ->
+            [[id: 1, name: 'Kitchen', deviceIds: []]]
+        }
+
+        when: 'args is a JSON string encoding an empty object -- simulates Sonnet subagent serialization'
+        def result = script.handleGateway('manage_rooms', 'list_rooms', '{}')
+
+        then: 'the string was transparently parsed; dispatch ran; result is the normal tool response'
+        !result.isError
+        result.rooms instanceof List
+        result.count == 1
+    }
+
+    def "JSON-encoded string args containing fields is parsed and fields are accessible to the tool"() {
+        given: 'get_room calls getRooms() -- stub it with a known room'
+        script.metaClass.getRooms = { ->
+            [[id: 42, name: 'Office', deviceIds: []]]
+        }
+
+        when: 'args is a JSON string encoding {"room":"Office"}'
+        def result = script.handleGateway('manage_rooms', 'get_room', '{"room":"Office"}')
+
+        then: 'string was parsed; the room parameter reached the tool; correct room returned'
+        !result.isError
+        result.name == 'Office'
+    }
+
+    def "JSON-encoded string args containing invalid JSON throws IllegalArgumentException"() {
+        when: 'args is a malformed JSON string'
+        script.handleGateway('manage_rooms', 'list_rooms', 'not valid json')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Gateway arg 'args' was a String but not valid JSON")
+        ex.message.contains('Parse error:')
+    }
+
+    def "JSON-encoded string args containing a JSON array rejects with IllegalArgumentException"() {
+        // A JSON array is valid JSON but not a valid args object (must be a JSON object).
+        // The type check after parsing rejects it with a clear error rather than letting
+        // a List propagate into tool implementations as a Map.
+        when:
+        script.handleGateway('manage_rooms', 'list_rooms', '[1,2,3]')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Gateway arg 'args' was a String that parsed to a JSON Array")
+        ex.message.contains("not a JSON object")
+    }
+
+    def "Map args (existing happy path) is unaffected by the defensive parse"() {
+        given:
+        script.metaClass.getRooms = { ->
+            [[id: 10, name: 'Garage', deviceIds: []]]
+        }
+
+        when: 'args is a plain Map -- the normal case'
+        def result = script.handleGateway('manage_rooms', 'list_rooms', [:])
+
+        then: 'no change in behaviour -- Map args passes through as before'
+        !result.isError
+        result.rooms instanceof List
+        result.count == 1
+    }
+
+    def "null args (no-arg tool) is unaffected by the defensive parse"() {
+        given:
+        script.metaClass.getRooms = { ->
+            [[id: 5, name: 'Bedroom', deviceIds: []]]
+        }
+
+        when: 'args is null -- also a normal case for parameter-less tools'
+        def result = script.handleGateway('manage_rooms', 'list_rooms', null)
+
+        then: 'safeArgs defaults to [:] and dispatch proceeds normally'
+        !result.isError
+        result.rooms instanceof List
+        result.count == 1
     }
 }

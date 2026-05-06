@@ -338,13 +338,13 @@ class TestRunner:
         """Create a rule, verify it was created, return ruleId."""
         rule_def.setdefault("name", name)
         rule_def.setdefault("testRule", True)
-        result = self.client.call_tool("create_rule", rule_def)
+        result = self.client.call_tool("custom_create_rule", rule_def)
         rule_id = str(result.get("ruleId", result.get("id", "")))
-        assert rule_id, f"create_rule did not return a ruleId: {result}"
+        assert rule_id, f"custom_create_rule did not return a ruleId: {result}"
         self.created_rule_ids.append(rule_id)
 
         # Verify creation
-        fetched = self.client.call_tool("get_rule", {"ruleId": rule_id})
+        fetched = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
         assert fetched.get("name") == name or fetched.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
         return rule_id
@@ -352,7 +352,7 @@ class TestRunner:
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
         try:
-            self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
+            self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
         except Exception as exc:
             print(f"[WARN] _delete_rule_safe({rule_id}) failed: {exc}")
         if rule_id in self.created_rule_ids:
@@ -578,22 +578,22 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to get")
-        result = self.client.call_tool("get_rule", {"ruleId": rule_id})
+        result = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
         assert result.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: {result.get('name')}"
-        assert "triggers" in result or "trigger" in result, "Missing triggers in get_rule"
-        assert "actions" in result, "Missing actions in get_rule"
+        assert "triggers" in result or "trigger" in result, "Missing triggers in custom_get_rule"
+        assert "actions" in result, "Missing actions in custom_get_rule"
 
     @test("rule_crud")
     def test_update_rule(self) -> None:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to update")
-        self.client.call_tool("update_rule", {
+        self.client.call_tool("custom_update_rule", {
             "ruleId": rule_id,
             "name": f"{PREFIX}Rule_CRUD_Updated",
         })
-        fetched = self.client.call_tool("get_rule", {"ruleId": rule_id})
+        fetched = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
         assert "Updated" in fetched.get("name", ""), \
             f"Rule name not updated: {fetched.get('name')}"
 
@@ -602,13 +602,13 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to delete")
-        self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
+        self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)
         # Verify it's gone
         try:
-            self.client.call_tool("get_rule", {"ruleId": rule_id})
-            raise AssertionError("get_rule should fail after deletion")
+            self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
+            raise AssertionError("custom_get_rule should fail after deletion")
         except (McpToolError, McpError):
             pass
 
@@ -1049,7 +1049,7 @@ class TestRunner:
     #   - enableDeveloperMode: true   (UI-only to enable; lockout protection)
     #   - enableHubAdminWrite: true   (UI-only to enable)
     #   - lastBackupTimestamp within 24h
-    #   - enableRuleEngine, enableHubAdminRead, enableBuiltinAppRead: true
+    #   - enableCustomRuleEngine, enableHubAdminRead, enableBuiltinApp: true
     #
     # T219 (toggle-OFF refusal) is omitted — would require briefly disabling
     # Developer Mode via UI, which CI can't do (toggle excluded from
@@ -1126,7 +1126,7 @@ class TestRunner:
         """T223: response message includes a client-reconnect hint."""
         result = self.client.call_tool("manage_mcp_self", {
             "tool": "update_mcp_settings",
-            "args": {"settings": {"enableRuleEngine": False}, "confirm": True},
+            "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
         })
         assert result.get("success") is True
         msg = result.get("message") or ""
@@ -1135,7 +1135,7 @@ class TestRunner:
         # Restore so the rest of the suite (rule_crud etc.) keeps working.
         restore = self.client.call_tool("manage_mcp_self", {
             "tool": "update_mcp_settings",
-            "args": {"settings": {"enableRuleEngine": True}, "confirm": True},
+            "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
         })
         assert restore.get("success") is True
 
@@ -1321,7 +1321,7 @@ class TestRunner:
         for rule_id in list(self.created_rule_ids):
             try:
                 print(f"  Deleting tracked rule {rule_id}")
-                self.client.call_tool("delete_rule", {"ruleId": rule_id, "confirm": True})
+                self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
             except Exception as exc:
                 print(f"  [WARN] Failed to delete rule {rule_id}: {exc}")
         self.created_rule_ids.clear()
@@ -1372,7 +1372,7 @@ class TestRunner:
 
         # Layer 3: sweep rules with BAT_E2E_ prefix
         try:
-            rules_result = self.client.call_tool("list_rules")
+            rules_result = self.client.call_tool("custom_list_rules")
             rules = rules_result if isinstance(rules_result, list) else rules_result.get("rules", [])
             for r in rules:
                 rname = r.get("name", "")
@@ -1381,7 +1381,7 @@ class TestRunner:
                     if rid:
                         try:
                             print(f"  Sweep: deleting rule '{rname}' (id={rid})")
-                            self.client.call_tool("delete_rule", {"ruleId": rid, "confirm": True})
+                            self.client.call_tool("custom_delete_rule", {"ruleId": rid, "confirm": True})
                         except Exception as exc:
                             print(f"  [WARN] Sweep delete failed for rule '{rname}': {exc}")
         except Exception as exc:

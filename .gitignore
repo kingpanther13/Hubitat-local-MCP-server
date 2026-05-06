@@ -41,3 +41,10 @@ __pycache__/
 .gradle/
 build/
 !gradle/wrapper/gradle-wrapper.jar
+
+# Wizard probe run results (regression baseline; per-run, not committed)
+tests/wizard_probe_results/
+
+# Local scratch / targeted-test output files (contributor-private, not committed)
+tests/bat_targeted_results.md
+tests/diag_*.py

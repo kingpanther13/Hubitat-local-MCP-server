@@ -19,7 +19,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "throws when Built-in App Read is disabled"() {
         given:
-        settingsMap.enableBuiltinAppRead = false
+        settingsMap.enableBuiltinApp = false
 
         when:
         script.toolGetDeviceInUseBy([:])
@@ -31,7 +31,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "throws when deviceId is missing from args"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolGetDeviceInUseBy([:])
@@ -43,7 +43,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "throws Device-not-found before any HTTP call for an unknown deviceId"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'no device registered -- childDevicesList is empty and selectedDevices is empty'
         // Do NOT register the /device/fullJson/ endpoint; if the tool calls HTTP
@@ -61,7 +61,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "golden path: returns appsUsing list with extraBreadcrumb as deviceName"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'device is in childDevicesList so findDevice succeeds'
         def mockDevice = [id: '42', label: 'Kitchen Switch', name: 'Generic Switch']
@@ -99,7 +99,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "deviceName falls back to .name when extraBreadcrumb is absent"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '55', label: 'My Device', name: 'Generic Device']
         childDevicesList << mockDevice
 
@@ -121,7 +121,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "deviceName falls back to .label when both extraBreadcrumb and name are absent"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '66', label: 'Label Only', name: null]
         childDevicesList << mockDevice
 
@@ -143,7 +143,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "non-numeric appsUsingCount falls back to appsUsing.size() and warn log fires"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '77', label: 'My Dev', name: 'Dev']
         childDevicesList << mockDevice
 
@@ -176,7 +176,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "returns success=false with empty-response error when hub body is empty"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '88', label: 'Dev', name: 'Dev']
         childDevicesList << mockDevice
         hubGet.register('/device/fullJson/88') { params -> '' }
@@ -191,7 +191,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes correctly"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '10', label: 'Switch', name: 'Switch']
         childDevicesList << mockDevice
 

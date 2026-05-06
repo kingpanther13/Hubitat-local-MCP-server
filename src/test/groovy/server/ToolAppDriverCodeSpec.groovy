@@ -222,7 +222,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.previousVersion == 12
 
         and: 'the pre-edit backup manifest entry is preserved so the user can still restore_item_backup to roll back the update'
-        stateMap.itemBackupManifest?.containsKey('app_50')
+        atomicStateMap.itemBackupManifest?.containsKey('app_50')
     }
 
     def "update_app_code (sourceFile mode) reads source from File Manager"() {
@@ -484,7 +484,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "restore_item_backup returns error response when the key is unknown"() {
         given:
         enableHubAdminWrite()
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'app_existing': [type: 'app', id: '1', fileName: 'f.groovy',
                              version: 1, timestamp: 1L, sourceLength: 0]
         ]
@@ -503,7 +503,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         and: 'a manifest entry for an app backup'
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
@@ -553,14 +553,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.undoHint.contains('prerestore_app_99')
 
         and: 'both the pre-restore entry and the original backup entry are preserved (original kept so the user can restore again if needed)'
-        stateMap.itemBackupManifest.containsKey('prerestore_app_99')
-        stateMap.itemBackupManifest.containsKey('app_99')
+        atomicStateMap.itemBackupManifest.containsKey('prerestore_app_99')
+        atomicStateMap.itemBackupManifest.containsKey('app_99')
     }
 
     def "restore_item_backup reports failure and preserves the backup when the hub POST fails"() {
         given:
         enableHubAdminWrite()
-        stateMap.itemBackupManifest = [
+        atomicStateMap.itemBackupManifest = [
             'driver_88': [type: 'driver', id: '88', fileName: 'mcp-backup-driver-88.groovy',
                           version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
         ]
@@ -580,6 +580,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('bad code')
         result.message.contains('preserved')
-        stateMap.itemBackupManifest.containsKey('driver_88')
+        atomicStateMap.itemBackupManifest.containsKey('driver_88')
     }
 }

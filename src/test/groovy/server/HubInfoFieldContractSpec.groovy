@@ -6,7 +6,7 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Contract spec asserting that {@code ruleEngineEnabled} and
+ * Contract spec asserting that {@code customRuleEngineEnabled} and
  * {@code developerModeEnabled} are present in both {@code getHubInfo()} and
  * {@code getHubDetails()} responses.
  *
@@ -33,17 +33,17 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
 
     // -------- toolGetHubInfo --------
 
-    def "getHubInfo includes ruleEngineEnabled=true when enableRuleEngine is true"() {
+    def "getHubInfo includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
         given:
-        settingsMap.enableRuleEngine = true
+        settingsMap.enableCustomRuleEngine = true
         sharedLocation.hub = new TestHub()
 
         when:
         def result = script.toolGetHubInfo()
 
         then:
-        result.containsKey('ruleEngineEnabled')
-        result.ruleEngineEnabled == true
+        result.containsKey('customRuleEngineEnabled')
+        result.customRuleEngineEnabled == true
     }
 
     def "getHubInfo includes developerModeEnabled=true when enableDeveloperMode is true"() {
@@ -61,7 +61,7 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
 
     def "getHubInfo includes both fields as false when toggles are off"() {
         given:
-        settingsMap.enableRuleEngine = false
+        settingsMap.enableCustomRuleEngine = false
         settingsMap.enableDeveloperMode = false
         sharedLocation.hub = new TestHub()
 
@@ -69,26 +69,26 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         def result = script.toolGetHubInfo()
 
         then:
-        result.containsKey('ruleEngineEnabled')
-        result.ruleEngineEnabled == false
+        result.containsKey('customRuleEngineEnabled')
+        result.customRuleEngineEnabled == false
         result.containsKey('developerModeEnabled')
         result.developerModeEnabled == false
     }
 
     // -------- toolGetHubDetails --------
 
-    def "getHubDetails includes ruleEngineEnabled=true when enableRuleEngine is true"() {
+    def "getHubDetails includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
         given:
         settingsMap.enableHubAdminRead = true
-        settingsMap.enableRuleEngine = true
+        settingsMap.enableCustomRuleEngine = true
         sharedLocation.hub = new TestHub()
 
         when:
         def result = script.toolGetHubDetails([:])
 
         then:
-        result.containsKey('ruleEngineEnabled')
-        result.ruleEngineEnabled == true
+        result.containsKey('customRuleEngineEnabled')
+        result.customRuleEngineEnabled == true
     }
 
     def "getHubDetails includes developerModeEnabled=true when enableDeveloperMode is true"() {
@@ -108,7 +108,7 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
     def "getHubDetails includes both fields as false when toggles are off"() {
         given:
         settingsMap.enableHubAdminRead = true
-        settingsMap.enableRuleEngine = false
+        settingsMap.enableCustomRuleEngine = false
         settingsMap.enableDeveloperMode = false
         sharedLocation.hub = new TestHub()
 
@@ -116,8 +116,8 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         def result = script.toolGetHubDetails([:])
 
         then:
-        result.containsKey('ruleEngineEnabled')
-        result.ruleEngineEnabled == false
+        result.containsKey('customRuleEngineEnabled')
+        result.customRuleEngineEnabled == false
         result.containsKey('developerModeEnabled')
         result.developerModeEnabled == false
     }

@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolResumeRmRule (hubitat-mcp-server.groovy approx line 7819).
- * Gateway: manage_rule_machine -> resume_rm_rule.
+ * Gateway: manage_native_rules_and_apps -> resume_rm_rule.
  *
  * Covers: gate-throw, missing ruleId, golden-path resumeRule dispatch,
  * and String ruleId coercion.
@@ -25,7 +25,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "throws when Built-in App Read is disabled"() {
         given:
-        settingsMap.enableBuiltinAppRead = false
+        settingsMap.enableBuiltinApp = false
 
         when:
         script.toolResumeRmRule([ruleId: 1])
@@ -37,7 +37,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "throws when ruleId is missing"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolResumeRmRule([:])
@@ -49,7 +49,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "golden path: dispatches resumeRule sendAction for the given ruleId"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolResumeRmRule([ruleId: 600])
@@ -62,7 +62,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "String ruleId is coerced to Integer"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         def result = script.toolResumeRmRule([ruleId: '601'])
@@ -75,7 +75,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "non-numeric ruleId throws IllegalArgumentException"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
         script.toolResumeRmRule([ruleId: 'xyz'])
@@ -87,10 +87,10 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to resume_rm_rule"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('manage_rule_machine', 'resume_rm_rule', [ruleId: 700])
+        def result = script.handleGateway('manage_native_rules_and_apps', 'resume_rm_rule', [ruleId: 700])
 
         then:
         result.success == true

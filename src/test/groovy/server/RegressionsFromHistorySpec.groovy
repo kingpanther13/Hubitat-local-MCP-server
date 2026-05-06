@@ -252,7 +252,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         given: 'a recent cached backup whose manifest carries a stale version=5'
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        stateMap.itemBackupManifest = [app_50: [
+        atomicStateMap.itemBackupManifest = [app_50: [
             type: 'app', id: '50',
             fileName: 'mcp-backup-app-50.groovy',
             version: 5,                                    // stale
@@ -284,11 +284,40 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         result.previousVersion == 12
     }
 
+    // ---- isNewerVersion semver comparison ----------------------------------------
+    // Tests the strict-semver comparison helper: patch/minor/major bumps, equal
+    // versions, prerelease/malformed-string guard path (returns false + warn log
+    // rather than throwing), and null inputs (guarded at the top of the function
+    // before the regex match, which would NPE on a null receiver).
+
+    def "isNewerVersion(#remote, #local) == #expected"() {
+        given:
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
+
+        expect:
+        script.isNewerVersion(remote, local) == expected
+
+        where:
+        remote          | local       | expected
+        "0.12.1"        | "0.12.0"    | true    // patch bump
+        "0.13.0"        | "0.12.9"    | true    // minor bump rolls over patch
+        "1.0.0"         | "0.99.99"   | true    // major bump
+        "0.12.0"        | "0.12.0"    | false   // equal versions
+        "0.11.9"        | "0.12.0"    | false   // remote is older
+        "1.0.0-rc1"     | "0.12.0"    | false   // prerelease suffix: not strict semver -- warn + false
+        "0.12.0"        | "v0.11.0"   | false   // 'v' prefix on local: not strict semver -- warn + false
+        null            | "0.12.0"    | false   // null remote: guarded before regex (would NPE otherwise)
+        "not-a-version" | "0.12.0"    | false   // non-semver string: semver pattern guard fires
+    }
+
     def "update_app_code falls back to the cached backup version when the fresh-fetch fails (v0.4.6)"() {
         given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        stateMap.itemBackupManifest = [app_50: [
+        atomicStateMap.itemBackupManifest = [app_50: [
             type: 'app', id: '50',
             fileName: 'mcp-backup-app-50.groovy',
             version: 5,

@@ -15,7 +15,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "throws when Built-in App Read is disabled"() {
         given:
-        settingsMap.enableBuiltinAppRead = false
+        settingsMap.enableBuiltinApp = false
 
         when:
         script.toolListInstalledApps([:])
@@ -27,7 +27,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "golden path: 2-level tree flattens with parentId wiring"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'hub returns a parent with 2 children'
         def treeJson = JsonOutput.toJson([
@@ -68,7 +68,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=builtin returns only non-user apps"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         def treeJson = JsonOutput.toJson([
             apps: [
@@ -88,7 +88,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=user returns only user apps"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         def treeJson = JsonOutput.toJson([
             apps: [
@@ -108,7 +108,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=disabled returns only disabled apps"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         def treeJson = JsonOutput.toJson([
             apps: [
@@ -128,7 +128,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=parents returns only apps with children"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         def treeJson = JsonOutput.toJson([
             apps: [
@@ -152,7 +152,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=children returns only apps with a non-null parentId"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         def treeJson = JsonOutput.toJson([
             apps: [
@@ -176,7 +176,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "hidden parent excluded by default and child is promoted to root (parentId=null)"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         and: 'hidden parent with one visible child'
         def treeJson = JsonOutput.toJson([
@@ -205,7 +205,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "hidden parent in the middle of a three-level tree: grandchildren promote to nearest visible ancestor"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             // grandparent (visible, id=1)
             //   -> parent (hidden, id=2)
@@ -233,7 +233,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "includeHidden=true includes hidden parent and wires child parentId to it"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
 
         def treeJson = JsonOutput.toJson([
             apps: [
@@ -260,7 +260,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "throws IllegalArgumentException for an invalid filter value"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         // Hub endpoint must be registered even though it won't be reached;
         // the validation throws before the HTTP call.
 
@@ -274,7 +274,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "returns success=false with empty-response error when hub body is empty"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> '' }
 
         when:
@@ -287,7 +287,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "returns success=false with parse error when hub body is non-JSON"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> 'not json at all' }
 
         when:
@@ -300,7 +300,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway also returns apps list"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: []])
         }

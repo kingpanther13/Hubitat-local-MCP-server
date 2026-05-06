@@ -113,9 +113,9 @@ Defaults: 30 executions within 60 seconds. Configurable in app settings.
 
 ### Rule Deletion
 
-- `delete_rule` auto-backs up the rule to File Manager before deletion
+- `custom_delete_rule` auto-backs up the rule to File Manager before deletion
 - Backup format: `mcp_rule_backup_<name>_<timestamp>.json`
-- Restore via: `read_file(fileName)` then `import_rule(exportData: <json>)`
+- Restore via: `read_file(fileName)` then `custom_import_rule(exportData: <json>)`
 - Mark test rules with `testRule: true` to skip backup on deletion
 
 ---
