@@ -3208,7 +3208,7 @@ def toolDeleteRule(args) {
 
     def childApp = getChildAppById(args.ruleId)
     if (!childApp) {
-        def redirect = findRuleAppRedirect(args.ruleId, "write")
+        def redirect = findRuleAppRedirect(args.ruleId, "delete")
         def msg = "Rule not found: ${args.ruleId}"
         if (redirect) msg += ". ${redirect}"
         throw new IllegalArgumentException(msg)
@@ -3289,7 +3289,7 @@ def toolDeleteRule(args) {
 def toolTestRule(ruleId) {
     def childApp = getChildAppById(ruleId)
     if (!childApp) {
-        def redirect = findRuleAppRedirect(ruleId, "write")
+        def redirect = findRuleAppRedirect(ruleId, "test")
         def msg = "Rule not found: ${ruleId}"
         if (redirect) msg += ". ${redirect}"
         throw new IllegalArgumentException(msg)
@@ -3320,7 +3320,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
     // Soft gate: only enrich the error when Built-in App Tools are enabled.
     // Prevents leaking that an app exists at this id (or its type) when the
     // operator has intentionally restricted built-in app visibility.
-    if (!settings.enableBuiltinAppRead) return null
+    if (!settings.enableBuiltinApp) return null
 
     // Known classLocation values for rule-like built-in apps.
     // ruleApp51 = Rule Machine 5.1, ruleApp50 = Rule Machine 5.0,
@@ -3402,12 +3402,23 @@ private String findRuleAppRedirect(ruleId, String verb) {
         if (verb == "read") {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `manage_installed_apps -> get_app_config(appId=${idStr})` to read its configuration. " +
-                "`get_rule`, `export_rule`, and `clone_rule` only handle MCP's own rule engine, not Hubitat built-in apps."
-        } else {
+                "`custom_get_rule`, `custom_export_rule`, and `custom_clone_rule` only handle MCP's own rule engine, not Hubitat built-in apps."
+        } else if (verb == "delete") {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
-                "Hubitat built-in rules cannot be programmatically modified via MCP at this time -- " +
-                "use the Hubitat Rule Machine UI for changes."
+                "Use `manage_native_rules_and_apps -> delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
+                "(requires Built-in App Tools + Hub Admin Write)."
+        } else if (verb == "test") {
+            return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
+                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
+                "Use `manage_native_rules_and_apps -> run_rm_rule(ruleId=${idStr})` to trigger it " +
+                "(requires Built-in App Tools)."
+        } else {
+            // write (update_rule and any future write verbs)
+            return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
+                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
+                "Use `manage_native_rules_and_apps -> update_native_app(appId=${idStr})` to modify it programmatically " +
+                "(requires Built-in App Tools + Hub Admin Write)."
         }
     } catch (Exception e) {
         mcpLog("warn", "rules", "findRuleAppRedirect lookup failed for id ${idStr}: ${e.message ?: e.toString()}")

@@ -25,7 +25,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | `custom_create_rule` | Create a new automation rule. | None |
 | `custom_update_rule` | Update rule triggers, conditions, or actions. Also handles enable/disable via `enabled=true/false`. | None |
 
-> **Note:** `get_rule` and `update_rule` only operate on MCP-native rules. Passing a Hubitat built-in rule id yields a redirect hint (see `manage_rules_admin` note below).
+> **Note:** `custom_get_rule`, `custom_update_rule`, and related `custom_*` tools only operate on MCP-native rules. Passing a Hubitat built-in rule id yields a redirect hint pointing to `manage_installed_apps` (read) or `manage_native_rules_and_apps` (write/delete/test).
 
 ### Device Management (1)
 
@@ -78,7 +78,7 @@ Rule administration: delete, test, export, import, and clone rules.
 | `custom_import_rule` | Import a rule from exported JSON. | None |
 | `custom_clone_rule` | Duplicate an existing rule. | None |
 
-> **Built-in rule redirect:** `get_rule`, `export_rule`, `update_rule`, `delete_rule`, `test_rule`, and `clone_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `manage_installed_apps -> get_app_config(appId=<id>)`. This redirect fires only when Built-in App Tools are enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
+> **Built-in rule redirect:** `custom_get_rule`, `custom_export_rule`, `custom_update_rule`, `custom_delete_rule`, `custom_test_rule`, and `custom_clone_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `manage_installed_apps -> get_app_config(appId=<id>)` (read) or the appropriate `manage_native_rules_and_apps` tool (write/delete/test). This redirect fires only when Built-in App Tools are enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
 
 ### manage_hub_variables (4 tools)
 

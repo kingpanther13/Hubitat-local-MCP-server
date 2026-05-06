@@ -7,11 +7,11 @@ import support.ToolSpecBase
 /**
  * Spec for the Rule-not-found redirect feature (feat/rule-not-found-redirect).
  *
- * When an MCP-native rule tool (get_rule, export_rule, update_rule, delete_rule,
- * test_rule, clone_rule) receives an id that does not belong to any MCP child-app
- * rule, it calls findRuleAppRedirect() to check whether the id exists as a
- * Hubitat built-in rule-like app. If so, the IllegalArgumentException includes
- * a verb-appropriate redirect hint guiding the AI toward get_app_config.
+ * When an MCP-native rule tool (custom_get_rule, custom_export_rule, custom_update_rule,
+ * custom_delete_rule, custom_test_rule, custom_clone_rule) receives an id that does not
+ * belong to any MCP child-app rule, it calls findRuleAppRedirect() to check whether the
+ * id exists as a Hubitat built-in rule-like app. If so, the IllegalArgumentException
+ * includes a verb-appropriate redirect hint guiding the AI toward the right tool.
  *
  * Coverage matrix per affected tool:
  *   (a) Valid MCP-native rule id         -> no redirect; original behaviour unchanged
@@ -23,7 +23,7 @@ import support.ToolSpecBase
  * Shared helper scenarios (a/c/d/e) are tested once against toolGetRule since
  * they exercise the shared findRuleAppRedirect helper. Per-tool tests cover
  * the redirect hint phrasing (read vs write verb) and the gate/confirm checks
- * that fire before the redirect path is reached (e.g. delete_rule confirm gate).
+ * that fire before the redirect path is reached (e.g. custom_delete_rule confirm gate).
  */
 class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
@@ -60,7 +60,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     // ================================================================ toolGetRule
 
-    def "get_rule (a) valid MCP rule id -- no redirect, returns rule data"() {
+    def "custom_get_rule (a) valid MCP rule id -- no redirect, returns rule data"() {
         given: 'an existing MCP child-app rule'
         def childApp = new TestChildApp(id: 42L, label: 'Motion Rule')
         childApp.ruleData = [
@@ -79,9 +79,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         hubGet.calls.empty
     }
 
-    def "get_rule (b) RM rule id (classLocation=ruleApp51) -- read-verb redirect in exception"() {
+    def "custom_get_rule (b) RM rule id (classLocation=ruleApp51) -- read-verb redirect in exception"() {
         given: 'hub has appId 832 as a Rule Machine 5.1 rule'
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(832, 'Rule-5.1', 'ruleApp51')
         }
@@ -93,16 +93,16 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 832')
         ex.message.contains('get_app_config(appId=832)')
-        ex.message.contains('get_rule')
-        ex.message.contains('export_rule')
-        ex.message.contains('clone_rule')
-        // read-verb phrasing: should NOT contain write-verb phrasing
-        !ex.message.contains('cannot be programmatically modified')
+        ex.message.contains('custom_get_rule')
+        ex.message.contains('custom_export_rule')
+        ex.message.contains('custom_clone_rule')
+        // read-verb phrasing: should NOT contain write-verb pointer to update_native_app
+        !ex.message.contains('update_native_app')
     }
 
-    def "get_rule (b2) type-string fallback -- Rule Machine name without systemAppTypes"() {
+    def "custom_get_rule (b2) type-string fallback -- Rule Machine name without systemAppTypes"() {
         given: 'appsList has no systemAppTypes entries but type string matches'
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJsonNoTypes(900, 'Rule-5.1')
         }
@@ -116,9 +116,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('get_app_config(appId=900)')
     }
 
-    def "get_rule (b3) Room Lighting classLocation -- read-verb redirect"() {
+    def "custom_get_rule (b3) Room Lighting classLocation -- read-verb redirect"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(101, 'Room Lights', 'roomLightsApp')
         }
@@ -131,9 +131,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('get_app_config(appId=101)')
     }
 
-    def "get_rule (c) id not found anywhere -- generic not found, no redirect"() {
+    def "custom_get_rule (c) id not found anywhere -- generic not found, no redirect"() {
         given: 'hub appsList has no app with this id'
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -145,9 +145,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         !ex.message.contains('get_app_config')
     }
 
-    def "get_rule (d) non-rule-like built-in app -- no redirect"() {
+    def "custom_get_rule (d) non-rule-like built-in app -- no redirect"() {
         given: 'hub has appId 50 as Groups and Scenes (not rule-like)'
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(50, 'Groups and Scenes', 'groupsAndScenesApp')
         }
@@ -161,9 +161,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         !ex.message.contains('get_app_config')
     }
 
-    def "get_rule (e) appsList fetch throws -- graceful fallback, generic not found"() {
+    def "custom_get_rule (e) appsList fetch throws -- graceful fallback, generic not found"() {
         given: 'appsList endpoint is not registered (will throw IllegalStateException from mock)'
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         // HubInternalGetMock throws IllegalStateException for unregistered paths;
         // findRuleAppRedirect must catch this and return null.
         // Do NOT register /hub2/appsList here -- the mock's default throws.
@@ -177,9 +177,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         !ex.message.contains('get_app_config')
     }
 
-    def "get_rule (e2) appsList returns empty string -- graceful fallback"() {
+    def "custom_get_rule (e2) appsList returns empty string -- graceful fallback"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> '' }
 
         when:
@@ -191,9 +191,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         !ex.message.contains('get_app_config')
     }
 
-    def "get_rule (e3) appsList returns non-JSON -- graceful fallback"() {
+    def "custom_get_rule (e3) appsList returns non-JSON -- graceful fallback"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> 'not valid json' }
 
         when:
@@ -205,9 +205,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         !ex.message.contains('get_app_config')
     }
 
-    def "get_rule (f) enableBuiltinAppRead disabled -- no redirect even if id is a built-in rule"() {
+    def "custom_get_rule (f) enableBuiltinApp disabled -- no redirect even if id is a built-in rule"() {
         given: 'Built-in App Tools gate is OFF (default); helper must short-circuit without calling appsList'
-        // settingsMap.enableBuiltinAppRead is intentionally absent (falsy) -- this is the gate-off scenario
+        // settingsMap.enableBuiltinApp is intentionally absent (falsy) -- this is the gate-off scenario
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(832, 'Rule-5.1', 'ruleApp51')
         }
@@ -225,9 +225,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     // ============================================================== toolExportRule
 
-    def "export_rule (b) RM rule id -- read-verb redirect in exception"() {
+    def "custom_export_rule (b) RM rule id -- read-verb redirect in exception"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(500, 'Rule-5.0', 'ruleApp50')
         }
@@ -239,15 +239,16 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 500')
         ex.message.contains('get_app_config(appId=500)')
-        ex.message.contains('get_rule')
-        ex.message.contains('export_rule')
-        ex.message.contains('clone_rule')
-        !ex.message.contains('cannot be programmatically modified')
+        ex.message.contains('custom_get_rule')
+        ex.message.contains('custom_export_rule')
+        ex.message.contains('custom_clone_rule')
+        // read-verb phrasing: should NOT contain write-verb pointer to update_native_app
+        !ex.message.contains('update_native_app')
     }
 
-    def "export_rule (c) id not found anywhere -- generic not found"() {
+    def "custom_export_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -261,9 +262,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     // ============================================================== toolUpdateRule
 
-    def "update_rule (b) RM rule id -- write-verb redirect in exception"() {
+    def "custom_update_rule (b) RM rule id -- write-verb redirect in exception"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(300, 'Rule-5.1', 'ruleApp51')
         }
@@ -275,15 +276,15 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 300')
         ex.message.contains('get_app_config(appId=300)')
-        ex.message.contains('cannot be programmatically modified')
+        ex.message.contains('update_native_app')
         // write-verb phrasing: should NOT include the read-verb-exclusive phrase about
-        // get_rule / export_rule only handling MCP rules (mis-wiring 'read' verb would fail this)
+        // custom_get_rule / custom_export_rule only handling MCP rules
         !ex.message.contains('only handle MCP')
     }
 
-    def "update_rule (c) id not found anywhere -- generic not found"() {
+    def "custom_update_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -308,9 +309,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         hubGet.calls.empty
     }
 
-    def "delete_rule (b) RM rule id -- write-verb redirect in exception"() {
+    def "custom_delete_rule (b) RM rule id -- write-verb redirect in exception"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(400, 'Rule-5.1', 'ruleApp51')
         }
@@ -322,12 +323,12 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 400')
         ex.message.contains('get_app_config(appId=400)')
-        ex.message.contains('cannot be programmatically modified')
+        ex.message.contains('delete_native_app')
     }
 
-    def "delete_rule (c) id not found anywhere -- generic not found"() {
+    def "custom_delete_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -341,9 +342,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     // =============================================================== toolTestRule
 
-    def "test_rule (b) RM rule id -- write-verb redirect in exception"() {
+    def "custom_test_rule (b) RM rule id -- test-verb redirect in exception"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(600, 'Rule-5.1', 'ruleApp51')
         }
@@ -355,12 +356,12 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 600')
         ex.message.contains('get_app_config(appId=600)')
-        ex.message.contains('cannot be programmatically modified')
+        ex.message.contains('run_rm_rule')
     }
 
-    def "test_rule (c) id not found anywhere -- generic not found"() {
+    def "custom_test_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -374,9 +375,9 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     // =============================================================== toolCloneRule
 
-    def "clone_rule (b) RM rule id -- redirect propagates from toolExportRule"() {
+    def "custom_clone_rule (b) RM rule id -- redirect propagates from toolExportRule"() {
         given: 'clone delegates to toolExportRule which checks the redirect'
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(700, 'Rule-5.1', 'ruleApp51')
         }
@@ -388,14 +389,14 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 700')
         ex.message.contains('get_app_config(appId=700)')
-        // export_rule is called internally by clone_rule, so read-verb phrasing applies
-        ex.message.contains('export_rule')
-        ex.message.contains('clone_rule')
+        // toolExportRule is called internally by toolCloneRule, so read-verb phrasing applies
+        ex.message.contains('custom_export_rule')
+        ex.message.contains('custom_clone_rule')
     }
 
-    def "clone_rule (c) id not found anywhere -- generic not found"() {
+    def "custom_clone_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinAppRead = true
+        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
