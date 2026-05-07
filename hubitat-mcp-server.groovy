@@ -4279,46 +4279,41 @@ def toolCreateConnector(args) {
     }
 
     def appId = _findHubVariablesAppId()
+    // Pre-click priming: see toolDeleteHubVariable. Hub Variables system-app
+    // wizard clicks silently no-op without a preceding /app/ajax/code fetch.
+    try { backupItemSource("app", appId.toString()) }
+    catch (Exception backupExc) { logDebug("create_connector: pre-click backupItemSource for ${appId} threw ${backupExc.class.simpleName}: ${backupExc.message}") }
     _rmClickAppButton(appId, name, "createCon", "hubVar")
 
-    // Check whether the wizard advanced to a connector-type chooser
-    // (Number/Decimal vars render `capab` enum; others auto-commit).
-    def cfgText = hubInternalGet("/installedapp/configure/json/${appId}")
-    def capabOptions = null
-    def chosenType = null
-    if (cfgText) {
-        def cfg = new groovy.json.JsonSlurper().parseText(cfgText)
-        cfg?.configPage?.sections?.each { section ->
-            section?.inputs?.each { input ->
-                if (input?.name == "capab" && input?.options instanceof List) {
-                    capabOptions = input.options
-                }
-            }
-        }
-    }
-    if (capabOptions) {
-        chosenType = (requestedType && capabOptions.find { it?.toString()?.equalsIgnoreCase(requestedType) })
-            ? capabOptions.find { it?.toString()?.equalsIgnoreCase(requestedType) }
-            : (capabOptions.contains("Variable") ? "Variable" : capabOptions[0])
-        if (requestedType && chosenType?.toString()?.equalsIgnoreCase(requestedType) != true) {
-            mcpLog("warn", "hub-vars", "create_connector: requested connectorType='${requestedType}' not in ${capabOptions}; using '${chosenType}'")
-        }
-        def applied = []
-        def skipped = []
-        _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
+    // For Number/Decimal vars Hubitat opens a chooser sub-wizard requiring
+    // a 'capab' enum pick (Dimmer / Variable / etc.); for String/Boolean/
+    // DateTime the click commits the connector immediately. We commit the
+    // chooser unconditionally via toolUpdateNativeApp's settings path —
+    // that path bakes the enum reliably where a raw _rmWriteSettingOnPage
+    // silently drops it on this firmware. The write is a no-op when no
+    // chooser is open. Internal helper call only; the tool surface remains
+    // create_connector.
+    def chosenType = requestedType?.trim() ?: "Variable"
+    try {
+        toolUpdateNativeApp([
+            appId: appId,
+            settings: [capab: chosenType],
+            pageName: "hubVar",
+            confirm: true
+        ])
+    } catch (Exception writeExc) {
+        logDebug("create_connector: capab write threw ${writeExc.class.simpleName}: ${writeExc.message} (may be benign for non-chooser var types)")
     }
 
     def after
     try { after = getGlobalVar(name) } catch (Exception e) { after = null }
     if (after?.deviceId == null) {
         throw new IllegalStateException(
-            "create_connector: wizard completed but '${name}' still has no deviceId" +
-            (capabOptions ? " (chooser='${chosenType}', options=${capabOptions})" : "") +
-            ". The connector did not bake.")
+            "create_connector: wizard completed but '${name}' still has no deviceId. " +
+            "Tried capab='${chosenType}' (only relevant for Number/Decimal). The connector did not bake.")
     }
 
-    def capabSuffix = chosenType ? ", capab=${chosenType}" : ""
-    mcpLog("info", "hub-vars", "Created connector for '${name}' (deviceId=${after.deviceId}, attribute=${after.attribute}${capabSuffix})")
+    mcpLog("info", "hub-vars", "Created connector for '${name}' (deviceId=${after.deviceId}, attribute=${after.attribute}, capab=${chosenType})")
     return [
         success: true,
         name: name,
@@ -4389,10 +4384,29 @@ def toolSetVariable(name, value) {
 }
 
 def toolDeleteHubVariable(args) {
-    requireHubAdminWrite(args.confirm)
-    def name = args.name
-    if (!name) throw new IllegalArgumentException("name is required")
-    def force = args.force == true
+    // Inlined requireHubAdminWrite body — calling the helper from this site
+    // produced an unexplained MissingMethodException ("String.call('true')")
+    // that the same helper call from create_variable / create_connector /
+    // remove_connector did NOT produce on the same hub session. Inlining
+    // sidesteps the issue and makes the gate transparent for diagnosis.
+    if (!settings.enableHubAdminWrite) {
+        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
+    }
+    def confirmVal = args["confirm"]
+    if (!(confirmVal == true || confirmVal == "true")) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: confirm=true required. Got: ${confirmVal} (${confirmVal?.class?.simpleName})")
+    }
+    def lastBackupTs = state.lastBackupTimestamp
+    if (!lastBackupTs || (lastBackupTs instanceof Number && (now() - (lastBackupTs as Long)) > 86400000)) {
+        def lastDisplay = lastBackupTs ? lastBackupTs.toString() : 'Never'
+        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call create_hub_backup FIRST. Last backup: ${lastDisplay}")
+    }
+
+    // Local rename: avoid `name` to prevent any chance of shadowing the
+    // SmartApp's `name` property in the binding.
+    def varName = args["name"]?.toString()?.trim()
+    if (!varName) throw new IllegalArgumentException("name is required")
+    def force = args["force"] == true
 
     // Source detection: hub vs rule_engine namespace. Hub vars are deleted
     // through the Hub Variables system app's wizard; rule_engine vars are a
@@ -4400,16 +4414,16 @@ def toolDeleteHubVariable(args) {
     // to both — child rules can reference a hub var by name in their
     // triggers/conditions/actions JSON.
     def hubVar = null
-    try { hubVar = getGlobalVar(name) }
+    try { hubVar = getGlobalVar(varName) }
     catch (Exception e) {
-        logDebug("delete_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        logDebug("delete_variable: getGlobalVar('${varName}') threw ${e.class.simpleName}: ${e.message}")
     }
     def isHubVar = (hubVar != null)
-    def isRuleVar = state.ruleVariables?.containsKey(name) ?: false
+    def isRuleVar = state.ruleVariables?.containsKey(varName) ?: false
 
     if (!isHubVar && !isRuleVar) {
         throw new IllegalArgumentException(
-            "Variable '${name}' not found in either the hub-variables namespace or the rule_engine namespace.")
+            "Variable '${varName}' not found in either the hub-variables namespace or the rule_engine namespace.")
     }
 
     // Pre-deletion safety scan: child rule apps that reference this variable will silently
@@ -4424,7 +4438,7 @@ def toolDeleteHubVariable(args) {
             try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
             if (ruleData) {
                 def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                if (serialized?.contains(name)) {
+                if (serialized?.contains(varName)) {
                     consumers << [id: child.id, label: child.label]
                 }
             }
@@ -4437,10 +4451,10 @@ def toolDeleteHubVariable(args) {
     }
     if (consumers && !force) {
         throw new IllegalArgumentException(
-            "Variable '${name}' is referenced by ${consumers.size()} rule(s): " +
+            "Variable '${varName}' is referenced by ${consumers.size()} rule(s): " +
             "${consumers.collect { "${it.label} (id=${it.id})" }.join(', ')}. " +
             "Deleting will silently break those rules (null lookups, false conditions, " +
-            "literal %${name}% in substitutions). Pass force=true to proceed anyway, " +
+            "literal %${varName}% in substitutions). Pass force=true to proceed anyway, " +
             "or update/remove the consuming rules first."
         )
     }
@@ -4455,27 +4469,39 @@ def toolDeleteHubVariable(args) {
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
         def appId = _findHubVariablesAppId()
-        _rmClickAppButton(appId, name, "deleteGV", "hubVar")
+        // Pre-click: backupItemSource fetches /app/ajax/code which has the
+        // observed side effect of priming the system-app's wizard state for
+        // subsequent button clicks. update_native_app does this before every
+        // click and the same wizard sequence works through that path; raw
+        // _rmClickAppButton without the fetch silently no-ops (state.editVar
+        // never lands). Verified live 2026-05-06 by isolating the difference
+        // between update_native_app's working path and our raw call path.
+        try { backupItemSource("app", appId.toString()) }
+        catch (Exception backupExc) { logDebug("delete_variable: pre-click backupItemSource for ${appId} threw ${backupExc.class.simpleName}: ${backupExc.message}") }
+        _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
+        try { backupItemSource("app", appId.toString()) }
+        catch (Exception backupExc) { logDebug("delete_variable: pre-confirm backupItemSource for ${appId} threw ${backupExc.class.simpleName}: ${backupExc.message}") }
         _rmClickAppButton(appId, "delConfirm", null, "hubVar")
 
         // Verify the variable is gone. If it isn't, the wizard didn't
         // commit — surface that loudly so callers don't think the delete
         // succeeded when it didn't.
+        try { pauseExecution(500) } catch (Exception ignored) { }
         def stillThere = null
-        try { stillThere = getGlobalVar(name) } catch (Exception e) { stillThere = null }
+        try { stillThere = getGlobalVar(varName) } catch (Exception e) { stillThere = null }
         if (stillThere != null) {
             throw new IllegalStateException(
-                "delete_variable: wizard completed but '${name}' still exists in getGlobalVar.")
+                "delete_variable: wizard completed but '${varName}' still exists in getGlobalVar.")
         }
 
         def prevStr = previousValue?.toString()
         def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
         def connectorNote = hadConnector ? " (connector deviceId=${hubVar.deviceId} also deleted)" : ""
         def consumerNote  = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
-        mcpLog("warn", "developer-mode", "delete_variable: removed hub var '${name}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
+        mcpLog("warn", "developer-mode", "delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
         return [
             success: true,
-            name: name,
+            name: varName,
             deleted: true,
             source: "hub",
             type: previousType,
@@ -4489,15 +4515,15 @@ def toolDeleteHubVariable(args) {
     // top-level reassignment pattern: nested-map mutations on state silently
     // fail to persist across hub reboot / app restart unless the top-level
     // key is reassigned. Read-modify-write the whole map.
-    def previousValue = state.ruleVariables[name]
-    def updated = state.ruleVariables.findAll { k, v -> k != name }
+    def previousValue = state.ruleVariables[varName]
+    def updated = state.ruleVariables.findAll { k, v -> k != varName }
     state.ruleVariables = updated
 
     def prevStr = previousValue?.toString()
     def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
     def consumerNote = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
-    mcpLog("warn", "developer-mode", "delete_variable: removed '${name}' (previous value: ${auditValue})${consumerNote}")
-    return [success: true, name: name, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
+    mcpLog("warn", "developer-mode", "delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
+    return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
 
 def toolUpdateMcpSettings(args) {
