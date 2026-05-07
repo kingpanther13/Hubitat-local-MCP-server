@@ -119,6 +119,12 @@ RULES = [
         "message": "HubAction only valid in drivers, not apps",
         "severity": "error",
     },
+    {
+        "id": "SANDBOX-012",
+        "pattern": r"\bnew\s+(?:java\s*\.\s*util\s*\.\s*)?ArrayDeque\s*\(",
+        "message": "ArrayDeque instantiation blocked in Hubitat sandbox at parse time -- use Groovy list literal `[]` (LinkedList-backed; supports addLast/removeLast for LIFO semantics)",
+        "severity": "error",
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -631,6 +637,31 @@ SELF_TEST_CASES = [
         "Bare $Locale.default in an interpolation is flagged",
         'log.info "loc=$Locale.default"',
         [("SANDBOX-002", True)],
+    ),
+    (
+        "new ArrayDeque() (no-arg constructor) is flagged",
+        "def stack = new ArrayDeque()",
+        [("SANDBOX-012", True)],
+    ),
+    (
+        "new ArrayDeque(collection) is flagged",
+        "def stack = new ArrayDeque(apps)",
+        [("SANDBOX-012", True)],
+    ),
+    (
+        "new java.util.ArrayDeque() fully-qualified is flagged",
+        "def stack = new java.util.ArrayDeque()",
+        [("SANDBOX-012", True)],
+    ),
+    (
+        "Groovy list literal `[]` is NOT flagged (the safe alternative)",
+        "def stack = []",
+        [("SANDBOX-012", False)],
+    ),
+    (
+        "new LinkedList() is NOT flagged (LinkedList is sandbox-allowed)",
+        "def stack = new LinkedList()",
+        [("SANDBOX-012", False)],
     ),
 ]
 

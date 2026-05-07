@@ -252,6 +252,21 @@ Auto-backs up before modifying. Rapid edits within 1 hour preserve the original.
 - Use `list_item_backups` to enumerate, `restore_item_backup` (in `manage_apps_drivers`) with the backupKey to roll back
 - If the rule still exists, settings are replayed in place; if deleted, a fresh empty rule is recreated and the saved settings replayed onto it
 
+### Hubitat Built-in Rule Redirect
+When `custom_get_rule`, `custom_export_rule`, `custom_update_rule`, `custom_delete_rule`, `custom_test_rule`, or `custom_clone_rule` fails
+with "Rule not found", the error message may include a redirect hint if the ID belongs to a
+Hubitat built-in rule-like app (Rule Machine, Room Lighting, Basic Rules, Visual Rules Builder).
+
+Example redirect message:
+> "Rule 832 is a Hubitat built-in Rule-5.1 app. Use `manage_installed_apps -> get_app_config(appId=832)` to read its configuration."
+
+- Read verbs (`custom_get_rule`, `custom_export_rule`, `custom_clone_rule`): points to `get_app_config` and notes these tools only handle MCP's own rule engine.
+- Write verbs (`custom_update_rule`): points to `get_app_config` for inspection and `manage_native_rules_and_apps -> update_native_app` for programmatic modification (requires Built-in App Tools + Hub Admin Write).
+- Delete verb (`custom_delete_rule`): points to `manage_native_rules_and_apps -> delete_native_app` for programmatic deletion.
+- Test verb (`custom_test_rule`): points to `manage_installed_apps -> get_app_config` for inspection. For Rule Machine rules specifically, the hint also includes a pointer to `manage_native_rules_and_apps -> run_rm_rule` to trigger them; non-RM rule-likes (Room Lighting, Basic Rules, Visual Rule Builder) receive only the `get_app_config` pointer because `run_rm_rule` routes through `RMUtils.sendAction` and is RM-only.
+- The redirect check is best-effort: if the hub appsList call fails, a plain "Rule not found" message is returned with no secondary error.
+- `custom_list_rules` and `custom_create_rule` are not affected (they do not take a rule id as input).
+
 ---
 
 ## File Manager
