@@ -2122,6 +2122,321 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.issues.any { it.toString().toLowerCase().contains("broken") }
     }
 
+    // ---------- clone_native_app ----------
+    // The clone tool wraps Hubitat's appCloner system app. Wire format:
+    //   1. GET /installedapp/sysAppApi/appCloner/app/<sourceId> -> 302
+    //      Location: /apps/api/<clonerId>/app/<sourceId>?access_token=...
+    //   2. POST /installedapp/btn  name=cloneRuleButton, settings[cloneRuleButton]=clicked,
+    //      cloneRuleButton.type=button, id=<clonerId>
+    //   3. New child app appears under sourceApp.parentAppId — diff
+    //      parent.childApps before/after to discover its id.
+    //
+    // Clone POST blocks server-side until commit (minutes for big rules), so
+    // the tool fires it with a 5s read timeout and polls for the new child.
+    // Tests pass pollIntervalMs=1 to keep the polling loop fast.
+
+    private String cloneSourceConfigJson(int sourceId, int parentId, String label = "Src") {
+        JsonOutput.toJson([
+            app: [id: sourceId, label: label, parentAppId: parentId, name: "Rule-5.1", trueLabel: label, installed: true],
+            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: []],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    private String cloneParentConfigJson(int parentId, List children) {
+        JsonOutput.toJson([
+            app: [id: parentId, label: "RM"],
+            configPage: [name: "mainPage", title: "Rule Machine", install: true, error: null, sections: []],
+            settings: [:],
+            childApps: children
+        ])
+    }
+
+    def "clone_native_app requires confirm=true"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolCloneNativeApp([sourceAppId: 100])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("SAFETY CHECK FAILED")
+    }
+
+    def "clone_native_app throws when sourceAppId is missing"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolCloneNativeApp([confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains("sourceappid")
+    }
+
+    def "clone_native_app throws when source app not found"() {
+        given:
+        enableHubAdminWrite()
+        // Empty response triggers _rmFetchConfigJson's "Empty response" branch,
+        // which the tool catches and converts to a clean "Source app N not found".
+        hubGet.register('/installedapp/configure/json/999') { params -> "" }
+
+        when:
+        script.toolCloneNativeApp([sourceAppId: 999, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("999")
+        ex.message.toLowerCase().contains("not found")
+    }
+
+    def "clone_native_app throws when appCloner returns no Location header"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> cloneSourceConfigJson(100, 21, "Src") }
+        hubGet.register('/installedapp/configure/json/21') { params -> cloneParentConfigJson(21, [[id: 100, label: "Src"]]) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 200, location: null, data: ""]
+        }
+
+        when:
+        script.toolCloneNativeApp([sourceAppId: 100, confirm: true])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.toLowerCase().contains("no location")
+    }
+
+    def "clone_native_app throws when appCloner Location format is unrecognized"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> cloneSourceConfigJson(100, 21, "Src") }
+        hubGet.register('/installedapp/configure/json/21') { params -> cloneParentConfigJson(21, [[id: 100, label: "Src"]]) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/totally/unexpected/url/shape", data: ""]
+        }
+
+        when:
+        script.toolCloneNativeApp([sourceAppId: 100, confirm: true])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.toLowerCase().contains("unexpected")
+    }
+
+    def "clone_native_app golden path: fires click POST and finds new appId via polling"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> cloneSourceConfigJson(100, 21, "Source Rule") }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            // First call = pre-clone snapshot (just the source). Subsequent =
+            // new clone has appeared.
+            parentCalls <= 1
+                ? cloneParentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : cloneParentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Clone of Source Rule"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100?access_token=abc", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body, timeout: t]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, confirm: true, pollIntervalMs: 1])
+
+        then: "tool succeeds with new appId discovered via polling"
+        result.success == true
+        result.sourceAppId == 100
+        result.clonerAppId == 4242
+        result.newAppId == 250
+        result.pollAttempts >= 1
+
+        and: "click POST was sent with cloneRuleButton form contract + short read timeout"
+        def click = posts.find { it.path == "/installedapp/btn" && it.body?.name == "cloneRuleButton" }
+        click != null
+        click.body["settings[cloneRuleButton]"] == "clicked"
+        click.body["cloneRuleButton.type"] == "button"
+        click.body.id == "4242"
+        click.timeout == 5
+    }
+
+    def "clone_native_app survives click POST timeout and still finds new appId via polling"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> cloneSourceConfigJson(100, 21, "Source") }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? cloneParentConfigJson(21, [[id: 100, label: "Source"]])
+                : cloneParentConfigJson(21, [[id: 100, label: "Source"], [id: 300, label: "Clone of Source"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/777/app/100", data: ""]
+        }
+        // Simulate the click POST blocking past the short read timeout — production
+        // hub would throw SocketTimeoutException; the tool must tolerate any
+        // exception here and continue to polling.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new RuntimeException("simulated SocketTimeoutException after ${t}s")
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, confirm: true, pollIntervalMs: 1])
+
+        then:
+        result.success == true
+        result.newAppId == 300
+        result.clonerAppId == 777
+    }
+
+    def "clone_native_app multi-candidate disambiguation prefers 'Clone of <label>' match"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> cloneSourceConfigJson(100, 21, "Foo Rule") }
+        int pc = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            pc++
+            pc <= 1
+                ? cloneParentConfigJson(21, [[id: 100, label: "Foo Rule"]])
+                : cloneParentConfigJson(21, [
+                    [id: 100, label: "Foo Rule"],
+                    [id: 401, label: "Some unrelated rule"],
+                    [id: 402, label: "Clone of Foo Rule"]
+                  ])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, confirm: true, pollIntervalMs: 1])
+
+        then:
+        result.success == true
+        result.newAppId == 402
+    }
+
+    def "clone_native_app rename: writes origLabel + clicks updateRule on the new clone"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> cloneSourceConfigJson(100, 21, "Src") }
+        int pc = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            pc++
+            pc <= 1
+                ? cloneParentConfigJson(21, [[id: 100, label: "Src"]])
+                : cloneParentConfigJson(21, [[id: 100, label: "Src"], [id: 500, label: "Clone of Src"]])
+        }
+        // Stub the rename helpers so the test stays focused on the clone tool's
+        // dispatch contract rather than the full _rmUpdateAppSettings chain
+        // (which has its own dedicated tests above).
+        def rmUpdates = []
+        script.metaClass._rmCollectInputSchema = { Map cp -> [origLabel: [name: "origLabel", type: "text"]] }
+        script.metaClass._rmUpdateAppSettings = { Integer appId, Map sMap, Map schema ->
+            rmUpdates << [appId: appId, settings: sMap]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, newName: "My Renamed Clone", confirm: true, pollIntervalMs: 1])
+
+        then: "clone succeeded with the renamed clone id"
+        result.success == true
+        result.newAppId == 500
+        result.note?.contains("renamed to 'My Renamed Clone'")
+
+        and: "rename routed origLabel through _rmUpdateAppSettings on the new clone"
+        rmUpdates.size() == 1
+        rmUpdates[0].appId == 500
+        rmUpdates[0].settings == [origLabel: "My Renamed Clone"]
+
+        and: "updateRule click also fired on new clone (so the rename is committed)"
+        def updateClick = posts.find { it.path == "/installedapp/btn" && it.body?.name == "updateRule" && it.body?.id == "500" }
+        updateClick != null
+    }
+
+    def "clone_native_app returns pending=true when source has no parentAppId (cannot poll)"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, label: "Orphan"],   // no parentAppId
+                configPage: [name: "mainPage", title: "Rule", install: true, error: null, sections: []],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, confirm: true])
+
+        then: "no parent to poll = pending result + no new appId discovered"
+        result.success == false
+        result.pending == true
+        result.newAppId == null
+        result.pollAttempts == 0
+        result.clonerAppId == 4242
+    }
+
+    def "clone_native_app rename failure soft-warns and returns success with renameError"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> cloneSourceConfigJson(100, 21, "Src") }
+        int pc = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            pc++
+            pc <= 1
+                ? cloneParentConfigJson(21, [[id: 100, label: "Src"]])
+                : cloneParentConfigJson(21, [[id: 100, label: "Src"], [id: 600, label: "Clone of Src"]])
+        }
+        // Force the post-clone configPage fetch (used by _rmCollectInputSchema)
+        // to throw so the rename branch hits its catch block.
+        hubGet.register('/installedapp/configure/json/600') { params ->
+            throw new RuntimeException("simulated config fetch failure for new clone")
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, newName: "Foo", confirm: true, pollIntervalMs: 1])
+
+        then: "clone itself succeeded, rename failure is surfaced but non-fatal"
+        result.success == true
+        result.newAppId == 600
+        result.renameError != null
+        result.renameError.toString().length() > 0
+    }
+
     // ---------- post-write verification heuristic itself ----------
     // The silent-rejection / verification-fetch-failed paths are load-bearing
     // for the entire write-bookkeeping subsystem. Without these tests, a

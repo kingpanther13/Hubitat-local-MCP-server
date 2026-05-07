@@ -2349,16 +2349,17 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
             name: "clone_native_app",
             description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner. Lower-overhead alternative to creating from scratch + walking the wizard for every field — clone an existing rule that has the shape you want, then surgically edit a few fields via update_native_app.
 
-The clone preserves the full rule shape including state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays — things the wizard-driving path can't easily reconstruct from a spec. Pair with a small library of template rules to cover most user intents.
+The clone preserves the full rule shape including state.actNdx, conditions, expressions, and IF/THEN/ELSE positional arrays — things the wizard-driving path can't easily reconstruct from a spec. Pair with a small library of template rules to cover most user intents.
 
-Endpoint: GET /installedapp/sysAppApi/appCloner/app/<sourceAppId> (no body), then walk appCloner's wizard via update_native_app calls. Returns newAppId and the cloner's appId in case the caller wants to inspect/cancel it.
+Endpoint: GET /installedapp/sysAppApi/appCloner/app/<sourceAppId> (302), then POST /installedapp/btn (cloneRuleButton). The click is fired with a short read timeout because the hub blocks the response until the clone is fully committed server-side (which can take minutes for large rules); we then poll the source's parent.childApps to discover the new appId. Returns newAppId on success, or pending=true with a note to re-check via list_installed_apps if the poll budget runs out.
 
 Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone."],
-                    newName: [type: "string", description: "Label for the new cloned app. If omitted, the cloner picks a default like 'Source-Label (clone)'."],
+                    newName: [type: "string", description: "Label for the new cloned app. If omitted, the cloner picks a default like 'Clone of <source-label>'."],
+                    timeoutSec: [type: "integer", description: "Total polling budget in seconds for the new child app to appear after the clone fires. Default 60. Increase for very large rules."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["sourceAppId", "confirm"]
@@ -9971,7 +9972,7 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
  * Pass pageName for sub-page wizard buttons (hasAll on selectTriggers,
  * actionDone on selectActions, etc.) so the form-context fields fire.
  */
-private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null, String pageName = null) {
+private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null, String pageName = null, Integer timeoutSec = null) {
     def body = [
         id: appId.toString(),
         name: buttonName,
@@ -10002,7 +10003,13 @@ private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttr
             // whole call here.
         }
     }
-    def resp = hubInternalPostForm("/installedapp/btn", body)
+    // timeoutSec lets callers (currently only clone_native_app) shorten the
+    // socket-read timeout when the hub blocks the response until a slow
+    // server-side job completes. Default null = use hubInternalPostForm's
+    // built-in 420s default to preserve every existing caller's behavior.
+    def resp = (timeoutSec != null)
+        ? hubInternalPostForm("/installedapp/btn", body, timeoutSec)
+        : hubInternalPostForm("/installedapp/btn", body)
     if (resp?.status != null && resp.status >= 400) {
         throw new IllegalArgumentException("Button click '${buttonName}' on app ${appId} failed: status=${resp.status}")
     }
@@ -16510,14 +16517,16 @@ def toolCheckRuleHealth(args) {
  *        settings[cloneRuleButton]=clicked
  *        cloneRuleButton.type=button
  *      Hub clones the source as a new sibling under the same parent,
- *      naming it "Clone of <sourceLabel>". The POST blocks until the
- *      clone is fully committed (can take >30s for large rules).
- *   3. Optional rename: update_native_app(newAppId, settings={origLabel:…})
+ *      naming it "Clone of <sourceLabel>". The POST does not return until
+ *      the clone is fully committed server-side, which can take minutes
+ *      for rules with many settings — so we issue it with a short read
+ *      timeout and treat any timeout as "in flight, keep polling".
+ *   3. Optional rename via origLabel write + updateRule on the new clone.
  *
  * The button name `cloneRuleButton` is NOT discoverable via
  * /installedapp/configure/json/<clonerId>/main — that endpoint returns
  * a stripped page object missing the dynamic Export/Clone buttons. The
- * names are hardcoded since they're stable for this system app.
+ * name is hardcoded since it's stable for this system app.
  */
 def toolCloneNativeApp(args) {
     requireBuiltinApp()
@@ -16525,8 +16534,12 @@ def toolCloneNativeApp(args) {
     if (args?.sourceAppId == null) throw new IllegalArgumentException("sourceAppId is required")
     def sourceAppId = normalizeRuleId(args.sourceAppId)
     def newName = args?.newName?.toString()?.trim()
+    int overallTimeoutSec = (args?.timeoutSec ?: 60) as Integer
+    int pollIntervalMs = (args?.pollIntervalMs ?: 500) as Integer
+    int clickTimeoutSec = 5
+    long deadline = now() + (overallTimeoutSec * 1000L)
 
-    // Snapshot pre-clone children so we can identify the new app afterward.
+    // Snapshot pre-clone children so we can identify the new app after the clone fires.
     def sourceCfg
     try { sourceCfg = _rmFetchConfigJson(sourceAppId) } catch (Exception ignored) { sourceCfg = null }
     if (!sourceCfg?.app) {
@@ -16535,8 +16548,12 @@ def toolCloneNativeApp(args) {
     def parentAppId = sourceCfg.app.parentAppId as Integer
     def preCloneChildIds = [] as Set
     if (parentAppId) {
-        def parentCfg = _rmFetchConfigJson(parentAppId)
-        preCloneChildIds = ((parentCfg?.childApps ?: []) as List).collect { (it.id as Integer) } as Set
+        try {
+            def parentCfg = _rmFetchConfigJson(parentAppId)
+            preCloneChildIds = ((parentCfg?.childApps ?: []) as List).collect { (it.id as Integer) } as Set
+        } catch (Exception preExc) {
+            mcpLog("debug", "rm-native", "clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preExc.message}")
+        }
     }
 
     // Step 1: hit appCloner's entry point. Hub responds with a 302 whose
@@ -16566,49 +16583,82 @@ def toolCloneNativeApp(args) {
         throw new IllegalStateException("Unexpected appCloner Location: ${clonerLocation}")
     }
 
-    // Step 2: click cloneRuleButton. Hardcoded button name — see header
-    // comment for why introspection doesn't work for this system app.
-    // _rmClickAppButton POSTs to /installedapp/btn with the right shape;
-    // the call blocks until the clone is committed server-side.
-    _rmClickAppButton(clonerAppId, "cloneRuleButton")
-
-    // Step 3: discover the new app id. The clone appears as a new child of
-    // the source's parent. Diff against the pre-clone snapshot to find it.
-    def newAppId = null
-    if (parentAppId) {
-        def parentCfg = _rmFetchConfigJson(parentAppId)
-        def afterIds = ((parentCfg?.childApps ?: []) as List).collect { (it.id as Integer) }
-        def added = afterIds.findAll { !preCloneChildIds.contains(it) }
-        if (added.size() == 1) {
-            newAppId = added[0]
-        } else if (added.size() > 1) {
-            // Multiple new apps somehow; pick the one whose label looks like a clone of the source.
-            def srcLabel = sourceCfg?.app?.label?.toString() ?: ""
-            def candidates = (parentCfg.childApps as List).findAll { added.contains(it.id as Integer) }
-            def match = candidates.find { (it.label?.toString() ?: "").contains(srcLabel) || (it.label?.toString() ?: "").startsWith("Clone of") }
-            newAppId = (match?.id ?: candidates*.id.max()) as Integer
-        }
+    // Step 2: fire the cloneRuleButton click with a short read timeout.
+    // The hub processes the clone server-side regardless of whether we
+    // wait for the response — so we don't, and instead poll for the new
+    // child to appear. This unblocks the MCP loop for clones that take
+    // multiple minutes to commit.
+    def clickError = null
+    try {
+        _rmClickAppButton(clonerAppId, "cloneRuleButton", null, null, clickTimeoutSec)
+    } catch (Exception e) {
+        clickError = e.message
+        mcpLog("debug", "rm-native", "clone_native_app: click POST returned/timed out after ${clickTimeoutSec}s — polling parent ${parentAppId} for new child (${clickError})")
     }
 
-    // Step 4: optional rename via update_native_app on the new clone.
+    // Step 3: poll parent.childApps for the new clone. Returns as soon as
+    // a previously-unseen child appears, or when the overall budget runs out.
+    def newAppId = null
+    int pollAttempts = 0
+    while (parentAppId != null && now() < deadline && newAppId == null) {
+        pollAttempts++
+        try {
+            def parentCfg = _rmFetchConfigJson(parentAppId)
+            def afterIds = ((parentCfg?.childApps ?: []) as List).collect { (it.id as Integer) }
+            def added = afterIds.findAll { !preCloneChildIds.contains(it) }
+            if (added.size() == 1) {
+                newAppId = added[0]
+            } else if (added.size() > 1) {
+                // Multiple new children appeared. Prefer the one whose label
+                // matches the cloner's "Clone of <source-label>" pattern, then
+                // any label containing the source label, else the highest id.
+                def srcLabel = sourceCfg?.app?.label?.toString() ?: ""
+                def candidates = (parentCfg.childApps as List).findAll { added.contains(it.id as Integer) }
+                def match = candidates.find { (it.label?.toString() ?: "").startsWith("Clone of") } ?:
+                            candidates.find { srcLabel && (it.label?.toString() ?: "").contains(srcLabel) }
+                newAppId = (match?.id ?: candidates*.id.max()) as Integer
+            }
+        } catch (Exception pollExc) {
+            mcpLog("debug", "rm-native", "clone_native_app: poll #${pollAttempts} parent ${parentAppId} fetch failed: ${pollExc.message}")
+        }
+        if (newAppId == null && now() < deadline) pauseExecution(pollIntervalMs)
+    }
+
+    // Step 4: optional rename via origLabel write + updateRule on the new clone.
+    def renameError = null
     if (newAppId && newName) {
         try {
             def newSchema = _rmCollectInputSchema(_rmFetchConfigJson(newAppId)?.configPage)
             _rmUpdateAppSettings(newAppId, [origLabel: newName], newSchema)
             _rmClickAppButton(newAppId, "updateRule")
         } catch (Exception e) {
+            renameError = e.message
             mcpLog("warn", "rm-native", "clone_native_app: rename failed for new app ${newAppId}: ${e.message}")
         }
     }
 
+    if (newAppId != null) {
+        def result = [
+            success: true,
+            sourceAppId: sourceAppId,
+            clonerAppId: clonerAppId,
+            newAppId: newAppId,
+            pollAttempts: pollAttempts,
+            note: "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
+        ]
+        if (renameError) result.renameError = renameError
+        return result
+    }
+
     return [
-        success: newAppId != null,
+        success: false,
+        pending: true,
         sourceAppId: sourceAppId,
         clonerAppId: clonerAppId,
-        newAppId: newAppId,
-        note: newAppId
-            ? "Cloned source ${sourceAppId} → new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
-            : "Clone button clicked but no new child app appeared under parent ${parentAppId}. The clone may have failed silently — check Hubitat logs."
+        newAppId: null,
+        pollAttempts: pollAttempts,
+        clickError: clickError,
+        note: "Clone fired but no new child app appeared under parent ${parentAppId} within ${overallTimeoutSec}s. The hub may still be processing the clone — re-check via list_installed_apps shortly. If it never appears, check Hubitat logs."
     ]
 }
 
