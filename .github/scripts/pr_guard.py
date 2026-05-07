@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""PR guard: block contributor PRs that modify bookkeeping files.
+"""PR guard: block PRs that modify bookkeeping files.
 
 Release bookkeeping (version strings, packageManifest.json releaseNotes and
 dateReleased, README Version History, CHANGELOG.md) is maintained exclusively
-by the release bot. Contributors don't write CHANGELOG entries either — the
-bot generates CHANGELOG entries from merged PR titles (and optional
+by the release bot. PRs don't hand-write CHANGELOG entries either — the bot
+generates CHANGELOG entries from merged PR titles (and optional
 '## Release notes' sections in PR bodies) at release time.
 
 Reads env:
@@ -81,7 +81,7 @@ def check_bookkeeping(base_ref: str) -> list[str]:
         if before != after:
             errors.append(
                 f"{path}: {label} changed ({before} -> {after}). "
-                "Contributors cannot bump versions — the release bot handles this."
+                "Version bumps in PRs are blocked — the release bot handles this."
             )
 
     before_manifest_text = file_at_ref(base_ref, "packageManifest.json")
@@ -97,7 +97,7 @@ def check_bookkeeping(base_ref: str) -> list[str]:
         if before_manifest.get(field) != after_manifest.get(field):
             errors.append(
                 f"packageManifest.json: '{field}' changed. "
-                "Contributors cannot modify this field — the release bot handles this."
+                "This field cannot be modified in PRs — the release bot handles this."
             )
 
     before_readme = file_at_ref(base_ref, "README.md")
@@ -105,14 +105,14 @@ def check_bookkeeping(base_ref: str) -> list[str]:
     if extract_version_history(before_readme) != extract_version_history(after_readme):
         errors.append(
             "README.md: '## Version History' section changed. "
-            "Contributors cannot modify this section — the release bot handles this."
+            "This section cannot be modified in PRs — the release bot handles this."
         )
 
     before_changelog = file_at_ref(base_ref, "CHANGELOG.md")
     after_changelog = (ROOT / "CHANGELOG.md").read_text()
     if before_changelog and before_changelog != after_changelog:
         errors.append(
-            "CHANGELOG.md: changed. Contributors cannot modify CHANGELOG — "
+            "CHANGELOG.md: changed. CHANGELOG.md cannot be modified in PRs — "
             "the release bot generates entries from merged PR titles at release time. "
             "To customize your entry, add a '## Release notes' section to your PR body."
         )

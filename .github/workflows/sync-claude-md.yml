@@ -1,0 +1,39 @@
+name: Sync CLAUDE.md
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    # Auto-fix only works on same-repo PRs; fork PRs lack write access
+    # via the default GITHUB_TOKEN. Fork PRs fall through to pr-guard,
+    # which still flags the drift and the contributor runs cp manually.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Sync CLAUDE.md from AGENTS.md if AGENTS.md changed
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}"
+          # Only sync when AGENTS.md is among the PR's changed files. Avoids
+          # silently overwriting CLAUDE.md-only edits (which pr-guard catches
+          # so the contributor can port them back to AGENTS.md).
+          if git diff --name-only "origin/${{ github.base_ref }}"...HEAD | grep -qx 'AGENTS\.md'; then
+            if ! cmp -s AGENTS.md CLAUDE.md; then
+              cp AGENTS.md CLAUDE.md
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add CLAUDE.md
+              git commit -m "chore: sync CLAUDE.md from AGENTS.md"
+              git push
+            fi
+          fi

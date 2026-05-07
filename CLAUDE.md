@@ -36,7 +36,7 @@ Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare 
 
 Use `.github/pull_request_template.md` — keep every section.
 
-- **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` (`build:` reserved for Dependabot).
+- **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` / `build:`. Dependabot uses `build(deps):` for its automated bumps.
 - **`## Release Notes`** drives `packageManifest.json` `releaseNotes` (what HPM users see in the update prompt) via `.github/scripts/release_bump.py`. Strongly recommended; write user-facing bullets. If you skip the section the PR title is the fallback. The bot warns on a present-but-unbulleted section.
 - **Open as draft** (`gh pr create --draft`); the maintainer flips to ready-for-review.
 - **Verify the PR body has both required headings** before claiming the PR is ready (`<N>` = PR number):
@@ -47,11 +47,9 @@ Use `.github/pull_request_template.md` — keep every section.
 
   Lenient match (case-insensitive, any heading level, optional trailing colon) — same shape `release_bump.py` parses with. Run on rebase/edit too; pre-#146 PRs may not satisfy the template.
 
-**Git identity**: commit with your GitHub noreply email (`<your-username>@users.noreply.github.com`), never your private email — GitHub push protection will block the push. Set both `--author` and `GIT_COMMITTER_EMAIL` when amending.
-
 ## Boundaries
 
-**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on contributor PRs:
+**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on every PR:
 - Version strings in tracked locations (server header comment, `currentVersion()`, rule header, manifest `version`)
 - `packageManifest.json` `releaseNotes` or `dateReleased`
 - `README.md` `## Version History` section
