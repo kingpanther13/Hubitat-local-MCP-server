@@ -2339,15 +2339,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 ? cloneParentConfigJson(21, [[id: 100, label: "Src"]])
                 : cloneParentConfigJson(21, [[id: 100, label: "Src"], [id: 500, label: "Clone of Src"]])
         }
-        // Stub the rename helpers so the test stays focused on the clone tool's
-        // dispatch contract rather than the full _rmUpdateAppSettings chain
-        // (which has its own dedicated tests above).
-        def rmUpdates = []
-        script.metaClass._rmCollectInputSchema = { Map cp -> [origLabel: [name: "origLabel", type: "text"]] }
-        script.metaClass._rmUpdateAppSettings = { Integer appId, Map sMap, Map schema ->
-            rmUpdates << [appId: appId, settings: sMap]
-            [status: 200, location: null, data: '{"status":"success"}']
+        // The rename branch fetches the new clone's configPage to collect a
+        // schema, then posts origLabel through the real _rmUpdateAppSettings
+        // chain — register the configure/json + statusJson endpoints so the
+        // post-write multiple-flag verification has data to inspect.
+        hubGet.register('/installedapp/configure/json/500') { params ->
+            JsonOutput.toJson([
+                app: [id: 500, label: "Clone of Src", name: "Rule-5.1", trueLabel: "Clone of Src", installed: true],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: [
+                    [title: "", input: [[name: "origLabel", type: "text"]]]
+                ]],
+                settings: [:],
+                childApps: []
+            ])
         }
+        hubGet.register('/installedapp/statusJson/500') { params -> statusJson(500) }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
@@ -2365,10 +2371,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.newAppId == 500
         result.note?.contains("renamed to 'My Renamed Clone'")
 
-        and: "rename routed origLabel through _rmUpdateAppSettings on the new clone"
-        rmUpdates.size() == 1
-        rmUpdates[0].appId == 500
-        rmUpdates[0].settings == [origLabel: "My Renamed Clone"]
+        and: "origLabel write POSTed to /installedapp/update/json with id=500"
+        def labelWrite = posts.find { it.path == "/installedapp/update/json" && it.body?.id == "500" }
+        labelWrite != null
+        labelWrite.body["settings[origLabel]"] == "My Renamed Clone"
+        labelWrite.body["origLabel.type"] == "text"
 
         and: "updateRule click also fired on new clone (so the rename is committed)"
         def updateClick = posts.find { it.path == "/installedapp/btn" && it.body?.name == "updateRule" && it.body?.id == "500" }
