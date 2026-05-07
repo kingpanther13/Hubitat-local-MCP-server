@@ -6666,8 +6666,20 @@ def toolGetHubLogs(args) {
                 } catch (Exception ignored) {}
             }
         }
+        // Space-separated hub-native formats (e.g. 'yyyy-MM-dd HH:mm:ss.SSS') carry no TZ
+        // designator. Date.parse() interprets them in JVM default TZ, which shifts the epoch
+        // on non-UTC hubs. Use explicit UTC SimpleDateFormat for all non-Z formats so a user
+        // copying a hub log timestamp as a since/until value gets the same UTC interpretation
+        // the entry-side parser uses.
+        def utcTzFallback = TimeZone.getTimeZone("UTC")
         for (fmt in logTimeFmts) {
             try {
+                if (!fmt.contains("Z") && !fmt.contains("'Z'")) {
+                    def sdf = new java.text.SimpleDateFormat(fmt)
+                    sdf.setTimeZone(utcTzFallback)
+                    sdf.setLenient(false)
+                    return sdf.parse(val)
+                }
                 return Date.parse(fmt, val)
             } catch (Exception ignored) {}
         }

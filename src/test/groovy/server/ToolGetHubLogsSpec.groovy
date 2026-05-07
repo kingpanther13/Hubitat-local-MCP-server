@@ -10,7 +10,8 @@ import support.ToolSpecBase
  * appId numeric validation, deviceId/appId mutual exclusion, the
  * pattern/patterns/patternMode/since/until/limit filter pipeline, type-shape
  * validation for all new args, case-insensitivity in both directions,
- * limit truncation, naked-T ISO timestamps parsed as UTC, and a
+ * limit truncation, naked-T ISO timestamps parsed as UTC, space-separated
+ * hub-native timestamps (no T, no Z) parsed as UTC in the fallback loop, and a
  * kitchen-sink combined-filter scenario.
  *
  * Filter pipeline (in order): scope (hub-side) -> level -> source ->
@@ -651,6 +652,31 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T10:30:00'])
 
         then: 'entry at 10:30:01 UTC is included; entry at 10:29:59 UTC is excluded'
+        result.logs.size() == 1
+        result.logs[0].message == 'After cutoff'
+    }
+
+    def "since as space-separated timestamp (hub log copy-paste shape, no TZ marker) is parsed as UTC"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Harness now() = 1234567890000L. Use a concrete recent window anchored on that epoch
+        // so the test is TZ-independent: build sinceDate and entry timestamps both from the
+        // same UTC-formatted epoch, then pass sinceDate back as the since= string.
+        // UTC epoch for 2024-01-15T12:30:45.123Z = 1705319445123L.
+        // An entry 1 second inside that window: 2024-01-15 12:30:46.000 UTC -> included.
+        // An entry 1 second before that window: 2024-01-15 12:30:44.000 UTC -> excluded.
+        // On a non-UTC JVM default TZ (e.g. UTC-5), Date.parse would shift 12:30:45.123 by
+        // 5 hours, placing sinceDate at 1705337445123L (5h later in epoch) -- causing the
+        // inside-window entry to appear falsely *before* sinceDate and be excluded.
+        registerLogs([
+            'App 1\tinfo\tBefore cutoff\t2024-01-15 12:30:44.000\ttype',
+            'App 1\tinfo\tAfter cutoff\t2024-01-15 12:30:46.000\ttype'
+        ])
+
+        when: 'space-separated since (no T, no Z) is parsed as UTC by the fallback loop'
+        def result = script.toolGetHubLogs([since: '2024-01-15 12:30:45.123'])
+
+        then: 'entry at 12:30:46 UTC is included; entry at 12:30:44 UTC is excluded'
         result.logs.size() == 1
         result.logs[0].message == 'After cutoff'
     }
