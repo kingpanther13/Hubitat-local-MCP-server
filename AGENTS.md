@@ -36,7 +36,7 @@ Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare 
 
 Use `.github/pull_request_template.md` — keep every section.
 
-- **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` / `build:`. Dependabot uses `build(deps):` for its automated bumps.
+- **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` (`build:` and `build(deps):` reserved for Dependabot).
 - **`## Release Notes`** drives `packageManifest.json` `releaseNotes` (what HPM users see in the update prompt) via `.github/scripts/release_bump.py`. Strongly recommended; write user-facing bullets. If you skip the section the PR title is the fallback. The bot warns on a present-but-unbulleted section.
 - **Open as draft** (`gh pr create --draft`); the maintainer flips to ready-for-review.
 - **Verify the PR body has both required headings** before claiming the PR is ready (`<N>` = PR number):

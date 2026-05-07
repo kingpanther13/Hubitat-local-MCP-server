@@ -1,7 +1,7 @@
 <!-- Prefix your PR title with the type that matches what you tick below.
-     Valid prefixes: feat: | fix: | chore: | refactor: | docs: | test: | ci: | build:
+     Valid prefixes: feat: | fix: | chore: | refactor: | docs: | test: | ci:
      Example: "feat: add device health polling tool"
-     Note: Dependabot uses build(deps): for its automated bumps. -->
+     Note: build: and build(deps): are reserved for Dependabot — contributors should not use them. -->
 
 ## Summary
 
@@ -18,7 +18,6 @@
 - [ ] `docs` — documentation only
 - [ ] `test` — tests only
 - [ ] `ci` — CI/CD pipeline change
-- [ ] `build` — build system / Gradle config change
 
 ## Changes
 
