@@ -76,7 +76,7 @@ Rule administration: delete, test, export, import, and clone rules.
 | `custom_import_rule` | Import a rule from exported JSON. | None |
 | `custom_clone_rule` | Duplicate an existing rule. | None |
 
-> **Built-in rule redirect:** `custom_get_rule`, `custom_export_rule`, `custom_update_rule`, `custom_delete_rule`, `custom_test_rule`, and `custom_clone_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `manage_installed_apps -> get_app_config(appId=<id>)` (read) or the appropriate `manage_native_rules_and_apps` tool (write/delete/test). This redirect fires only when Built-in App Tools are enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
+> **Built-in rule redirect:** `custom_get_rule`, `custom_export_rule`, `custom_update_rule`, `custom_delete_rule`, `custom_test_rule`, and `custom_clone_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `manage_installed_apps -> get_app_config(appId=<id>)` (read) or, for write and delete verbs, the appropriate `manage_native_rules_and_apps` CRUD tool. The test verb hint includes `run_rm_rule` only for Rule Machine rules; other built-in rule-likes receive `get_app_config` for inspection because `run_rm_rule` is RM-only. This redirect fires only when Built-in App Tools are enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
 
 ### manage_hub_variables (4 tools)
 

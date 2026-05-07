@@ -3355,7 +3355,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
         def stack = []
         stack.addAll(apps)
         while (!stack.isEmpty()) {
-            def node = stack.remove(0)
+            def node = stack.remove(stack.size() - 1)
             if (!(node instanceof Map)) continue
             def d = node.data
             if (d instanceof Map && d.id?.toString() == idStr) {
@@ -3363,7 +3363,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
                 break
             }
             if (node.children instanceof List) {
-                stack.addAll(0, node.children)
+                stack.addAll(node.children)
             }
         }
         if (!foundData) return null
@@ -3403,6 +3403,9 @@ private String findRuleAppRedirect(ruleId, String verb) {
             }
         } else {
             // Catch-all for "write" verb (custom_update_rule) and any future write verbs.
+            if (verb != "write") {
+                mcpLog("debug", "rules", "findRuleAppRedirect: unrecognized verb '${verb}', defaulting to write-verb message")
+            }
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`custom_update_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
