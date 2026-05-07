@@ -448,9 +448,15 @@ def renameVariable(String oldName, String newName) {
     // Re-subscribe to the new name. The old "variable:OLD" event will
     // never fire again since the variable is gone, but Hubitat's
     // unsubscribe semantics mean it's harmless to leave it in place.
-    try { subscribe(location, "variable:${newName}", "handleHubVariableEvent") }
-    catch (Exception e) {
-        mcpLog("warn", "hub-vars", "post-rename subscribe to variable:${newName} failed: ${e.message}")
+    // Catch Throwable because the hubitat_ci validator throws AssertionError
+    // (not Exception) when location is null in unit-test environments;
+    // history rewrite is the important part and shouldn't be aborted by a
+    // subscription registration failure.
+    if (location != null) {
+        try { subscribe(location, "variable:${newName}", "handleHubVariableEvent") }
+        catch (Throwable e) {
+            mcpLog("warn", "hub-vars", "post-rename subscribe to variable:${newName} failed: ${e.message}")
+        }
     }
 }
 
@@ -4090,7 +4096,11 @@ private String _validateHubVarType(String type) {
  * create_connector -- all of which drive that app's wizard via
  * update_native_app's settings/button POST machinery.
  */
-private Integer _findHubVariablesAppId() {
+// Non-private so test specs can override via script.metaClass — internal calls
+// from this script's other methods would bypass the metaClass dispatch on a
+// private method and hit the real implementation, which makes mocking the
+// hub-side discovery painful in unit tests.
+def _findHubVariablesAppId() {
     def cached = atomicState.hubVarsAppId
     if (cached != null) {
         try { return cached.toString().toInteger() } catch (NumberFormatException e) {

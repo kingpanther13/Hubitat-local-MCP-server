@@ -601,6 +601,10 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             if (applied != null) applied << key
         }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
+        // backupItemSource is called as a wizard-priming side effect on this firmware (see
+        // toolDeleteHubVariable / toolCreateConnector comments in hubitat-mcp-server.groovy).
+        // Stub to no-op so it doesn't try to fetch /app/ajax/code in tests.
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
 
         when:
         def result = script.toolCreateVariable([name: 'newVar', type: 'String', value: 'hi', confirm: true])
@@ -636,6 +640,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             if (applied != null) applied << key
         }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
 
         when:
         script.toolCreateVariable([name: 'ghostVar', type: 'String', value: 'x', confirm: true])
@@ -664,6 +669,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             return [status: 200]
         }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
+        // backupItemSource is called between clicks as wizard priming on this firmware.
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
 
         when:
         def result = script.toolDeleteHubVariable([name: 'condemned', confirm: true])
@@ -692,6 +699,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         and: 'wizard primitives recorded but no real effect'
         script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
 
         when:
         script.toolDeleteHubVariable([name: 'stuck', confirm: true])
@@ -702,7 +710,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('stuck')
     }
 
-    def "create_connector wizard sequence: one button click on the variable name with createCon"() {
+    def "create_connector wizard sequence: createCon click + capab commit via toolUpdateNativeApp"() {
         given:
         enableHubAdminWrite()
 
@@ -722,13 +730,28 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             return [status: 200]
         }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
+        // backupItemSource priming + toolUpdateNativeApp chooser-commit are both
+        // wizard side effects of the firmware quirk for Number/Decimal vars.
+        // Stub to no-op so the test exercises only the orchestration logic.
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+        def chooserWrites = []
+        script.metaClass.toolUpdateNativeApp = { Map argsMap ->
+            chooserWrites << argsMap
+            return [success: true, settingsApplied: argsMap?.settings?.keySet()?.toList()]
+        }
 
         when:
         def result = script.toolCreateConnector([name: 'foo', confirm: true])
 
-        then: 'exactly one click — variable-name button with createCon stateAttribute on the hubVar page'
+        then: 'one createCon click on the row'
         buttonClicks.size() == 1
         buttonClicks[0] == [appId: 1424, btn: 'foo', stateAttr: 'createCon', pageName: 'hubVar']
+
+        and: 'chooser commit attempted via toolUpdateNativeApp (no-op for Boolean vars but called unconditionally)'
+        chooserWrites.size() == 1
+        chooserWrites[0].appId == 1424
+        chooserWrites[0].pageName == 'hubVar'
+        chooserWrites[0].settings == [capab: 'Variable']  // default when no connectorType arg
 
         and: 'response surfaces the new connector deviceId'
         result.success == true
