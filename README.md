@@ -709,7 +709,7 @@ If your hub has Hub Security enabled (login required for the web UI), the MCP se
 <details>
 <summary><b>Known Limits</b></summary>
 
-- **`list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `list_devices(detailed=true, limit=25, offset=0)`. Use `labelFilter` or `capabilityFilter` to narrow server-side before pagination. Use `fields=[...]` to skip expensive attribute reads.
+- **`list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `list_devices(detailed=true, limit=25, offset=0)`. Use `labelFilter` or `capabilityFilter` to narrow server-side before pagination. Use `fields=[...]` to skip expensive hub reads -- `currentStates` and `attributes` trigger per-device hub reads and are the ones worth projecting out; `capabilities` and `commands` are in-memory and cheap.
 - **Duration triggers** — Maximum of 2 hours (7200 seconds)
 - **Captured states** — Default limit of 20 (configurable 1-100 in settings)
 - **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.

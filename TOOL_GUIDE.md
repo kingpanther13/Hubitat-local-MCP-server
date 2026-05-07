@@ -295,7 +295,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
   - `labelFilter` — case-insensitive substring match on device label (e.g. `'kitchen'` returns all devices whose label contains "kitchen")
   - `capabilityFilter` — case-insensitive exact match on capability name (e.g. `'Switch'`, `'TemperatureMeasurement'`)
 - **Format shortcuts**: `format='ids'` returns a flat integer array `deviceIds: [1,2,3]` (cheapest shape for "which devices exist" queries)
-- **Field projection**: `fields=['id','label']` skips `currentStates` reads; `fields=['id','label','capabilities']` skips attributes and commands. Only named fields are populated -- reduces both payload size and hub CPU. Unknown field names are silently ignored.
+- **Field projection**: `fields=['id','label']` skips `currentStates` and `attributes` (the expensive ones -- they trigger per-device hub reads); `capabilities` and `commands` are in-memory and cheap. Only named fields are populated -- reduces both payload size and hub CPU. Unknown field names throw. `id` is always included regardless of projection.
 - With `detailed=true` (or `format='detailed'`), paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel
 

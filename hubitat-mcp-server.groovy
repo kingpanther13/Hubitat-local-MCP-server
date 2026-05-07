@@ -941,10 +941,10 @@ Server-side filtering (all applied before pagination): filter for enabled/disabl
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale)."],
-                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label. Only devices whose label contains this string are returned. Applied after filter, before pagination. Empty or omitted = no label filtering."],
-                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Only devices with this capability are returned. Applied after labelFilter, before pagination. Capability names are camelCase, no spaces -- e.g., 'ColorControl', not 'Color Control'. Example: 'Switch', 'TemperatureMeasurement'. Empty or omitted = no capability filtering."],
-                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary' and produces detailed-mode output."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Unknown names are silently ignored. Omitted or empty = all default fields for the active format. Ignored when format='ids'."]
+                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Only devices whose label (or name) contains this string are returned. Applied after filter, before pagination. Empty or omitted = no label filtering."],
+                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Only devices with this capability are returned. Applied after labelFilter, before pagination. Capability names are camelCase, no spaces -- e.g., 'ColorControl', not 'Color Control'. Example: 'Switch', 'TemperatureMeasurement'. Empty or omitted = no capability filtering. When count=0, response includes capabilityFilterMatchedKnownCapability (bool) to distinguish 'no devices have this capability' from a typo."],
+                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg and detailed=true -- format='ids' always wins). detailed=true overrides format='summary' and produces detailed-mode output."],
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap."]
                 ]
             ]
         ],
@@ -2631,7 +2631,25 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices", total: 0]
     }
 
+    // Capture the full set BEFORE any filter/labelFilter/capabilityFilter narrows it. Used
+    // by the capabilityFilterMatchedKnownCapability typo-vs-absence diagnostic so a
+    // mistyped capability can be distinguished from a real-but-excluded one even when
+    // labelFilter has already removed every device that would have matched.
+    def unfilteredDevices = allDevices
+
     def unfilteredTotal = allDevices.size()
+
+    // Type validation for caller-supplied filter args. Groovy coercion would otherwise surface
+    // as MissingMethodException deep in the filter logic rather than a clear -32602 error.
+    if (labelFilter != null && !(labelFilter instanceof String)) {
+        throw new IllegalArgumentException("labelFilter must be a string")
+    }
+    if (capabilityFilter != null && !(capabilityFilter instanceof String)) {
+        throw new IllegalArgumentException("capabilityFilter must be a string")
+    }
+    if (fields != null && !(fields instanceof List)) {
+        throw new IllegalArgumentException("fields must be an array")
+    }
 
     // Parse and apply server-side filter BEFORE pagination so limit/offset respect the filtered set.
     // Supported filters: null/"all" (default), "enabled", "disabled", "stale:<hours>" (e.g. "stale:24").
@@ -2683,7 +2701,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
     }
 
-    // Apply capabilityFilter (case-insensitive exact match on capability name)
+    // Apply capabilityFilter (case-insensitive exact match on capability name).
     if (capabilityFilter) {
         def cf = capabilityFilter.toLowerCase()
         allDevices = allDevices.findAll { d ->
@@ -2739,6 +2757,10 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         if (anyFilterActive) result.unfilteredTotal = unfilteredTotal
         if (labelFilter) result.labelFilter = labelFilter
         if (capabilityFilter) result.capabilityFilter = capabilityFilter
+        if (capabilityFilter && totalCount == 0) {
+            def allCaps = unfilteredDevices.collectMany { d -> d.capabilities?.collect { cap -> cap.name?.toLowerCase() } ?: [] } as Set
+            result.capabilityFilterMatchedKnownCapability = allCaps.contains(capabilityFilter.toLowerCase())
+        }
         if (limit && limit > 0) {
             result.offset = startIndex
             result.limit = limit
@@ -2754,6 +2776,19 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // Build the requested field set. null/empty means "all fields for this format mode".
     def fieldSet = (fields && !fields.isEmpty()) ? (fields as Set) : null
 
+    // Validate field names against the documented whitelist. Unknown names would silently
+    // produce empty device objects (a typo gives {id: '1'} instead of {id: '1', label: 'X'})
+    // -- catching it here gives the caller a recoverable -32602 instead of bad data.
+    if (fieldSet) {
+        def validFieldNames = ["id", "name", "label", "room", "disabled", "deviceNetworkId",
+            "lastActivity", "parentDeviceId", "mcpManaged", "currentStates",
+            "capabilities", "attributes", "commands"] as Set
+        def unknownFields = fieldSet - validFieldNames
+        if (unknownFields) {
+            throw new IllegalArgumentException("Unknown fields: ${unknownFields.sort()}. Valid: ${validFieldNames.sort()}")
+        }
+    }
+
     // Resolve whether to use detailed mode: explicit format="detailed", detailed=true, or any
     // detail-only field requested via the fields projection (capabilities, attributes, commands).
     // Auto-promote so fields=['id','capabilities'] works without requiring detailed=true.
@@ -2764,13 +2799,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
 
-        // Build all candidate fields, then project down to requested fields.
-        // Fields that require hub calls (currentStates, capabilities, attributes, commands)
-        // are skipped entirely when not requested -- saves hub CPU on large-fleet requests.
+        // Per-field gating avoids calling expensive hub APIs (currentValue, supportedAttributes,
+        // supportedCommands) for omitted fields. id is always emitted -- without it callers
+        // get a list of objects with no correlation key; use format='ids' for id-only results.
         def info = [:]
 
-        // Always include id (needed for correlation); callers can drop it via fields if unwanted
-        if (fieldSet == null || fieldSet.contains("id")) info.id = deviceIdStr
+        info.id = deviceIdStr
         if (fieldSet == null || fieldSet.contains("name")) info.name = device.name
         if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device.name
         if (fieldSet == null || fieldSet.contains("room")) info.room = device.roomName
@@ -2820,6 +2854,10 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (anyFilterActive) result.unfilteredTotal = unfilteredTotal
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter
+    if (capabilityFilter && totalCount == 0) {
+        def allCaps = unfilteredDevices.collectMany { d -> d.capabilities?.collect { cap -> cap.name?.toLowerCase() } ?: [] } as Set
+        result.capabilityFilterMatchedKnownCapability = allCaps.contains(capabilityFilter.toLowerCase())
+    }
 
     // Include pagination info if pagination was used
     if (limit && limit > 0) {
@@ -17312,7 +17350,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Make tool calls sequentially, not in parallel
 - Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
 - format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
-- fields=[...] skips expensive hub reads: fields=['id','label'] skips currentStates reads; fields=['id','label','capabilities'] enables capability inspection without attributes or commands
+- fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
 
 **get_device_events:**
 - Default limit 10, recommended max 50
