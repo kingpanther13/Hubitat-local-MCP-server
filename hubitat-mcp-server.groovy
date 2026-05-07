@@ -3263,7 +3263,10 @@ def toolPollUntilAttribute(args) {
         polledCount++
         def elapsedMs = (now() - startMs) as Integer
 
-        if (matchSet.contains(finalValue?.toString())) {
+        // String match first; numeric fallback handles BigDecimal/Double "50.0" vs "50" quirk.
+        def matched = matchSet.contains(finalValue?.toString()) ||
+            (finalValue instanceof Number && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) })
+        if (matched) {
             return [
                 success     : true,
                 finalValue  : finalValue,

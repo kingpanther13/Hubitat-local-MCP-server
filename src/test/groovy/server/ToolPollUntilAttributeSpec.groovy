@@ -23,6 +23,9 @@ import support.ToolSpecBase
  *  - Attribute name typo (not in supportedAttributes) -> throws with helpful message listing available attributes
  *  - Unknown arg (timeoutSeconds) -> throws with message naming the bad key and suggesting timeoutMs
  *  - Multiple unknown args -> all listed in the error plus gotcha hint
+ *  - BigDecimal integer-equivalent (50.0) matches expectedValue '50' (numeric fallback)
+ *  - BigDecimal fractional (50.5) does NOT match expectedValue '50' (correct behavior)
+ *  - Numeric finalValue against non-numeric expectedValue -> no match, no exception (isNumber() guard)
  *
  * pauseExecution() is declared on AppExecutor / BaseExecutor, so it goes through
  * the @Delegate chain -- it's a no-op in tests (the Mock doesn't stub it, which
@@ -602,5 +605,92 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ex.message.contains('timeoutSeconds')
         ex.message.contains('pollIntervalSeconds')
         ex.message.contains('timeoutMs')        // gotcha hint still present
+    }
+
+    // ---------------------------------------------------------------------------
+    // 17. Numeric attribute -- BigDecimal integer-equivalent matches string "50"
+    //     Real hub returns level/temperature as BigDecimal; toString() yields "50.0"
+    //     for an integer-equivalent value, so strict string equality would fail.
+    // ---------------------------------------------------------------------------
+
+    def "matches when BigDecimal 50.0 attribute value is compared to expectedValue '50'"() {
+        given:
+        def device = Spy(TestDevice)
+        device.id = 170
+        device.label = 'Numeric Level'
+        device.supportedAttributes = [[name: 'level']]
+        device.currentValue(_) >> { String attr -> new BigDecimal('50.0') }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '170',
+            attribute     : 'level',
+            expectedValue : '50',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        result.success    == true
+        result.timedOut   == false
+        result.polledCount >= 1
+    }
+
+    // ---------------------------------------------------------------------------
+    // 18. Numeric attribute -- fractional value does NOT match integer expectedValue
+    //     BigDecimal 50.5 must not match expectedValue '50'.
+    // ---------------------------------------------------------------------------
+
+    def "does not match when BigDecimal 50.5 attribute value is compared to expectedValue '50'"() {
+        given:
+        def device = Spy(TestDevice)
+        device.id = 171
+        device.label = 'Fractional Level'
+        device.supportedAttributes = [[name: 'level']]
+        device.currentValue(_) >> { String attr -> new BigDecimal('50.5') }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '171',
+            attribute     : 'level',
+            expectedValue : '50',
+            timeoutMs     : 100,
+            pollIntervalMs: 50
+        ])
+
+        then:
+        result.success  == false
+        result.timedOut == true
+    }
+
+    // ---------------------------------------------------------------------------
+    // 19. Numeric finalValue against non-numeric expectedValue -- no exception
+    //     The isNumber() guard must prevent a cast attempt on non-numeric strings.
+    // ---------------------------------------------------------------------------
+
+    def "does not throw and does not match when numeric attribute is compared to non-numeric expectedValue"() {
+        given:
+        def device = Spy(TestDevice)
+        device.id = 172
+        device.label = 'Numeric vs Non-Numeric'
+        device.supportedAttributes = [[name: 'level']]
+        device.currentValue(_) >> { String attr -> new BigDecimal('50.0') }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '172',
+            attribute     : 'level',
+            expectedValue : 'abc',
+            timeoutMs     : 100,
+            pollIntervalMs: 50
+        ])
+
+        then:
+        notThrown(Exception)
+        result.success  == false
+        result.timedOut == true
     }
 }
