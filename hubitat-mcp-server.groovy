@@ -352,7 +352,13 @@ private void _refreshHubVarInUseRegistrations() {
     try {
         hubVarNames = (getAllGlobalVars()?.keySet() ?: []) as Set<String>
     } catch (Exception e) {
-        logDebug("_refreshHubVarInUseRegistrations: getAllGlobalVars threw ${e.class.simpleName}: ${e.message}")
+        // Surface as ERROR — when this fails the in-use safety net is stale,
+        // and delete_variable's pre-deletion warning won't fire. Users need
+        // to know the safety registrations weren't refreshed.
+        mcpLog("error", "hub-vars",
+            "_refreshHubVarInUseRegistrations: getAllGlobalVars failed (${e.class.simpleName}: ${e.message}) -- " +
+            "in-use safety registrations are STALE. delete_variable's hub-side warning may not fire until " +
+            "this resolves and updated() runs again.")
         return
     }
     if (!hubVarNames) {
@@ -371,7 +377,12 @@ private void _refreshHubVarInUseRegistrations() {
             if (ruleData) {
                 def serialized = groovy.json.JsonOutput.toJson(ruleData)
                 hubVarNames.each { varName ->
-                    if (serialized?.contains(varName)) {
+                    // Check for the JSON-quoted form so `temp` doesn't match
+                    // `temperature` / `attempt`. Names live as JSON values
+                    // (and sometimes keys) in the serialized blob, so the
+                    // `"<name>"` form is a reliable word-boundary proxy.
+                    def needle = "\"${varName}\""
+                    if (serialized?.contains(needle)) {
                         currentVars << varName
                     }
                 }
@@ -387,12 +398,15 @@ private void _refreshHubVarInUseRegistrations() {
     def toRemove = previous - currentVars
 
     toAdd.each { name ->
+        // ERROR level: failure here means Hubitat won't warn the user before
+        // they delete a variable a rule depends on. Warn-level would be
+        // dropped at the default mcpLogLevel="error" config.
         try { addInUseGlobalVar(name) }
-        catch (Exception e) { mcpLog("warn", "hub-vars", "addInUseGlobalVar('${name}') failed: ${e.message}") }
+        catch (Exception e) { mcpLog("error", "hub-vars", "addInUseGlobalVar('${name}') failed: ${e.message} -- in-use safety warning will not surface for this var") }
     }
     toRemove.each { name ->
         try { removeInUseGlobalVar(name) }
-        catch (Exception e) { mcpLog("warn", "hub-vars", "removeInUseGlobalVar('${name}') failed: ${e.message}") }
+        catch (Exception e) { mcpLog("error", "hub-vars", "removeInUseGlobalVar('${name}') failed: ${e.message} -- stale in-use registration will linger") }
     }
 
     atomicState.inUseHubVars = (currentVars as List).sort()
@@ -425,7 +439,10 @@ private void _subscribeToAllHubVariables() {
             // sometimes rejects names with characters that getAllGlobalVars
             // returned but subscribe() refuses; log and continue. Catch
             // Throwable because hubitat_ci's validator throws AssertionError.
-            mcpLog("warn", "hub-vars", "subscribe to variable:${varName} failed: ${e.message}")
+            // ERROR level: a persistent failure here means get_variable_history
+            // silently misses changes for this variable; warn-level would be
+            // dropped at default mcpLogLevel="error".
+            mcpLog("error", "hub-vars", "subscribe to variable:${varName} failed: ${e.message} -- get_variable_history will not capture changes for this var")
         }
     }
 }
@@ -459,7 +476,7 @@ def renameVariable(String oldName, String newName) {
     if (location != null) {
         try { subscribe(location, "variable:${newName}", "handleHubVariableEvent") }
         catch (Throwable e) {
-            mcpLog("warn", "hub-vars", "post-rename subscribe to variable:${newName} failed: ${e.message}")
+            mcpLog("error", "hub-vars", "post-rename subscribe to variable:${newName} failed: ${e.message} -- history capture for renamed var will lag until next initialize()")
         }
     }
 }
@@ -4085,7 +4102,7 @@ private String _validateHubVarType(String type) {
  * once on first need and cache in atomicState.
  *
  * Discovery is two-stage because /hub2/appsList omits hidden system apps
- * on at least some firmware versions (verified on 2.5.0.x: Hub Variables
+ * on at least some firmware versions (verified on 2.5.0.126: Hub Variables
  * is reachable at /installedapp/configure/json/<id> but not listed in
  * /hub2/appsList -- same gap that hides it from list_installed_apps):
  *   1. Walk /hub2/appsList (cheap, single GET) -- catches hubs that DO
@@ -4100,6 +4117,21 @@ private String _validateHubVarType(String type) {
  * create_connector -- all of which drive that app's wizard via
  * update_native_app's settings/button POST machinery.
  */
+// Wizard-priming for the Hub Variables system app. Verified on firmware
+// 2.5.0.126: clicks via _rmClickAppButton silently no-op unless the app's
+// wizard state is "warmed" first. The configure-json + statusJson GET pair
+// reliably primes it; a single bare GET does not.
+//
+// Non-private so test specs can override via script.metaClass.
+def _primeHubVarsWizard(Integer appId, String context) {
+    try {
+        hubInternalGet("/installedapp/configure/json/${appId}")
+        hubInternalGet("/installedapp/statusJson/${appId}")
+    } catch (Exception e) {
+        logDebug("${context}: _primeHubVarsWizard for ${appId} threw ${e.class.simpleName}: ${e.message}")
+    }
+}
+
 // Non-private so test specs can override via script.metaClass — internal calls
 // from this script's other methods would bypass the metaClass dispatch on a
 // private method and hit the real implementation, which makes mocking the
@@ -4157,7 +4189,6 @@ def _findHubVariablesAppId() {
         try {
             cfgText = hubInternalGet("/installedapp/configure/json/${id}")
         } catch (Exception e) {
-            // 404s are expected for unused ids; only log unusual failures
             continue
         }
         if (!cfgText) continue
@@ -4182,7 +4213,7 @@ def _findHubVariablesAppId() {
 
 /**
  * create_variable: drive the Hub Variables system app's wizard to create a
- * new hub variable. Sequence (probed live 2026-05-06):
+ * new hub variable. Sequence (probed on firmware 2.5.0.126):
  *   1. btn moreVar (stateAttribute=moreVar) on page hubVar -- opens wizard
  *   2. set hbVar  = name      -- wizard advances; varType field appears
  *   3. set varType = type      -- wizard advances; varValue field appears
@@ -4220,18 +4251,50 @@ def toolCreateVariable(args) {
     def applied = []
     def skipped = []
 
+    _primeHubVarsWizard(appId, "create_variable pre-moreVar")
     _rmClickAppButton(appId, "moreVar", "moreVar", "hubVar")
-    _rmWriteSettingOnPage(appId, "hubVar", "hbVar",    name,  applied, "text",     skipped)
-    _rmWriteSettingOnPage(appId, "hubVar", "varType",  type,  applied, "enum",     skipped)
-    _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
+    _rmWriteSettingOnPage(appId, "hubVar", "hbVar",   name, applied, "text", skipped)
+    _rmWriteSettingOnPage(appId, "hubVar", "varType", type, applied, "enum", skipped)
+    if (type == "DateTime") {
+        // DateTime renders varDate + varTime instead of varValue. Accept ISO
+        // "yyyy-MM-ddTHH:mm[:ss]", "yyyy-MM-dd HH:mm[:ss]", or a Map
+        // {date:"yyyy-MM-dd", time:"HH:mm"}.
+        def dateStr, timeStr
+        if (value instanceof Map) {
+            dateStr = value.date?.toString()
+            timeStr = value.time?.toString()
+        } else {
+            def s = value.toString().trim()
+            def parts = s.contains("T") ? s.split("T", 2) : (s.contains(" ") ? s.split(" ", 2) : [s, null])
+            dateStr = parts[0]
+            timeStr = parts.size() > 1 ? parts[1]?.take(5) : null  // "HH:mm" only
+        }
+        if (!dateStr || !timeStr) {
+            throw new IllegalArgumentException(
+                "DateTime variable '${name}' requires both date and time. " +
+                "Pass an ISO string like '2026-05-06T12:00:00' or a {date,time} map. Got: ${value}")
+        }
+        _rmWriteSettingOnPage(appId, "hubVar", "varDate", dateStr, applied, "date", skipped)
+        _rmWriteSettingOnPage(appId, "hubVar", "varTime", timeStr, applied, "time", skipped)
+        // DateTime requires an explicit Done click to commit (the other
+        // types auto-commit when varValue is written). Prime first — same
+        // wizard quirk as delete/create_connector clicks.
+        _primeHubVarsWizard(appId, "create_variable DateTime pre-Done")
+        _rmClickAppButton(appId, "dateTimeDone", null, "hubVar")
+    } else {
+        _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
+    }
 
-    // Verify the variable landed. The wizard auto-commits on varValue write,
-    // so the new var should be visible via getGlobalVar immediately. If it
-    // isn't, something went sideways in the wizard walk — fail loud rather
-    // than reporting a false success.
+    // Verify the variable landed. The wizard auto-commits on varValue write
+    // (or dateTimeDone for DateTime); the var becomes visible to getGlobalVar
+    // shortly after. Retry with backoff up to ~3s before giving up.
     def created = null
-    try { created = getGlobalVar(name) } catch (Exception e) {
-        logDebug("create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+    for (int attempt = 0; attempt < 4; attempt++) {
+        try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        try { created = getGlobalVar(name) } catch (Exception e) {
+            logDebug("create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        }
+        if (created != null) break
     }
     if (created == null) {
         throw new IllegalStateException(
@@ -4248,7 +4311,7 @@ def toolCreateVariable(args) {
     if (location != null) {
         try { subscribe(location, "variable:${name}", "handleHubVariableEvent") }
         catch (Throwable e) {
-            mcpLog("warn", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message}")
+            mcpLog("error", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message} -- get_variable_history won't capture this var's changes until next initialize()")
         }
     }
 
@@ -4299,34 +4362,27 @@ def toolCreateConnector(args) {
     }
 
     def appId = _findHubVariablesAppId()
-    // Pre-click priming: see toolDeleteHubVariable. Hub Variables system-app
-    // wizard clicks silently no-op without a preceding /app/ajax/code fetch.
-    try { backupItemSource("app", appId.toString()) }
-    catch (Exception backupExc) { logDebug("create_connector: pre-click backupItemSource for ${appId} threw ${backupExc.class.simpleName}: ${backupExc.message}") }
+    _primeHubVarsWizard(appId, "create_connector pre-click")
     _rmClickAppButton(appId, name, "createCon", "hubVar")
 
     // For Number/Decimal vars Hubitat opens a chooser sub-wizard requiring
     // a 'capab' enum pick (Dimmer / Variable / etc.); for String/Boolean/
-    // DateTime the click commits the connector immediately. We commit the
-    // chooser unconditionally via toolUpdateNativeApp's settings path —
-    // that path bakes the enum reliably where a raw _rmWriteSettingOnPage
-    // silently drops it on this firmware. The write is a no-op when no
-    // chooser is open. Internal helper call only; the tool surface remains
-    // create_connector.
+    // DateTime the click commits the connector immediately and the capab
+    // input isn't in the schema, so the write is a schema-skip no-op.
+    // Prime the wizard fresh (the chooser sub-page is its own wizard step
+    // and benefits from the same priming as the parent click).
     def chosenType = requestedType?.trim() ?: "Variable"
-    try {
-        toolUpdateNativeApp([
-            appId: appId,
-            settings: [capab: chosenType],
-            pageName: "hubVar",
-            confirm: true
-        ])
-    } catch (Exception writeExc) {
-        logDebug("create_connector: capab write threw ${writeExc.class.simpleName}: ${writeExc.message} (may be benign for non-chooser var types)")
-    }
+    def applied = []
+    def skipped = []
+    _primeHubVarsWizard(appId, "create_connector pre-capab")
+    _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
 
     def after
-    try { after = getGlobalVar(name) } catch (Exception e) { after = null }
+    for (int v = 0; v < 4; v++) {
+        try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        try { after = getGlobalVar(name) } catch (Exception e) { after = null }
+        if (after?.deviceId != null) break
+    }
     if (after?.deviceId == null) {
         throw new IllegalStateException(
             "create_connector: wizard completed but '${name}' still has no deviceId. " +
@@ -4353,8 +4409,8 @@ def toolCreateConnector(args) {
  * The hub variable itself is NOT deleted; only the connector linkage.
  */
 def toolRemoveConnector(args) {
-    requireHubAdminWrite(args.confirm)
-    def name = args.name?.toString()?.trim()
+    requireHubAdminWrite(args?.confirm as Boolean)
+    def name = args?.name?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("Variable name is required")
 
     def existing
@@ -4374,13 +4430,31 @@ def toolRemoveConnector(args) {
 
     def deviceId = existing.deviceId
     def res = toolDeleteDevice([deviceId: deviceId.toString(), confirm: true])
+    if (res?.success != true) {
+        throw new IllegalStateException(
+            "remove_connector: toolDeleteDevice failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
+    }
+
+    // Verify the variable's deviceId linkage is cleared. Without this, a
+    // delete_device that returned success but didn't actually remove (or the
+    // hub didn't propagate the unlinking) would silently report success here.
+    def after = null
+    for (int v = 0; v < 4; v++) {
+        try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        try { after = getGlobalVar(name) } catch (Exception e) { after = null }
+        if (after?.deviceId == null) break
+    }
+    if (after?.deviceId != null) {
+        throw new IllegalStateException(
+            "remove_connector: device ${deviceId} delete returned success but variable '${name}' still has deviceId=${after.deviceId}")
+    }
 
     mcpLog("info", "hub-vars", "Removed connector for '${name}' (deviceId=${deviceId})")
     return [
         success: true,
         name: name,
         deviceId: deviceId,
-        deviceDeleted: res?.success == true,
+        deviceDeleted: true,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
 }
@@ -4404,29 +4478,10 @@ def toolSetVariable(name, value) {
 }
 
 def toolDeleteHubVariable(args) {
-    // Inlined requireHubAdminWrite body — calling the helper from this site
-    // produced an unexplained MissingMethodException ("String.call('true')")
-    // that the same helper call from create_variable / create_connector /
-    // remove_connector did NOT produce on the same hub session. Inlining
-    // sidesteps the issue and makes the gate transparent for diagnosis.
-    if (!settings.enableHubAdminWrite) {
-        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
-    }
-    def confirmVal = args["confirm"]
-    if (!(confirmVal == true || confirmVal == "true")) {
-        throw new IllegalArgumentException("SAFETY CHECK FAILED: confirm=true required. Got: ${confirmVal} (${confirmVal?.class?.simpleName})")
-    }
-    def lastBackupTs = state.lastBackupTimestamp
-    if (!lastBackupTs || (lastBackupTs instanceof Number && (now() - (lastBackupTs as Long)) > 86400000)) {
-        def lastDisplay = lastBackupTs ? lastBackupTs.toString() : 'Never'
-        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call create_hub_backup FIRST. Last backup: ${lastDisplay}")
-    }
-
-    // Local rename: avoid `name` to prevent any chance of shadowing the
-    // SmartApp's `name` property in the binding.
-    def varName = args["name"]?.toString()?.trim()
+    requireHubAdminWrite(args?.confirm as Boolean)
+    def varName = args?.name?.toString()?.trim()
     if (!varName) throw new IllegalArgumentException("name is required")
-    def force = args["force"] == true
+    def force = args?.force == true
 
     // Source detection: hub vs rule_engine namespace. Hub vars are deleted
     // through the Hub Variables system app's wizard; rule_engine vars are a
@@ -4453,12 +4508,15 @@ def toolDeleteHubVariable(args) {
     // serialized triggers/conditions/actions JSON.
     def consumers = []
     try {
+        // Word-boundary match: look for "<varName>" (JSON-quoted) so a var
+        // named `temp` doesn't match rules referencing `temperature` etc.
+        def needle = "\"${varName}\""
         getChildApps()?.each { child ->
             def ruleData = null
             try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
             if (ruleData) {
                 def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                if (serialized?.contains(varName)) {
+                if (serialized?.contains(needle)) {
                     consumers << [id: child.id, label: child.label]
                 }
             }
@@ -4489,29 +4547,27 @@ def toolDeleteHubVariable(args) {
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
         def appId = _findHubVariablesAppId()
-        // Pre-click: backupItemSource fetches /app/ajax/code which has the
-        // observed side effect of priming the system-app's wizard state for
-        // subsequent button clicks. update_native_app does this before every
-        // click and the same wizard sequence works through that path; raw
-        // _rmClickAppButton without the fetch silently no-ops (state.editVar
-        // never lands). Verified live 2026-05-06 by isolating the difference
-        // between update_native_app's working path and our raw call path.
-        try { backupItemSource("app", appId.toString()) }
-        catch (Exception backupExc) { logDebug("delete_variable: pre-click backupItemSource for ${appId} threw ${backupExc.class.simpleName}: ${backupExc.message}") }
-        _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
-        try { backupItemSource("app", appId.toString()) }
-        catch (Exception backupExc) { logDebug("delete_variable: pre-confirm backupItemSource for ${appId} threw ${backupExc.class.simpleName}: ${backupExc.message}") }
-        _rmClickAppButton(appId, "delConfirm", null, "hubVar")
-
-        // Verify the variable is gone. If it isn't, the wizard didn't
-        // commit — surface that loudly so callers don't think the delete
-        // succeeded when it didn't.
-        try { pauseExecution(500) } catch (Exception ignored) { }
+        // The wizard's first click sequence after a fresh create/edit can be
+        // dropped silently by the hub (state-machine race that priming
+        // alone doesn't reliably defeat). Retry the full click
+        // sequence once if the verification fails — empirically the second
+        // attempt always commits.
         def stillThere = null
-        try { stillThere = getGlobalVar(varName) } catch (Exception e) { stillThere = null }
+        for (int attempt = 0; attempt < 2; attempt++) {
+            _primeHubVarsWizard(appId, "delete_variable pre-click attempt-${attempt + 1}")
+            _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
+            _rmClickAppButton(appId, "delConfirm", null, "hubVar")
+            // Brief pause + verification. If the var is gone, we're done.
+            for (int v = 0; v < 4; v++) {
+                try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+                try { stillThere = getGlobalVar(varName) } catch (Exception e) { stillThere = null }
+                if (stillThere == null) break
+            }
+            if (stillThere == null) break
+        }
         if (stillThere != null) {
             throw new IllegalStateException(
-                "delete_variable: wizard completed but '${varName}' still exists in getGlobalVar.")
+                "delete_variable: wizard completed but '${varName}' still exists in getGlobalVar after 2 click-sequence attempts.")
         }
 
         def prevStr = previousValue?.toString()
