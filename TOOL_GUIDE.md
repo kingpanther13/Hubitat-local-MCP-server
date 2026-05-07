@@ -305,7 +305,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - `level` and `source` (substring) are simple string filters applied before regex
 - `pattern` (string): case-insensitive regex against the message field; compiled once; throws on invalid syntax
 - `patterns` (array of strings): multiple regexes; `patternMode='any'` (default) = OR, `patternMode='all'` = AND; compatible with `pattern` (both apply)
-- `since` / `until`: ISO-8601 timestamp (e.g. `'2024-01-15T10:30:00Z'`) or relative offset (`'30m'`, `'2h'`, `'1d'`, `'7d'`); relative offset subtracted from now; max 30d; entries with unparseable time fields pass through rather than being excluded
+- `since` / `until`: ISO-8601 timestamp (e.g. `'2024-01-15T10:30:00Z'`) or relative offset (`'30m'`, `'2h'`, `'1d'`, `'7d'`); relative offset subtracted from now; max 30d (throws if exceeded -- use ISO-8601 for longer ranges); entries with unparseable time fields pass through rather than being excluded. ISO-8601 timestamps without an explicit TZ marker (e.g., `'2024-01-15T10:30:00'` or `'2024-01-15 10:30:00.000'`) are parsed as UTC.
 - For single-device or single-app logs, pass `deviceId` or `appId` -- this is a server-side scope filter (mutually exclusive) and is much cheaper than post-filtering the full buffer
 
 **get_device_history:**

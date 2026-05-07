@@ -153,7 +153,7 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 Core tool: `get_device_events` (always visible)
 
 Via `manage_logs` gateway (6 tools):
-- `get_hub_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`); or scope server-side to a single `deviceId` / `appId` (mutually exclusive)
+- `get_hub_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
 - `get_device_history` - Device event history (up to 7 days)
 - `get_debug_logs` / `clear_debug_logs` - MCP-specific debug logs
 - `set_log_level` - Set MCP log level

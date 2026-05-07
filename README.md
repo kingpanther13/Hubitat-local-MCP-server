@@ -399,7 +399,7 @@ Source code is automatically backed up before any modify/delete operation.
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until), and server-side deviceId/appId scoping |
+| `get_hub_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. |
 | `get_device_history` | Up to 7 days of device event history |
 | `get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
 | `get_hub_jobs` | Scheduled jobs, running jobs, and hub actions |

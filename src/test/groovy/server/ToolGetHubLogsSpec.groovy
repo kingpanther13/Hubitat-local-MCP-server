@@ -300,21 +300,29 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         ex.message.contains('ISO-8601') || ex.message.contains('2024') || ex.message.contains('30m')
     }
 
-    def "relative offset beyond 30d is capped silently (not thrown)"() {
+    def "relative offset beyond 30d throws IllegalArgumentException with ISO-8601 hint"() {
         given:
         settingsMap.enableHubAdminRead = true
-        // '400d' exceeds the 30d cap -- should cap rather than throw
-        // The mcpLog warn is emitted; the filter runs with a 30d window
-        registerLogs([
-            'App 1\tinfo\tAny entry\t2026-04-19 10:00:00.000\ttype'
-        ])
 
-        when: 'call succeeds (no exception)'
-        def result = script.toolGetHubLogs([since: '400d'])
+        when:
+        script.toolGetHubLogs([since: '31d'])
 
-        then: 'result is returned normally (not thrown)'
-        notThrown(IllegalArgumentException)
-        result.containsKey('logs')
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('31d')
+        ex.message.toLowerCase().contains('30d')
+        ex.message.toLowerCase().contains('iso-8601')
+    }
+
+    def "relative offset of exactly 400d also throws (cap is strict, not a clamp)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        script.toolGetHubLogs([since: '400d'])
+
+        then:
+        thrown(IllegalArgumentException)
     }
 
     def "entries with no parseable time field are passed through (not excluded) when time-window active"() {
@@ -656,28 +664,326 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         result.logs[0].message == 'After cutoff'
     }
 
-    def "since as space-separated timestamp (hub log copy-paste shape, no TZ marker) is parsed as UTC"() {
+    def "since as space-separated timestamp (hub log copy-paste shape, no TZ marker) is parsed as UTC -- JVM TZ swap"() {
         given:
         settingsMap.enableHubAdminRead = true
-        // Harness now() = 1234567890000L. Use a concrete recent window anchored on that epoch
-        // so the test is TZ-independent: build sinceDate and entry timestamps both from the
-        // same UTC-formatted epoch, then pass sinceDate back as the since= string.
-        // UTC epoch for 2024-01-15T12:30:45.123Z = 1705319445123L.
-        // An entry 1 second inside that window: 2024-01-15 12:30:46.000 UTC -> included.
-        // An entry 1 second before that window: 2024-01-15 12:30:44.000 UTC -> excluded.
-        // On a non-UTC JVM default TZ (e.g. UTC-5), Date.parse would shift 12:30:45.123 by
-        // 5 hours, placing sinceDate at 1705337445123L (5h later in epoch) -- causing the
-        // inside-window entry to appear falsely *before* sinceDate and be excluded.
+        // This scenario deliberately swaps the JVM default TZ to America/Denver (UTC-6 or -7
+        // depending on DST) before making the call. If production code regresses to Date.parse()
+        // for the space-separated format, the epoch shifts by 6-7 hours, causing the inside-window
+        // entry to appear falsely outside the window. The fix (explicit UTC SimpleDateFormat)
+        // must survive a non-UTC JVM default TZ.
+        // UTC epoch for 2024-01-15T12:30:45.123Z = 1705319445123L (UTC).
+        // An entry 1s inside: 2024-01-15 12:30:46.000 UTC -> included.
+        // An entry 1s before: 2024-01-15 12:30:44.000 UTC -> excluded.
         registerLogs([
             'App 1\tinfo\tBefore cutoff\t2024-01-15 12:30:44.000\ttype',
             'App 1\tinfo\tAfter cutoff\t2024-01-15 12:30:46.000\ttype'
         ])
+        def origDefault = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("America/Denver"))
 
-        when: 'space-separated since (no T, no Z) is parsed as UTC by the fallback loop'
-        def result = script.toolGetHubLogs([since: '2024-01-15 12:30:45.123'])
+        when: 'space-separated since (no T, no Z) is parsed as UTC despite non-UTC JVM default TZ'
+        def result
+        try {
+            result = script.toolGetHubLogs([since: '2024-01-15 12:30:45.123'])
+        } finally {
+            TimeZone.setDefault(origDefault)
+        }
 
-        then: 'entry at 12:30:46 UTC is included; entry at 12:30:44 UTC is excluded'
+        then: 'entry at 12:30:46 UTC is included; entry at 12:30:44 UTC is excluded -- UTC parse is TZ-default-independent'
         result.logs.size() == 1
         result.logs[0].message == 'After cutoff'
+    }
+
+    def "TZ-swap asymmetric regression: space-separated UTC entry and explicit-Z entry both resolve to same epoch ms"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Two entries that represent identical points in time, expressed two ways:
+        //   (a) space-separated hub-native: '2024-01-15 12:30:44.000' (no TZ marker; production
+        //       must parse as UTC via hubLogSdfs)
+        //   (b) explicit-Z ISO-8601: '2024-01-15T12:30:44Z' (carries its own TZ; Date.parse handles)
+        // Both are 1s BEFORE the since cutoff (2024-01-15T12:30:45.000Z) => both excluded.
+        // If production regresses the space-separated parser only (reverts to JVM-default TZ),
+        // entry (a) shifts by the JVM offset and may land on the wrong side of the window.
+        // Symmetry failure: one entry excluded, the other not => test fails.
+        registerLogs([
+            'App 1\tinfo\tSpace-sep before\t2024-01-15 12:30:44.000\ttype',
+            'App 1\tinfo\tISO-Z before\t2024-01-15T12:30:44Z\ttype',
+            'App 1\tinfo\tSpace-sep after\t2024-01-15 12:30:46.000\ttype',
+            'App 1\tinfo\tISO-Z after\t2024-01-15T12:30:46Z\ttype'
+        ])
+        def origDefault = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("America/Denver"))
+
+        when: 'since cutoff is between the before and after pairs'
+        def result
+        try {
+            result = script.toolGetHubLogs([since: '2024-01-15T12:30:45.000Z'])
+        } finally {
+            TimeZone.setDefault(origDefault)
+        }
+
+        then: 'both "after" entries are included; both "before" entries are excluded regardless of format'
+        result.logs.size() == 2
+        result.logs*.message.sort() == ['ISO-Z after', 'Space-sep after'].sort()
+    }
+
+    // ==================== B3: timeFilterUnparseable counter ====================
+
+    def "unparseable timestamps are passed through and counted in timeFilterUnparseable"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // 5 valid entries after the cutoff + 2 entries with unparseable timestamps.
+        // The 2 unparseable entries should be kept (not excluded) and counted separately.
+        registerLogs([
+            'App 1\tinfo\tValid 1\t2024-01-15 01:00:00.000\ttype',
+            'App 1\tinfo\tValid 2\t2024-01-15 02:00:00.000\ttype',
+            'App 1\tinfo\tValid 3\t2024-01-15 03:00:00.000\ttype',
+            'App 1\tinfo\tValid 4\t2024-01-15 04:00:00.000\ttype',
+            'App 1\tinfo\tValid 5\t2024-01-15 05:00:00.000\ttype',
+            'App 1\tinfo\tNo timestamp\t\ttype',
+            'App 1\tinfo\tBad timestamp\tNOT_A_DATE\ttype'
+        ])
+
+        when:
+        def result = script.toolGetHubLogs([since: '2024-01-15T00:00:00Z'])
+
+        then: '5 valid + 2 unparseable = 7 total entries returned'
+        result.logs.size() == 7
+        result.timeFilterUnparseable == 2
+    }
+
+    def "timeFilterUnparseable is absent from response when no time filter is active"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App 1\tinfo\tNo timestamp\t\ttype',
+            'App 1\tinfo\tBad timestamp\tNOT_A_DATE\ttype'
+        ])
+
+        when: 'no since/until -- time-window filter is not active'
+        def result = script.toolGetHubLogs([:])
+
+        then: 'unparseable timestamps not counted because time-window is off'
+        !result.containsKey('timeFilterUnparseable')
+    }
+
+    // ==================== I4: filteredOut and appliedFilters ====================
+
+    def "zero-match result includes filteredOut count and appliedFilters echo"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App 1\tinfo\tSomething normal\t2026-04-19 10:00:00.000\ttype',
+            'App 1\tinfo\tAnother normal\t2026-04-19 10:00:01.000\ttype',
+            'App 1\tinfo\tYet another\t2026-04-19 10:00:02.000\ttype'
+        ])
+
+        when: 'pattern matches nothing'
+        def result = script.toolGetHubLogs([pattern: 'DEFINITELY_NOT_PRESENT'])
+
+        then: 'count is 0 but filteredOut and appliedFilters reveal what happened'
+        result.count == 0
+        result.filteredOut == 3
+        result.appliedFilters != null
+        result.appliedFilters.pattern == 'DEFINITELY_NOT_PRESENT'
+    }
+
+    def "partial-match result includes filteredOut count reflecting excluded entries"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App 1\tinfo\tfound: match this\t2026-04-19 10:00:00.000\ttype',
+            'App 1\tinfo\tunrelated entry here\t2026-04-19 10:00:01.000\ttype',
+            'App 1\tinfo\talso found: match\t2026-04-19 10:00:02.000\ttype'
+        ])
+
+        when:
+        def result = script.toolGetHubLogs([pattern: 'found'])
+
+        then: '2 matched "found", 1 filtered out; filteredOut = 1'
+        result.count == 2
+        result.filteredOut == 1
+        result.appliedFilters.pattern == 'found'
+    }
+
+    def "filteredOut counts only filter-excluded entries not limit-truncated ones"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // 100 entries: 50 contain 'ALPHA' (match), 50 contain 'BETA' (no match). limit=10.
+        // filteredOut must be 50 (the BETA entries excluded by filter), NOT 90 (totalParsed - count).
+        // The 40 ALPHA entries beyond the limit are limit-truncated, not filter-excluded.
+        def lines = (1..50).collect { "App 1\tinfo\tALPHA entry ${it}\t2026-04-19 10:00:00.000\ttype" } +
+                    (1..50).collect { "App 1\tinfo\tBETA entry ${it}\t2026-04-19 10:00:00.000\ttype" }
+        registerLogs(lines)
+
+        when:
+        def result = script.toolGetHubLogs([pattern: 'ALPHA', limit: 10])
+
+        then: 'count = 10 (limit hit), filteredOut = 50 (filter-excluded), totalParsed = 100'
+        result.count == 10
+        result.totalParsed == 100
+        result.filteredOut == 50
+        // limit-truncated entries (the other 40 ALPHA matches) are NOT counted in filteredOut
+    }
+
+    def "no filters active means filteredOut and appliedFilters are absent"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App 1\tinfo\tSomething\t2026-04-19 10:00:00.000\ttype'
+        ])
+
+        when: 'no filter args'
+        def result = script.toolGetHubLogs([:])
+
+        then: 'metadata fields absent when no filters were applied'
+        !result.containsKey('filteredOut')
+        !result.containsKey('appliedFilters')
+    }
+
+    // ==================== I5: empty pattern / empty patterns element ====================
+
+    def "empty pattern string throws IllegalArgumentException with hint to omit"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        script.toolGetHubLogs([pattern: ''])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('pattern')
+        ex.message.toLowerCase().contains('empty')
+    }
+
+    def "empty string inside patterns list throws IllegalArgumentException naming the index"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        script.toolGetHubLogs([patterns: ['valid', '']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('patterns[1]')
+        ex.message.toLowerCase().contains('empty')
+    }
+
+    // ==================== I6: pattern length limit ====================
+
+    def "pattern longer than 100 chars throws before compile with length in message"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def longPat = 'a' * 101   // 101 chars -- exceeds 100-char limit
+
+        when:
+        script.toolGetHubLogs([pattern: longPat])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('101')
+        ex.message.toLowerCase().contains('100')
+    }
+
+    def "pattern element in patterns list longer than 100 chars throws naming the index"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def longPat = 'b' * 101   // 101 chars
+
+        when:
+        script.toolGetHubLogs([patterns: ['ok', longPat]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('patterns[1]')
+        ex.message.contains('101')
+    }
+
+    // ==================== I7: hubInternalGet failure becomes IllegalStateException ====================
+
+    def "hubInternalGet failure throws IllegalStateException surfaceable as JSON-RPC error"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Intentionally no hubGet.register() -- harness throws IllegalStateException("Unstubbed
+        // hubInternalGet: ...") when the path is not registered, which production code then
+        // wraps and rethrows as IllegalStateException("Failed to fetch hub logs: ...").
+        // This verifies the rethrow path reaches the caller rather than returning a success-shape map.
+
+        when:
+        script.toolGetHubLogs([:])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.toLowerCase().contains('failed to fetch hub logs')
+    }
+
+    // ==================== I8: additional validation scenarios ====================
+
+    def "multi-pattern compile failure throws on the bad element and names its index"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when: "patterns list contains one valid and one invalid regex"
+        script.toolGetHubLogs([patterns: ['valid', '[unclosed']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('patterns[1]')
+        ex.message.toLowerCase().contains('invalid regex')
+    }
+
+    def "inverted ISO-8601 window since after until throws IllegalArgumentException"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when: 'since is after until -- window contains no entries'
+        script.toolGetHubLogs([since: '2024-01-15T12:00:00Z', until: '2024-01-15T08:00:00Z'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('window is empty')
+    }
+
+    def "until as Number throws IllegalArgumentException with format hint"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        script.toolGetHubLogs([until: 1234567890000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('until')
+        ex.message.toLowerCase().contains('string')
+    }
+
+    def "patternMode as List throws IllegalArgumentException naming the expected type"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when: 'patternMode given as a list instead of a string'
+        script.toolGetHubLogs([patternMode: ['any']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('patternmode')
+    }
+
+    def "empty patterns list is accepted and applies no pattern filter"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App 1\tinfo\tfoo\t2026-04-19 10:00:00.000\ttype',
+            'App 1\tinfo\tbar\t2026-04-19 10:00:01.000\ttype'
+        ])
+
+        when: 'patterns=[] is a no-op -- all entries pass through'
+        def result = script.toolGetHubLogs([patterns: []])
+
+        then: 'all entries returned; empty patterns list treated as no-filter'
+        result.logs.size() == 2
+        // empty patterns list means no filter was applied -- appliedFilters omits patterns key
+        !result.containsKey('appliedFilters') || !result.appliedFilters?.containsKey('patterns')
     }
 }

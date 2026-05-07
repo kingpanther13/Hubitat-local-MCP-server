@@ -1376,8 +1376,8 @@ Verify rule after creation.""",
                     pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching. Entry is kept when it matches. Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
                     patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns applied to the log message field only -- use source for app/device-name substring matching. Use with patternMode to control AND/OR logic. Each pattern compiled once. Throws on invalid regex syntax. Compatible with pattern (both apply). Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR -- entry kept if any pattern matches; 'all' = AND -- entry kept only if every pattern matches. Case-insensitive ('ANY' and 'any' both work).", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise."],
-                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."]
+                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d (throws if exceeded -- use ISO-8601 for longer ranges). Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise."],
+                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."]
                 ]
             ]
         ],
@@ -6565,12 +6565,18 @@ def toolGetHubLogs(args) {
 
     // Single pattern (case-insensitive substring regex against message field)
     def compiledPattern = null
-    if (args.pattern) {
-        def pat = args.pattern.toString().take(100)
+    if (args.pattern != null) {
+        def rawPat = args.pattern.toString()
+        if (rawPat.isEmpty()) {
+            throw new IllegalArgumentException("pattern must not be empty (got empty string); omit pattern arg to skip pattern filter")
+        }
+        if (rawPat.length() > 100) {
+            throw new IllegalArgumentException("pattern exceeds 100 char limit (was ${rawPat.length()} chars)")
+        }
         try {
-            compiledPattern = java.util.regex.Pattern.compile(pat, java.util.regex.Pattern.CASE_INSENSITIVE)
+            compiledPattern = java.util.regex.Pattern.compile(rawPat, java.util.regex.Pattern.CASE_INSENSITIVE)
         } catch (java.util.regex.PatternSyntaxException e) {
-            throw new IllegalArgumentException("Invalid regex pattern '${pat}': ${e.message}")
+            throw new IllegalArgumentException("Invalid regex pattern '${rawPat}': ${e.message}")
         }
     }
 
@@ -6585,12 +6591,21 @@ def toolGetHubLogs(args) {
     }
     if (args.patterns instanceof List && args.patterns) {
         for (int pi = 0; pi < args.patterns.size(); pi++) {
-            def pat = args.patterns[pi]?.toString()?.take(100)
-            if (!pat) continue
+            def rawPat = args.patterns[pi]
+            if (rawPat == null) {
+                throw new IllegalArgumentException("patterns[${pi}] must not be null or empty")
+            }
+            rawPat = rawPat.toString()
+            if (rawPat.isEmpty()) {
+                throw new IllegalArgumentException("patterns[${pi}] must not be null or empty")
+            }
+            if (rawPat.length() > 100) {
+                throw new IllegalArgumentException("patterns[${pi}] exceeds 100 char limit (was ${rawPat.length()} chars)")
+            }
             try {
-                compiledPatterns << java.util.regex.Pattern.compile(pat, java.util.regex.Pattern.CASE_INSENSITIVE)
+                compiledPatterns << java.util.regex.Pattern.compile(rawPat, java.util.regex.Pattern.CASE_INSENSITIVE)
             } catch (java.util.regex.PatternSyntaxException e) {
-                throw new IllegalArgumentException("Invalid regex pattern '${pat}' (patterns[${pi}]): ${e.message}")
+                throw new IllegalArgumentException("Invalid regex pattern '${rawPat}' (patterns[${pi}]): ${e.message}")
             }
         }
     }
@@ -6626,8 +6641,7 @@ def toolGetHubLogs(args) {
                 default: ms = 0
             }
             if (ms > maxRelativeMs) {
-                mcpLog("warn", "monitoring", "${argName} relative offset capped at 30d (was ${val})")
-                ms = maxRelativeMs
+                throw new IllegalArgumentException("${argName} exceeds 30d cap (got '${val}'); use ISO-8601 for longer ranges (e.g. '2024-01-15T00:00:00Z')")
             }
             return new Date(now() - ms)
         }
@@ -6647,7 +6661,7 @@ def toolGetHubLogs(args) {
                     sdf2.setTimeZone(utcTz)
                     sdf2.setLenient(false)
                     return sdf2.parse(bare)
-                } catch (Exception ignored) {}
+                } catch (java.text.ParseException ignored) {}
             }
         }
         // Naked-T ISO form without a TZ designator (e.g. '2024-01-15T10:30:00' or
@@ -6663,7 +6677,7 @@ def toolGetHubLogs(args) {
                     sdf.setTimeZone(utcTz)
                     sdf.setLenient(false)
                     return sdf.parse(val)
-                } catch (Exception ignored) {}
+                } catch (java.text.ParseException ignored) {}
             }
         }
         // Space-separated hub-native formats (e.g. 'yyyy-MM-dd HH:mm:ss.SSS') carry no TZ
@@ -6681,7 +6695,7 @@ def toolGetHubLogs(args) {
                     return sdf.parse(val)
                 }
                 return Date.parse(fmt, val)
-            } catch (Exception ignored) {}
+            } catch (java.text.ParseException ignored) {}
         }
         throw new IllegalArgumentException("Cannot parse ${argName}='${val}' -- use ISO-8601 (e.g. '2024-01-15T10:30:00Z') or a relative offset like '30m', '2h', '1d'")
     }
@@ -6727,7 +6741,7 @@ def toolGetHubLogs(args) {
         responseText = hubInternalGet("/logs/past/json", query, 30)
     } catch (Exception e) {
         mcpLog("error", "monitoring", "Failed to fetch hub logs: ${e.message}")
-        return [logs: [], error: "Failed to fetch hub logs: ${e.message}", count: 0]
+        throw new IllegalStateException("Failed to fetch hub logs: ${e.message}")
     }
 
     if (!responseText) {
@@ -6781,6 +6795,15 @@ def toolGetHubLogs(args) {
     // on non-UTC hubs if a future firmware ever did emit them.
     def hubLogIsoFmts = logTimeFmts.findAll { it.contains("Z") && !it.contains("'Z'") }
 
+    // Counter for entries that passed through the time-window filter due to unparseable timestamps.
+    // Populated only when since or until is active; surfaced in the response as timeFilterUnparseable.
+    def timeFilterUnparseable = 0
+
+    // Count entries excluded by the active filter set (level / source / pattern / patterns /
+    // time-window). Does NOT include entries truncated by the limit parameter or malformed entries
+    // (empty lines or too-few tab fields) -- those are pre-filter dropouts, not filter exclusions.
+    def filterExcluded = 0
+
     for (logEntry in logArray) {
         def line = logEntry?.toString()
         if (!line?.trim()) continue
@@ -6809,31 +6832,32 @@ def toolGetHubLogs(args) {
         // Apply filters in pipeline order:
         // scope (hub-side, done above) -> level -> source -> pattern -> patterns -> time window -> limit
 
-        if (levelFilter && entry.level?.toLowerCase() != levelFilter.toLowerCase()) continue
+        if (levelFilter && entry.level?.toLowerCase() != levelFilter.toLowerCase()) { filterExcluded++; continue }
         if (sourceFilter) {
             def src = sourceFilter.toLowerCase()
             // Source info is in the message field (format: "app|ID|AppName|..." or "dev|ID|DevName|...")
-            if (!entry.message?.toLowerCase()?.contains(src) && !entry.name?.toLowerCase()?.contains(src)) continue
+            if (!entry.message?.toLowerCase()?.contains(src) && !entry.name?.toLowerCase()?.contains(src)) { filterExcluded++; continue }
         }
 
         // Single-pattern regex against the message field
         if (compiledPattern != null) {
-            if (!compiledPattern.matcher(entry.message ?: "").find()) continue
+            if (!compiledPattern.matcher(entry.message ?: "").find()) { filterExcluded++; continue }
         }
 
         // Multi-pattern: patternMode='all' requires every pattern to match; 'any' (default) requires at least one
         if (compiledPatterns) {
             def msg = entry.message ?: ""
             if (patternModeAll) {
-                if (!compiledPatterns.every { it.matcher(msg).find() }) continue
+                if (!compiledPatterns.every { it.matcher(msg).find() }) { filterExcluded++; continue }
             } else {
-                if (!compiledPatterns.any { it.matcher(msg).find() }) continue
+                if (!compiledPatterns.any { it.matcher(msg).find() }) { filterExcluded++; continue }
             }
         }
 
         // Time-window filter: parse entry.time lazily; if empty (firmware 2.5.0.126+ puts the
         // timestamp in parts[0]/entry.name), fall back to entry.name before giving up.
-        // Skip filtering (not excluding) only when both candidates are unparseable.
+        // Entries with unparseable timestamps are kept (not excluded) and counted separately
+        // so callers know they exist in the result alongside filtered entries.
         if (sinceDate != null || untilDate != null) {
             def entryTime = null
             def timeStr = entry.time?.trim() ?: entry.name?.trim()
@@ -6843,7 +6867,7 @@ def toolGetHubLogs(args) {
                     try {
                         entryTime = sdf.parse(timeStr)
                         break
-                    } catch (Exception ignored) {}
+                    } catch (java.text.ParseException ignored) {}
                 }
                 // Fall through to ISO-8601 formats that carry their own TZ marker.
                 if (entryTime == null) {
@@ -6851,17 +6875,21 @@ def toolGetHubLogs(args) {
                         try {
                             entryTime = Date.parse(fmt, timeStr)
                             break
-                        } catch (Exception ignored) {}
+                        } catch (java.text.ParseException ignored) {}
                     }
                 }
                 if (entryTime == null) {
                     mcpLog("debug", "monitoring", "Could not parse log entry time '${timeStr?.take(30)}' for time-window filter -- entry not excluded")
+                    timeFilterUnparseable++
                 }
+            } else {
+                // No time field at all -- count as unparseable and pass through
+                timeFilterUnparseable++
             }
             // If entryTime resolved: enforce bounds. If entryTime is null (no time field or unparseable): pass through.
             if (entryTime != null) {
-                if (sinceDate != null && entryTime.before(sinceDate)) continue
-                if (untilDate != null && entryTime.after(untilDate)) continue
+                if (sinceDate != null && entryTime.before(sinceDate)) { filterExcluded++; continue }
+                if (untilDate != null && entryTime.after(untilDate)) { filterExcluded++; continue }
             }
         }
 
@@ -6877,6 +6905,29 @@ def toolGetHubLogs(args) {
         logs.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
+    }
+
+    // Expose filter metadata so callers can distinguish "no matching logs" from "no logs exist".
+    // filteredOut: entries excluded by the active filter set (level / source / pattern / patterns /
+    //   time-window). Does NOT include entries truncated by the limit parameter or malformed entries.
+    //   Omitted when hasFilters is false or when every parsed entry matched (filterExcluded == 0).
+    // appliedFilters: echo of every non-null filter arg (omitted when no filters were active).
+    def hasFilters = levelFilter || sourceFilter || compiledPattern != null || compiledPatterns || sinceDate != null || untilDate != null
+    if (hasFilters) {
+        if (filterExcluded > 0) result.filteredOut = filterExcluded
+        def applied = [:]
+        if (levelFilter)                applied.level       = levelFilter
+        if (sourceFilter)               applied.source      = sourceFilter
+        if (args.pattern != null)       applied.pattern     = args.pattern
+        if (args.patterns instanceof List && args.patterns) applied.patterns = args.patterns
+        if (compiledPatterns)           applied.patternMode = args.patternMode ?: 'any'
+        if (args.since != null)         applied.since       = args.since
+        if (args.until != null)         applied.until       = args.until
+        result.appliedFilters = applied
+    }
+    // Surface unparseable-timestamp count only when a time-window was active and at least one entry was affected.
+    if ((sinceDate != null || untilDate != null) && timeFilterUnparseable > 0) {
+        result.timeFilterUnparseable = timeFilterUnparseable
     }
 
     mcpLog("info", "monitoring", "Retrieved ${logs.size()} hub log entries (${totalParsed} total parsed)")

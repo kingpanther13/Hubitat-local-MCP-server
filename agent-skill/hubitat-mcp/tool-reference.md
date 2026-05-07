@@ -144,7 +144,7 @@ Hub and MCP log access, performance stats, and log configuration.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `get_hub_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source/pattern (regex) or multi-pattern with AND/OR mode; time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`); or scope server-side to a single `deviceId` / `appId`. | Hub Admin Read |
+| `get_hub_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source/pattern (regex) or multi-pattern with AND/OR mode; time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded); or scope server-side to a single `deviceId` / `appId`. `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation. | Hub Admin Read |
 | `get_device_history` | Up to 7 days of device event history. | Hub Admin Read |
 | `get_performance_stats` | Device/app performance stats from `/logs`: method call counts, % busy, cumulative total ms, state size, events. Sortable. | Hub Admin Read |
 | `get_hub_jobs` | Scheduled and running jobs on the hub. | Hub Admin Read |

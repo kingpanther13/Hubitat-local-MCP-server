@@ -567,6 +567,16 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected**: Calls `manage_logs` -> `get_hub_logs` with `since='1h'` and `pattern='error|failed'` (or equivalent `patterns` array). Demonstrates pattern filter + time-window together.
 
+### T47c — get_hub_logs patterns + patternMode all (AND-mode)
+
+```json
+{
+  "test_prompt": "Show me hub logs from the last 2 hours that mention both 'timeout' AND 'device' in the same message -- I want only entries that contain both words simultaneously."
+}
+```
+
+**Expected**: Calls `manage_logs` -> `get_hub_logs` with `patterns=['timeout', 'device']` and `patternMode='all'` (AND semantics) plus `since='2h'`. Demonstrates AND-mode multi-pattern filtering -- higher-value than OR-mode because it narrows results more precisely.
+
 ### T48 — Discover get_device_history (manage_logs)
 
 ```json
