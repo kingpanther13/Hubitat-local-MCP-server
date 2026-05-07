@@ -1469,6 +1469,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.0.3** - feat(rule-tools): redirect hint when caller passes a built-in RM rule id (addresses #118 Option A). PRs: [#135](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/135)
 - **v1.0.2** - docs: add AGENTS.md for AI contributors; PR #91. PRs: [#149](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/149)
 - **v1.0.1** - feat: optional flat tool-list mode (toggle off category gateways). PRs: [#136](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/136)
 - **v1.0.0** - ci(hub-e2e): self-configuring CI workflow against test hub (closes #77); feat(rm-native): native Rule Machine tools and classic-app CRUD + custom_ rename of MCP rule engine tools. PRs: [#148](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/148), [#134](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/134)
