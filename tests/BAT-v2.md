@@ -70,6 +70,32 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `list_devices` with `detailed=true, limit=10`.
 
+### T02b — list_devices (server-side filtering)
+
+```json
+{
+  "test_prompt": "List only my devices that have the Switch capability. Show just their IDs and labels."
+}
+```
+
+**Expected**: Calls `list_devices` with `capabilityFilter='Switch'` and `fields=['id','label']` (or equivalent). Returns a subset of devices without fetching all. Does NOT fetch all devices and filter client-side.
+
+```json
+{
+  "test_prompt": "How many devices do I have in the kitchen? List just their names."
+}
+```
+
+**Expected**: Calls `list_devices` with `labelFilter='kitchen'` (or similar). Returns only kitchen-named devices without downloading the full device list.
+
+```json
+{
+  "test_prompt": "Give me just the device IDs for all my devices — the smallest possible response."
+}
+```
+
+**Expected**: Calls `list_devices` with `format='ids'`. Response is `deviceIds: [...]` flat array, not full device objects.
+
 ### T03 — get_device
 
 ```json

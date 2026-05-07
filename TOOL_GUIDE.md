@@ -289,9 +289,14 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 **list_devices:**
 - Use `detailed=false` for initial discovery
-- Summary response (always returned) includes: id, name (driver type), label, room, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId` — enough for most filtering without `get_device` round-trips. Summary mode also returns `currentStates`; detailed mode replaces it with `capabilities`/`attributes`/`commands`. To count children of a parent device, group the response on `parentDeviceId` client-side
-- Use `filter` for server-side narrowing before pagination: `'enabled'`, `'disabled'`, or `'stale:<hours>'` (e.g. `'stale:24'` = devices with no activity in the last 24h). Use this for boolean and time-relative queries; leave name/label/capability filtering to client-side (AI scans returned JSON)
-- With `detailed=true`, paginate: 20-30 devices per request. Detailed adds capabilities, attributes, commands
+- Summary response always includes: id, name (driver type), label, room, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId` + `currentStates` dict. Detailed mode replaces `currentStates` with `capabilities`, `attributes`, `commands`. To count children of a parent device, group on `parentDeviceId` client-side
+- **Server-side filters** (all applied before pagination, composable with each other):
+  - `filter` — `'enabled'` / `'disabled'` / `'stale:<hours>'` (boolean and time-relative queries)
+  - `labelFilter` — case-insensitive substring match on device label (e.g. `'kitchen'` returns all devices whose label contains "kitchen")
+  - `capabilityFilter` — case-insensitive exact match on capability name (e.g. `'Switch'`, `'TemperatureMeasurement'`)
+- **Format shortcuts**: `format='ids'` returns a flat integer array `deviceIds: [1,2,3]` (cheapest shape for "which devices exist" queries)
+- **Field projection**: `fields=['id','label']` skips `currentStates` and `attributes` (the expensive ones -- they trigger per-device hub reads); `capabilities` and `commands` are in-memory and cheap. Only named fields are populated -- reduces both payload size and hub CPU. Unknown field names throw. `id` is always included regardless of projection.
+- With `detailed=true` (or `format='detailed'`), paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel
 
 **get_device_events:**

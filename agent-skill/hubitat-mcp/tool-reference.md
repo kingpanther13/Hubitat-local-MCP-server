@@ -10,7 +10,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `list_devices` | List accessible devices. Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |
+| `list_devices` | List accessible devices. Pagination, `labelFilter` (substring), `capabilityFilter` (exact), `format='ids'` (flat ID array), `fields=[...]` (projection). Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |
 | `get_device` | Full device details: attributes, commands, capabilities, room. | None |
 | `get_attribute` | Get specific attribute value from a device. | None |
 | `send_command` | Send a command to a device (on, off, setLevel, etc.). | None |
