@@ -7,7 +7,7 @@ This file is for AI agents. Human contributors follow `.github/pull_request_temp
 ## Commands
 
 ```bash
-./gradlew test                     # full Spock suite (~10 min)
+./gradlew test                     # full Spock suite (~5 min)
 ./gradlew test --tests "<spec>"    # single spec
 python tests/sandbox_lint.py       # Groovy sandbox lint
 ```
@@ -47,11 +47,9 @@ Use `.github/pull_request_template.md` — keep every section.
 
   Lenient match (case-insensitive, any heading level, optional trailing colon) — same shape `release_bump.py` parses with. Run on rebase/edit too; pre-#146 PRs may not satisfy the template.
 
-**Git identity**: commit with your GitHub noreply email (`<your-username>@users.noreply.github.com`), never your private email — GitHub push protection will block the push. Set both `--author` and `GIT_COMMITTER_EMAIL` when amending.
-
 ## Boundaries
 
-**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on contributor PRs:
+**🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on every PR:
 - Version strings in tracked locations (server header comment, `currentVersion()`, rule header, manifest `version`)
 - `packageManifest.json` `releaseNotes` or `dateReleased`
 - `README.md` `## Version History` section
