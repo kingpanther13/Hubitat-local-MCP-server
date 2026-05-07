@@ -10584,7 +10584,10 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
  * Pass pageName for sub-page wizard buttons (hasAll on selectTriggers,
  * actionDone on selectActions, etc.) so the form-context fields fire.
  */
-private Map _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null, String pageName = null) {
+// Non-private so test specs can override via script.metaClass — internal
+// Groovy-script dispatch to private methods bypasses the per-instance
+// metaClass override.
+def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null, String pageName = null) {
     def body = [
         id: appId.toString(),
         name: buttonName,
@@ -14438,7 +14441,9 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
  * The `applied` accumulator collects every key that actually landed on
  * the page so the caller can include it in the response.
  */
-private void _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null, List skipped = null) {
+// Non-private so test specs can override via script.metaClass — see
+// _rmClickAppButton for the same rationale.
+def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null, List skipped = null) {
     def config = _rmFetchConfigJson(appId, pageName)
     def schema = _rmCollectInputSchema(config?.configPage)
     if (!schema?.containsKey(key)) {
