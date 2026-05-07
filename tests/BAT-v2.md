@@ -557,6 +557,16 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_logs` → `get_hub_logs`.
 
+### T47b — get_hub_logs pattern + since combination
+
+```json
+{
+  "test_prompt": "Pull the last hour of hub logs and show me only entries where the message mentions 'error' or 'failed' -- case-insensitive. Use the pattern filter, not just the level filter."
+}
+```
+
+**Expected**: Calls `manage_logs` -> `get_hub_logs` with `since='1h'` and `pattern='error|failed'` (or equivalent `patterns` array). Demonstrates pattern filter + time-window together.
+
 ### T48 — Discover get_device_history (manage_logs)
 
 ```json

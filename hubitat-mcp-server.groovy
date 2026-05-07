@@ -620,7 +620,7 @@ def getGatewayConfig() {
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, device event history, MCP debug logs, and log level configuration.",
             tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
             summaries: [
-                get_hub_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), deviceId or appId (server-side scope), limit",
+                get_hub_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex AND/OR), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
                 get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
                 get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
@@ -630,7 +630,7 @@ def getGatewayConfig() {
                 get_logging_status: "Get logging system status and capacity"
             ],
             searchHints: [
-                get_hub_logs: "errors warnings messages trace syslog output print recent latest newest device app scope",
+                get_hub_logs: "errors warnings messages trace syslog output print recent latest newest device app scope regex pattern filter time window since until last hour minute",
                 get_device_history: "events timeline past activity what happened sensor",
                 get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 get_hub_jobs: "scheduled cron timer recurring what is running next automation",
@@ -1364,7 +1364,7 @@ Verify rule after creation.""",
         ],
         [
             name: "get_hub_logs",
-            description: "Get Hubitat system logs, most recent first. Filter by level, source substring, or scope server-side to a single device or app. Default 100 entries, max 500. Requires Hub Admin Read.",
+            description: "Get Hubitat system logs, most recent first. Filter pipeline (in order): scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit. Default 100 entries, max 500. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1372,7 +1372,12 @@ Verify rule after creation.""",
                     source: [type: "string", description: "Filter by source/app name (case-insensitive substring match against the log entry)"],
                     deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
-                    limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100]
+                    limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
+                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching. Entry is kept when it matches. Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
+                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns applied to the log message field only -- use source for app/device-name substring matching. Use with patternMode to control AND/OR logic. Each pattern compiled once. Throws on invalid regex syntax. Compatible with pattern (both apply). Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
+                    patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR -- entry kept if any pattern matches; 'all' = AND -- entry kept only if every pattern matches. Case-insensitive ('ANY' and 'any' both work).", enum: ["any", "all"]],
+                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise."],
+                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."]
                 ]
             ]
         ],
@@ -6529,6 +6534,156 @@ def toolGetHubLogs(args) {
         throw new IllegalArgumentException("deviceId and appId are mutually exclusive: set only one")
     }
 
+    // --- Type-shape validation: catch wrong-type args before any parsing or regex compile ---
+    // pattern must be a String; List callers occasionally pass ['foo'] expecting a substring search
+    if (args.pattern != null && !(args.pattern instanceof String)) {
+        throw new IllegalArgumentException("pattern must be a string (got ${args.pattern instanceof List ? 'list' : 'non-string'})")
+    }
+    // patterns must be a List; a bare String is never silently treated as a single-element list
+    if (args.patterns != null && !(args.patterns instanceof List)) {
+        throw new IllegalArgumentException("patterns must be a list of strings (got ${args.patterns instanceof String ? 'string' : 'non-list'})")
+    }
+    // All elements inside patterns must be strings
+    if (args.patterns instanceof List) {
+        for (int i = 0; i < args.patterns.size(); i++) {
+            def pi = args.patterns[i]
+            if (pi != null && !(pi instanceof String)) {
+                throw new IllegalArgumentException("patterns[${i}] must be a string (got ${pi instanceof List ? 'list' : pi instanceof Number ? 'number' : 'non-string'})")
+            }
+        }
+    }
+    // since / until must be Strings (ISO-8601 or relative offset); numeric ms would require a
+    // different parsing path and silently no-op the time-window filter if passed as a number
+    if (args.since != null && !(args.since instanceof String)) {
+        throw new IllegalArgumentException("since must be a string (ISO-8601 timestamp or relative offset like '30m', '2h', '1d')")
+    }
+    if (args.until != null && !(args.until instanceof String)) {
+        throw new IllegalArgumentException("until must be a string (same format as since)")
+    }
+
+    // --- Compile regex patterns before the loop (once, not per entry) ---
+
+    // Single pattern (case-insensitive substring regex against message field)
+    def compiledPattern = null
+    if (args.pattern) {
+        def pat = args.pattern.toString().take(100)
+        try {
+            compiledPattern = java.util.regex.Pattern.compile(pat, java.util.regex.Pattern.CASE_INSENSITIVE)
+        } catch (java.util.regex.PatternSyntaxException e) {
+            throw new IllegalArgumentException("Invalid regex pattern '${pat}': ${e.message}")
+        }
+    }
+
+    // Multi-pattern (case-insensitive regex list; patternMode controls AND/OR)
+    def compiledPatterns = []
+    def patternModeAll = (args.patternMode?.toString()?.toLowerCase() == "all")
+    if (args.patternMode != null) {
+        def pm = args.patternMode.toString().toLowerCase()
+        if (pm != 'any' && pm != 'all') {
+            throw new IllegalArgumentException("patternMode must be 'any' or 'all' (got '${args.patternMode}')")
+        }
+    }
+    if (args.patterns instanceof List && args.patterns) {
+        for (int pi = 0; pi < args.patterns.size(); pi++) {
+            def pat = args.patterns[pi]?.toString()?.take(100)
+            if (!pat) continue
+            try {
+                compiledPatterns << java.util.regex.Pattern.compile(pat, java.util.regex.Pattern.CASE_INSENSITIVE)
+            } catch (java.util.regex.PatternSyntaxException e) {
+                throw new IllegalArgumentException("Invalid regex pattern '${pat}' (patterns[${pi}]): ${e.message}")
+            }
+        }
+    }
+
+    // --- Parse since/until time bounds before the loop ---
+
+    // Relative-offset regex: <N><unit> where unit in m, h, d. Capped at 30d.
+    def maxRelativeMs = 30L * 24 * 60 * 60 * 1000  // 30 days in ms
+
+    // Supported ISO-8601 and hub-native timestamp formats for log entry times
+    def logTimeFmts = [
+        "yyyy-MM-dd HH:mm:ss.SSS",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+        "yyyy-MM-dd'T'HH:mm:ssZ",
+        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+        "yyyy-MM-dd'T'HH:mm:ss'Z'",
+        "yyyy-MM-dd'T'HH:mm:ss"
+    ]
+
+    Closure parseTimeArg = { String argName, String val ->
+        if (!val) return null
+        // Try relative offset: <N>m / <N>h / <N>d
+        def relMatcher = val =~ /^(\d+)([mhd])$/
+        if (relMatcher.matches()) {
+            long n = relMatcher.group(1).toLong()
+            def unit = relMatcher.group(2)
+            long ms
+            switch (unit) {
+                case 'm': ms = n * 60L * 1000; break
+                case 'h': ms = n * 3600L * 1000; break
+                case 'd': ms = n * 86400L * 1000; break
+                default: ms = 0
+            }
+            if (ms > maxRelativeMs) {
+                mcpLog("warn", "monitoring", "${argName} relative offset capped at 30d (was ${val})")
+                ms = maxRelativeMs
+            }
+            return new Date(now() - ms)
+        }
+        // Try ISO-8601 / timestamp formats.
+        // Values ending with literal 'Z' (UTC designator) must be parsed in UTC;
+        // Date.parse with a 'Z'-literal format uses JVM default TZ, which shifts
+        // the epoch by the hub's local offset. Detect the Z-suffix and use an explicit
+        // UTC-anchored SimpleDateFormat so "2024-01-15T00:00:00Z" resolves to UTC midnight.
+        if (val.endsWith("Z")) {
+            def utcTz = TimeZone.getTimeZone("UTC")
+            // Strip trailing Z; try ISO patterns without the Z suffix against the bare value.
+            def bare = val[0..-2]
+            def isoFmtsNoZ = ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"]
+            for (fmt in isoFmtsNoZ) {
+                try {
+                    def sdf2 = new java.text.SimpleDateFormat(fmt)
+                    sdf2.setTimeZone(utcTz)
+                    sdf2.setLenient(false)
+                    return sdf2.parse(bare)
+                } catch (Exception ignored) {}
+            }
+        }
+        // Naked-T ISO form without a TZ designator (e.g. '2024-01-15T10:30:00' or
+        // '2024-01-15T10:30:00.000'): treat as UTC to match the hub's log timestamp
+        // convention. Date.parse() uses JVM default TZ for these formats, which silently
+        // shifts the intended epoch on hubs running in non-UTC timezones.
+        if (val.contains('T') && !val.endsWith('Z')) {
+            def utcTz = TimeZone.getTimeZone("UTC")
+            def isoNoTzFmts = ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"]
+            for (fmt in isoNoTzFmts) {
+                try {
+                    def sdf = new java.text.SimpleDateFormat(fmt)
+                    sdf.setTimeZone(utcTz)
+                    sdf.setLenient(false)
+                    return sdf.parse(val)
+                } catch (Exception ignored) {}
+            }
+        }
+        for (fmt in logTimeFmts) {
+            try {
+                return Date.parse(fmt, val)
+            } catch (Exception ignored) {}
+        }
+        throw new IllegalArgumentException("Cannot parse ${argName}='${val}' -- use ISO-8601 (e.g. '2024-01-15T10:30:00Z') or a relative offset like '30m', '2h', '1d'")
+    }
+
+    def sinceDate = parseTimeArg("since", args.since?.toString()?.trim())
+    def untilDate = parseTimeArg("until", args.until?.toString()?.trim())
+
+    // Guard against inverted time window. With relative offsets, since='1h' means
+    // "1 hour ago" and until='2h' means "2 hours ago", making since > until -- a
+    // window with no entries that is indistinguishable from a genuine empty result.
+    if (sinceDate != null && untilDate != null && sinceDate.after(untilDate)) {
+        throw new IllegalArgumentException("since='${args.since}' resolves later than until='${args.until}' -- window is empty (relative offsets are subtracted from now, so since='2h' means 2 hours ago)")
+    }
+
     // Server-side scoping: the hub's /logs/past/json endpoint accepts ?type=dev&id=<N>
     // or ?type=app&id=<N> to filter at the source (same mechanism the UI's device- and
     // app-specific log pages use). Much cheaper than returning the whole buffer and
@@ -6590,6 +6745,30 @@ def toolGetHubLogs(args) {
     logArray = logArray.reverse()
 
     def totalParsed = logArray.size()
+
+    // Hub log timestamps from /logs/past/json carry no TZ marker but represent UTC.
+    // Parsing them with Date.parse() (JVM default TZ) would shift them by the hub's
+    // local offset, causing the time-window comparison to silently no-op on hubs in
+    // non-UTC timezones. Build reusable UTC-anchored parsers once per call, outside
+    // the per-entry loop, to avoid constructing SimpleDateFormat on every iteration.
+    def hubLogUtcTz = TimeZone.getTimeZone("UTC")
+    def hubLogSdfs = logTimeFmts
+        .findAll { !it.contains("Z") && !it.contains("'Z'") }
+        .collect { fmt ->
+            def sdf = new java.text.SimpleDateFormat(fmt)
+            sdf.setTimeZone(hubLogUtcTz)
+            sdf.setLenient(false)
+            sdf
+        }
+    // Formats with a real Z offset marker (no quotes) carry explicit TZ info and Date.parse
+    // handles them correctly. Formats with a literal 'Z' in quotes are intentionally excluded
+    // here: Date.parse treats 'Z' as a literal character match, not a TZ marker, so it
+    // interprets the value in JVM default TZ -- the same TZ bug hubLogSdfs was built to avoid.
+    // Hub /logs/past/json is confirmed not to emit 'T'-with-quoted-'Z' timestamps on any known
+    // firmware; keeping them in the fallback list would silently no-op the time-window filter
+    // on non-UTC hubs if a future firmware ever did emit them.
+    def hubLogIsoFmts = logTimeFmts.findAll { it.contains("Z") && !it.contains("'Z'") }
+
     for (logEntry in logArray) {
         def line = logEntry?.toString()
         if (!line?.trim()) continue
@@ -6615,12 +6794,63 @@ def toolGetHubLogs(args) {
             }
         }
 
-        // Apply filters
+        // Apply filters in pipeline order:
+        // scope (hub-side, done above) -> level -> source -> pattern -> patterns -> time window -> limit
+
         if (levelFilter && entry.level?.toLowerCase() != levelFilter.toLowerCase()) continue
         if (sourceFilter) {
             def src = sourceFilter.toLowerCase()
             // Source info is in the message field (format: "app|ID|AppName|..." or "dev|ID|DevName|...")
             if (!entry.message?.toLowerCase()?.contains(src) && !entry.name?.toLowerCase()?.contains(src)) continue
+        }
+
+        // Single-pattern regex against the message field
+        if (compiledPattern != null) {
+            if (!compiledPattern.matcher(entry.message ?: "").find()) continue
+        }
+
+        // Multi-pattern: patternMode='all' requires every pattern to match; 'any' (default) requires at least one
+        if (compiledPatterns) {
+            def msg = entry.message ?: ""
+            if (patternModeAll) {
+                if (!compiledPatterns.every { it.matcher(msg).find() }) continue
+            } else {
+                if (!compiledPatterns.any { it.matcher(msg).find() }) continue
+            }
+        }
+
+        // Time-window filter: parse entry.time lazily; if empty (firmware 2.5.0.126+ puts the
+        // timestamp in parts[0]/entry.name), fall back to entry.name before giving up.
+        // Skip filtering (not excluding) only when both candidates are unparseable.
+        if (sinceDate != null || untilDate != null) {
+            def entryTime = null
+            def timeStr = entry.time?.trim() ?: entry.name?.trim()
+            if (timeStr) {
+                // Try UTC-anchored parsers first (hub format has no TZ marker but is UTC).
+                for (sdf in hubLogSdfs) {
+                    try {
+                        entryTime = sdf.parse(timeStr)
+                        break
+                    } catch (Exception ignored) {}
+                }
+                // Fall through to ISO-8601 formats that carry their own TZ marker.
+                if (entryTime == null) {
+                    for (fmt in hubLogIsoFmts) {
+                        try {
+                            entryTime = Date.parse(fmt, timeStr)
+                            break
+                        } catch (Exception ignored) {}
+                    }
+                }
+                if (entryTime == null) {
+                    mcpLog("debug", "monitoring", "Could not parse log entry time '${timeStr?.take(30)}' for time-window filter -- entry not excluded")
+                }
+            }
+            // If entryTime resolved: enforce bounds. If entryTime is null (no time field or unparseable): pass through.
+            if (entryTime != null) {
+                if (sinceDate != null && entryTime.before(sinceDate)) continue
+                if (untilDate != null && entryTime.after(untilDate)) continue
+            }
         }
 
         logs << entry
