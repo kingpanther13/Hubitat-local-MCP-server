@@ -14,7 +14,7 @@ The repo has no `CHANGELOG.md`, no git tags, and no GitHub Releases. Release not
 
 1. Every merged PR automatically bumps the version number in all four locations.
 2. `CHANGELOG.md` is the source of truth for release notes; entries auto-inject into `packageManifest.json` `releaseNotes` and `README.md` Version History at release time.
-3. Contributors cannot modify version strings, `releaseNotes`, `dateReleased`, or the README Version History section. Those files/sections are bot-only.
+3. Version strings, `releaseNotes`, `dateReleased`, and the README Version History section cannot be modified in PRs. Those files/sections are bot-only.
 4. Every PR is required to document its change under a `## [Unreleased]` section in `CHANGELOG.md`. PRs that don't are blocked.
 5. Every PR is required to have a `release:patch|minor|major` label before merge. Maintainer applies the label after approving.
 6. Git tags (`vX.Y.Z`) are created automatically at each release.
@@ -49,7 +49,7 @@ The maintainer applies a `release:patch|minor|major` label to each PR based on t
 
 ### Source of truth hierarchy
 
-All three artifacts below are **bot-maintained**; contributors never edit them.
+All three artifacts below are **bot-maintained** — they're never edited in PRs.
 
 1. **`CHANGELOG.md`** — Canonical. Entries generated at release time from merged PR metadata (titles, authors, PR URLs, optional `## Release notes` sections in PR bodies).
 2. **`packageManifest.json` `releaseNotes`** — Derived. Bot prepends a flattened paragraph from the new CHANGELOG entry.
@@ -83,11 +83,11 @@ Two checks must pass before a PR can merge.
 - `README.md` `## Version History` section
 - `CHANGELOG.md` (entire file — bot-only)
 
-Contributors don't touch these files. Bot commits go directly to main (not through PRs), so this workflow only runs on contributor PRs.
+These files aren't edited in PRs. Bot commits go directly to main, never through PRs, so this workflow never runs on them.
 
 ### No changelog entry requirement
 
-Contributors do not write CHANGELOG entries. The release bot generates entries from merged PR titles (and optional `## Release notes` sections in PR bodies) at release time. Eliminates merge-conflict risk between concurrent PRs and removes contributor bookkeeping responsibility.
+CHANGELOG entries aren't hand-written in PRs. The release bot generates entries from merged PR titles (and optional `## Release notes` sections in PR bodies) at release time. Eliminates merge-conflict risk between concurrent PRs and removes the bookkeeping toil.
 
 If a contributor wants richer prose than their PR title, they add a `## Release notes` section to the PR body — the bot uses that in place of the title.
 

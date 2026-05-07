@@ -7,7 +7,7 @@ This file is for AI agents. Human contributors follow `.github/pull_request_temp
 ## Commands
 
 ```bash
-./gradlew test                     # full Spock suite (~10 min)
+./gradlew test                     # full Spock suite (~5 min)
 ./gradlew test --tests "<spec>"    # single spec
 python tests/sandbox_lint.py       # Groovy sandbox lint
 ```

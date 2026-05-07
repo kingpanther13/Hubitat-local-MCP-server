@@ -3,8 +3,8 @@
 
 Release bookkeeping (version strings, packageManifest.json releaseNotes and
 dateReleased, README Version History, CHANGELOG.md) is maintained exclusively
-by the release bot. PRs don't hand-write CHANGELOG entries either — the bot
-generates CHANGELOG entries from merged PR titles (and optional
+by the release bot. Don't hand-write CHANGELOG entries in PRs either — the
+bot generates CHANGELOG entries from merged PR titles (and optional
 '## Release notes' sections in PR bodies) at release time.
 
 Reads env:
@@ -112,7 +112,7 @@ def check_bookkeeping(base_ref: str) -> list[str]:
     after_changelog = (ROOT / "CHANGELOG.md").read_text()
     if before_changelog and before_changelog != after_changelog:
         errors.append(
-            "CHANGELOG.md: changed. CHANGELOG.md cannot be modified in PRs — "
+            "CHANGELOG.md: changed. This file cannot be modified in PRs — "
             "the release bot generates entries from merged PR titles at release time. "
             "To customize your entry, add a '## Release notes' section to your PR body."
         )
@@ -127,8 +127,8 @@ def check_agents_claude_sync() -> list[str]:
     Claude Code auto-loads CLAUDE.md. Symlinks don't ride cleanly through
     Windows checkouts (core.symlinks=false silently materializes the symlink
     as a 10-byte text file containing the target path), so we ship two real
-    files and enforce sync here. Contributors edit AGENTS.md (the source of
-    truth) and run `cp AGENTS.md CLAUDE.md` before committing.
+    files and enforce sync here. Edit AGENTS.md (the source of truth) and
+    run `cp AGENTS.md CLAUDE.md` before committing.
 
     Skip rule: if NEITHER file exists (e.g. fork that hasn't adopted the
     convention), pass silently. If exactly ONE exists, that's the drift case

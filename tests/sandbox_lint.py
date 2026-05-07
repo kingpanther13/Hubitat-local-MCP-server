@@ -125,6 +125,12 @@ RULES = [
         "message": "ArrayDeque instantiation blocked in Hubitat sandbox at parse time -- use Groovy list literal `[]` (LinkedList-backed; supports addLast/removeLast for LIFO semantics)",
         "severity": "error",
     },
+    {
+        "id": "SANDBOX-013",
+        "pattern": r"\bnew\s+(?:groovy\s*\.\s*lang\s*\.\s*)?GroovyShell\b|\bGroovyShell\s*\.",
+        "message": "GroovyShell blocked in Hubitat sandbox",
+        "severity": "error",
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -662,6 +668,26 @@ SELF_TEST_CASES = [
         "new LinkedList() is NOT flagged (LinkedList is sandbox-allowed)",
         "def stack = new LinkedList()",
         [("SANDBOX-012", False)],
+    ),
+    (
+        "new GroovyShell() is flagged",
+        "def shell = new GroovyShell()",
+        [("SANDBOX-013", True)],
+    ),
+    (
+        "new groovy.lang.GroovyShell() fully-qualified is flagged",
+        "def shell = new groovy.lang.GroovyShell(binding)",
+        [("SANDBOX-013", True)],
+    ),
+    (
+        "GroovyShell.parse(...) static call is flagged",
+        "def script = GroovyShell.parse(src)",
+        [("SANDBOX-013", True)],
+    ),
+    (
+        "GroovyShell mentioned in a string literal is NOT flagged",
+        'log.warn "do not use GroovyShell here"',
+        [("SANDBOX-013", False)],
     ),
 ]
 
