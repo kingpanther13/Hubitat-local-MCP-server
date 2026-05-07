@@ -425,6 +425,46 @@ class ToolListDevicesSpec extends ToolSpecBase {
         result.unfilteredTotal == 3
     }
 
+    // ---- MEDIUM-1: format=ids unfilteredTotal parity with capabilityFilter --
+
+    def "format=ids + capabilityFilter: response includes unfilteredTotal"() {
+        given:
+        def d1 = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
+        def d2 = makeDevice(id: 2, label: 'Motion Sensor', capabilities: [[name: 'MotionSensor']])
+        def d3 = makeDevice(id: 3, label: 'Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
+        settingsMap.selectedDevices = [d1, d2, d3]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, 'Switch', 'ids', null)
+
+        then:
+        result.total == 2
+        result.unfilteredTotal == 3
+        result.deviceIds as Set == [1, 3] as Set
+        result.containsKey('capabilityFilter')
+    }
+
+    // ---- MEDIUM-2: format=ids offset-overshoot unfilteredTotal parity -------
+
+    def "format=ids + labelFilter + offset overshoot: early-return includes unfilteredTotal"() {
+        given:
+        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
+        def d2 = makeDevice(id: 2, label: 'Kitchen Outlet')
+        def d3 = makeDevice(id: 3, label: 'Bedroom Fan')
+        settingsMap.selectedDevices = [d1, d2, d3]
+
+        when:
+        // 2 devices match 'kitchen'; offset=999 triggers early-return
+        def result = script.toolListDevices(false, 999, 0, null, 'kitchen', null, 'ids', null)
+
+        then:
+        result.deviceIds == []
+        result.count == 0
+        result.total == 2
+        result.unfilteredTotal == 3
+        result.containsKey('labelFilter')
+    }
+
     // ---- WARN-6: all-unknown fields projection returns empty device objects
 
     def "fields projection with all-unknown names produces empty device objects"() {

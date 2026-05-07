@@ -2711,7 +2711,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (totalCount > 0 && startIndex >= totalCount) {
         if (resolvedFormat == "ids") {
             def earlyResult = [deviceIds: [], count: 0, total: totalCount, hasMore: false, nextOffset: null]
-            if (filter && filter != "all") { earlyResult.filter = filter; earlyResult.unfilteredTotal = unfilteredTotal }
+            def anyFilterActive = (filter && filter != "all") || labelFilter || capabilityFilter
+            if (filter && filter != "all") earlyResult.filter = filter
+            if (anyFilterActive) earlyResult.unfilteredTotal = unfilteredTotal
             if (labelFilter) earlyResult.labelFilter = labelFilter
             if (capabilityFilter) earlyResult.capabilityFilter = capabilityFilter
             return earlyResult
@@ -2732,10 +2734,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
         def ids = pagedDevices.collect { it.id as Integer }
         def result = [deviceIds: ids, count: ids.size(), total: totalCount]
-        if (filter && filter != "all") {
-            result.filter = filter
-            result.unfilteredTotal = unfilteredTotal
-        }
+        def anyFilterActive = (filter && filter != "all") || labelFilter || capabilityFilter
+        if (filter && filter != "all") result.filter = filter
+        if (anyFilterActive) result.unfilteredTotal = unfilteredTotal
         if (labelFilter) result.labelFilter = labelFilter
         if (capabilityFilter) result.capabilityFilter = capabilityFilter
         if (limit && limit > 0) {
