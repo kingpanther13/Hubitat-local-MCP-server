@@ -3307,13 +3307,16 @@ def toolTestRule(ruleId) {
  * verb-appropriate redirect hint string. Returns null on any failure (fetch error, parse error,
  * id not present, app not rule-like) so callers always get graceful fallback.
  *
- * Rule-like detection uses two complementary signals:
- *   1. classLocation from systemAppTypes[] (authoritative SDK string: ruleApp51, roomLightsApp, etc.)
- *   2. type string from the instance data (human-readable: "Rule-5.1", "Room Lights", etc.)
- * Either signal matching is sufficient.
+ * Rule-like detection uses the human-readable type string from the app's instance data
+ * (e.g. "Rule-5.1", "Room Lights", "Visual Rule Builder"). Fragment matching is case-insensitive
+ * substring: any type string containing a fragment from ruleTypeFragments is considered rule-like.
+ * The test verb additionally checks RM-specific fragments to gate the run_rm_rule pointer
+ * (RMUtils is RM-only and does not work for Room Lighting / Basic Rules / Visual Rules instances).
  *
  * @param ruleId  the ID to look up (String or numeric)
- * @param verb    "read" (get/export) or "write" (update/delete/test/clone) -- controls hint phrasing
+ * @param verb    controls hint phrasing: "read" (get/export; clone routes through export so it also uses read),
+ *                "write" (update -- catch-all for any future write verbs),
+ *                "delete" (delete), "test" (test -- RM-only run_rm_rule pointer; non-RM falls back to inspection)
  * @return        redirect hint String, or null if no redirect applies
  */
 private String findRuleAppRedirect(ruleId, String verb) {
@@ -3322,22 +3325,16 @@ private String findRuleAppRedirect(ruleId, String verb) {
     // operator has intentionally restricted built-in app visibility.
     if (!settings.enableBuiltinApp) return null
 
-    // Known classLocation values for rule-like built-in apps.
-    // ruleApp51 = Rule Machine 5.1, ruleApp50 = Rule Machine 5.0,
-    // ruleApp = Rule Machine 4.x (legacy), roomLightsApp = Room Lighting parent,
-    // roomLightsChildApp = Room Lighting instance, basicRulesApp = Basic Rules,
-    // vrb = Visual Rules Builder.
-    def ruleClassLocations = [
-        "ruleApp51", "ruleApp50", "ruleApp",
-        "roomLightsApp", "roomLightsChildApp",
-        "basicRulesApp", "vrb"
-    ] as Set
-
-    // Human-readable type-string fragments to match as a fallback when classLocation
-    // is unavailable (e.g., systemAppTypes absent from the firmware's appsList response).
+    // Type-string fragments that identify rule-like built-in apps. Matched case-insensitively
+    // as substrings of the app's type field. "visual rule" (singular) covers both
+    // "Visual Rule Builder" (child instances) and "Visual Rules Builder" (parent app).
     def ruleTypeFragments = [
-        "rule machine", "rule-5", "rule-4", "room light", "basic rules", "visual rules"
+        "rule machine", "rule-5", "rule-4", "room light", "basic rules", "visual rule"
     ]
+
+    // Subset of ruleTypeFragments that are RM-specific. run_rm_rule (RMUtils) only works for
+    // Rule Machine rules -- pointing Room Lighting / Basic Rules / VRB ids there would fail.
+    def rmTypeFragments = ["rule machine", "rule-5", "rule-4"]
 
     def idStr = ruleId?.toString()?.trim()
     if (!idStr || !idStr.isInteger()) return null
@@ -3346,57 +3343,39 @@ private String findRuleAppRedirect(ruleId, String verb) {
         def responseText = hubInternalGet("/hub2/appsList")
         if (!responseText) return null
 
-        def parsed
-        try {
-            parsed = new groovy.json.JsonSlurper().parseText(responseText)
-        } catch (Exception ignored) {
-            return null
-        }
-
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
         if (!(parsed instanceof Map)) return null
 
-        // Build a classLocation lookup map from systemAppTypes[]: id -> classLocation.
-        def classLocationById = [:]
-        def systemTypes = parsed.systemAppTypes
-        if (systemTypes instanceof List) {
-            systemTypes.each { t ->
-                if (t instanceof Map && t.id != null && t.classLocation) {
-                    classLocationById[t.id.toString()] = t.classLocation.toString()
-                }
-            }
-        }
-
-        // Walk the apps[] tree with an early-exit DFS to find the app instance
-        // with matching id. Avoids building a full flat list when the target
-        // is found partway through a large app tree.
+        // Walk the apps[] tree with an early-exit iterative DFS to find the app instance
+        // with matching id. Iterative (explicit stack) avoids StackOverflowError on pathological
+        // hub responses with deeply-nested children (which would bypass the outer Exception catch).
         def foundData = null
-        def findInNodes
-        findInNodes = { List nodes ->
-            for (node in nodes) {
-                if (!(node instanceof Map)) continue
-                def d = node.data
-                if (d instanceof Map && d.id?.toString() == idStr) {
-                    foundData = d
-                    return true
-                }
-                if (node.children instanceof List && findInNodes(node.children)) return true
-            }
-            return false
-        }
         def apps = parsed.apps
         if (!(apps instanceof List)) return null
-        findInNodes(apps)
+        def stack = []
+        stack.addAll(apps)
+        while (!stack.isEmpty()) {
+            def node = stack.remove(0)
+            if (!(node instanceof Map)) continue
+            def d = node.data
+            if (d instanceof Map && d.id?.toString() == idStr) {
+                foundData = d
+                break
+            }
+            if (node.children instanceof List) {
+                stack.addAll(0, node.children)
+            }
+        }
         if (!foundData) return null
 
-        // Determine whether this app type is rule-like via classLocation or type string.
         def appTypeName = foundData.type?.toString() ?: "built-in app"
-        def appTypeId = foundData.appTypeId?.toString()
-        def classLoc = appTypeId ? classLocationById[appTypeId] : null
+        def appTypeNameLower = appTypeName.toLowerCase()
 
-        boolean isRuleLike = (classLoc && ruleClassLocations.contains(classLoc)) ||
-            ruleTypeFragments.any { frag -> appTypeName.toLowerCase().contains(frag) }
-
+        boolean isRuleLike = ruleTypeFragments.any { frag -> appTypeNameLower.contains(frag) }
         if (!isRuleLike) return null
+
+        // Is this app a Rule Machine instance? Gates the run_rm_rule pointer in the test-verb hint.
+        boolean isRmRule = rmTypeFragments.any { frag -> appTypeNameLower.contains(frag) }
 
         // Build verb-appropriate redirect hint.
         if (verb == "read") {
@@ -3406,22 +3385,32 @@ private String findRuleAppRedirect(ruleId, String verb) {
         } else if (verb == "delete") {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
+                "`custom_delete_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
                 "Use `manage_native_rules_and_apps -> delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
                 "(requires Built-in App Tools + Hub Admin Write)."
         } else if (verb == "test") {
-            return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
-                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
-                "Use `manage_native_rules_and_apps -> run_rm_rule(ruleId=${idStr})` to trigger it " +
-                "(requires Built-in App Tools)."
+            // run_rm_rule routes through RMUtils and is RM-only. Point non-RM rule-likes at get_app_config instead.
+            if (isRmRule) {
+                return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
+                    "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
+                    "`custom_test_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
+                    "Use `manage_native_rules_and_apps -> run_rm_rule(ruleId=${idStr})` to trigger it " +
+                    "(requires Built-in App Tools)."
+            } else {
+                return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
+                    "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
+                    "`custom_test_rule` only handles MCP's own rule engine, not Hubitat built-in apps."
+            }
         } else {
-            // write (update_rule and any future write verbs)
+            // Catch-all for "write" verb (custom_update_rule) and any future write verbs.
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
+                "`custom_update_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
                 "Use `manage_native_rules_and_apps -> update_native_app(appId=${idStr})` to modify it programmatically " +
                 "(requires Built-in App Tools + Hub Admin Write)."
         }
     } catch (Exception e) {
-        mcpLog("warn", "rules", "findRuleAppRedirect lookup failed for id ${idStr}: ${e.message ?: e.toString()}")
+        mcpLog("error", "rules", "findRuleAppRedirect lookup failed for id ${idStr}: ${e.message ?: e.toString()}")
         return null
     }
 }

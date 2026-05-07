@@ -25,8 +25,6 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | `custom_create_rule` | Create a new automation rule. | None |
 | `custom_update_rule` | Update rule triggers, conditions, or actions. Also handles enable/disable via `enabled=true/false`. | None |
 
-> **Note:** `custom_get_rule`, `custom_update_rule`, and related `custom_*` tools only operate on MCP-native rules. Passing a Hubitat built-in rule id yields a redirect hint pointing to `manage_installed_apps` (read) or `manage_native_rules_and_apps` (write/delete/test).
-
 ### Device Management (1)
 
 | Tool | Description | Access Gate |
