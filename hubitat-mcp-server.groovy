@@ -416,13 +416,15 @@ private void _subscribeToAllHubVariables() {
         logDebug("_subscribeToAllHubVariables: getAllGlobalVars threw ${e.class.simpleName}: ${e.message}")
         return
     }
+    if (location == null) return  // unit-test environment safety
     vars?.keySet()?.each { varName ->
         try {
             subscribe(location, "variable:${varName}", "handleHubVariableEvent")
-        } catch (Exception e) {
+        } catch (Throwable e) {
             // Don't let one bad subscribe break the whole loop. The hub
             // sometimes rejects names with characters that getAllGlobalVars
-            // returned but subscribe() refuses; log and continue.
+            // returned but subscribe() refuses; log and continue. Catch
+            // Throwable because hubitat_ci's validator throws AssertionError.
             mcpLog("warn", "hub-vars", "subscribe to variable:${varName} failed: ${e.message}")
         }
     }
@@ -4237,9 +4239,15 @@ def toolCreateVariable(args) {
 
     // Subscribe to the new variable's location event so changes show up in
     // get_variable_history without waiting for the next updated() pass.
-    try { subscribe(location, "variable:${name}", "handleHubVariableEvent") }
-    catch (Exception e) {
-        mcpLog("warn", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message}")
+    // Null-check + Throwable catch mirrors renameVariable: hubitat_ci's
+    // validator throws AssertionError (not Exception) when location is null
+    // in unit-test environments, and the create itself shouldn't be aborted
+    // by a subscription-registration failure.
+    if (location != null) {
+        try { subscribe(location, "variable:${name}", "handleHubVariableEvent") }
+        catch (Throwable e) {
+            mcpLog("warn", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message}")
+        }
     }
 
     mcpLog("info", "hub-vars", "Created hub variable '${name}' type=${type} value=${value}")
