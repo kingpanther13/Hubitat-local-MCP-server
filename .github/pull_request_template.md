@@ -1,7 +1,7 @@
 <!-- Prefix your PR title with the type that matches what you tick below.
      Valid prefixes: feat: | fix: | chore: | refactor: | docs: | test: | ci:
      Example: "feat: add device health polling tool"
-     Note: build: and build(deps): are reserved for Dependabot — contributors should not use them. -->
+     Note: build: is reserved for Dependabot — contributors should not use it. -->
 
 ## Summary
 
