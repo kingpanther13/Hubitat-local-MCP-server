@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 89 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, and Developer Mode self-administration. The tools are organized as **22 core tools** (always visible) plus **12 domain-named gateways** that proxy 67 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 90 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **12 domain-named gateways** that proxy 67 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -38,6 +38,8 @@ Use `send_command` with the device ID and command name. Common commands:
 - Thermostats: `setHeatingSetpoint`, `setCoolingSetpoint`, `setThermostatMode`
 
 Always check the device's `supportedCommands` (from `get_device`) before sending commands.
+
+After sending a command, use `poll_until_attribute` to verify the state change took effect rather than sleeping and calling `get_attribute`. Example: after `send_command(on)` poll `attribute=switch, expectedValue="on", timeoutMs=5000`.
 
 ### Virtual Devices
 

@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 89 MCP tools (34 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 90 MCP tools (35 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 89 tools total — 22 core tools are always visible, while 67 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 90 tools total — 23 core tools are always visible, while 67 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,14 +221,14 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (89 total — 34 on tools/list)
+### MCP Tools (90 total — 35 on tools/list)
 
-The server has 89 tools total. To keep the MCP `tools/list` manageable, **22 core tools** are always visible and **67 additional tools** are organized behind **12 domain-named gateways**. The AI sees 34 items on `tools/list` (22 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 90 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **67 additional tools** are organized behind **12 domain-named gateways**. The AI sees 35 items on `tools/list` (23 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (22) — Always visible on tools/list
+#### Core Tools (23) — Always visible on tools/list
 
 <details>
-<summary><b>Devices</b> (5) — Control and query devices</summary>
+<summary><b>Devices</b> (6) — Control and query devices</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -237,6 +237,7 @@ The server has 89 tools total. To keep the MCP `tools/list` manageable, **22 cor
 | `get_attribute` | Get a specific attribute value |
 | `send_command` | Send a command (on, off, setLevel, etc.) |
 | `get_device_events` | Recent events for a device |
+| `poll_until_attribute` | Block-poll an attribute until it matches an expected value or times out (up to 60s) |
 
 </details>
 

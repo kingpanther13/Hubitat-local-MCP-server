@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 34 items (22 core + 12 gateways) covering 89 total tools. Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 35 items (23 core + 12 gateways) covering 90 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -302,6 +302,17 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 **get_device_events:**
 - Default limit 10, recommended max 50
 - Higher values (100+) may cause delays on busy devices
+
+**poll_until_attribute:**
+- Blocks the MCP request up to `timeoutMs` (default 5000ms, max 60000ms)
+- Re-reads the attribute every `pollIntervalMs` (default 200ms, min 50ms, max 5000ms)
+- Returns `success: true` with `finalValue`, `elapsedMs`, `polledCount`, `timedOut: false` when the value matches
+- Returns `success: false` with `timedOut: true` and the last-read `finalValue` on timeout
+- Provide `expectedValue` (string), `expectedValues` (list of strings), or both (OR semantics)
+- `pollIntervalMs` is automatically clamped to `timeoutMs` if larger, ensuring at least one poll
+- For passive one-shot reads, use `get_attribute` instead -- this tool is for waiting on state transitions
+- Common pattern after `send_command`: poll for the resulting attribute state rather than sleeping client-side
+- Note: each call holds an HTTP worker for up to `timeoutMs`. Avoid concurrent calls from multiple agents -- the hub has a finite worker pool. Prefer event-driven flows when available.
 
 **get_hub_logs:**
 - Returns most recent entries first
