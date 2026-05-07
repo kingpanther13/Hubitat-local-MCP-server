@@ -927,18 +927,24 @@ def getAllToolDefinitions() {
             name: "list_devices",
             description: """List all devices available to MCP with current states.
 
-DEVICE AUTHORIZATION: Exact name match → use directly. No exact match → suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
+DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
 
-Summary response always includes: id, name (driver type), label (user name), room, disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Summary mode also returns currentStates (dict); detailed mode replaces currentStates with capabilities, attributes, and commands. Use filter to narrow on common patterns (much more efficient than fetching all and client-side filtering). To count children of a parent device, group the response by parentDeviceId.""",
+Summary response always includes: id, name (driver type), label (user name), room, disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Summary mode also returns currentStates (dict); detailed mode replaces currentStates with capabilities, attributes, and commands.
+
+Server-side filtering (all applied before pagination): filter for enabled/disabled/stale; labelFilter for case-insensitive substring match on device label; capabilityFilter for case-insensitive exact match on capability name (e.g. 'Switch'). Use format='ids' for a flat ID array (cheapest shape). Use fields=[...] to project only named fields and skip expensive hub reads (e.g. fields=['id','label'] skips currentStates). To count children of a parent device, group the response by parentDeviceId.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
-                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale). For filtering by room/label/capability, omit filter and use client-side logic on the returned list."]
+                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale)."],
+                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label. Only devices whose label contains this string are returned. Applied after filter, before pagination. Empty or omitted = no label filtering."],
+                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Only devices with this capability are returned. Applied after labelFilter, before pagination. Capability names are camelCase, no spaces -- e.g., 'ColorControl', not 'Color Control'. Example: 'Switch', 'TemperatureMeasurement'. Empty or omitted = no capability filtering."],
+                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary' and produces detailed-mode output."],
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Unknown names are silently ignored. Omitted or empty = all default fields for the active format. Ignored when format='ids'."]
                 ]
             ]
         ],
@@ -2433,7 +2439,7 @@ def executeTool(toolName, args) {
     }
     switch (toolName) {
         // Device Tools
-        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter)
+        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields)
         case "get_device": return toolGetDevice(args.deviceId)
         case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
         case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
@@ -2609,7 +2615,7 @@ def executeTool(toolName, args) {
 
 // ==================== DEVICE TOOLS ====================
 
-def toolListDevices(detailed, offset, limit, filter = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null) {
     // Combine selected devices and MCP-managed child devices (virtual devices)
     def allDevices = (selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
@@ -2668,6 +2674,23 @@ def toolListDevices(detailed, offset, limit, filter = null) {
         }
     }
 
+    // Apply labelFilter (case-insensitive substring match on device label)
+    if (labelFilter) {
+        def lf = labelFilter.toLowerCase()
+        allDevices = allDevices.findAll { d ->
+            def lbl = (d.label ?: d.name)?.toString()?.toLowerCase()
+            lbl != null && lbl.contains(lf)
+        }
+    }
+
+    // Apply capabilityFilter (case-insensitive exact match on capability name)
+    if (capabilityFilter) {
+        def cf = capabilityFilter.toLowerCase()
+        allDevices = allDevices.findAll { d ->
+            d.capabilities?.any { cap -> cap.name?.toLowerCase() == cf }
+        }
+    }
+
     def totalCount = allDevices.size()
 
     // Apply pagination (post-filter)
@@ -2678,8 +2701,21 @@ def toolListDevices(detailed, offset, limit, filter = null) {
         endIndex = Math.min(startIndex + limit, totalCount)
     }
 
-    // Validate offset
+    // Validate format before any early-return so invalid format always throws.
+    def resolvedFormat = format ?: "summary"
+    if (format && !["summary", "detailed", "ids"].contains(resolvedFormat)) {
+        throw new IllegalArgumentException("Invalid format '${format}'. Must be one of: summary, detailed, ids")
+    }
+
+    // Validate offset (after format validation so callers always get the format error first).
     if (totalCount > 0 && startIndex >= totalCount) {
+        if (resolvedFormat == "ids") {
+            def earlyResult = [deviceIds: [], count: 0, total: totalCount, hasMore: false, nextOffset: null]
+            if (filter && filter != "all") { earlyResult.filter = filter; earlyResult.unfilteredTotal = unfilteredTotal }
+            if (labelFilter) earlyResult.labelFilter = labelFilter
+            if (capabilityFilter) earlyResult.capabilityFilter = capabilityFilter
+            return earlyResult
+        }
         return [
             devices: [],
             total: totalCount,
@@ -2691,36 +2727,81 @@ def toolListDevices(detailed, offset, limit, filter = null) {
         ]
     }
 
+    // format="ids" returns a flat array of integer IDs; ignores detailed/fields
+    if (resolvedFormat == "ids") {
+        def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
+        def ids = pagedDevices.collect { it.id as Integer }
+        def result = [deviceIds: ids, count: ids.size(), total: totalCount]
+        if (filter && filter != "all") {
+            result.filter = filter
+            result.unfilteredTotal = unfilteredTotal
+        }
+        if (labelFilter) result.labelFilter = labelFilter
+        if (capabilityFilter) result.capabilityFilter = capabilityFilter
+        if (limit && limit > 0) {
+            result.offset = startIndex
+            result.limit = limit
+            result.hasMore = endIndex < totalCount
+            if (endIndex < totalCount) result.nextOffset = endIndex
+        }
+        return result
+    }
+
     def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
     def childDeviceIds = childDevs.collect { it.id.toString() } as Set
 
+    // Build the requested field set. null/empty means "all fields for this format mode".
+    def fieldSet = (fields && !fields.isEmpty()) ? (fields as Set) : null
+
+    // Resolve whether to use detailed mode: explicit format="detailed", detailed=true, or any
+    // detail-only field requested via the fields projection (capabilities, attributes, commands).
+    // Auto-promote so fields=['id','capabilities'] works without requiring detailed=true.
+    def detailFields = ['capabilities', 'attributes', 'commands'] as Set
+    def useDetailed = (resolvedFormat == "detailed") || detailed ||
+        (fieldSet != null && fieldSet.any { detailFields.contains(it) })
+
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
-        def info = [
-            id: deviceIdStr,
-            name: device.name,
-            label: device.label ?: device.name,
-            room: device.roomName,
-            disabled: isDeviceDisabled(device),
-            deviceNetworkId: safeDni(device),
-            lastActivity: formatLastActivity(safeLastActivity(device)),
-            parentDeviceId: safeParentDeviceId(device)
-        ]
+
+        // Build all candidate fields, then project down to requested fields.
+        // Fields that require hub calls (currentStates, capabilities, attributes, commands)
+        // are skipped entirely when not requested -- saves hub CPU on large-fleet requests.
+        def info = [:]
+
+        // Always include id (needed for correlation); callers can drop it via fields if unwanted
+        if (fieldSet == null || fieldSet.contains("id")) info.id = deviceIdStr
+        if (fieldSet == null || fieldSet.contains("name")) info.name = device.name
+        if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device.name
+        if (fieldSet == null || fieldSet.contains("room")) info.room = device.roomName
+        if (fieldSet == null || fieldSet.contains("disabled")) info.disabled = isDeviceDisabled(device)
+        if (fieldSet == null || fieldSet.contains("deviceNetworkId")) info.deviceNetworkId = safeDni(device)
+        if (fieldSet == null || fieldSet.contains("lastActivity")) info.lastActivity = formatLastActivity(safeLastActivity(device))
+        if (fieldSet == null || fieldSet.contains("parentDeviceId")) info.parentDeviceId = safeParentDeviceId(device)
+
         if (childDeviceIds.contains(deviceIdStr)) {
-            info.mcpManaged = true
+            if (fieldSet == null || fieldSet.contains("mcpManaged")) info.mcpManaged = true
         }
 
-        if (detailed) {
-            info.capabilities = device.capabilities?.collect { it.name }
-            info.attributes = device.supportedAttributes?.collect { attr ->
-                [name: attr.name, value: device.currentValue(attr.name)]
+        if (useDetailed) {
+            if (fieldSet == null || fieldSet.contains("capabilities")) {
+                info.capabilities = device.capabilities?.collect { it.name }
             }
-            info.commands = device.supportedCommands?.collect { it.name }
+            if (fieldSet == null || fieldSet.contains("attributes")) {
+                info.attributes = device.supportedAttributes?.collect { attr ->
+                    [name: attr.name, value: device.currentValue(attr.name)]
+                }
+            }
+            if (fieldSet == null || fieldSet.contains("commands")) {
+                info.commands = device.supportedCommands?.collect { it.name }
+            }
         } else {
-            info.currentStates = [:]
-            ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
-                def val = device.currentValue(attr)
-                if (val != null) info.currentStates[attr] = val
+            // Summary mode: populate currentStates only when requested (or when no projection active)
+            if (fieldSet == null || fieldSet.contains("currentStates")) {
+                info.currentStates = [:]
+                ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
+                    def val = device.currentValue(attr)
+                    if (val != null) info.currentStates[attr] = val
+                }
             }
         }
 
@@ -2732,10 +2813,12 @@ def toolListDevices(detailed, offset, limit, filter = null) {
         count: devices.size(),
         total: totalCount
     ]
-    if (filter && filter != "all") {
-        result.filter = filter
-        result.unfilteredTotal = unfilteredTotal
-    }
+    // Report unfilteredTotal whenever any filter narrowed the set (filter, labelFilter, or capabilityFilter).
+    def anyFilterActive = (filter && filter != "all") || labelFilter || capabilityFilter
+    if (filter && filter != "all") result.filter = filter
+    if (anyFilterActive) result.unfilteredTotal = unfilteredTotal
+    if (labelFilter) result.labelFilter = labelFilter
+    if (capabilityFilter) result.capabilityFilter = capabilityFilter
 
     // Include pagination info if pagination was used
     if (limit && limit > 0) {
@@ -17226,6 +17309,9 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Use detailed=false for initial discovery
 - With detailed=true, paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel
+- Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
+- format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
+- fields=[...] skips expensive hub reads: fields=['id','label'] skips currentStates reads; fields=['id','label','capabilities'] enables capability inspection without attributes or commands
 
 **get_device_events:**
 - Default limit 10, recommended max 50

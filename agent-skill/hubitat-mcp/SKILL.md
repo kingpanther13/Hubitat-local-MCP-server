@@ -188,10 +188,12 @@ Via `manage_hub_variables` gateway:
 ## Performance Tips
 
 - Use `list_devices(detailed=false)` first, then paginate `detailed=true` in batches of 20-30
+- Use `labelFilter` (substring) and `capabilityFilter` (exact capability name) for server-side narrowing -- far cheaper than fetching all devices and filtering client-side
+- `format='ids'` returns a flat integer array (cheapest shape); `fields=[...]` projects only named fields to reduce payload and skip hub reads
 - `get_device_events` default limit 10, max recommended 50
 - `get_hub_logs` default 100, max 500 - use filters to narrow
 - Make tool calls sequentially, not in parallel (hub is single-threaded)
-- For Hubitat Cloud connections, responses are limited to 128KB - use pagination
+- For Hubitat Cloud connections, responses are limited to 128KB - use `labelFilter`, `capabilityFilter`, `fields`, or pagination to stay under the limit
 
 ## On-Demand Reference
 

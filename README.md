@@ -232,7 +232,7 @@ The server has 89 tools total. To keep the MCP `tools/list` manageable, **22 cor
 
 | Tool | Description |
 |------|-------------|
-| `list_devices` | List accessible devices (supports pagination) |
+| `list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection) |
 | `get_device` | Full device details: attributes, commands, capabilities |
 | `get_attribute` | Get a specific attribute value |
 | `send_command` | Send a command (on, off, setLevel, etc.) |
@@ -709,7 +709,7 @@ If your hub has Hub Security enabled (login required for the web UI), the MCP se
 <details>
 <summary><b>Known Limits</b></summary>
 
-- **`list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `list_devices(detailed=true, limit=25, offset=0)`
+- **`list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `list_devices(detailed=true, limit=25, offset=0)`. Use `labelFilter` or `capabilityFilter` to narrow server-side before pagination. Use `fields=[...]` to skip expensive attribute reads.
 - **Duration triggers** — Maximum of 2 hours (7200 seconds)
 - **Captured states** — Default limit of 20 (configurable 1-100 in settings)
 - **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
@@ -760,11 +760,13 @@ Make sure the device is selected in the app's "Select Devices for MCP Access" se
 <details>
 <summary><b>list_devices(detailed=true) fails over Hubitat Cloud</b></summary>
 
-Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). Use pagination:
+Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). Use pagination and server-side filtering to stay under the limit:
 
 ```
-list_devices(detailed=true, limit=25, offset=0)   // First 25 devices
-list_devices(detailed=true, limit=25, offset=25)  // Next 25 devices
+list_devices(detailed=true, limit=25, offset=0)               // First 25 devices
+list_devices(detailed=true, limit=25, offset=25)              // Next 25 devices
+list_devices(capabilityFilter='Switch', limit=25, offset=0)   // Only Switch devices
+list_devices(fields=['id','label','currentStates'], limit=50) // Slim payload
 ```
 
 The response includes `total`, `hasMore`, and `nextOffset` to help with pagination.
