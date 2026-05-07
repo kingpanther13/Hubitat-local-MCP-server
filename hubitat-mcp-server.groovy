@@ -347,7 +347,7 @@ def initialize() {
  * stopped being referenced.
  */
 private void _refreshHubVarInUseRegistrations() {
-    Set<String> currentVars = []
+    Set<String> currentVars = [] as Set
     Set<String> hubVarNames
     try {
         hubVarNames = (getAllGlobalVars()?.keySet() ?: []) as Set<String>
@@ -442,7 +442,9 @@ def renameVariable(String oldName, String newName) {
     history = history.collect { entry ->
         if (entry?.name == oldName) {
             rewrote = true
-            return [name: newName] + (entry.findAll { k, v -> k != "name" })
+            // Groovy Map +: rightmost map's keys override; produces a new
+            // map with `name` updated and other fields preserved.
+            return entry + [name: newName]
         }
         return entry
     }
