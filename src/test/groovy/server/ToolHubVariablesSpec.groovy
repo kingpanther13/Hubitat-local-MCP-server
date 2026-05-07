@@ -710,7 +710,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('stuck')
     }
 
-    def "create_connector wizard sequence: createCon click + capab commit via toolUpdateNativeApp"() {
+    def "create_connector wizard sequence: createCon click + capab commit via _rmWriteSettingOnPage"() {
         given:
         enableHubAdminWrite()
 
@@ -730,14 +730,10 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             return [status: 200]
         }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
-        // backupItemSource priming + toolUpdateNativeApp chooser-commit are both
-        // wizard side effects of the firmware quirk for Number/Decimal vars.
-        // Stub to no-op so the test exercises only the orchestration logic.
-        script.metaClass.backupItemSource = { String type, String id -> [:] }
-        def chooserWrites = []
-        script.metaClass.toolUpdateNativeApp = { Map argsMap ->
-            chooserWrites << argsMap
-            return [success: true, settingsApplied: argsMap?.settings?.keySet()?.toList()]
+        script.metaClass._primeHubVarsWizard = { Integer appId, String context -> /* no-op */ }
+        def settingWrites = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String settingName, val, List applied, String fieldType, List skipped ->
+            settingWrites << [appId: appId, pageName: pageName, name: settingName, value: val, fieldType: fieldType]
         }
 
         when:
@@ -747,11 +743,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         buttonClicks.size() == 1
         buttonClicks[0] == [appId: 1424, btn: 'foo', stateAttr: 'createCon', pageName: 'hubVar']
 
-        and: 'chooser commit attempted via toolUpdateNativeApp (no-op for Boolean vars but called unconditionally)'
-        chooserWrites.size() == 1
-        chooserWrites[0].appId == 1424
-        chooserWrites[0].pageName == 'hubVar'
-        chooserWrites[0].settings == [capab: 'Variable']  // default when no connectorType arg
+        and: 'chooser capab commit via _rmWriteSettingOnPage (no-op for Boolean vars but called unconditionally)'
+        settingWrites.size() == 1
+        settingWrites[0].appId == 1424
+        settingWrites[0].pageName == 'hubVar'
+        settingWrites[0].name == 'capab'
+        settingWrites[0].value == 'Variable'  // default when no connectorType arg
+        settingWrites[0].fieldType == 'enum'
 
         and: 'response surfaces the new connector deviceId'
         result.success == true
