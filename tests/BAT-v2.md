@@ -179,6 +179,18 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `poll_until_attribute` with `expectedValue="on", timeoutMs=500`. Device was never turned on, so returns `success: false, timedOut: true`.
 
+### T07d — poll_until_attribute (expectedValues OR semantics)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Poll OR Test'. Leave it in whatever state it defaults to (off).",
+  "test_prompt": "Poll the switch attribute of 'BAT Poll OR Test' waiting for it to be in EITHER the 'on' or 'off' state. Use expectedValues=['on','off'] and a 2-second timeout. Report whether the poll succeeded.",
+  "teardown_prompt": "Delete the virtual device 'BAT Poll OR Test'."
+}
+```
+
+**Expected**: Calls `poll_until_attribute` with `expectedValues=["on","off"], timeoutMs=2000`. Device is in one of those states by default, so returns `success: true, timedOut: false` on the first poll.
+
 ### T08 — custom_list_rules
 
 ```json

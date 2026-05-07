@@ -39,7 +39,7 @@ Use `send_command` with the device ID and command name. Common commands:
 
 Always check the device's `supportedCommands` (from `get_device`) before sending commands.
 
-After sending a command, use `poll_until_attribute` to verify the state change took effect rather than sleeping and calling `get_attribute`. Example: after `send_command(on)` poll `attribute=switch, expectedValue="on", timeoutMs=5000`.
+After sending a command, use `poll_until_attribute` to verify the state change took effect rather than sleeping and calling `get_attribute`. Example: after `send_command(on)` poll `attribute=switch, expectedValue="on", timeoutMs=5000`. Note: `timeoutMs` is in MILLISECONDS (5000 = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` is required. This tool BLOCKS the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running it in parallel with other MCP calls.
 
 ### Virtual Devices
 

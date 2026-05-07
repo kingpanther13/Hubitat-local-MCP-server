@@ -237,7 +237,7 @@ The server has 90 tools total. To keep the MCP `tools/list` manageable, **23 cor
 | `get_attribute` | Get a specific attribute value |
 | `send_command` | Send a command (on, off, setLevel, etc.) |
 | `get_device_events` | Recent events for a device |
-| `poll_until_attribute` | Block-poll an attribute until it matches an expected value or times out (up to 60s) |
+| `poll_until_attribute` | Block-poll an attribute until it matches an expected value or times out. `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` required. BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
 
 </details>
 

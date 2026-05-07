@@ -14,16 +14,27 @@ import support.ToolSpecBase
  *  - expectedValues (list) no match -> timeout
  *  - Both expectedValue and expectedValues set (OR semantics)
  *  - Both null -> throws
- *  - Type-validation throws (deviceId as int, attribute as list, timeoutMs string, expectedValues with int element)
+ *  - Empty expectedValues list -> throws (B1)
+ *  - Empty string expectedValue -> throws (W1)
+ *  - Null value for present keys (timeoutMs, pollIntervalMs, expectedValue, expectedValues) -> throws (B2)
+ *  - Type-validation throws: deviceId as int, attribute as list, timeoutMs string,
+ *    expectedValues with int element, pollIntervalMs string, expectedValue as int (6 tests)
  *  - timeoutMs out of range (< 100, > 60000)
+ *  - timeoutMs exact boundaries (99 throws, 60001 throws, 100 accepts, 60000 accepts) (W2)
  *  - pollIntervalMs out of range (< 50, > 5000)
+ *  - pollIntervalMs exact boundaries (49 throws, 5001 throws, 50 accepts, 5000 accepts) (W2)
  *  - pollIntervalMs > timeoutMs -> auto-clamped (at least one poll still fires)
  *  - Device not found -> throws
- *  - Attribute with null currentValue -> polls until timeout, returns cleanly
+ *  - Attribute with null currentValue (neverReported=true path) (I5)
+ *  - Attribute value transitions from null to wrong -> neverReported absent or false (I5)
  *  - Attribute name typo (not in supportedAttributes) -> throws with helpful message listing available attributes
  *  - Unknown arg (timeoutSeconds) -> throws with message naming the bad key and suggesting timeoutMs
  *  - Multiple unknown args -> all listed in the error plus gotcha hint
- *  - BigDecimal integer-equivalent (50.0) matches expectedValue '50' (numeric fallback)
+ *  - pauseExecution throws -> returns interrupted=true with context fields (I6)
+ *  - BigDecimal integer-equivalent (50.0) matches expectedValue '50' (numeric fallback, Number->String)
+ *  - String "50.0" attribute matches expectedValue '50' (numeric fallback, String->String, B3)
+ *  - expectedValue '50.0' matches Integer currentValue 50 (inverse direction, I8)
+ *  - expectedValue '50' matches Double 50.0d (I8)
  *  - BigDecimal fractional (50.5) does NOT match expectedValue '50' (correct behavior)
  *  - Numeric finalValue against non-numeric expectedValue -> no match, no exception (isNumber() guard)
  *
@@ -692,5 +703,463 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         notThrown(Exception)
         result.success  == false
         result.timedOut == true
+    }
+
+    // ---------------------------------------------------------------------------
+    // 20. B1: empty expectedValues list -> throws
+    // ---------------------------------------------------------------------------
+
+    def "throws when expectedValues is an empty list"() {
+        given:
+        def device = new TestDevice(
+            id: 200,
+            label: 'Empty EV Test',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'on']
+        )
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([
+            deviceId       : '200',
+            attribute      : 'switch',
+            expectedValues : []   // empty -- not a valid filter
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('expectedvalues')
+        ex.message.toLowerCase().contains('empty')
+    }
+
+    // ---------------------------------------------------------------------------
+    // 21. W1: empty string expectedValue -> throws
+    // ---------------------------------------------------------------------------
+
+    def "throws when expectedValue is an empty string"() {
+        given:
+        def device = new TestDevice(
+            id: 201,
+            label: 'Empty EV String Test',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'on']
+        )
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([
+            deviceId      : '201',
+            attribute     : 'switch',
+            expectedValue : ''   // empty string -- ambiguous semantics; reject
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('expectedvalue')
+        ex.message.toLowerCase().contains('empty')
+    }
+
+    // ---------------------------------------------------------------------------
+    // 22. B2: null value for present keys -> throws with descriptive messages
+    // ---------------------------------------------------------------------------
+
+    def "throws when timeoutMs is explicitly null"() {
+        given:
+        def device = new TestDevice(
+            id: 210,
+            label: 'Null TimeoutMs',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([
+            deviceId      : '210',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : null   // key present, value null
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('timeoutms')
+        ex.message.toLowerCase().contains('null')
+    }
+
+    def "throws when pollIntervalMs is explicitly null"() {
+        given:
+        def device = new TestDevice(
+            id: 211,
+            label: 'Null PollIntervalMs',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([
+            deviceId       : '211',
+            attribute      : 'switch',
+            expectedValue  : 'on',
+            pollIntervalMs : null   // key present, value null
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('pollintervalms')
+        ex.message.toLowerCase().contains('null')
+    }
+
+    // ---------------------------------------------------------------------------
+    // 23. I9: missing type-validation tests -- pollIntervalMs and expectedValue
+    // ---------------------------------------------------------------------------
+
+    def "throws when pollIntervalMs is a string instead of a number"() {
+        given:
+        def device = new TestDevice(
+            id: 220,
+            label: 'PollInterval Type',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'on']
+        )
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([
+            deviceId       : '220',
+            attribute      : 'switch',
+            expectedValue  : 'on',
+            pollIntervalMs : '200'   // should be Number
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('pollintervalms')
+    }
+
+    def "throws when expectedValue is a non-string type (integer)"() {
+        given:
+        def device = new TestDevice(
+            id: 221,
+            label: 'EV Type Check',
+            supportedAttributes: [[name: 'level']],
+            attributeValues: [level: '50']
+        )
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([
+            deviceId      : '221',
+            attribute     : 'level',
+            expectedValue : 50   // should be String "50", not Integer
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('expectedvalue')
+    }
+
+    // ---------------------------------------------------------------------------
+    // 24. W2: exact boundary tests for timeoutMs
+    // ---------------------------------------------------------------------------
+
+    def "throws when timeoutMs is exactly 99 (one below minimum)"() {
+        given:
+        def device = new TestDevice(id: 230, label: 'Boundary Low',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '230', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 99])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('timeoutms')
+    }
+
+    def "throws when timeoutMs is exactly 60001 (one above maximum)"() {
+        given:
+        def device = new TestDevice(id: 231, label: 'Boundary High',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '231', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 60001])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('timeoutms')
+    }
+
+    def "accepts timeoutMs at exact minimum (100)"() {
+        given:
+        def device = new TestDevice(id: 232, label: 'Boundary Min Accept',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([deviceId: '232', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 100])
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.success == true
+    }
+
+    def "accepts timeoutMs at exact maximum (60000)"() {
+        given:
+        def device = new TestDevice(id: 233, label: 'Boundary Max Accept',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([deviceId: '233', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 60000])
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.success == true
+    }
+
+    // ---------------------------------------------------------------------------
+    // 25. W2: exact boundary tests for pollIntervalMs
+    // ---------------------------------------------------------------------------
+
+    def "throws when pollIntervalMs is exactly 49 (one below minimum)"() {
+        given:
+        def device = new TestDevice(id: 240, label: 'Interval Low',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '240', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 49])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('pollintervalms')
+    }
+
+    def "throws when pollIntervalMs is exactly 5001 (one above maximum)"() {
+        given:
+        def device = new TestDevice(id: 241, label: 'Interval High',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << device
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '241', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 60000, pollIntervalMs: 5001])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('pollintervalms')
+    }
+
+    def "accepts pollIntervalMs at exact minimum (50)"() {
+        given:
+        def device = new TestDevice(id: 242, label: 'Interval Min Accept',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([deviceId: '242', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.success == true
+    }
+
+    def "accepts pollIntervalMs at exact maximum (5000)"() {
+        given:
+        def device = new TestDevice(id: 243, label: 'Interval Max Accept',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        // pollIntervalMs=5000 > timeoutMs=200 so it gets clamped -- still accepts, not throws
+        def result = script.toolPollUntilAttribute([deviceId: '243', attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 200, pollIntervalMs: 5000])
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.success == true
+    }
+
+    // ---------------------------------------------------------------------------
+    // 26. I5: neverReported=true when attribute is always null during poll
+    // ---------------------------------------------------------------------------
+
+    def "sets neverReported=true when attribute never returns a non-null value"() {
+        given:
+        def device = new TestDevice(
+            id: 250,
+            label: 'Always Null',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [:]   // null throughout
+        )
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '250',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 100,
+            pollIntervalMs: 50
+        ])
+
+        then:
+        result.success      == false
+        result.timedOut     == true
+        result.neverReported == true
+    }
+
+    def "does not set neverReported when attribute returns non-null on at least one poll"() {
+        given:
+        def readCount = 0
+        def device = Spy(TestDevice)
+        device.id = 251
+        device.label = 'Null Then Wrong'
+        device.supportedAttributes = [[name: 'switch']]
+        // First read returns null, subsequent reads return 'off' (wrong value)
+        device.currentValue(_) >> { String attr ->
+            readCount++
+            return readCount == 1 ? null : 'off'
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '251',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 100,
+            pollIntervalMs: 50
+        ])
+
+        then:
+        result.success      == false
+        result.timedOut     == true
+        !result.neverReported   // key absent or false -- attribute did report eventually
+    }
+
+    // ---------------------------------------------------------------------------
+    // 27. I6: pauseExecution throws -> returns interrupted=true with context fields
+    // ---------------------------------------------------------------------------
+
+    def "returns interrupted=true when pauseExecution throws an exception"() {
+        given:
+        def device = new TestDevice(
+            id: 260,
+            label: 'Interrupted Poll',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']   // won't match, so we'll reach sleep
+        )
+        childDevicesList << device
+
+        // pauseExecution is on BaseExecutor/@Delegate chain; override via metaClass on the script
+        script.metaClass.pauseExecution = { long ms ->
+            throw new InterruptedException("hub reloading")
+        }
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '260',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        result.success      == false
+        result.interrupted  == true
+        result.polledCount  >= 1
+        result.finalValue   == 'off'
+        result.elapsedMs    >= 0
+    }
+
+    // ---------------------------------------------------------------------------
+    // 28. B3: String-typed numeric attribute matched by expectedValue
+    //     Hubitat drivers return some attributes as String "50.0" not BigDecimal.
+    // ---------------------------------------------------------------------------
+
+    def "matches when String attribute '50.0' is compared to expectedValue '50'"() {
+        given:
+        def device = Spy(TestDevice)
+        device.id = 280
+        device.label = 'String Numeric Attr'
+        device.supportedAttributes = [[name: 'level']]
+        // Driver returns a String, not BigDecimal
+        device.currentValue(_) >> { String attr -> '50.0' }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '280',
+            attribute     : 'level',
+            expectedValue : '50',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        result.success    == true
+        result.timedOut   == false
+        result.polledCount >= 1
+    }
+
+    // ---------------------------------------------------------------------------
+    // 29. I8: inverse direction -- expectedValue '50.0' against Integer currentValue 50
+    // ---------------------------------------------------------------------------
+
+    def "matches when Integer attribute 50 is compared to expectedValue '50.0'"() {
+        given:
+        def device = Spy(TestDevice)
+        device.id = 290
+        device.label = 'Integer vs Decimal EV'
+        device.supportedAttributes = [[name: 'level']]
+        device.currentValue(_) >> { String attr -> 50 as Integer }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '290',
+            attribute     : 'level',
+            expectedValue : '50.0',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        result.success    == true
+        result.timedOut   == false
+    }
+
+    def "matches when Double attribute 50.0d is compared to expectedValue '50'"() {
+        given:
+        def device = Spy(TestDevice)
+        device.id = 291
+        device.label = 'Double vs String EV'
+        device.supportedAttributes = [[name: 'level']]
+        device.currentValue(_) >> { String attr -> 50.0d }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '291',
+            attribute     : 'level',
+            expectedValue : '50',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        result.success    == true
+        result.timedOut   == false
     }
 }

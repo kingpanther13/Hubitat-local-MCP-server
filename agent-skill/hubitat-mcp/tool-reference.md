@@ -15,7 +15,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | `get_attribute` | Get specific attribute value from a device. | None |
 | `send_command` | Send a command to a device (on, off, setLevel, etc.). | None |
 | `get_device_events` | Recent events for a device. Default 10, recommended max 50. | None |
-| `poll_until_attribute` | Block-poll an attribute until it matches `expectedValue` or one of `expectedValues`, or `timeoutMs` elapses (default 5000, max 60000). Returns `success`, `finalValue`, `elapsedMs`, `polledCount`, `timedOut`. Use after `send_command` to verify state change in a single round-trip. | None |
+| `poll_until_attribute` | Block-poll an attribute until it matches `expectedValue` or any of `expectedValues` (at least one required; both may be set simultaneously, OR semantics). `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). BLOCKS the MCP request; use sparingly and prefer event-driven flows. Returns `success`, `finalValue`, `elapsedMs`, `polledCount`, `timedOut`; adds `neverReported: true` if the attribute was null throughout. Use after `send_command` to verify a state change in a single round-trip. | None |
 
 ### Rule Tools (4)
 
