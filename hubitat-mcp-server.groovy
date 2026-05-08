@@ -1002,6 +1002,30 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 required: ["deviceId"]
             ]
         ],
+        [
+            name: "poll_until_attribute",
+            description: """Block-poll a device attribute until it matches an expected value (or one of a set of values), or a timeout elapses. Returns immediately when the match condition is satisfied.
+
+Single MCP round-trip replaces N client-side get_attribute polls + sleep loops. Common use: verify a send_command actually took effect (e.g. switch turned on), wait for a sensor reading to cross a threshold, or detect when a Z-Wave inclusion finished.
+
+Cost profile: this tool BLOCKS up to timeoutMs (default 5000ms, max 60000ms = 60 seconds). Use sparingly and prefer event-driven flows when possible. For passive one-shot observation use get_attribute instead. Concurrent MCP requests will queue while this call blocks; avoid parallel poll_until_attribute calls.
+
+First read fires immediately (no upfront delay); subsequent reads are spaced by pollIntervalMs.
+
+At least one of expectedValue or expectedValues must be provided. If both are provided, the poll succeeds when currentValue matches either (OR semantics).""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "Device ID from list_devices"],
+                    attribute: [type: "string", description: "Attribute name to poll"],
+                    expectedValue: [type: "string", description: "Match when currentValue equals this string. At least one of expectedValue or expectedValues is required."],
+                    expectedValues: [type: "array", items: [type: "string"], description: "Match when currentValue is any of these strings. Compatible with expectedValue (OR semantics if both set)."],
+                    timeoutMs: [type: "integer", description: "Max wait time in MILLISECONDS (e.g., 5000 = 5 seconds). Default 5000ms, min 100ms, max 60000ms (60 seconds).", default: 5000],
+                    pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS (e.g., 200 = 0.2 seconds). Default 200ms, min 50ms, max 5000ms (5 seconds). Clamped to timeoutMs if larger.", default: 200]
+                ],
+                required: ["deviceId", "attribute"]
+            ]
+        ],
         // Rule Management
         [
             name: "custom_list_rules",
@@ -2449,6 +2473,7 @@ def executeTool(toolName, args) {
         case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
         case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
         case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
+        case "poll_until_attribute": return toolPollUntilAttribute(args)
 
         // Rule Management - now using child apps
         case "custom_list_rules": return toolListRules()
@@ -3134,6 +3159,195 @@ def toolGetAttribute(deviceId, attribute) {
         attribute: attribute,
         value: value
     ]
+}
+
+/**
+ * Block-polls a device attribute until it matches the expected value(s) or the
+ * timeout elapses. Uses pauseExecution() for inter-poll delays -- the only
+ * synchronous sleep available in the Hubitat app sandbox.
+ *
+ * Kept separate from get_attribute rather than extending it because the two
+ * tools have different cost profiles (sub-second vs. up-to-60s blocking),
+ * different cognitive intent (observe now vs. wait-for), and different arg
+ * shapes. Extending get_attribute would create a UX trap where a fast-read
+ * tool silently becomes a long-blocking one.
+ */
+def toolPollUntilAttribute(args) {
+    // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
+    def validArgKeys = ["deviceId", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs"] as Set
+    if (args instanceof Map) {
+        def unknownKeys = (args.keySet() - validArgKeys).sort()
+        if (unknownKeys) {
+            throw new IllegalArgumentException("Unknown arg(s): ${unknownKeys}. Valid args: ${validArgKeys.sort()}. Common gotcha: timeout is 'timeoutMs' in milliseconds, not 'timeoutSeconds'.")
+        }
+    }
+
+    // 1. Validate deviceId and look up device
+    if (args.containsKey("deviceId") && args.deviceId == null) {
+        throw new IllegalArgumentException("deviceId must not be null (omit the arg or pass a non-empty string)")
+    }
+    if (!(args.deviceId instanceof String) || !args.deviceId) {
+        throw new IllegalArgumentException("deviceId is required and must be a non-empty string")
+    }
+    def device = findDevice(args.deviceId)
+    if (!device) {
+        throw new IllegalArgumentException("Device not found: ${args.deviceId}")
+    }
+
+    // 2. Validate attribute
+    if (args.containsKey("attribute") && args.attribute == null) {
+        throw new IllegalArgumentException("attribute must not be null (omit the arg or pass a non-empty string)")
+    }
+    if (!(args.attribute instanceof String) || !args.attribute) {
+        throw new IllegalArgumentException("attribute is required and must be a non-empty string")
+    }
+    def deviceLabel = device.label ?: device.name ?: "Device ${args.deviceId}"
+    def supportedAttrs = device.supportedAttributes?.collect { it.name } ?: []
+    if (!supportedAttrs.contains(args.attribute)) {
+        throw new IllegalArgumentException("Attribute '${args.attribute}' not found on device '${deviceLabel}'. Available: ${supportedAttrs}")
+    }
+
+    // 3. Validate expectedValue / expectedValues (at least one required)
+    if (args.containsKey("expectedValue") && args.expectedValue == null) {
+        throw new IllegalArgumentException("expectedValue must not be null (omit the arg or pass a non-empty string)")
+    }
+    if (args.containsKey("expectedValues") && args.expectedValues == null) {
+        throw new IllegalArgumentException("expectedValues must not be null (omit the arg or pass a non-empty list)")
+    }
+    def hasExpectedValue  = (args.expectedValue  != null)
+    def hasExpectedValues = (args.expectedValues != null)
+    if (!hasExpectedValue && !hasExpectedValues) {
+        throw new IllegalArgumentException("At least one of expectedValue or expectedValues must be provided")
+    }
+    if (hasExpectedValue && !(args.expectedValue instanceof String)) {
+        throw new IllegalArgumentException("expectedValue must be a string")
+    }
+    if (hasExpectedValue && args.expectedValue == "") {
+        throw new IllegalArgumentException("expectedValue must not be empty (omit the arg or pass a non-empty value)")
+    }
+    if (hasExpectedValues) {
+        if (!(args.expectedValues instanceof List)) {
+            throw new IllegalArgumentException("expectedValues must be a list of strings")
+        }
+        if (args.expectedValues.isEmpty()) {
+            throw new IllegalArgumentException("expectedValues must not be empty (omit the arg or pass at least one value)")
+        }
+        args.expectedValues.eachWithIndex { v, i ->
+            if (!(v instanceof String)) {
+                throw new IllegalArgumentException("expectedValues[${i}] must be a string, got: ${v}")
+            }
+        }
+    }
+
+    // 4. Validate timeoutMs
+    if (args.containsKey("timeoutMs") && args.timeoutMs == null) {
+        throw new IllegalArgumentException("timeoutMs must not be null (omit the arg to use default 5000ms)")
+    }
+    def timeoutMs = (args.timeoutMs != null) ? args.timeoutMs : 5000
+    if (!(timeoutMs instanceof Number)) {
+        throw new IllegalArgumentException("timeoutMs must be an integer (got: ${timeoutMs})")
+    }
+    timeoutMs = timeoutMs as Integer
+    if (timeoutMs < 100 || timeoutMs > 60000) {
+        throw new IllegalArgumentException("timeoutMs must be between 100 and 60000 (got: ${timeoutMs})")
+    }
+
+    // 5. Validate pollIntervalMs, clamp to timeoutMs if larger
+    if (args.containsKey("pollIntervalMs") && args.pollIntervalMs == null) {
+        throw new IllegalArgumentException("pollIntervalMs must not be null (omit the arg to use default 200ms)")
+    }
+    def pollIntervalMs = (args.pollIntervalMs != null) ? args.pollIntervalMs : 200
+    if (!(pollIntervalMs instanceof Number)) {
+        throw new IllegalArgumentException("pollIntervalMs must be an integer (got: ${pollIntervalMs})")
+    }
+    pollIntervalMs = pollIntervalMs as Integer
+    if (pollIntervalMs < 50 || pollIntervalMs > 5000) {
+        throw new IllegalArgumentException("pollIntervalMs must be between 50 and 5000 (got: ${pollIntervalMs})")
+    }
+    // Clamp poll interval so at least one poll is possible within the timeout
+    if (pollIntervalMs > timeoutMs) {
+        pollIntervalMs = timeoutMs
+    }
+
+    // 6. Build the expected-value set for match checking (OR semantics)
+    def matchSet = [] as Set
+    if (hasExpectedValue)  matchSet << args.expectedValue
+    if (hasExpectedValues) matchSet.addAll(args.expectedValues)
+
+    // 7. Poll loop.
+    //    Two termination guards:
+    //      (a) wall-clock: elapsedMs >= timeoutMs  (primary, production path)
+    //      (b) poll count: polledCount >= maxPolls  (safety net; also the test path
+    //          since now() is fixed in the test harness making elapsedMs always 0)
+    //    Both guards produce the same timedOut=true result. maxPolls is the number
+    //    of polls that would fit in timeoutMs at the configured pollIntervalMs, plus
+    //    one to account for the initial read before the first sleep.
+    def maxPolls    = ((timeoutMs / pollIntervalMs) as Integer) + 1
+    def startMs     = now()
+    def polledCount = 0
+    def finalValue  = null
+    // Track whether the attribute ever reported a non-null value during the poll window.
+    // Null throughout the window means the driver has never reported the attribute,
+    // which is a different condition from "reported a wrong value the whole time."
+    def everNonNull = false
+
+    while (true) {
+        finalValue = device.currentValue(args.attribute)
+        polledCount++
+        if (finalValue != null) everNonNull = true
+        def elapsedMs = (now() - startMs) as Integer
+
+        // String match first.
+        // Numeric fallback handles BigDecimal/Double "50.0" vs "50" quirk in both directions:
+        //   - Number attribute (e.g. BigDecimal 50.0) matched by String expectedValue "50"
+        //   - String attribute "50.0" (some drivers return numeric-typed attributes as String)
+        //     matched by String expectedValue "50"
+        def matched = matchSet.contains(finalValue?.toString()) ||
+            (finalValue instanceof Number && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) }) ||
+            (finalValue instanceof String && finalValue.isNumber() && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) })
+        if (matched) {
+            return [
+                success     : true,
+                finalValue  : finalValue,
+                elapsedMs   : elapsedMs,
+                polledCount : polledCount,
+                timedOut    : false
+            ]
+        }
+
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
+            def response = [
+                success     : false,
+                finalValue  : finalValue,
+                elapsedMs   : elapsedMs,
+                polledCount : polledCount,
+                timedOut    : true
+            ]
+            // Attribute exists in supportedAttributes but never reported a value during
+            // the entire poll window -- driver has not yet emitted a reading.
+            if (!everNonNull) response.neverReported = true
+            return response
+        }
+
+        // Sleep for the poll interval (or the remaining time, whichever is less)
+        def remaining = timeoutMs - elapsedMs
+        def sleepMs   = Math.min(pollIntervalMs, remaining > 0 ? remaining : pollIntervalMs) as Integer
+        try {
+            if (sleepMs > 0) pauseExecution(sleepMs)
+        } catch (InterruptedException e) {
+            // pauseExecution wraps Thread.sleep() and throws InterruptedException
+            // when the hub is restarting or the app is being reloaded.
+            elapsedMs = (now() - startMs) as Integer
+            mcpLog("warn", "device-tools", "poll_until_attribute interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
+            return [
+                success     : false,
+                interrupted : true,
+                finalValue  : finalValue,
+                elapsedMs   : elapsedMs,
+                polledCount : polledCount
+            ]
+        }
+    }
 }
 
 // ==================== RULE TOOLS (Child App Based) ====================

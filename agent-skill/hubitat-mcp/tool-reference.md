@@ -1,12 +1,12 @@
 # Tool Reference
 
-Quick reference for all 89 MCP tools. The server exposes **34 items on `tools/list`**: 22 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 90 MCP tools. The server exposes **35 items on `tools/list`**: 23 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
-## Core Tools (22) — Always visible on tools/list
+## Core Tools (23) — Always visible on tools/list
 
-### Device Tools (5)
+### Device Tools (6)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -15,6 +15,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | `get_attribute` | Get specific attribute value from a device. | None |
 | `send_command` | Send a command to a device (on, off, setLevel, etc.). | None |
 | `get_device_events` | Recent events for a device. Default 10, recommended max 50. | None |
+| `poll_until_attribute` | Block-poll an attribute until it matches `expectedValue` or any of `expectedValues` (at least one required; both may be set simultaneously, OR semantics). `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). BLOCKS the MCP request; use sparingly and prefer event-driven flows. Returns `success`, `finalValue`, `elapsedMs`, `polledCount`, `timedOut`; adds `neverReported: true` if the attribute was null throughout. Use after `send_command` to verify a state change in a single round-trip. | None |
 
 ### Rule Tools (4)
 
@@ -56,7 +57,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 89 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 90 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 

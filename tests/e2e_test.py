@@ -393,7 +393,7 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
-        assert len(tools) == 34, f"Expected 34 tools (22 core + 12 gateways), got {len(tools)}"
+        assert len(tools) == 35, f"Expected 35 tools (23 core + 12 gateways), got {len(tools)}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
@@ -1273,7 +1273,55 @@ class TestRunner:
             assert "boolean" in msg.lower(), f"error didn't say boolean: {msg}"
 
     # -----------------------------------------------------------------------
-    # GROUP 11: error_verification (1 test)
+    # GROUP 11: poll_until_attribute (2 tests -- wall-clock coverage, I7)
+    # These exercise the real pauseExecution + now() path that Spock unit tests
+    # cannot reach because the test harness fixes now() to a constant.
+    # -----------------------------------------------------------------------
+
+    @test("poll_until_attribute")
+    def test_poll_immediate_match(self) -> None:
+        """Happy path: device already in expected state -> polledCount=1, success=true."""
+        # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
+        dev_id = self.get_test_switch_id()
+        # Drive it to 'off' first so we know its state.
+        self.client.call_tool("send_command", {"deviceId": dev_id, "command": "off"})
+        time.sleep(0.3)
+
+        result = self.client.call_tool("poll_until_attribute", {
+            "deviceId": dev_id,
+            "attribute": "switch",
+            "expectedValue": "off",
+            "timeoutMs": 5000,
+        })
+        assert result.get("success") is True, f"Expected success=true, got: {result}"
+        assert result.get("timedOut") is False, f"Expected timedOut=false, got: {result}"
+        assert result.get("polledCount", 0) >= 1, f"Expected polledCount>=1, got: {result}"
+
+    @test("poll_until_attribute")
+    def test_poll_timeout(self) -> None:
+        """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
+        dev_id = self.get_test_switch_id()
+        # Ensure switch is 'off' so 'on' won't match.
+        self.client.call_tool("send_command", {"deviceId": dev_id, "command": "off"})
+        time.sleep(0.3)
+
+        import time as _time
+        t0 = _time.monotonic()
+        result = self.client.call_tool("poll_until_attribute", {
+            "deviceId": dev_id,
+            "attribute": "switch",
+            "expectedValue": "on",
+            "timeoutMs": 2000,
+        })
+        elapsed_wall = (_time.monotonic() - t0) * 1000
+
+        assert result.get("success") is False, f"Expected success=false, got: {result}"
+        assert result.get("timedOut") is True, f"Expected timedOut=true, got: {result}"
+        # Wall clock should reflect roughly the timeout (within 1 second of variance)
+        assert elapsed_wall >= 1800, f"Wall clock too short ({elapsed_wall:.0f}ms); poll may not have blocked"
+
+    # -----------------------------------------------------------------------
+    # GROUP 12: error_verification (1 test)
     # -----------------------------------------------------------------------
 
     @test("error_verification")

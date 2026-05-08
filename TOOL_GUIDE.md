@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 34 items (22 core + 12 gateways) covering 89 total tools. Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 35 items (23 core + 12 gateways) covering 90 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -302,6 +302,18 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 **get_device_events:**
 - Default limit 10, recommended max 50
 - Higher values (100+) may cause delays on busy devices
+
+**poll_until_attribute:**
+- BLOCKS the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.
+- Concurrent MCP requests queue while this call blocks; avoid parallel `poll_until_attribute` calls.
+- At least one of `expectedValue` or `expectedValues` must be provided. Both may be set simultaneously -- the poll succeeds if the current value matches either (OR semantics, not XOR).
+- Re-reads the attribute every `pollIntervalMs` MILLISECONDS (default 200ms, min 50ms, max 5000ms)
+- Returns `success: true` with `finalValue`, `elapsedMs`, `polledCount`, `timedOut: false` when the value matches
+- Returns `success: false` with `timedOut: true` and the last-read `finalValue` on timeout; adds `neverReported: true` if the attribute never returned a non-null value during the entire poll window
+- Returns `success: false` with `interrupted: true` (plus `finalValue`, `elapsedMs`, `polledCount`) if the hub interrupted the sleep (e.g. app reload during poll)
+- `pollIntervalMs` is automatically clamped to `timeoutMs` if larger, ensuring at least one poll
+- For passive one-shot reads, use `get_attribute` instead -- this tool is for waiting on state transitions
+- Common pattern after `send_command`: poll for the resulting attribute state rather than sleeping client-side
 
 **get_hub_logs:**
 - Returns most recent entries first
