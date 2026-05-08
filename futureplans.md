@@ -643,3 +643,4 @@
 39. **Button Controller** — Use native app; MCP already has `button_event` triggers
 40. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
 41. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
+

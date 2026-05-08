@@ -15,8 +15,8 @@ The repo has no `CHANGELOG.md`, no git tags, and no GitHub Releases. Release not
 1. Every merged PR automatically bumps the version number in all four locations.
 2. `CHANGELOG.md` is the source of truth for release notes; entries auto-inject into `packageManifest.json` `releaseNotes` and `README.md` Version History at release time.
 3. Version strings, `releaseNotes`, `dateReleased`, and the README Version History section cannot be modified in PRs. Those files/sections are bot-only.
-4. Every PR is required to document its change under a `## [Unreleased]` section in `CHANGELOG.md`. PRs that don't are blocked.
-5. Every PR is required to have a `release:patch|minor|major` label before merge. Maintainer applies the label after approving.
+4. PRs do not hand-write CHANGELOG entries. The release bot generates entries from merged PR titles (and optional `## Release notes` sections in PR bodies) at release time. PRs that try to edit `CHANGELOG.md` are blocked by `pr_guard.py`.
+5. Release labels (`release:patch|minor|major`) are optional. Unlabeled PRs merge normally without a version bump; the next labeled PR merge produces a release covering everything merged since the previous tag.
 6. Git tags (`vX.Y.Z`) are created automatically at each release.
 7. Works with the existing constraint: HPM polls `https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json`, and this URL cannot be changed without stranding existing installations.
 
@@ -83,7 +83,7 @@ Two checks must pass before a PR can merge.
 - `README.md` `## Version History` section
 - `CHANGELOG.md` (entire file — bot-only)
 
-These files aren't edited in PRs. Bot commits go directly to main, never through PRs, so this workflow never runs on them.
+These files aren't edited in PRs. Bot commits go directly to main, never through PRs — the workflow's recursion guard short-circuits when the head commit is bot-authored, so the version-bump path doesn't re-fire on the bot's own push.
 
 ### No changelog entry requirement
 
@@ -103,17 +103,17 @@ Flow:
 
 ### Trigger
 
-`pull_request.closed` event where `merged == true` and base branch is `main`.
+`push` event on `main` branch. The trigger was moved from `pull_request.closed` so the workflow gets the base repo's `contents: write` permission regardless of where the merged code came from (fork PRs would otherwise inherit GITHUB_TOKEN's forced read-only scope). The originating PR is recovered via the commits-to-PRs API for label inspection.
 
 ### Concurrency control
 
 ```yaml
 concurrency:
-  group: release
+  group: post-merge
   cancel-in-progress: false
 ```
 
-Serializes all release workflow runs. If PRs A and B merge seconds apart, B's workflow waits for A's to complete, ensuring B reads the post-A version state before computing its own bump.
+Serializes all post-merge automation runs (version bumps AND futureplans→README syncs share the same group, so they cannot race). If PRs A and B merge seconds apart, B's workflow waits for A's to complete, ensuring B reads the post-A version state before computing its own bump.
 
 ### Steps
 
@@ -158,7 +158,7 @@ After the bot rewrites `packageManifest.json` `releaseNotes`, parse the entire f
 
 ### 4. Concurrency group
 
-`concurrency: group: release, cancel-in-progress: false`. See Post-merge release workflow > Concurrency control.
+`concurrency: group: post-merge, cancel-in-progress: false`. See Post-merge release workflow > Concurrency control.
 
 ### 5. Multiple-label guard
 
@@ -166,7 +166,7 @@ Release workflow validates exactly one `release:*` label is set on the triggerin
 
 ### 7. Bot commit visibility under squash merges
 
-Squash merge absorbs the bot's `chore(release):` commit into a single main-branch commit. Cosmetic-only; tag logic keys off "main's tip after push", which works under squash, merge-commit, and rebase. No branch-protection restriction needed on merge strategy.
+Tag logic keys off "main's tip after push", so it works regardless of how the triggering PR was merged (squash, merge-commit, or rebase). The bot's own `chore(release):` commit is a direct push to main, not a PR merge, so merge-strategy choices don't affect tagging. No branch-protection restriction needed on merge strategy.
 
 ### 8. `Co-authored-by` preservation
 
