@@ -1,67 +1,61 @@
-name: Release on merge
+name: Post-merge automation
 on:
   push:
     branches: [main]
 
+# Single concurrency group covers both the version-bump release path and the
+# futureplans-to-README sync path so they cannot race against each other.
 concurrency:
-  group: release
+  group: post-merge
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      # Short-circuit on the bot's own release-commit pushes so we don't
-      # recurse. The push event fires again when `git push origin main`
-      # lands the version-bump commit from a prior release run.
-      - name: Guard against release-commit recursion
+      # Short-circuit on the bot's own pushes (release commits, futureplans-sync
+      # commits) so we don't recurse. The push event fires again when the bot's
+      # commit lands on main.
+      - name: Guard against bot-commit recursion
         id: precheck
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           COMMIT_AUTHOR_NAME: ${{ github.event.head_commit.author.name }}
         run: |
+          set -euo pipefail
           if [ "$COMMIT_AUTHOR_NAME" = "github-actions[bot]" ]; then
-            echo "::notice::Push authored by github-actions[bot] — skipping to avoid release loop"
+            echo "::notice::Push authored by github-actions[bot] — skipping to avoid loop"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -n1)
           case "$FIRST_LINE" in
-            "chore(release):"*)
-              echo "::notice::Head commit is a release commit — skipping"
+            "chore(release):"*|"docs: sync Future Plans"*)
+              echo "::notice::Head commit is bot-authored bookkeeping — skipping"
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
           esac
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      # Trigger moved from `pull_request: closed` to `push: main` so the
-      # release bot doesn't inherit GITHUB_TOKEN's forced read-only scope
-      # when a fork contributor's PR is merged. Push events on the base
-      # repo get the workflow's declared `contents: write` permission
-      # regardless of where the merged code came from. We recover the PR
-      # the merge commit came from via the commits-to-PRs API.
+      # Trigger is `push: main` (not `pull_request: closed`) so the workflow
+      # gets the base repo's `contents` permission regardless of where the
+      # merged code came from. We recover the originating PR via the
+      # commits-to-PRs API for label inspection and changed-file detection.
       - name: Resolve PR from merge commit
-        # Positive-match cascade: `!= 'true'` evaluates TRUE for empty outputs,
-        # so a skipped upstream step would let this one run anyway. Using
-        # `== 'false'` only proceeds when the upstream explicitly signalled
-        # "don't skip" — empty (because upstream was skipped) correctly gates
-        # this step out.
         if: steps.precheck.outputs.skip == 'false'
         id: pr
         env:
           SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # GitHub's commit-to-PR index is eventually consistent. When the
-          # push event fires immediately after a merge, the association is
-          # often not yet visible (run #26 on PR #108's merge hit this
-          # and got an empty result within ~15s of merge). Retry with
-          # backoff before declaring "no PR".
+          set -euo pipefail
+          # GitHub's commit-to-PR index is eventually consistent. Retry with
+          # backoff so a fast-firing push event doesn't see an empty result.
           PR_JSON=""
           for attempt in 1 2 3 4 5; do
             PR_JSON=$(gh api "/repos/${{ github.repository }}/commits/${SHA}/pulls" --jq '.[0] // empty')
@@ -100,10 +94,11 @@ jobs:
           LABELS_JSON: ${{ steps.pr.outputs.labels_json }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
+          set -euo pipefail
           RELEASE_LABELS=$(echo "$LABELS_JSON" | jq -r '[.[] | select(.name | startswith("release:")) | .name]')
           COUNT=$(echo "$RELEASE_LABELS" | jq 'length')
           if [ "$COUNT" = "0" ]; then
-            echo "::notice::PR #${PR_NUMBER} has no release:* label — skipping version bump (PR accumulates for the next labeled release)"
+            echo "::notice::PR #${PR_NUMBER} has no release:* label — skipping version bump (futureplans sync may still run)"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -115,20 +110,114 @@ jobs:
           echo "label=$LABEL" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
+      - name: Detect futureplans.md change
+        if: steps.pr.outputs.skip == 'false'
+        id: fp
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Use the PR's changed-files list (works regardless of squash / rebase /
+          # merge-commit strategy and doesn't require a checkout).
+          if gh api "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' | grep -qx 'futureplans.md'; then
+            echo "::notice::futureplans.md changed in PR #${PR_NUMBER} — will sync FUTURE_PLANS block in README"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if no work to do
+        if: steps.pr.outputs.skip == 'false'
+        id: skip_all
+        env:
+          RELEASE_SKIP: ${{ steps.label.outputs.skip }}
+          FP_CHANGED: ${{ steps.fp.outputs.changed }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_SKIP" != "false" ] && [ "$FP_CHANGED" != "true" ]; then
+            echo "::notice::No release label and futureplans.md unchanged — nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fail loud if the deploy-key secret is empty/unset — actions/checkout
+      # would silently fall back to GITHUB_TOKEN HTTPS, which the
+      # main-required-checks ruleset rejects.
+      - name: Verify deploy key secret is set
+        if: steps.skip_all.outputs.skip == 'false'
+        env:
+          SECRET: ${{ secrets.RELEASE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SECRET:-}" ]; then
+            echo "::error::RELEASE_DEPLOY_KEY secret is empty or unset — actions/checkout would silently fall back to GITHUB_TOKEN HTTPS, which is rejected by the main-required-checks ruleset."
+            exit 1
+          fi
+
       - name: Checkout main via deploy key
-        if: steps.label.outputs.skip == 'false'
+        if: steps.skip_all.outputs.skip == 'false'
         uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
           # Deploy key is the only actor allowed to bypass the main-branch
-          # ruleset's required status checks (see repo rulesets; for
-          # user-owned repos only DeployKey / RepositoryRole / DeployKey
-          # bypass types are accepted — Integration bypass is org-only).
-          # GITHUB_TOKEN would push as github-actions[bot], which is not in
-          # the bypass list, and the ruleset would reject the release commit
-          # (it's brand new on the runner, no CI has observed it yet).
+          # ruleset's required status checks (DeployKey bypass actor matches
+          # any deploy key on the repo). GITHUB_TOKEN would push as
+          # github-actions[bot], which is not in the bypass list, and the
+          # ruleset would reject the push.
           ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+      # Sync futureplans → README runs BEFORE setup-python so the python step
+      # below isn't installed when only release work is needed. The sync's own
+      # python invocation uses the runner's preinstalled python3.
+      - name: Sync futureplans.md into README
+        if: steps.fp.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          # Read futureplans.md, strip the top-level heading (line 1),
+          # and demote all headings by one level (## -> ###, ### -> ####)
+          CONTENT=$(tail -n +2 futureplans.md | sed 's/^### /#### /; s/^## /### /')
+
+          # Build the replacement block with marker comments. Wrap in <details>
+          # so it renders collapsed on GitHub — the body is large and speculative.
+          REPLACEMENT="<!-- FUTURE_PLANS_START -->"
+          REPLACEMENT+=$'\n'"<details>"
+          REPLACEMENT+=$'\n'"<summary><h2>Future Plans</h2></summary>"$'\n\n'
+          REPLACEMENT+="$CONTENT"
+          REPLACEMENT+=$'\n\n'"</details>"
+          REPLACEMENT+=$'\n'"<!-- FUTURE_PLANS_END -->"
+
+          # Replace everything between the markers in README.md.
+          # The marker-existence guard distinguishes "regex matched but content
+          # identical" (legitimate no-op) from "markers missing" (broken README)
+          # so a future README edit that drops the markers fails loudly here
+          # instead of silently no-op'ing every subsequent sync run.
+          python3 -c "
+          import re, sys
+
+          with open('README.md', 'r') as f:
+              readme = f.read()
+
+          with open('/dev/stdin', 'r') as f:
+              replacement = f.read()
+
+          pattern = r'<!-- FUTURE_PLANS_START -->.*?<!-- FUTURE_PLANS_END -->'
+          if not re.search(pattern, readme, flags=re.DOTALL):
+              sys.exit('ERROR: FUTURE_PLANS markers missing in README.md — restore the <!-- FUTURE_PLANS_START --> / <!-- FUTURE_PLANS_END --> comment pair before this workflow can run.')
+
+          updated = re.sub(pattern, replacement, readme, flags=re.DOTALL)
+
+          if updated == readme:
+              print('No changes needed.')
+              sys.exit(0)
+
+          with open('README.md', 'w') as f:
+              f.write(updated)
+
+          print('README.md updated.')
+          " <<< "$REPLACEMENT"
 
       - uses: actions/setup-python@v6
         if: steps.label.outputs.skip == 'false'
@@ -144,21 +233,51 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python .github/scripts/release_bump.py
 
+      # Single push at the end. Either branch produces ONE commit on main:
+      # - Release path: chore(release): X.Y.Z (may include the FUTURE_PLANS
+      #   block change if futureplans.md was also touched in the PR; both
+      #   land together because release_bump.py only edits README's Version
+      #   History section, leaving the FUTURE_PLANS block intact).
+      # - Sync-only path: docs: sync Future Plans from futureplans.md.
       - name: Commit, tag, and push
-        if: steps.label.outputs.skip == 'false'
+        if: steps.skip_all.outputs.skip == 'false'
         env:
           NEW_VERSION: ${{ steps.bump.outputs.new_version }}
           PR_AUTHOR: ${{ steps.pr.outputs.author }}
           PR_AUTHOR_ID: ${{ steps.pr.outputs.author_id }}
+          RELEASE_SKIP: ${{ steps.label.outputs.skip }}
+          FP_CHANGED: ${{ steps.fp.outputs.changed }}
         run: |
+          set -euo pipefail
+          # Canonical noreply form (with the bot's user-ID prefix) so GitHub's
+          # UI attributes the commit to github-actions[bot] rather than showing
+          # "unrecognized author".
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md README.md packageManifest.json hubitat-mcp-server.groovy hubitat-mcp-rule.groovy
-          git commit \
-            -m "chore(release): ${NEW_VERSION}" \
-            -m "Co-authored-by: ${PR_AUTHOR} <${PR_AUTHOR_ID}+${PR_AUTHOR}@users.noreply.github.com>"
-          # Annotated tag + explicit tag push (--follow-tags silently skips
-          # lightweight tags; this was the v0.9.3 regression).
-          git tag -a "v${NEW_VERSION}" -m "Release ${NEW_VERSION}"
-          git push origin main
-          git push origin "v${NEW_VERSION}"
+
+          if [ "$RELEASE_SKIP" = "false" ]; then
+            # Release path: stage all release-bump files. README.md may carry
+            # both Version History (from release_bump.py) and FUTURE_PLANS (from
+            # the sync step) edits — both land in the same chore(release) commit.
+            git add CHANGELOG.md README.md packageManifest.json hubitat-mcp-server.groovy hubitat-mcp-rule.groovy
+            git commit \
+              -m "chore(release): ${NEW_VERSION}" \
+              -m "Co-authored-by: ${PR_AUTHOR} <${PR_AUTHOR_ID}+${PR_AUTHOR}@users.noreply.github.com>"
+            # Annotated tag + explicit tag push (--follow-tags silently skips
+            # lightweight tags; this was the v0.9.3 regression).
+            git tag -a "v${NEW_VERSION}" -m "Release ${NEW_VERSION}"
+            git push origin main
+            git push origin "v${NEW_VERSION}"
+          elif [ "$FP_CHANGED" = "true" ]; then
+            # Sync-only path: only README's FUTURE_PLANS block changed.
+            # Python sync may have produced no diff (e.g. the futureplans edit
+            # was a no-op against the current README block) — skip the commit
+            # rather than fail.
+            if git diff --quiet README.md; then
+              echo "::notice::futureplans edit produced no README diff — nothing to commit"
+              exit 0
+            fi
+            git add README.md
+            git commit -m "docs: sync Future Plans from futureplans.md"
+            git push origin main
+          fi
