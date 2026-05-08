@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-05-08",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v1.1.0 - 2026-05-08\n- feat(devices): add poll_until_attribute -- block-poll until attribute matches (#157)\n  - New `poll_until_attribute` tool blocks until a device attribute matches an expected value (or list of values), or a timeout elapses. Replaces client-side polling loops with a single server-side call.\n  - Common use: verify a `send_command` actually took effect on flaky Z-Wave/Zigbee meshes, wait for a sensor to cross a threshold, or wait for a state transition.\n  - Cost profile: BLOCKS up to `timeoutMs` (default 5s, max 60s). Use sparingly; prefer event-driven flows when available.\n- PR #92",
+    "releaseNotes": "v1.1.1 - 2026-05-08\n- ci: consolidate post-merge automation into release workflow (closes race) (#160)\n  - Internal CI fix; no end-user changes.\n\nv1.1.0 - 2026-05-08\n- feat(devices): add poll_until_attribute -- block-poll until attribute matches (#157)\n  - New `poll_until_attribute` tool blocks until a device attribute matches an expected value (or list of values), or a timeout elapses. Replaces client-side polling loops with a single server-side call.\n  - Common use: verify a `send_command` actually took effect on flaky Z-Wave/Zigbee meshes, wait for a sensor to cross a threshold, or wait for a state transition.\n  - Cost profile: BLOCKS up to `timeoutMs` (default 5s, max 60s). Use sparingly; prefer event-driven flows when available.\n- PR #92",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
