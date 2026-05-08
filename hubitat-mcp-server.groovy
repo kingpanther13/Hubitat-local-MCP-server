@@ -3329,15 +3329,16 @@ def toolPollUntilAttribute(args) {
         def sleepMs   = Math.min(pollIntervalMs, remaining > 0 ? remaining : pollIntervalMs) as Integer
         try {
             if (sleepMs > 0) pauseExecution(sleepMs)
-        } catch (Exception e) {
-            // pauseExecution throws InterruptedException when the hub is restarting or
-            // the app is being reloaded; surface context fields so the caller knows
-            // how far the poll got before it was cut short.
+        } catch (InterruptedException e) {
+            // pauseExecution wraps Thread.sleep() and throws InterruptedException
+            // when the hub is restarting or the app is being reloaded.
+            elapsedMs = (now() - startMs) as Integer
+            mcpLog("warn", "device-tools", "poll_until_attribute interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
             return [
                 success     : false,
                 interrupted : true,
                 finalValue  : finalValue,
-                elapsedMs   : (now() - startMs) as Integer,
+                elapsedMs   : elapsedMs,
                 polledCount : polledCount
             ]
         }

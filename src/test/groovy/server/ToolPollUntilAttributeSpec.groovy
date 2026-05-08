@@ -30,7 +30,9 @@ import support.ToolSpecBase
  *  - Attribute name typo (not in supportedAttributes) -> throws with helpful message listing available attributes
  *  - Unknown arg (timeoutSeconds) -> throws with message naming the bad key and suggesting timeoutMs
  *  - Multiple unknown args -> all listed in the error plus gotcha hint
- *  - pauseExecution throws -> returns interrupted=true with context fields (I6)
+ *  - pauseExecution throws InterruptedException -> returns interrupted=true with context fields (I6)
+ *  - pauseExecution throws non-InterruptedException -> propagates (not swallowed as interrupted=true)
+ *  - pauseExecution throws InterruptedException -> emits mcpLog warn with poll count and elapsed
  *  - BigDecimal integer-equivalent (50.0) matches expectedValue '50' (numeric fallback, Number->String)
  *  - String "50.0" attribute matches expectedValue '50' (numeric fallback, String->String, B3)
  *  - expectedValue '50.0' matches Integer currentValue 50 (inverse direction, I8)
@@ -38,9 +40,9 @@ import support.ToolSpecBase
  *  - BigDecimal fractional (50.5) does NOT match expectedValue '50' (correct behavior)
  *  - Numeric finalValue against non-numeric expectedValue -> no match, no exception (isNumber() guard)
  *
- * pauseExecution() is declared on AppExecutor / BaseExecutor, so it goes through
- * the @Delegate chain -- it's a no-op in tests (the Mock doesn't stub it, which
- * means Spock returns null/void silently, effectively making sleeps instant).
+ * pauseExecution() stubs inject via script.metaClass.pauseExecution (empirically
+ * verified in scenarios 27, 30, 31); for normal test paths with no stub, the Mock
+ * returns void silently, making sleeps instant.
  */
 class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
@@ -1161,5 +1163,86 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         then:
         result.success    == true
         result.timedOut   == false
+    }
+
+    // ---------------------------------------------------------------------------
+    // 30. Non-InterruptedException from pauseExecution propagates (not swallowed
+    //     as interrupted=true). After the narrow catch, any other exception
+    //     escapes to the JSON-RPC error layer rather than masking as a poll result.
+    // ---------------------------------------------------------------------------
+
+    def "propagates RuntimeException from pauseExecution rather than returning interrupted=true"() {
+        given:
+        def device = new TestDevice(
+            id: 300,
+            label: 'NPE In Sleep',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']   // won't match, so we'll reach the sleep
+        )
+        childDevicesList << device
+
+        // Inject a non-interrupted exception to verify the narrow catch does NOT swallow it
+        script.metaClass.pauseExecution = { long ms ->
+            throw new RuntimeException("simulated bug in sleep path")
+        }
+
+        when:
+        script.toolPollUntilAttribute([
+            deviceId      : '300',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        // RuntimeException is NOT caught by the narrow InterruptedException handler --
+        // it propagates up to the caller (JSON-RPC layer maps to -32603 in production).
+        thrown(RuntimeException)
+    }
+
+    // ---------------------------------------------------------------------------
+    // 31. InterruptedException path emits log.warn with poll count and elapsed time.
+    //     Verifies operator observability added in the interrupt catch block.
+    // ---------------------------------------------------------------------------
+
+    def "emits warn log when pauseExecution throws InterruptedException"() {
+        given:
+        def device = new TestDevice(
+            id: 310,
+            label: 'Warn On Interrupt',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']   // won't match, so we'll reach the sleep
+        )
+        childDevicesList << device
+
+        // mcpLog is a script-defined method (bucket 1 -- purely dynamic; not on
+        // AppExecutor/BaseExecutor). Per-instance metaClass overrides intercept
+        // cleanly. The production code calls mcpLog("warn", "device-tools", ...)
+        // in the interrupt catch block.
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
+
+        script.metaClass.pauseExecution = { long ms ->
+            throw new InterruptedException("hub reloading")
+        }
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '310',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        result.success     == false
+        result.interrupted == true
+        // A warn was emitted via mcpLog naming the poll count and component
+        mcpLogCalls.any { it.level == 'warn' && it.component == 'device-tools' &&
+                          it.msg ==~ /poll_until_attribute interrupted after \d+ poll\(s\).*/ }
     }
 }
