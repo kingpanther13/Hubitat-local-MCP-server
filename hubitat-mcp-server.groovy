@@ -827,10 +827,10 @@ def getGatewayConfig() {
             description: "Install, update, and delete hub apps and drivers. All operations modify hub code and require Hub Admin Write.",
             tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup"],
             summaries: [
-                install_app: "Install new app from Groovy source. Args: source, confirm=true",
-                install_driver: "Install new driver from Groovy source. Args: source, confirm=true",
-                update_app_code: "Modify existing app code (CRITICAL). Args: appId, source|sourceFile|resave, confirm=true",
-                update_driver_code: "Modify existing driver code (CRITICAL). Args: driverId, source|sourceFile|resave, confirm=true",
+                install_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
+                install_driver: "Install new driver. PREFER curl-upload + sourceFile. For 1: source|sourceFile. For >1: USE BULK (single round-trip: installs=[{source|sourceFile},...]). confirm=true",
+                update_app_code: "Modify existing app code (CRITICAL). PREFER curl-upload + sourceFile. Args: appId, source|sourceFile|resave, confirm=true",
+                update_driver_code: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile},...]). PREFER sourceFile + curl-upload over inline. confirm=true",
                 delete_app: "Permanently delete an app (DESTRUCTIVE). Args: appId, confirm=true",
                 delete_driver: "Permanently delete a driver (DESTRUCTIVE). Args: driverId, confirm=true",
                 restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true"
@@ -1963,45 +1963,83 @@ Requires Hub Admin Write.""",
         // Hub Admin App/Driver Management Write Tools
         [
             name: "install_app",
-            description: """⚠️ Install new app from Groovy source. Show code to user and get confirmation first.
+            description: """⚠️ Install new app. Show code to user and get confirmation first.
 
-Requires Hub Admin Write + confirm + backup <24h. Returns new app ID. After install, add via Apps > Add User App in Hubitat UI.""",
+PREFERRED workflow (avoids reading source into agent transcript):
+  1) Upload bytes to File Manager via local CLI tool that bypasses agent context:
+       curl -F 'uploadFile=@./app.groovy' -F 'folder=/' 'http://<hub>/hub/fileManager/upload'
+       (PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
+  2) install_app(sourceFile: 'app.groovy', confirm: true)
+
+Inline 'source' is acceptable for stub-size snippets only. The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
+
+Verifies install succeeded: if the hub accepted the request but the app failed to compile, install_app returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new app ID. After install, add via Apps > Add User App in Hubitat UI.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "The full Groovy source code for the app"],
+                    source: [type: "string", description: "Inline Groovy source. ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install/redeploy. For non-trivial apps, prefer sourceFile (recipe in tool description)."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["source", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
             name: "install_driver",
-            description: """⚠️ Install new driver from Groovy source. Show code to user and get confirmation first.
+            description: """⚠️ Install new driver. Show code to user and get confirmation first.
 
-Requires Hub Admin Write + confirm + backup <24h. Returns new driver ID.""",
+PREFERRED workflow (avoids reading source into agent transcript):
+  1) Upload bytes to File Manager via local CLI tool that bypasses agent context:
+       curl -F 'uploadFile=@./driver.groovy' -F 'folder=/' 'http://<hub>/hub/fileManager/upload'
+       (PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
+  2) install_driver(sourceFile: 'driver.groovy', confirm: true)
+
+Inline 'source' is acceptable for stub-size snippets only. The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
+
+For >1 driver: USE BULK mode (single round-trip, not N separate calls): installs=[{sourceFile}, ...]. Each driver's bytes still uploaded once via CLI per the same recipe -- bulk mode references them by filename.
+
+Single-driver mode: supply one of source|sourceFile.
+Bulk mode: 'installs' array of {source|sourceFile} objects. Errors on individual items do not abort the rest (continue-on-error). Practical limit: ~10-20 drivers per call. Cannot mix bulk and single-driver fields.
+
+Verifies install succeeded: if the hub accepted the request but the driver failed to compile, install_driver returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new driver ID(s).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "The full Groovy source code for the driver"],
+                    source: [type: "string", description: "Inline Groovy source (single-driver mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install/redeploy. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    installs: [
+                        type: "array",
+                        description: "BULK MODE -- USE THIS WHEN INSTALLING >1 DRIVER (single round-trip vs N separate calls; same arg structure, just an array). Each entry: {source|sourceFile}. Cannot mix with single-driver fields (source/sourceFile). Continue-on-error: failures on individual items don't abort the rest. Practical limit ~10-20 drivers/call. Authorization is controlled by top-level 'confirm' only. PREFER each item's sourceFile (after CLI upload per recipe in tool description) over inline source.",
+                        items: [
+                            type: "object",
+                            properties: [
+                                sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED -- upload first via CLI per tool description recipe to bypass agent transcript)"],
+                                source: [type: "string", description: "Inline source (stubs only -- fills agent transcript)"]
+                            ]
+                        ]
+                    ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["source", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
             name: "update_app_code",
             description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
 
-Modes: source (direct), sourceFile (from File Manager), resave (recompile without changes).
+PREFERRED workflow for any iterative app dev (avoids reading source into agent transcript):
+  1) Upload bytes via local CLI: 'curl -F uploadFile=@./app.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
+  2) update_app_code(appId: <id>, sourceFile: 'app.groovy', confirm: true)
+
+Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
 Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "The app ID to update"],
-                    source: [type: "string", description: "The full new Groovy source code (for apps under 64KB)"],
-                    sourceFile: [type: "string", description: "File Manager file name containing the source code (e.g., 'mcp-source-app-467.groovy'). Use this for large apps to avoid cloud size limits."],
-                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub — no cloud round-trip needed."],
+                    source: [type: "string", description: "Inline Groovy source. ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial apps, prefer sourceFile (recipe in tool description)."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub -- no source touches the agent transcript."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
@@ -2011,18 +2049,41 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
             name: "update_driver_code",
             description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
 
-Modes: source (direct), sourceFile (from File Manager), resave (recompile without changes).
+PREFERRED workflow for any iterative driver dev (avoids reading source into agent transcript):
+  1) Upload bytes via local CLI: 'curl -F uploadFile=@./driver.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
+  2) update_driver_code(driverId: <id>, sourceFile: 'driver.groovy', confirm: true)
+
+For >1 driver: USE BULK mode (single round-trip, not N): updates=[{driverId, sourceFile}, ...]. Each driver's bytes still uploaded once via CLI per the same recipe -- bulk-mode references them by filename.
+
+Single-driver mode: driverId + one of source|sourceFile|resave.
+Bulk mode: 'updates' array of {driverId, sourceFile|source|resave} objects. Errors on individual items do not abort the rest (continue-on-error). Practical limit: ~20 drivers per call. Cannot mix bulk and single-driver fields.
+
+Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
 Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    driverId: [type: "string", description: "The driver ID to update"],
-                    source: [type: "string", description: "The full new Groovy source code (for drivers under 64KB)"],
-                    sourceFile: [type: "string", description: "File Manager file name containing the source code (e.g., 'mcp-source-driver-747.groovy'). Use this for large drivers to avoid cloud size limits."],
-                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub — no cloud round-trip needed."],
+                    driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array for bulk."],
+                    source: [type: "string", description: "Inline Groovy source (single-driver mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    resave: [type: "boolean", description: "Re-save the current source code without changes (single-driver mode). Runs entirely on-hub -- no source touches the agent transcript."],
+                    updates: [
+                        type: "array",
+                        description: "BULK MODE -- USE THIS WHEN UPDATING >1 DRIVER (single round-trip vs N separate calls; same arg structure, just an array). Each entry: {driverId, sourceFile|source|resave}. Cannot mix with single-driver fields (driverId/source/sourceFile/resave). Continue-on-error: failures on individual items don't abort the rest. Practical limit ~20 drivers/call. Authorization is controlled by top-level 'confirm' only; item-level 'confirm' is ignored. PREFER each item's sourceFile (after CLI upload per recipe in tool description) over inline source.",
+                        items: [
+                            type: "object",
+                            properties: [
+                                driverId: [type: "string", description: "The driver ID to update"],
+                                sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED -- upload first via CLI per tool description recipe to bypass agent transcript)"],
+                                source: [type: "string", description: "Inline source (stubs only -- fills agent transcript)"],
+                                resave: [type: "boolean", description: "Re-save without changes (no source touched)"]
+                            ],
+                            required: ["driverId"]
+                        ]
+                    ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["driverId", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
@@ -9249,7 +9310,8 @@ def toolGetDriverSource(args) {
 }
 
 def toolInstallApp(args) {
-    return toolInstallItem("app", args)
+    requireHubAdminWrite(args.confirm)
+    return toolInstallItemSingle("app", args)
 }
 
 def toolInstallDriver(args) {
@@ -9257,40 +9319,169 @@ def toolInstallDriver(args) {
 }
 
 /**
- * Shared implementation for installing apps and drivers.
+ * install_driver dispatcher: single-driver mode or bulk mode.
+ *
+ * Single-driver mode: supply source (inline Groovy) or sourceFile (File Manager filename).
+ * After the install POST, verifies the new item is actually readable on-hub to catch
+ * the Hubitat false-positive pattern where the hub returns a redirect URL but the item
+ * failed to compile and was not persisted.
+ *
+ * Bulk mode: supply an 'installs' array of {source|sourceFile} objects. Each entry is
+ * applied in sequence using the same single-driver code path. Errors on individual items
+ * are recorded but do not abort remaining items (continue-on-error semantics). A
+ * practical limit of ~10-20 drivers per call is recommended; each install takes ~1-5s.
+ * Cannot supply both 'installs' and single-driver fields.
+ *
+ * install_app is single-item only; apps are typically one-of-a-kind installs.
  */
 private Map toolInstallItem(String type, args) {
     requireHubAdminWrite(args.confirm)
-    if (!args.source) throw new IllegalArgumentException("source (Groovy code) is required")
+
+    def idField = (type == "app") ? "appId" : "driverId"
+
+    // Bulk mode: installs array present -- validate then dispatch per-item
+    if (args.installs != null) {
+        if (args.source != null || args.sourceFile != null) {
+            throw new IllegalArgumentException("Cannot supply both 'installs' (bulk mode) and single-item fields (source/sourceFile). Use one mode or the other.")
+        }
+        if (!(args.installs instanceof List)) {
+            throw new IllegalArgumentException("'installs' must be an array of objects, each with 'source' or 'sourceFile'.")
+        }
+        if (args.installs.isEmpty()) {
+            throw new IllegalArgumentException("'installs' array must not be empty.")
+        }
+
+        // Bulk mode: apply each install in sequence, continue on per-item errors
+        def itemResults = []
+        def allSucceeded = true
+        args.installs.eachWithIndex { item, idx ->
+            if (!(item instanceof Map) || (item.source == null && item.sourceFile == null)) {
+                itemResults << [(idField): null, success: false, error: "Each installs entry must have a 'source' or 'sourceFile' field."]
+                allSucceeded = false
+                return
+            }
+            try {
+                def singleArgs = [confirm: args.confirm]
+                if (item.sourceFile != null) singleArgs.sourceFile = item.sourceFile
+                if (item.source != null) singleArgs.source = item.source
+                def r = toolInstallItemSingle(type, singleArgs)
+                def entry = [(idField): r[idField], success: r.success == true]
+                if (r.success) {
+                    if (r.sourceMode) entry.sourceMode = r.sourceMode
+                    if (r.name) entry.name = r.name
+                } else {
+                    entry.error = r.error ?: "Install failed"
+                    allSucceeded = false
+                }
+                itemResults << entry
+            } catch (Exception e) {
+                itemResults << [(idField): null, success: false, error: e.message ?: e.toString()]
+                allSucceeded = false
+            }
+        }
+
+        def successCount = itemResults.count { it.success == true }
+        mcpLog("info", "hub-admin", "Bulk install_${type}: ${successCount}/${itemResults.size()} succeeded")
+        return [
+            success: allSucceeded,
+            message: allSucceeded ? "All ${itemResults.size()} ${type}(s) installed successfully." : "${successCount} of ${itemResults.size()} ${type}(s) installed successfully.",
+            installs: itemResults,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    }
+
+    // Single-item mode: delegate to single-item helper
+    return toolInstallItemSingle(type, args)
+}
+
+/**
+ * Single-item install implementation shared by single-item mode and bulk mode per-item dispatch.
+ * Caller must have already invoked requireHubAdminWrite before reaching here.
+ */
+private Map toolInstallItemSingle(String type, args) {
+    def idField = (type == "app") ? "appId" : "driverId"
+
+    // Resolve source: sourceFile takes precedence when both are supplied
+    def sourceCode = null
+    def sourceMode = null
+    if (args.sourceFile && args.source) {
+        throw new IllegalArgumentException("Provide either 'source' (inline) OR 'sourceFile' (File Manager filename), not both.")
+    } else if (args.sourceFile) {
+        sourceMode = "sourceFile"
+        mcpLog("info", "hub-admin", "Reading ${type} source from File Manager: ${args.sourceFile}")
+        def bytes = downloadHubFile(args.sourceFile)
+        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        sourceCode = new String(bytes, "UTF-8")
+        mcpLog("info", "hub-admin", "Read ${sourceCode.length()} chars from ${args.sourceFile}")
+    } else if (args.source) {
+        sourceMode = "source"
+        sourceCode = args.source
+    } else {
+        throw new IllegalArgumentException("Either 'source' (inline Groovy code) or 'sourceFile' (File Manager filename) is required")
+    }
 
     def savePath = (type == "app") ? "/app/save" : "/driver/save"
     def editorPath = (type == "app") ? "/app/editor/" : "/driver/editor/"
-    def idField = (type == "app") ? "appId" : "driverId"
+    def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
 
-    mcpLog("info", "hub-admin", "Installing new ${type}...")
+    mcpLog("info", "hub-admin", "Installing new ${type} (mode: ${sourceMode}, sourceLength: ${sourceCode.length()})...")
     try {
         def result = hubInternalPostForm(savePath, [
             id: "",
             version: "",
             create: "",
-            source: args.source
+            source: sourceCode
         ])
 
         def newItemId = null
         if (result?.location) {
             newItemId = result.location.replaceAll(".*?${editorPath}", "").replaceAll("[^0-9]", "")
+            if (!newItemId) newItemId = null  // reject empty string from replaceAll
         }
 
-        mcpLog("info", "hub-admin", "${type.capitalize()} installed successfully${newItemId ? ' (ID: ' + newItemId + ')' : ''}")
+        if (!newItemId) {
+            mcpLog("warn", "hub-admin", "${type.capitalize()} install: no ID in Location header -- install may have silently failed")
+            return [
+                success: false,
+                error: "Could not confirm ${type} installation -- hub returned no item ID. The ${type} may have a compile error or the hub rejected the source.",
+                (idField): null,
+                note: "Check Hubitat > Apps Code (or Drivers Code) for error details. The source may have syntax errors.",
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        }
+
+        // Verify: confirm the hub actually persisted the item by fetching it back.
+        // Hubitat can return a Location redirect pointing at the editor while the
+        // item is in an error state (e.g., compile failure). A successful save
+        // returns status="ok" with a non-empty source field.
+        try {
+            def verifyText = hubInternalGet(ajaxPath, [id: newItemId])
+            if (verifyText) {
+                def verified = new groovy.json.JsonSlurper().parseText(verifyText)
+                if (verified.status == "error" || !verified.source) {
+                    def errMsg = verified.errorMessage ?: "item in error state after install"
+                    mcpLog("warn", "hub-admin", "${type.capitalize()} ID ${newItemId} installed but failed verification: ${errMsg}")
+                    return [
+                        success: false,
+                        error: "${type.capitalize()} installation failed: ${errMsg}",
+                        (idField): newItemId,
+                        note: "The hub created an item slot (ID: ${newItemId}) but reported an error. Check the Groovy source for compilation issues. You can view the error via get_app_source/get_driver_source with this ID."
+                    ]
+                }
+            }
+        } catch (Exception verifyErr) {
+            mcpLog("warn", "hub-admin", "${type.capitalize()} post-install verification fetch failed for ID ${newItemId}: ${verifyErr.message} -- assuming install succeeded")
+        }
+
+        mcpLog("info", "hub-admin", "${type.capitalize()} installed successfully (ID: ${newItemId}, mode: ${sourceMode})")
         def installResult = [
             success: true,
             message: "${type.capitalize()} installed successfully",
             (idField): newItemId,
+            sourceMode: sourceMode,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
-        if (!newItemId) {
-            installResult.warning = "Could not extract new ${type} ID from hub response. The ${type} was installed but you may need to check the Hubitat web UI to find it."
-        }
+        if (sourceMode == "sourceFile") installResult.note = "Source was read from File Manager file '${args.sourceFile}'."
         return installResult
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "${type.capitalize()} installation failed: ${e.message}")
@@ -9304,6 +9495,16 @@ private Map toolInstallItem(String type, args) {
 
 def toolUpdateItemCode(String type, String idParam, args) {
     requireHubAdminWrite(args.confirm)
+    return toolUpdateItemCodeInner(type, idParam, args)
+}
+
+/**
+ * Inner implementation for updating app or driver source code.
+ * Caller must have already invoked requireHubAdminWrite before reaching here --
+ * used directly from the bulk loop in toolUpdateDriverCode where the outer gate
+ * fires once for the whole batch.
+ */
+private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
@@ -9425,7 +9626,73 @@ def toolUpdateAppCode(args) {
     return toolUpdateItemCode("app", "appId", args)
 }
 
+/**
+ * update_driver_code dispatcher: single-driver mode or bulk mode.
+ *
+ * Single-driver mode: supply driverId + source|sourceFile|resave (unchanged).
+ *
+ * Bulk mode: supply an 'updates' array of {driverId, sourceFile} objects.
+ * Each entry is applied in sequence via toolUpdateItemCodeInner (gate fires
+ * once at the outer level -- not per-item). Errors on individual items are
+ * recorded but do not abort remaining items (continue-on-error semantics).
+ * A practical limit of ~20 items per call is recommended.
+ */
 def toolUpdateDriverCode(args) {
+    requireHubAdminWrite(args.confirm)
+
+    // Bulk mode validation: updates array and single-driver fields are mutually exclusive
+    if (args.updates != null) {
+        if (args.driverId != null || args.source != null || args.sourceFile != null || args.resave != null) {
+            throw new IllegalArgumentException("Cannot supply both 'updates' (bulk mode) and single-driver fields (driverId/source/sourceFile/resave). Use one mode or the other.")
+        }
+        if (!(args.updates instanceof List)) {
+            throw new IllegalArgumentException("'updates' must be an array of objects, each with 'driverId' and 'sourceFile' (or 'source' or 'resave').")
+        }
+        if (args.updates.isEmpty()) {
+            throw new IllegalArgumentException("'updates' array must not be empty.")
+        }
+
+        // Bulk mode: apply each update in sequence, continue on per-item errors
+        def itemResults = []
+        def allSucceeded = true
+        args.updates.eachWithIndex { item, idx ->
+            if (!(item instanceof Map) || !item.driverId) {
+                itemResults << [driverId: item?.driverId?.toString() ?: "item[${idx}]", success: false, error: "Each updates entry must have a 'driverId' field."]
+                allSucceeded = false
+                return
+            }
+            try {
+                def singleArgs = [driverId: item.driverId]
+                if (item.sourceFile != null) singleArgs.sourceFile = item.sourceFile
+                if (item.source != null) singleArgs.source = item.source
+                if (item.resave != null) singleArgs.resave = item.resave
+                def r = toolUpdateItemCodeInner("driver", "driverId", singleArgs)
+                def entry = [driverId: item.driverId.toString(), success: r.success == true]
+                if (r.success) {
+                    entry.sourceMode = r.sourceMode
+                    entry.sourceLength = r.sourceLength
+                } else {
+                    entry.error = r.error ?: "Update failed"
+                    allSucceeded = false
+                }
+                itemResults << entry
+            } catch (Exception e) {
+                itemResults << [driverId: item.driverId.toString(), success: false, error: e.message ?: e.toString()]
+                allSucceeded = false
+            }
+        }
+
+        def successCount = itemResults.count { it.success == true }
+        mcpLog("info", "hub-admin", "Bulk update_driver_code: ${successCount}/${itemResults.size()} succeeded")
+        return [
+            success: allSucceeded,
+            message: allSucceeded ? "All ${itemResults.size()} driver(s) updated successfully." : "${successCount} of ${itemResults.size()} driver(s) updated successfully.",
+            updates: itemResults,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    }
+
+    // Single-driver mode: unchanged behaviour
     return toolUpdateItemCode("driver", "driverId", args)
 }
 

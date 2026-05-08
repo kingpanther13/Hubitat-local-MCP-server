@@ -134,6 +134,10 @@ Destructive write operations (require Hub Admin Write): `reboot_hub`, `shutdown_
 
 `install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`, `restore_item_backup`
 
+- `install_app` / `install_driver` accept `source` (inline) OR `sourceFile` (File Manager filename). Token-economy tip: upload source via local CLI first, then pass filename. Includes post-install verification -- returns `success: false` if the Groovy failed to compile, even when the hub returned a redirect.
+- `install_driver` supports bulk mode via an `installs` array of `{source|sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields. Returns per-item `driverId`. Practical limit ~10-20 drivers/call. (`install_app` is single-item only -- apps are typically one-of-a-kind installs.)
+- `update_driver_code` supports bulk mode via an `updates` array of `{driverId, sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields.
+
 ### Pre-flight checklist for ALL write operations
 
 1. A hub backup must exist within the last 24 hours (`create_hub_backup`)

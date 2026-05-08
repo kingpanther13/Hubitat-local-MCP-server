@@ -383,10 +383,10 @@ All operations are disruptive. Hub admin tools require Hub Admin Read/Write to b
 
 | Tool | Description |
 |------|-------------|
-| `install_app` | Install new app from Groovy source |
-| `install_driver` | Install new driver from Groovy source |
-| `update_app_code` | Modify existing app code |
-| `update_driver_code` | Modify existing driver code |
+| `install_app` | Install new app from Groovy source or File Manager file (`source` or `sourceFile`). Verifies install succeeded. |
+| `install_driver` | Install new driver from Groovy source or File Manager file (`source` or `sourceFile`). Bulk mode: `installs=[{sourceFile},...]`. Verifies each install succeeded. |
+| `update_app_code` | Modify existing app code (source, sourceFile, or resave) |
+| `update_driver_code` | Modify existing driver code (single-driver or bulk `updates` array) |
 | `delete_app` | Permanently delete an app (auto-backs up) |
 | `delete_driver` | Permanently delete a driver (auto-backs up) |
 | `restore_item_backup` | Restore app/driver to backed-up version |
