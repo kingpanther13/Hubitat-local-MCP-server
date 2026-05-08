@@ -934,7 +934,7 @@ def getGatewayConfig() {
         ],
         manage_native_rules_and_apps: [
             description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via get_app_config(appId=N) and inspect persisted settings before retrying.",
-            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "check_rule_health"],
+            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"],
             summaries: [
                 list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 run_rm_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
@@ -944,6 +944,9 @@ def getGatewayConfig() {
                 create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use update_native_app next to populate.",
                 update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic), click a page-transition button, or use a high-level structured shortcut (addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / walkStep). Auto-backs-up first. Args: appId, settings|button|<shortcut>, pageName (opt), stateAttribute (opt), confirm",
                 delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
+                clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: sourceAppId, newName (opt), confirm. Returns newAppId.",
+                export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
+                import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), confirm. Returns newAppId.",
                 check_rule_health: "Inspect a rule for broken state (label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption). Args: appId. Returns {ok, issues, ...}. Auto-attached to update_native_app responses too."
             ],
             searchHints: [
@@ -955,6 +958,9 @@ def getGatewayConfig() {
                 create_native_app: "create new native rule machine room lighting button controller basic rule notifier scene group automation app",
                 update_native_app: "modify edit change native rule machine room lighting button controller basic rule notifier app trigger action condition setting",
                 delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
+                clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
+                export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
+                import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
                 check_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption"
             ]
         ],
@@ -1074,12 +1080,12 @@ def getToolDefinitions() {
     def hideGatewaySubTools = [:].withDefault { [] as Set }
 
     if (!builtinAppOn) {
-        def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "check_rule_health"]
+        def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"]
         biTools.each { hideByName << it }
         // Sub-tool removal from gateways (when in gateway mode):
-        //   manage_native_rules_and_apps: ALL 9 sub-tools require enableBuiltinApp → empty gateway → drops entirely
+        //   manage_native_rules_and_apps: ALL 12 sub-tools require enableBuiltinApp → empty gateway → drops entirely
         //   manage_installed_apps: 2/4 sub-tools require enableBuiltinApp; the other 2 (get_app_config, list_app_pages) only need Hub Admin Read
-        hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "check_rule_health"] as Set
+        hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"] as Set
         hideGatewaySubTools["manage_installed_apps"] = ["list_installed_apps", "get_device_in_use_by"] as Set
     }
     if (customEngineMode == "off") {
@@ -2660,6 +2666,46 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
             ]
         ],
         [
+            name: "clone_native_app",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via update_native_app. Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone."],
+                    newName: [type: "string", description: "Label for the new cloned app. If omitted, the cloner default ('<source-label> clone') is kept."],
+                    confirm: [type: "boolean", description: "Must be true."]
+                ],
+                required: ["sourceAppId", "confirm"]
+            ]
+        ],
+        [
+            name: "export_native_app",
+            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires Built-in App Tools enabled.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to export."],
+                    saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]
+                ],
+                required: ["sourceAppId"]
+            ]
+        ],
+        [
+            name: "import_native_app",
+            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    jsonContent: [type: "string", description: "The exported JSON content. Either jsonContent or fromFile is required."],
+                    fromFile: [type: "string", description: "File Manager filename to read the JSON from. Either jsonContent or fromFile is required."],
+                    parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app. Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent."],
+                    newName: [type: "string", description: "Label for the imported app. If omitted, the cloner default ('<original-label> import') is kept."],
+                    confirm: [type: "boolean", description: "Must be true."]
+                ],
+                required: ["parentHintAppId", "confirm"]
+            ]
+        ],
+        [
             name: "check_rule_health",
             description: """Inspect a rule's current state and return a structured health report — the LLM uses this to detect broken rules without having to investigate via curl. Surfaces:
 
@@ -2882,6 +2928,9 @@ def executeTool(toolName, args) {
         case "create_native_app": return toolCreateNativeApp(args)
         case "update_native_app": return toolUpdateNativeApp(args)
         case "delete_native_app": return toolDeleteNativeApp(args)
+        case "clone_native_app": return toolCloneNativeApp(args)
+        case "export_native_app": return toolExportNativeApp(args)
+        case "import_native_app": return toolImportNativeApp(args)
         case "check_rule_health": return toolCheckRuleHealth(args)
 
         // Tool Guide
@@ -18014,6 +18063,418 @@ def toolCheckRuleHealth(args) {
     return _rmCheckRuleHealth(appId)
 }
 
+// ==================== APP CLONER (clone / export / import) ====================
+//
+// Wraps Hubitat's first-party appCloner system app for clone, export, and
+// import of any classic SmartApp. The cloner UI is a 4-step wizard:
+//
+//   /main                    -> three buttons: Export / Import / Clone
+//   click cloneRuleButton    -> /main with a "Clone..." confirmation page
+//   _action_href_name=importRule -> /importRule sub-page with name editor + final button
+//   click importNow on /importRule -> commits the actual clone
+//
+// Each click is followed by a /installedapp/update/json form refresh that
+// carries the full form state — without it the cloner's state machine
+// stalls. Confirmed via Chrome XHR sniffing on firmware 2.5.0.x.
+
+/**
+ * Initialize a fresh appCloner instance for a given source rule. Hits
+ * /installedapp/sysAppApi/appCloner/app/<sourceId> which returns 302 with
+ * Location pointing at the new cloner instance. Returns the cloner's appId.
+ *
+ * Two Location shapes seen across firmwares:
+ *   /apps/api/<clonerId>/app/<sourceId>?access_token=...   (current)
+ *   /installedapp/configure/<clonerId>                      (older)
+ */
+private Integer _appClonerInit(Integer sourceAppId) {
+    def resp
+    try {
+        resp = hubInternalGetRaw("/installedapp/sysAppApi/appCloner/app/${sourceAppId}")
+    } catch (Exception e) {
+        throw new IllegalStateException("appCloner entry failed for source ${sourceAppId}: ${e.message}. The source app may not exist or appCloner may be unavailable.")
+    }
+    def loc = resp?.location
+    if (!loc) {
+        throw new IllegalStateException("appCloner entry returned no Location header for source ${sourceAppId} (status=${resp?.status})")
+    }
+    def m = (loc =~ /\/(?:apps\/api|installedapp\/configure)\/(\d+)/)
+    Integer clonerId = m.find() ? (m[0][1] as Integer) : null
+    if (clonerId == null) {
+        throw new IllegalStateException("Unexpected appCloner Location: ${loc}")
+    }
+    return clonerId
+}
+
+/**
+ * Submit a form-refresh POST to the cloner's /installedapp/update/json with
+ * `formAction=update, currentPage=<page>` plus optional extra form fields.
+ * Mirrors the form refresh the UI fires automatically after every click —
+ * required to advance the cloner's server-side state machine.
+ */
+private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, Map extras = null, String pageBreadcrumbs = null) {
+    def body = [
+        formAction: "update",
+        id: clonerAppId.toString(),
+        currentPage: currentPage,
+        pageBreadcrumbs: pageBreadcrumbs ?: (currentPage == "main" ? "[]" : '["main"]'),
+        version: "1"
+    ]
+    if (extras) body.putAll(extras)
+    def resp = hubInternalPostForm("/installedapp/update/json", body)
+    return resp ?: [:]
+}
+
+/**
+ * Drive the appCloner's importRule sub-page commit (steps 3-5: navigate to
+ * importRule, optionally write newName, click importNow). Shared by clone +
+ * import — they converge here once the initial state-setting click has
+ * happened (cloneRuleButton for clone, ruleUpload write for import).
+ *
+ * sourceAppId is the id used in the dynamic `newName<id>` field. For clone
+ * it's the source rule's id; for import it's the original source id from
+ * the JSON's `appReplacements` map.
+ */
+private void _appClonerCommitImportRule(Integer clonerAppId, Integer sourceAppId, String newName) {
+    // Step 3: navigate /main -> /main/importRule via _action_href_name. The
+    // <idx> in the field name is the embedded-action index in the page's
+    // action list; the hub accepts any value as long as the page name matches.
+    _appClonerSubmitForm(clonerAppId, "main", [
+        ("_action_href_name|importRule|0".toString()): "",
+        ("params_for_action_href_name|importRule|0".toString()): ""
+    ])
+
+    // Step 4 (optional): override the cloner's default new-app label. The
+    // setting name is dynamic per source: settings[newName<sourceId>].
+    if (newName) {
+        def field = "settings[newName${sourceAppId}]".toString()
+        def typeKey = "newName${sourceAppId}.type".toString()
+        def multipleKey = "newName${sourceAppId}.multiple".toString()
+        _appClonerSubmitForm(clonerAppId, "importRule", [
+            (field): newName,
+            (typeKey): "text",
+            (multipleKey): "false"
+        ])
+    }
+
+    // Step 5: click importNow — fires the actual create. The button is
+    // named `importNow` regardless of which path (clone vs import) brought
+    // us here — both surfaces converge on this final commit.
+    def btnBody = [
+        id: clonerAppId.toString(),
+        name: "importNow",
+        ("settings[importNow]".toString()): "clicked",
+        ("importNow.type".toString()): "button"
+    ]
+    def resp = hubInternalPostForm("/installedapp/btn", btnBody)
+    if (resp?.status != null && resp.status >= 400) {
+        throw new IllegalStateException("appCloner importNow click failed: status=${resp.status}")
+    }
+
+    // Step 5 follow-up: form refresh on importRule that the UI fires after
+    // the click. The actual create on the hub side completes here.
+    _appClonerSubmitForm(clonerAppId, "importRule", [
+        ("importNow.type".toString()): "button",
+        ("importNow.multiple".toString()): "false",
+        ("settings[importNow]".toString()): ""
+    ])
+}
+
+/**
+ * Discover the new app id created by the cloner. Diffs the parent app's
+ * children before vs after the commit. Tiebreaks on the cloner's "<label> clone"
+ * / "<label> import" naming convention if multiple new children appeared.
+ */
+private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preCloneIds, String sourceLabel, String hint) {
+    if (parentAppId == null) return null
+    def afterCfg
+    try {
+        afterCfg = _rmFetchConfigJson(parentAppId)
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "appCloner: parent ${parentAppId} fetch after commit failed: ${e.message}")
+        return null
+    }
+    def afterIds = ((afterCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
+    def added = afterIds.findAll { !preCloneIds.contains(it) }
+    if (added.isEmpty()) return null
+    if (added.size() == 1) return added[0] as Integer
+    // Multiple new children: prefer hint match, then "<label> clone/import" prefix, else max id.
+    def candidates = (afterCfg.childApps as List).findAll { added.contains(it?.id?.toString()) }
+    def hintMatch = hint ? candidates.find { (it.label?.toString() ?: "") == hint } : null
+    if (hintMatch) return hintMatch.id as Integer
+    def labelMatch = sourceLabel ? candidates.find {
+        def lbl = it.label?.toString() ?: ""
+        lbl.startsWith("${sourceLabel} clone") || lbl.startsWith("${sourceLabel} import") || lbl.startsWith("Clone of ${sourceLabel}")
+    } : null
+    if (labelMatch) return labelMatch.id as Integer
+    return (candidates.collect { it.id as Integer }.max()) as Integer
+}
+
+/**
+ * clone_native_app — wraps the appCloner's Clone path.
+ */
+def toolCloneNativeApp(args) {
+    requireBuiltinApp()
+    requireHubAdminWrite(args?.confirm as Boolean)
+    if (args?.sourceAppId == null) throw new IllegalArgumentException("sourceAppId is required")
+    def sourceAppId = normalizeRuleId(args.sourceAppId)
+    def newName = args?.newName?.toString()?.trim()
+
+    def sourceCfg
+    try {
+        sourceCfg = _rmFetchConfigJson(sourceAppId)
+    } catch (Exception sourceErr) {
+        mcpLog("warn", "rm-native", "clone_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
+        sourceCfg = null
+    }
+    if (!sourceCfg?.app) {
+        throw new IllegalArgumentException("Source app ${sourceAppId} not found or unreadable")
+    }
+    def sourceLabel = sourceCfg.app.label?.toString()
+    Integer parentAppId = null
+    try {
+        parentAppId = (sourceCfg.app.parentAppId != null) ? (sourceCfg.app.parentAppId.toString() as Integer) : null
+    } catch (NumberFormatException ignored) {
+        mcpLog("warn", "rm-native", "clone_native_app: source ${sourceAppId} parentAppId not numeric: ${sourceCfg.app.parentAppId}")
+    }
+
+    def preIds = [] as Set
+    if (parentAppId != null) {
+        try {
+            def pc = _rmFetchConfigJson(parentAppId)
+            preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
+        } catch (Exception preErr) {
+            mcpLog("warn", "rm-native", "clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
+        }
+    }
+
+    Integer clonerAppId = _appClonerInit(sourceAppId)
+
+    // Step 2: click cloneRuleButton + form refresh.
+    def btnBody = [
+        id: clonerAppId.toString(),
+        name: "cloneRuleButton",
+        ("settings[cloneRuleButton]".toString()): "clicked",
+        ("cloneRuleButton.type".toString()): "button"
+    ]
+    hubInternalPostForm("/installedapp/btn", btnBody)
+    _appClonerSubmitForm(clonerAppId, "main", [
+        ("cloneRuleButton.type".toString()): "button",
+        ("cloneRuleButton.multiple".toString()): "false",
+        ("settings[cloneRuleButton]".toString()): ""
+    ])
+
+    // Steps 3-5: navigate importRule, optional rename, click importNow.
+    _appClonerCommitImportRule(clonerAppId, sourceAppId, newName)
+
+    Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
+
+    return [
+        success: newAppId != null,
+        sourceAppId: sourceAppId,
+        clonerAppId: clonerAppId,
+        newAppId: newAppId,
+        note: newAppId
+            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
+            : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+    ]
+}
+
+/**
+ * export_native_app — wraps the appCloner's Export path.
+ *
+ * After clicking exportRuleButton the cloner renders a download button whose
+ * onclick reads the JSON from a hidden input. The JSON also lands in the
+ * cloner's settings as `ruleDownload` (or similar) and is exposed via
+ * /installedapp/configure/json/<clonerId> with includeSettings. We read it
+ * from there directly — no HTML scraping required.
+ */
+def toolExportNativeApp(args) {
+    requireBuiltinApp()
+    if (args?.sourceAppId == null) throw new IllegalArgumentException("sourceAppId is required")
+    def sourceAppId = normalizeRuleId(args.sourceAppId)
+    def saveAs = args?.saveAs?.toString()?.trim()
+
+    def sourceCfg
+    try { sourceCfg = _rmFetchConfigJson(sourceAppId) } catch (Exception ignored) { sourceCfg = null }
+    if (!sourceCfg?.app) {
+        throw new IllegalArgumentException("Source app ${sourceAppId} not found or unreadable")
+    }
+    def sourceLabel = sourceCfg.app.label?.toString() ?: "app-${sourceAppId}"
+
+    Integer clonerAppId = _appClonerInit(sourceAppId)
+
+    // Step 2: click exportRuleButton + form refresh.
+    def btnBody = [
+        id: clonerAppId.toString(),
+        name: "exportRuleButton",
+        ("settings[exportRuleButton]".toString()): "clicked",
+        ("exportRuleButton.type".toString()): "button"
+    ]
+    hubInternalPostForm("/installedapp/btn", btnBody)
+    _appClonerSubmitForm(clonerAppId, "main", [
+        ("exportRuleButton.type".toString()): "button",
+        ("exportRuleButton.multiple".toString()): "false",
+        ("settings[exportRuleButton]".toString()): ""
+    ])
+
+    // Step 3: read the cloner's settings to extract the JSON. The export
+    // content lives in a setting whose name varies by firmware — search for
+    // any setting whose value is a JSON object containing "appReplacements".
+    String jsonContent = _appClonerExtractJsonFromSettings(clonerAppId)
+    if (!jsonContent) {
+        throw new IllegalStateException("appCloner export fired but no JSON content could be extracted from cloner ${clonerAppId} — wire format may have changed")
+    }
+
+    def result = [
+        success: true,
+        sourceAppId: sourceAppId,
+        sourceLabel: sourceLabel,
+        clonerAppId: clonerAppId,
+        contentLength: jsonContent.length(),
+        jsonContent: jsonContent,
+        note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to import_native_app to re-create the rule."
+    ]
+    if (saveAs) {
+        try {
+            uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
+            result.savedAs = saveAs
+            result.savedUrl = "http://<HUB_IP>/local/${saveAs}"
+        } catch (Exception fileErr) {
+            result.saveError = fileErr.message
+            mcpLog("warn", "rm-native", "export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
+        }
+    }
+    return result
+}
+
+/**
+ * Internal: pull the exported JSON out of the cloner's settings. The setting
+ * key isn't stable across firmwares (seen as `ruleDownload` and similar) —
+ * scan all settings and pick the first whose value parses as JSON containing
+ * "appReplacements".
+ */
+private String _appClonerExtractJsonFromSettings(Integer clonerAppId) {
+    def cfg
+    try {
+        cfg = _rmFetchConfigJson(clonerAppId)
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "appCloner: extract config fetch failed for ${clonerAppId}: ${e.message}")
+        return null
+    }
+    def settings = (cfg?.settings instanceof Map) ? cfg.settings : [:]
+    for (entry in settings) {
+        def v = entry?.value
+        if (v instanceof String && v.length() > 100 && v.contains("appReplacements") && v.startsWith("{")) {
+            return v
+        }
+    }
+    // Fallback: parse the rendered HTML page for <input id="ruledownload-value" value="...">
+    try {
+        def html = hubInternalGet("/installedapp/configure/${clonerAppId}")
+        if (html instanceof String) {
+            def m = (html =~ /id="ruledownload-value"[^>]*value="([^"]+)"/)
+            if (m.find()) {
+                def encoded = m[0][1]
+                return encoded.replace("&quot;", "\"").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            }
+        }
+    } catch (Exception htmlErr) {
+        mcpLog("debug", "rm-native", "appCloner: HTML scrape fallback failed for ${clonerAppId}: ${htmlErr.message}")
+    }
+    return null
+}
+
+/**
+ * import_native_app — wraps the appCloner's Import path.
+ *
+ * Stages the JSON via settings[ruleUpload]= (urlencoded, NOT multipart),
+ * then drives the same importRule -> importNow commit as clone.
+ */
+def toolImportNativeApp(args) {
+    requireBuiltinApp()
+    requireHubAdminWrite(args?.confirm as Boolean)
+    if (args?.parentHintAppId == null) {
+        throw new IllegalArgumentException("parentHintAppId is required (any existing rule's id under the target parent — used to seed the cloner)")
+    }
+    def parentHintAppId = normalizeRuleId(args.parentHintAppId)
+    def newName = args?.newName?.toString()?.trim()
+
+    String jsonContent = args?.jsonContent?.toString()
+    if (!jsonContent && args?.fromFile) {
+        try {
+            def bytes = downloadHubFile(args.fromFile.toString())
+            jsonContent = new String(bytes, "UTF-8")
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Cannot read fromFile '${args.fromFile}': ${e.message}")
+        }
+    }
+    if (!jsonContent) {
+        throw new IllegalArgumentException("jsonContent or fromFile is required")
+    }
+
+    // Parse to verify shape + extract original source id (for the dynamic
+    // newName<id> field on the importRule sub-page).
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(jsonContent) }
+    catch (Exception e) { throw new IllegalArgumentException("jsonContent is not valid JSON: ${e.message}") }
+    def appReplacements = (parsed instanceof Map) ? parsed.appReplacements : null
+    if (!(appReplacements instanceof Map) || appReplacements.isEmpty()) {
+        throw new IllegalArgumentException("jsonContent does not contain an appReplacements map — not an appCloner export")
+    }
+    Integer originalSourceId = null
+    try {
+        originalSourceId = ((appReplacements.keySet() as List)[0]).toString() as Integer
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Could not extract original source id from appReplacements: ${e.message}")
+    }
+    def originalLabel = appReplacements[originalSourceId.toString()]?.appLabel?.toString()
+
+    // Snapshot pre-import children of the target parent.
+    def parentHintCfg
+    try { parentHintCfg = _rmFetchConfigJson(parentHintAppId) } catch (Exception ignored) { parentHintCfg = null }
+    if (!parentHintCfg?.app) {
+        throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} not found or unreadable")
+    }
+    Integer parentAppId = null
+    try {
+        parentAppId = (parentHintCfg.app.parentAppId != null) ? (parentHintCfg.app.parentAppId.toString() as Integer) : null
+    } catch (NumberFormatException ignored) { /* fall through */ }
+    def preIds = [] as Set
+    if (parentAppId != null) {
+        try {
+            def pc = _rmFetchConfigJson(parentAppId)
+            preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
+        } catch (Exception ignored) { /* heuristic */ }
+    }
+
+    Integer clonerAppId = _appClonerInit(parentHintAppId)
+
+    // Step 2: stage the JSON via settings[ruleUpload]=. Hubitat accepts
+    // urlencoded form fields with the full JSON content inline.
+    _appClonerSubmitForm(clonerAppId, "main", [
+        ("settings[ruleUpload]".toString()): jsonContent,
+        ("ruleUpload.type".toString()): "file-text",
+        ("ruleUpload.multiple".toString()): "false"
+    ])
+
+    // Steps 3-5: navigate importRule, optional rename, click importNow.
+    _appClonerCommitImportRule(clonerAppId, originalSourceId, newName)
+
+    Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
+
+    return [
+        success: newAppId != null,
+        clonerAppId: clonerAppId,
+        newAppId: newAppId,
+        originalSourceId: originalSourceId,
+        originalLabel: originalLabel,
+        contentLength: jsonContent.length(),
+        note: newAppId
+            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
+            : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+    ]
+}
+
 /**
  * Internal: replay an RM rule snapshot. Called by the unified
  * restore_item_backup tool when entry.type == "rm-rule". Two paths:
@@ -18679,7 +19140,7 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-**manage_native_rules_and_apps (9 tools) — read, trigger, AND full CRUD on native RM rules:**
+**manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 
 RMUtils-based control surface (Built-in App Tools gate only):
 - **list_rm_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
@@ -18694,6 +19155,9 @@ Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
 - **create_native_app** — create a new empty classic SmartApp (RM 5.1 by default; appType enum covers rule_machine / button_controller / groups_scenes / notifier / visual_rule). Args: appType (default rule_machine), name, confirm. Returns appId. Call update_native_app afterward to populate; or pass triggers=[...] / actions=[...] arrays to populate in one call.
 - **update_native_app** — modify any classic SmartApp. Two raw modes (settings (Map) OR button (String)) plus 14 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).
 - **delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
+- **clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner. Args: sourceAppId, newName (opt), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
+- **export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through import_native_app.
+- **import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId, newName (opt), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
 - **check_rule_health** — read-only health check on any installed app. Args: appId. Returns ok / configPageError / brokenMarkers / multipleFlagPoison / issues.
 
 For READING an RM rule's current state, use **get_app_config** in the manage_installed_apps gateway — it works on any installed app including RM rules and returns the same configPage shape that update_native_app expects to see.

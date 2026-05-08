@@ -2122,6 +2122,289 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.issues.any { it.toString().toLowerCase().contains("broken") }
     }
 
+    // ---------- clone / export / import_native_app (appCloner trio) ----------
+    // These three tools share the appCloner system app's wire format. Wire
+    // format captured live via Chrome XHR sniffing on firmware 2.5.0.x:
+    //
+    //   GET /installedapp/sysAppApi/appCloner/app/<sourceId> -> 302
+    //     Location: /apps/api/<clonerId>/app/<sourceId>?access_token=...
+    //   POST /installedapp/btn  (cloneRuleButton or exportRuleButton)
+    //   POST /installedapp/update/json  (form refresh after each click)
+    //   POST /installedapp/update/json  (with _action_href_name|importRule|<idx>=)
+    //   POST /installedapp/btn  (importNow — actual commit, clone+import only)
+    //
+    // Helpers shared by these tests construct minimal source/parent configs
+    // and stub the cloner's GET-302 + POST responses.
+
+    private String parentConfigJson(int parentId, List<Map> children) {
+        JsonOutput.toJson([
+            app: [id: parentId, label: "Rule Machine"],
+            configPage: [name: "mainPage", title: "RM", install: true, error: null, sections: []],
+            settings: [:],
+            childApps: children
+        ])
+    }
+
+    def "clone_native_app requires confirm=true"() {
+        given: enableHubAdminWrite()
+
+        when: script.toolCloneNativeApp([sourceAppId: 100])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("SAFETY CHECK FAILED")
+    }
+
+    def "clone_native_app throws when sourceAppId is missing"() {
+        given: enableHubAdminWrite()
+
+        when: script.toolCloneNativeApp([confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains("sourceappid")
+    }
+
+    def "clone_native_app throws when source app config fetch returns empty"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/999') { params -> "" }
+
+        when: script.toolCloneNativeApp([sourceAppId: 999, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("999")
+        ex.message.toLowerCase().contains("not found")
+    }
+
+    def "clone_native_app drives the full appCloner wizard and returns the new appId"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            // Pre-clone snapshot: just the source. Post-commit: source + new clone.
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, confirm: true])
+
+        then: "tool returns the discovered new appId"
+        result.success == true
+        result.sourceAppId == 100
+        result.clonerAppId == 4242
+        result.newAppId == 250
+
+        and: "cloneRuleButton click POSTed to /installedapp/btn with the 4-field contract"
+        def cloneClick = posts.find { it.path == "/installedapp/btn" && it.body?.name == "cloneRuleButton" }
+        cloneClick != null
+        cloneClick.body["settings[cloneRuleButton]"] == "clicked"
+        cloneClick.body["cloneRuleButton.type"] == "button"
+        cloneClick.body.id == "4242"
+
+        and: "importNow click POSTed (the actual commit)"
+        def importNowClick = posts.find { it.path == "/installedapp/btn" && it.body?.name == "importNow" }
+        importNowClick != null
+        importNowClick.body.id == "4242"
+
+        and: "page-navigation POST sent to advance to the importRule sub-page"
+        def navPost = posts.find { it.path == "/installedapp/update/json" && it.body?.containsKey("_action_href_name|importRule|0") }
+        navPost != null
+    }
+
+    def "clone_native_app rename writes settings[newName<sourceId>] before importNow"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Src", [], 21) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Src"]])
+                : parentConfigJson(21, [[id: 100, label: "Src"], [id: 500, label: "My Renamed"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, newName: "My Renamed", confirm: true])
+
+        then: "rename POSTed with the dynamic settings[newName<sourceId>] field"
+        result.success == true
+        result.newAppId == 500
+        result.note?.contains("renamed to 'My Renamed'")
+        def renamePost = posts.find { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[newName100]") }
+        renamePost != null
+        renamePost.body["settings[newName100]"] == "My Renamed"
+    }
+
+    def "export_native_app pulls JSON from the cloner's settings"() {
+        given:
+        enableHubAdminWrite()
+        def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"Source Rule"}}}'
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        // Cloner's /configure/json includes the export content as a settings value
+        // after the exportRuleButton click — return shape mirrors what
+        // _rmFetchConfigJson sees with the settings field populated.
+        hubGet.register('/installedapp/configure/json/4242') { params ->
+            JsonOutput.toJson([
+                app: [id: 4242, label: "Export/Import/Clone", name: "Export/Import/Clone",
+                      installed: true, parentAppId: null,
+                      appType: [name: "Export/Import/Clone", namespace: "hubitat"]],
+                configPage: [name: "main", install: true, error: null, sections: []],
+                settings: [ruleDownload: fakeJson, exportRuleButton: ""],
+                childApps: []
+            ])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolExportNativeApp([sourceAppId: 100])
+
+        then:
+        result.success == true
+        result.sourceAppId == 100
+        result.clonerAppId == 4242
+        result.jsonContent == fakeJson
+        result.contentLength == fakeJson.length()
+    }
+
+    def "export_native_app saveAs uploads to File Manager"() {
+        given:
+        enableHubAdminWrite()
+        def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"X"}}}'
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "X", [], 21) }
+        hubGet.register('/installedapp/configure/json/4242') { params ->
+            JsonOutput.toJson([
+                app: [id: 4242, label: "Export/Import/Clone", installed: true,
+                      appType: [name: "Export/Import/Clone", namespace: "hubitat"]],
+                configPage: [name: "main", install: true, error: null, sections: []],
+                settings: [ruleDownload: fakeJson],
+                childApps: []
+            ])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        def uploaded = []
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploaded << [name: fn, len: bytes.length] }
+
+        when:
+        def result = script.toolExportNativeApp([sourceAppId: 100, saveAs: "x-export.json"])
+
+        then:
+        result.success == true
+        result.savedAs == "x-export.json"
+        uploaded.size() == 1
+        uploaded[0].name == "x-export.json"
+        uploaded[0].len == fakeJson.getBytes("UTF-8").length
+    }
+
+    def "import_native_app requires parentHintAppId + confirm"() {
+        given: enableHubAdminWrite()
+
+        when:
+        script.toolImportNativeApp([jsonContent: '{"appReplacements":{"100":{}}}'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("SAFETY CHECK FAILED") || ex.message.toLowerCase().contains("parenthint")
+    }
+
+    def "import_native_app rejects non-JSON content"() {
+        given: enableHubAdminWrite()
+
+        when:
+        script.toolImportNativeApp([jsonContent: 'not-json', parentHintAppId: 100, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains("not valid json") || ex.message.toLowerCase().contains("appreplacements")
+    }
+
+    def "import_native_app rejects JSON without appReplacements"() {
+        given: enableHubAdminWrite()
+
+        when:
+        script.toolImportNativeApp([jsonContent: '{"foo":"bar"}', parentHintAppId: 100, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains("appreplacements")
+    }
+
+    def "import_native_app drives the cloner with settings[ruleUpload]= and finds the new appId"() {
+        given:
+        enableHubAdminWrite()
+        def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
+        // parentHint = an existing rule under parent 21
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "ExistingRule"]])
+                : parentConfigJson(21, [[id: 100, label: "ExistingRule"], [id: 700, label: "Source Rule import"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolImportNativeApp([jsonContent: importJson, parentHintAppId: 100, confirm: true])
+
+        then: "import succeeds with newAppId discovered"
+        result.success == true
+        result.newAppId == 700
+        result.originalSourceId == 42
+        result.originalLabel == "Source Rule"
+
+        and: "JSON staged via settings[ruleUpload] (urlencoded, NOT multipart)"
+        def stage = posts.find { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[ruleUpload]") }
+        stage != null
+        stage.body["settings[ruleUpload]"] == importJson
+
+        and: "importNow click fired the actual commit"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "importNow" }
+
+        and: "rename used the ORIGINAL source id (42), not parentHintAppId (100)"
+        def renamePostCheck = posts.findAll { it.path == "/installedapp/update/json" }
+        // No newName passed, so settings[newName42] should NOT appear
+        !renamePostCheck.any { it.body?.containsKey("settings[newName42]") }
+    }
+
     // ---------- post-write verification heuristic itself ----------
     // The silent-rejection / verification-fetch-failed paths are load-bearing
     // for the entire write-bookkeeping subsystem. Without these tests, a
