@@ -96,6 +96,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
     }
 
+    // Decode a URL-encoded form body (key=value&key=value...) back into a Map
+    // for assertion-friendly access. The cloner POSTs go through
+    // hubInternalPostFormRaw with a pre-encoded body string; tests want to
+    // assert on logical fields, not the percent-escape level.
+    private Map decodeForm(String encoded) {
+        if (!encoded) return [:]
+        Map out = [:]
+        encoded.split('&').each { kv ->
+            int eq = kv.indexOf('=')
+            String k = eq < 0 ? kv : kv.substring(0, eq)
+            String v = eq < 0 ? "" : kv.substring(eq + 1)
+            out[URLDecoder.decode(k, "UTF-8")] = URLDecoder.decode(v, "UTF-8")
+        }
+        return out
+    }
+
     private String statusJson(int ruleId, List appSettings = [], int subs = 1) {
         JsonOutput.toJson([
             installedApp: [id: ruleId],
@@ -2184,6 +2200,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        // _appClonerInit primes the cloner state before any POST; needs to
+        // resolve. _appClonerFindActionHrefIdx parses this for the navigate
+        // index and falls back to 0 when missing.
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> '{"configPage":{"sections":[]}}' }
         int parentCalls = 0
         hubGet.register('/installedapp/configure/json/21') { params ->
             parentCalls++
@@ -2198,6 +2218,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            posts << [path: path, body: decodeForm(encodedBody)]
             [status: 200, location: null, data: '{"status":"success"}']
         }
 
@@ -2231,6 +2255,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Src", [], 21) }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> '{"configPage":{"sections":[]}}' }
         int parentCalls = 0
         hubGet.register('/installedapp/configure/json/21') { params ->
             parentCalls++
@@ -2246,6 +2271,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             [status: 200, location: null, data: '{"status":"success"}']
         }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            posts << [path: path, body: decodeForm(encodedBody)]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
 
         when:
         def result = script.toolCloneNativeApp([sourceAppId: 100, newName: "My Renamed", confirm: true])
@@ -2259,29 +2288,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         renamePost.body["settings[newName100]"] == "My Renamed"
     }
 
-    def "export_native_app pulls JSON from the cloner's settings"() {
+    def "export_native_app pulls JSON from the cloner's form-refresh response"() {
         given:
         enableHubAdminWrite()
         def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"Source Rule"}}}'
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
-        // Cloner's /configure/json includes the export content as a settings value
-        // after the exportRuleButton click — return shape mirrors what
-        // _rmFetchConfigJson sees with the settings field populated.
-        hubGet.register('/installedapp/configure/json/4242') { params ->
-            JsonOutput.toJson([
-                app: [id: 4242, label: "Export/Import/Clone", name: "Export/Import/Clone",
-                      installed: true, parentAppId: null,
-                      appType: [name: "Export/Import/Clone", namespace: "hubitat"]],
-                configPage: [name: "main", install: true, error: null, sections: []],
-                settings: [ruleDownload: fakeJson, exportRuleButton: ""],
-                childApps: []
-            ])
-        }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> '{"configPage":{"sections":[]}}' }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
+        // The post-exportRuleButton form refresh response carries the canonical
+        // JSON in configPage.sections[].input[].filecontent — the cloner renders
+        // it there session-keyed and only on the click-fired POST.
+        def refreshResp = JsonOutput.toJson([
+            configPage: [name: "main", sections: [
+                [input: [[name: "ruleDownload", type: "download-text", filecontent: fakeJson]]]
+            ]]
+        ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            [status: 200, location: null, data: refreshResp]
         }
 
         when:
@@ -2300,20 +2328,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableHubAdminWrite()
         def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"X"}}}'
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "X", [], 21) }
-        hubGet.register('/installedapp/configure/json/4242') { params ->
-            JsonOutput.toJson([
-                app: [id: 4242, label: "Export/Import/Clone", installed: true,
-                      appType: [name: "Export/Import/Clone", namespace: "hubitat"]],
-                configPage: [name: "main", install: true, error: null, sections: []],
-                settings: [ruleDownload: fakeJson],
-                childApps: []
-            ])
-        }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> '{"configPage":{"sections":[]}}' }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
+        def refreshResp = JsonOutput.toJson([
+            configPage: [name: "main", sections: [
+                [input: [[name: "ruleDownload", type: "download-text", filecontent: fakeJson]]]
+            ]]
+        ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            [status: 200, location: null, data: refreshResp]
         }
         def uploaded = []
         script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploaded << [name: fn, len: bytes.length] }
@@ -2368,6 +2396,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
         // parentHint = an existing rule under parent 21
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> '{"configPage":{"sections":[]}}' }
         int parentCalls = 0
         hubGet.register('/installedapp/configure/json/21') { params ->
             parentCalls++
@@ -2381,6 +2410,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            posts << [path: path, body: decodeForm(encodedBody)]
             [status: 200, location: null, data: '{"status":"success"}']
         }
 
