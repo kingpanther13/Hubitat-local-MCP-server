@@ -18364,7 +18364,7 @@ private String _appClonerExtractJsonFromSettings(Integer clonerAppId) {
     def settings = (cfg?.settings instanceof Map) ? cfg.settings : [:]
     for (entry in settings) {
         def v = entry?.value
-        if (v instanceof String && v.length() > 100 && v.contains("appReplacements") && v.startsWith("{")) {
+        if (v instanceof String && v.startsWith("{") && v.contains("appReplacements")) {
             return v
         }
     }
