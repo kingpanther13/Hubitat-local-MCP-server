@@ -9368,7 +9368,7 @@ private Map toolInstallItem(String type, args) {
                 def entry = [(idField): r[idField], success: r.success == true]
                 if (r.success) {
                     if (r.sourceMode) entry.sourceMode = r.sourceMode
-                    if (r.name) entry.name = r.name
+                    if (r.sourceLength != null) entry.sourceLength = r.sourceLength
                 } else {
                     entry.error = r.error ?: "Install failed"
                     allSucceeded = false
@@ -9435,8 +9435,8 @@ private Map toolInstallItemSingle(String type, args) {
 
         def newItemId = null
         if (result?.location) {
-            newItemId = result.location.replaceAll(".*?${editorPath}", "").replaceAll("[^0-9]", "")
-            if (!newItemId) newItemId = null  // reject empty string from replaceAll
+            newItemId = result.location.replaceAll(".*?${editorPath}", "").split("[?#/]")[0]
+            if (!newItemId) newItemId = null  // reject empty string if path segment was absent
         }
 
         if (!newItemId) {
@@ -9479,6 +9479,7 @@ private Map toolInstallItemSingle(String type, args) {
             message: "${type.capitalize()} installed successfully",
             (idField): newItemId,
             sourceMode: sourceMode,
+            sourceLength: sourceCode.length(),
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
         if (sourceMode == "sourceFile") installResult.note = "Source was read from File Manager file '${args.sourceFile}'."
