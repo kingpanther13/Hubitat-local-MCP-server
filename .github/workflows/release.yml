@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: read
 
 jobs:
@@ -118,14 +118,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Use the PR's changed-files list (works regardless of squash / rebase /
-          # merge-commit strategy and doesn't require a checkout).
-          if gh api "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' | grep -qx 'futureplans.md'; then
+          # Capture the API call into a file first so a transient gh failure
+          # is distinguishable from "no match" (piping straight into grep
+          # would silently report changed=false on API error because grep's
+          # exit-1 lands in the same `else` branch as a real no-match).
+          FILES_LIST=$(mktemp)
+          if ! gh api "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' > "$FILES_LIST"; then
+            echo "::error::Failed to list changed files for PR #${PR_NUMBER}"
+            exit 1
+          fi
+          if grep -qx 'futureplans.md' "$FILES_LIST"; then
             echo "::notice::futureplans.md changed in PR #${PR_NUMBER} — will sync FUTURE_PLANS block in README"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
+          rm -f "$FILES_LIST"
 
       - name: Skip if no work to do
         if: steps.pr.outputs.skip == 'false'
