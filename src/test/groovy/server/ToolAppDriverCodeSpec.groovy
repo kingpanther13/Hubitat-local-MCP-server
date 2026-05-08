@@ -194,7 +194,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.note.contains('syntax errors')
     }
 
-    def "install_app proceeds with assumed success when post-install verification fetch throws"() {
+    def "install_app surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -210,6 +210,62 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         result.success == true
         result.appId == '7100'
+        result.verified == false
+        result.verifyError != null
+        result.verifyError.contains('transient error')
+        result.verifyError.contains('7100')
+    }
+
+    def "install_app returns success=false when verify endpoint returns an empty body"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7200', data: '']
+        }
+        hubGet.register('/app/ajax/code') { params -> '' }
+
+        when:
+        def result = script.toolInstallApp([source: 'definition(name: "Test")', confirm: true])
+
+        then:
+        result.success == false
+        result.appId == '7200'
+        result.error.contains('empty verify body')
+        result.note.contains('Do NOT retry')
+        result.lastBackup != null
+    }
+
+    def "install_app returns success=false when verify endpoint returns unparseable HTML"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7300', data: '']
+        }
+        hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
+
+        when:
+        def result = script.toolInstallApp([source: 'definition(name: "Test")', confirm: true])
+
+        then:
+        result.success == false
+        result.appId == '7300'
+        result.error.contains('unparseable verify body')
+        result.note.contains('not valid JSON')
+        result.note.contains('Do NOT retry')
+        result.lastBackup != null
+    }
+
+    def "install_app rejects bulk-mode args (installs[] not supported on apps)"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolInstallApp([installs: [[source: 'a'], [source: 'b']], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Bulk mode")
+        ex.message.contains("install_app")
     }
 
     def "install_driver (source mode) POSTs to /driver/save and returns the new driverId"() {
@@ -276,7 +332,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.error.contains('Unknown identifier')
     }
 
-    def "install_driver proceeds with assumed success when post-install verification fetch throws"() {
+    def "install_driver surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -292,6 +348,46 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         result.success == true
         result.driverId == '6600'
+        result.verified == false
+        result.verifyError != null
+        result.verifyError.contains('transient error')
+        result.verifyError.contains('6600')
+    }
+
+    def "install_driver returns success=false when verify endpoint returns an empty body"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: '/driver/editor/6700', data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params -> '' }
+
+        when:
+        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
+
+        then:
+        result.success == false
+        result.driverId == '6700'
+        result.error.contains('empty verify body')
+        result.note.contains('Do NOT retry')
+    }
+
+    def "install_driver returns success=false when verify endpoint returns unparseable HTML"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: '/driver/editor/6800', data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
+
+        when:
+        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
+
+        then:
+        result.success == false
+        result.driverId == '6800'
+        result.error.contains('unparseable verify body')
+        result.note.contains('Do NOT retry')
     }
 
     def "install_driver throws when Hub Admin Write is disabled"() {
@@ -450,7 +546,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.installs.size() == 3
         result.installs.every { it.success == true }
         result.installs*.driverId == ['9001', '9002', '9003']
-        result.installs*.sourceMode.every { it == 'sourceFile' }
+        result.installs.every { it.sourceMode == 'sourceFile' }
     }
 
     def "install_driver bulk mode partial failure: middle item missing file, outer two installed"() {
@@ -491,6 +587,132 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.installs[1].error.contains('not found in File Manager')
         result.installs[2].success == true
         result.installs[2].driverId == '8002'
+    }
+
+    def "install_driver bulk mode: inline source items work alongside sourceFile items"() {
+        given:
+        enableHubAdminWrite()
+        def callNum = 0
+        script.metaClass.downloadHubFile = { String fileName ->
+            'metadata { }'.getBytes('UTF-8')
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            callNum++
+            [status: 302, location: "/driver/editor/${8500 + callNum}", data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "source": "metadata { }", "version": 1}'
+        }
+
+        when:
+        def result = script.toolInstallDriver([
+            installs: [
+                [source: 'metadata { name "inline-1" }'],
+                [sourceFile: 'driver-b.groovy'],
+                [source: 'metadata { name "inline-3" }']
+            ],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.installs.size() == 3
+        result.installs[0].sourceMode == 'source'
+        result.installs[1].sourceMode == 'sourceFile'
+        result.installs[2].sourceMode == 'source'
+    }
+
+    def "install_driver bulk mode: single-element installs array works"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: '/driver/editor/8900', data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "source": "metadata { }", "version": 1}'
+        }
+
+        when:
+        def result = script.toolInstallDriver([
+            installs: [[source: 'metadata { }']],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.installs.size() == 1
+        result.installs[0].driverId == '8900'
+    }
+
+    def "install_driver bulk mode: malformed entry (non-Map) yields per-item failure with index hint"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: '/driver/editor/9100', data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "source": "metadata { }", "version": 1}'
+        }
+
+        when:
+        def result = script.toolInstallDriver([
+            installs: [
+                [source: 'metadata { }'],
+                'not-a-map',
+                [:]
+            ],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.installs.size() == 3
+        result.installs[0].success == true
+        result.installs[1].success == false
+        result.installs[1].error.contains("'source' or 'sourceFile'")
+        result.installs[2].success == false
+        result.installs[2].error.contains("'source' or 'sourceFile'")
+    }
+
+    def "install_driver bulk mode: per-item verify-throw surfaces verified=false and verifyError on the success entry"() {
+        given:
+        enableHubAdminWrite()
+        def callNum = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            callNum++
+            [status: 302, location: "/driver/editor/${9300 + callNum}", data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params ->
+            // middle item's verify GET throws, outer two return clean JSON
+            if (params?.id?.toString() == '9302') {
+                throw new RuntimeException('hub blip on verify')
+            }
+            '{"status": "ok", "source": "metadata { }", "version": 1}'
+        }
+
+        when:
+        def result = script.toolInstallDriver([
+            installs: [
+                [source: 'metadata { name "a" }'],
+                [source: 'metadata { name "b" }'],
+                [source: 'metadata { name "c" }']
+            ],
+            confirm: true
+        ])
+
+        then: 'all three installs return success=true (POST succeeded for each)'
+        result.success == true
+        result.installs.size() == 3
+        result.installs.every { it.success == true }
+
+        and: 'middle item carries verified=false plus verifyError; outer two are verified=true'
+        result.installs[0].verified == true
+        result.installs[0].verifyError == null
+        result.installs[1].verified == false
+        result.installs[1].verifyError != null
+        result.installs[1].verifyError.contains('hub blip')
+        result.installs[2].verified == true
+        result.installs[2].verifyError == null
     }
 
     // -------- toolUpdateAppCode / toolUpdateDriverCode --------
@@ -661,6 +883,22 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.note.contains('syntax')
     }
 
+    def "update_app_code rejects bulk-mode args (updates[] not supported on apps)"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolUpdateAppCode([
+            updates: [[appId: '1', source: 'a'], [appId: '2', source: 'b']],
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Bulk mode")
+        ex.message.contains("update_app_code")
+    }
+
     def "update_driver_code (single mode) delegates to toolUpdateItemCode with the driver paths"() {
         given:
         enableHubAdminWrite()
@@ -802,6 +1040,46 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'drivers 201 and 203 were actually posted; driver 202 was not'
         postedIds as Set == ['201', '203'] as Set
+    }
+
+    def "update_driver_code bulk mode: mixed resave and sourceFile entries dispatch correctly"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.downloadHubFile = { String fileName ->
+            'metadata { name "from-file" }'.getBytes('UTF-8')
+        }
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "metadata { name \\"existing\\" }"}'
+        }
+        def postedSources = []
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postedSources << body.source
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def result = script.toolUpdateDriverCode([
+            updates: [
+                [driverId: '301', resave: true],
+                [driverId: '302', sourceFile: 'driver-302.groovy'],
+                [driverId: '303', source: 'metadata { name "inline" }']
+            ],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updates.size() == 3
+        result.updates[0].sourceMode == 'resave'
+        result.updates[1].sourceMode == 'sourceFile'
+        result.updates[2].sourceMode == 'source'
+
+        and: 'each item posted with the correct source for its mode'
+        postedSources.size() == 3
+        postedSources[0].contains('existing')   // resave fetched from hub
+        postedSources[1].contains('from-file')  // sourceFile read from File Manager
+        postedSources[2].contains('inline')     // source passed inline
     }
 
     // -------- toolDeleteApp / toolDeleteDriver --------

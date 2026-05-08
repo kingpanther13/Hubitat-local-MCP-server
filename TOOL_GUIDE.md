@@ -84,7 +84,7 @@ All Hub Admin Write tools require these steps:
 **install_app** (via `manage_app_driver_code`)
 - Accepts `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
 - Token-economy tip: upload large source via local CLI first, then pass the filename as `sourceFile`. Avoids re-sending multi-KB source strings on each install attempt.
-- Performs post-install verification: after the hub creates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` if the hub reports a compile error, even if the redirect URL was returned. The item ID is included in the error response so the error can be inspected via `get_app_source`.
+- Performs post-install verification: after the hub creates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `appId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_app_source`. If the hub returns no item ID at all (no `Location` header), `appId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
 **install_driver** (via `manage_app_driver_code`)
@@ -94,7 +94,7 @@ All Hub Admin Write tools require these steps:
   - Top-level `success: true` only if ALL items succeeded.
   - Practical limit: ~10-20 drivers per call (each install is a sequential on-hub compilation, ~1-5 seconds each).
   - Token-economy pattern: upload all driver source files via local CLI, then call bulk `install_driver` once with all `{sourceFile}` entries.
-- Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` if the hub reports a compile error, even if the redirect URL was returned. The item ID is included in the error response so the error can be inspected via `get_driver_source`.
+- Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_driver_source`. If the hub returns no item ID at all (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
 **update_driver_code** (via `manage_app_driver_code`)
