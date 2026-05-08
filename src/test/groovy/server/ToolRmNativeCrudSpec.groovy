@@ -2401,10 +2401,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "importNow click fired the actual commit"
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "importNow" }
 
-        and: "rename used the ORIGINAL source id (42), not parentHintAppId (100)"
-        def renamePostCheck = posts.findAll { it.path == "/installedapp/update/json" }
-        // No newName passed, so settings[newName42] should NOT appear
-        !renamePostCheck.any { it.body?.containsKey("settings[newName42]") }
+        and: "the importRule form refresh uses the ORIGINAL source id (42) as the newName field's <sourceId>, not parentHintAppId (100). With no newName argument the field is still emitted (matches UI behaviour) but its value is empty."
+        def importRulePosts = posts.findAll { it.path == "/installedapp/update/json" && it.body?.currentPage == "importRule" }
+        importRulePosts.any { it.body?.containsKey("settings[newName42]") }
+        importRulePosts.every { it.body?["settings[newName42]"] == "" }
+        !importRulePosts.any { it.body?.containsKey("settings[newName100]") }
     }
 
     // ---------- post-write verification heuristic itself ----------
