@@ -103,17 +103,17 @@ Flow:
 
 ### Trigger
 
-`pull_request.closed` event where `merged == true` and base branch is `main`.
+`push` event on `main` branch. The trigger was moved from `pull_request.closed` so the workflow gets the base repo's `contents: write` permission regardless of where the merged code came from (fork PRs would otherwise inherit GITHUB_TOKEN's forced read-only scope). The originating PR is recovered via the commits-to-PRs API for label inspection.
 
 ### Concurrency control
 
 ```yaml
 concurrency:
-  group: release
+  group: post-merge
   cancel-in-progress: false
 ```
 
-Serializes all release workflow runs. If PRs A and B merge seconds apart, B's workflow waits for A's to complete, ensuring B reads the post-A version state before computing its own bump.
+Serializes all post-merge automation runs (version bumps AND futureplans→README syncs share the same group, so they cannot race). If PRs A and B merge seconds apart, B's workflow waits for A's to complete, ensuring B reads the post-A version state before computing its own bump.
 
 ### Steps
 
@@ -158,7 +158,7 @@ After the bot rewrites `packageManifest.json` `releaseNotes`, parse the entire f
 
 ### 4. Concurrency group
 
-`concurrency: group: release, cancel-in-progress: false`. See Post-merge release workflow > Concurrency control.
+`concurrency: group: post-merge, cancel-in-progress: false`. See Post-merge release workflow > Concurrency control.
 
 ### 5. Multiple-label guard
 

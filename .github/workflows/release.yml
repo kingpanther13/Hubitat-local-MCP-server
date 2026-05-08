@@ -27,19 +27,26 @@ jobs:
           COMMIT_AUTHOR_NAME: ${{ github.event.head_commit.author.name }}
         run: |
           set -euo pipefail
+          # Author identity is the load-bearing check — the bot is the only
+          # actor that produces these commits. The commit-message pattern
+          # match below is informational/defense-in-depth; gating it on
+          # author=bot avoids the false-positive where a human PR squash-
+          # merged with a title like "chore(release): tweak versioning"
+          # would otherwise be silently skipped (and a release-labeled
+          # follow-up PR's release would never run).
           if [ "$COMMIT_AUTHOR_NAME" = "github-actions[bot]" ]; then
-            echo "::notice::Push authored by github-actions[bot] — skipping to avoid loop"
+            FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -n1)
+            case "$FIRST_LINE" in
+              "chore(release):"*|"docs: sync Future Plans"*)
+                echo "::notice::Bot-authored bookkeeping commit (${FIRST_LINE}) — skipping to avoid loop"
+                ;;
+              *)
+                echo "::notice::Push authored by github-actions[bot] (non-bookkeeping message) — skipping to avoid loop"
+                ;;
+            esac
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -n1)
-          case "$FIRST_LINE" in
-            "chore(release):"*|"docs: sync Future Plans"*)
-              echo "::notice::Head commit is bot-authored bookkeeping — skipping"
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-              ;;
-          esac
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       # Trigger is `push: main` (not `pull_request: closed`) so the workflow
