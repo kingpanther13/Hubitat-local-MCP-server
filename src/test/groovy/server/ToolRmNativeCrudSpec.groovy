@@ -82,10 +82,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // Minimal RM rule config JSON. Schema inputs drive _rmBuildSettingsBody's
     // 3-field group logic, so tests shape the sections/inputs as needed.
-    private String ruleConfigJson(int ruleId, String label = "BAT-RM-test", List inputs = []) {
+    private String ruleConfigJson(int ruleId, String label = "BAT-RM-test", List inputs = [], Integer parentAppId = null) {
+        def app = [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
+                   appType: [name: "Rule-5.1", namespace: "hubitat"]]
+        if (parentAppId != null) app.parentAppId = parentAppId
         JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            app: app,
             configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: [
                 [title: "", input: inputs]
             ]],
