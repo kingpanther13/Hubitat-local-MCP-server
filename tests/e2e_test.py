@@ -1174,21 +1174,19 @@ class TestRunner:
             self.created_variable_names.remove(var_name)
 
     @test("developer_mode")
-    def test_t225_delete_variable_not_in_rule_engine_namespace(self) -> None:
-        """T225: refusal with redirect-to-UI hint when name isn't in rule_engine state."""
-        # The refusal fires whether the var exists in the connector namespace or
-        # doesn't exist anywhere at all — error message text is identical.
+    def test_t225_delete_variable_not_in_either_namespace(self) -> None:
+        """T225: refusal when the variable doesn't exist in either namespace."""
+        # delete_variable now addresses both hub-variables and rule_engine
+        # namespaces (PR #151), so the refusal mentions both.
         try:
             self.client.call_tool("manage_hub_variables", {
                 "tool": "delete_variable",
                 "args": {"name": f"{PREFIX}DEFINITELY_NONEXISTENT_T225", "confirm": True},
             })
-            assert False, "Expected refusal for variable not in rule_engine namespace"
+            assert False, "Expected refusal for variable missing from both namespaces"
         except McpError as e:
             msg = str(e)
-            assert "not found in rule_engine namespace" in msg, f"wrong refusal text: {msg}"
-            assert "Settings" in msg, f"missing UI redirect hint: {msg}"
-            assert "Hub Variables" in msg, f"missing 'Hub Variables' in redirect: {msg}"
+            assert "not found in either the hub-variables namespace or the rule_engine namespace" in msg, f"wrong refusal text: {msg}"
 
     @test("developer_mode")
     def test_t226_delete_variable_no_confirm(self) -> None:

@@ -2702,7 +2702,11 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
                     newName: [type: "string", description: "Label for the imported app. If omitted, the cloner default ('<original-label> import') is kept."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
-                required: ["parentHintAppId", "confirm"]
+                required: ["parentHintAppId", "confirm"],
+                oneOf: [
+                    [required: ["jsonContent"]],
+                    [required: ["fromFile"]]
+                ]
             ]
         ],
         [
@@ -18544,7 +18548,9 @@ def toolExportNativeApp(args) {
         try {
             uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
             result.savedAs = saveAs
-            result.savedUrl = "http://<HUB_IP>/local/${saveAs}"
+            String hubIp = null
+            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall back below */ }
+            result.savedUrl = "http://${hubIp ?: '<HUB_IP>'}/local/${saveAs}"
         } catch (Exception fileErr) {
             result.saveError = fileErr.message
             mcpLog("warn", "rm-native", "export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
@@ -18625,7 +18631,7 @@ private String _appClonerExtractJsonFromSettings(Integer clonerAppId) {
             def m = (html =~ /id="ruledownload-value"[^>]*value="([^"]+)"/)
             if (m.find()) {
                 def encoded = m[0][1]
-                return encoded.replace("&quot;", "\"").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                return encoded.replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
             }
         }
     } catch (Exception htmlErr) {
