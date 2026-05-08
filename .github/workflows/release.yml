@@ -129,7 +129,11 @@ jobs:
           # is distinguishable from "no match" (piping straight into grep
           # would silently report changed=false on API error because grep's
           # exit-1 lands in the same `else` branch as a real no-match).
-          FILES_LIST=$(mktemp)
+          FILES_LIST=$(mktemp) || { echo "::error::mktemp failed"; exit 1; }
+          # EXIT trap cleans up unconditionally (including the early exit
+          # on API failure below). GitHub-hosted runners are ephemeral so
+          # this is hygiene, not a real leak prevention.
+          trap 'rm -f "$FILES_LIST"' EXIT
           if ! gh api "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' > "$FILES_LIST"; then
             echo "::error::Failed to list changed files for PR #${PR_NUMBER}"
             exit 1
@@ -140,7 +144,6 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
-          rm -f "$FILES_LIST"
 
       - name: Skip if no work to do
         if: steps.pr.outputs.skip == 'false'
