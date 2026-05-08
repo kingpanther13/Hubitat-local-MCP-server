@@ -12,6 +12,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          # SSH deploy key (write-enabled) so the bot's push satisfies the
+          # branch ruleset's DeployKey bypass actor — the default GITHUB_TOKEN
+          # identity has no bypass and gets rejected by required_status_checks.
+          ssh-key: ${{ secrets.SYNC_DEPLOY_KEY }}
 
       - name: Sync futureplans.md into README
         run: |
