@@ -4,7 +4,7 @@
  * Individual automation rule with isolated settings.
  * Each rule is a separate child app instance.
  *
- * Version: 1.0.4
+ * Version: 1.0.5
  */
 
 definition(
