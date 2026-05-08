@@ -6223,6 +6223,48 @@ def hubInternalPost(String path, Map body = null, boolean isRetry = false) {
  * Make an authenticated POST request to the hub's internal API with form-encoded body.
  * Used for app/driver management endpoints that require application/x-www-form-urlencoded.
  */
+/**
+ * POST a pre-encoded form-urlencoded body to the hub's internal API. Use
+ * this instead of `hubInternalPostForm` when the body contains values
+ * HTTPBuilder's auto-encoder mangles (notably backslash + quote sequences
+ * inside JSON values). Caller is responsible for URL-encoding keys/values
+ * themselves; this method passes the body string straight through.
+ */
+def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, boolean isRetry = false) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        requestContentType: "application/x-www-form-urlencoded",
+        textParser: true,
+        headers: ["Connection": "keep-alive"],
+        body: encodedBody,
+        timeout: timeout,
+        ignoreSSLIssues: true
+    ]
+    if (cookie) params.headers["Cookie"] = cookie
+    def result = null
+    try {
+        httpPost(params) { resp ->
+            def responseData = resp.data
+            try { responseData = responseData.text }
+            catch (Exception readErr) { responseData = responseData?.toString() }
+            result = [
+                status: resp.status,
+                location: resp.headers?."Location"?.toString(),
+                data: responseData
+            ]
+        }
+    } catch (Exception e) {
+        if (shouldRetryWithFreshCookie(e, isRetry)) {
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST-form-raw ${path}")
+            return hubInternalPostFormRaw(path, encodedBody, timeout, true)
+        }
+        throw e
+    }
+    return result
+}
+
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
     def cookie = getHubSecurityCookie()
     def params = [
@@ -18138,6 +18180,19 @@ private Map _appClonerInit(Integer sourceAppId) {
         // Cloner appears to need a beat to commit state.cloneSource after
         // the source-context render before subsequent clicks are honored.
         pauseExecution(1000)
+        // Mimic browser flow: fetch the configPage JSON before any settings
+        // POSTs. Without this, file-text widgets (`settings[ruleUpload]`)
+        // silently drop their values — the cloner accepts the POST (200,
+        // ruleUpload key registered) but stores null. The browser's main
+        // page render fires this XHR after navigation; settings writes
+        // sent before it land in a half-initialized cloner that can't
+        // receive uploads. Required for import_native_app; harmless for
+        // clone/export.
+        try {
+            hubInternalGet("/installedapp/configure/json/${clonerId}/main", [:])
+        } catch (Exception primeErr) {
+            mcpLog("warn", "rm-native", "appCloner: configPage JSON prime failed for cloner ${clonerId}: ${primeErr.message}")
+        }
     } catch (Exception followErr) {
         // Source-context render is best-effort. If it fails, the click POSTs
         // still try; some firmwares may seed source context differently.
@@ -18203,7 +18258,20 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
             break
     }
     if (extras) body.putAll(extras)
-    def resp = hubInternalPostForm("/installedapp/update/json", body)
+    // URL-encode manually — HTTPBuilder's Map auto-encoder mangles backslash
+    // sequences inside form-urlencoded bodies, so JSON content with embedded
+    // `\"` (e.g. canonical exports' multi-select enum encoding) loses its
+    // escaping on the wire and the cloner silently rejects the upload.
+    StringBuilder sb = new StringBuilder()
+    boolean first = true
+    body.each { k, v ->
+        if (!first) sb.append('&')
+        first = false
+        sb.append(URLEncoder.encode(k.toString(), "UTF-8"))
+        sb.append('=')
+        sb.append(v == null ? "" : URLEncoder.encode(v.toString(), "UTF-8"))
+    }
+    def resp = hubInternalPostFormRaw("/installedapp/update/json", sb.toString())
     return resp ?: [:]
 }
 
@@ -18217,14 +18285,47 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
  * it's the source rule's id; for import it's the original source id from
  * the JSON's `appReplacements` map.
  */
+private Integer _appClonerFindActionHrefIdx(Integer clonerAppId, String pageName, String targetActionName) {
+    // Hubitat assigns action_href elements a session-scoped numeric id at
+    // render time — the same logical button gets a different number on the
+    // post-clone confirmation page (low — usually 0) than on the post-upload
+    // restore-or-import page (high — observed 55 live), and the cloner's
+    // server-side dispatcher matches on the EXACT `<action>|<idx>` pair.
+    // Fetch the page JSON and regex out the current id; without this the
+    // navigate POST hits a no-op and the importNow click later fires on
+    // the wrong page (silent failure — settings persist but no rule).
+    def pn = pageName ?: "main"
+    String body = null
+    try {
+        def resp = hubInternalGet("/installedapp/configure/json/${clonerAppId}/${pn}", [:])
+        body = (resp instanceof Map) ? (resp.data?.toString()) : (resp?.toString())
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "appCloner: fetch state for href discovery failed: ${e.message}")
+        return null
+    }
+    if (!body) return null
+    def m = (body =~ /_action_href_name\|${java.util.regex.Pattern.quote(targetActionName)}\|(\d+)/)
+    return m.find() ? (m[0][1] as Integer) : null
+}
+
 private void _appClonerCommitImportRule(Integer clonerAppId, Integer sourceAppId, String newName, String referrer, String configUrl) {
     // Step 3: navigate /main → /main/importRule via _action_href_name. The
-    // cloner is in "confirmation" state at this point — its form has
-    // cancelUpload as the only schema-input; the "Clone..." button is an
-    // href submission that submits with name=_action_href_name|importRule|N.
+    // cloner is in either confirmation (post-clone) or restore-or-import
+    // (post-upload) state — both expose an importRule action_href but at
+    // different session-scoped indices.
+    // The cloner re-renders asynchronously after a state-transition POST;
+    // poll the page state a few times to give the action_href button time
+    // to appear before falling back to 0 (which would only succeed for
+    // the clone path's confirmation page).
+    Integer hrefIdx = null
+    for (int attempt = 0; attempt < 4 && hrefIdx == null; attempt++) {
+        if (attempt > 0) pauseExecution(500)
+        hrefIdx = _appClonerFindActionHrefIdx(clonerAppId, "main", "importRule")
+    }
+    if (hrefIdx == null) hrefIdx = 0
     _appClonerSubmitForm(clonerAppId, "main", "confirmation", referrer, configUrl, [
-        ("_action_href_name|importRule|0".toString()): "",
-        ("params_for_action_href_name|importRule|0".toString()): ""
+        ("_action_href_name|importRule|${hrefIdx}".toString()): "",
+        ("params_for_action_href_name|importRule|${hrefIdx}".toString()): ""
     ])
     pauseExecution(500)
 
@@ -18407,27 +18508,27 @@ def toolExportNativeApp(args) {
     String referrer = initRes.referrer
     String configUrl = initRes.configUrl
 
-    // Step 2: click exportRuleButton + form refresh — twice (state-machine
-    // race; first click drops, second commits).
+    // Step 2: click exportRuleButton, then capture the form-refresh response.
+    // Unlike clone (which writes persistent state and needs a double-click
+    // to commit the state transition), export's serialized JSON is rendered
+    // INTO the form-refresh POST response itself as
+    // configPage.sections[].input[].filecontent — session-keyed and not
+    // persisted to the cloner's settings. So we must capture the response
+    // body of the same POST that fires the click rather than fetching the
+    // cloner's state in a subsequent request (different session = bare view,
+    // no JSON). One click is sufficient here.
     def btnBody = [
         id: clonerAppId.toString(),
         name: "exportRuleButton",
         ("settings[exportRuleButton]".toString()): "clicked",
         ("exportRuleButton.type".toString()): "button"
     ]
-    for (int attempt = 0; attempt < 2; attempt++) {
-        hubInternalPostForm("/installedapp/btn", btnBody)
-        pauseExecution(500)
-        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
-        pauseExecution(500)
-    }
-
-    // Step 3: read the cloner's settings to extract the JSON. The export
-    // content lives in a setting whose name varies by firmware — search for
-    // any setting whose value is a JSON object containing "appReplacements".
-    String jsonContent = _appClonerExtractJsonFromSettings(clonerAppId)
+    hubInternalPostForm("/installedapp/btn", btnBody)
+    pauseExecution(500)
+    def refreshResp = _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
+    String jsonContent = _appClonerExtractJsonFromResponse(refreshResp?.data)
     if (!jsonContent) {
-        throw new IllegalStateException("appCloner export fired but no JSON content could be extracted from cloner ${clonerAppId} — wire format may have changed")
+        throw new IllegalStateException("appCloner export fired but no JSON content could be extracted from cloner ${clonerAppId} — wire format may have changed (looked for configPage.sections[].input[].filecontent)")
     }
 
     def result = [
@@ -18453,10 +18554,54 @@ def toolExportNativeApp(args) {
 }
 
 /**
- * Internal: pull the exported JSON out of the cloner's settings. The setting
- * key isn't stable across firmwares (seen as `ruleDownload` and similar) —
- * scan all settings and pick the first whose value parses as JSON containing
- * "appReplacements".
+ * Internal: pull the exported JSON out of the form-refresh POST response
+ * body. The cloner renders the export content into configPage.sections[]
+ * .input[].filecontent (and .body[].filecontent) on the post-click render —
+ * but only within the same request/session as the click. A subsequent fetch
+ * sees the bare 3-button view because Hubitat's post-click rendering is
+ * session-keyed and our groovy helpers don't share a cookie jar.
+ *
+ * So we extract from the response body of the form-refresh POST itself.
+ */
+private String _appClonerExtractJsonFromResponse(String responseBody) {
+    if (!responseBody || !(responseBody instanceof String)) return null
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(responseBody) }
+    catch (Exception e) {
+        mcpLog("debug", "rm-native", "appCloner: response JSON parse failed: ${e.message}")
+        return null
+    }
+    def sections = (parsed instanceof Map) ? parsed?.configPage?.sections : null
+    if (!(sections instanceof List)) return null
+    for (section in sections) {
+        // The filecontent lives on input[] entries (download-type inputs)
+        // and is mirrored in body[] entries. Either works.
+        for (key in ["input", "inputs", "body"]) {
+            def items = section?."${key}"
+            if (!(items instanceof List)) continue
+            for (item in items) {
+                def fc = (item instanceof Map) ? item.filecontent : null
+                if (fc instanceof String && fc.contains("appReplacements") && fc.startsWith("{")) {
+                    // Hubitat appCloner over-escapes multi-select enum values
+                    // by one extra level when generating the download payload —
+                    // its `filecontent` has `\\"` (2 backslashes + quote) where
+                    // canonical JSON requires `\"` (1 backslash + quote). The
+                    // result is malformed JSON that won't round-trip back into
+                    // import. The pattern `\\"` is unreachable in valid JSON
+                    // (a literal `\` + `"` would encode as `\\\"`), so we can
+                    // safely collapse it.
+                    return fc.replace('\\\\"', '\\"')
+                }
+            }
+        }
+    }
+    return null
+}
+
+/**
+ * Legacy: pull the exported JSON from the cloner's persisted settings. Kept
+ * as a fallback for firmwares that may persist the content there. The
+ * primary extraction path is now from the form-refresh response body.
  */
 private String _appClonerExtractJsonFromSettings(Integer clonerAppId) {
     def cfg
@@ -18554,19 +18699,28 @@ def toolImportNativeApp(args) {
 
     def initRes = _appClonerInit(parentHintAppId)
     Integer clonerAppId = initRes.clonerAppId
-    String referrer = initRes.referrer
+    // For import the cloner's state machine validates session against the
+    // local config URL (the page the user uploaded from). The OAuth source-
+    // context URL the init returns is correct for clone (that's where the
+    // cloneRuleButton lives) but trips a session check on the import path.
+    // Verified live: same wire shape with OAuth referrer → no rule created;
+    // with local-URL referrer → rule created. Use configUrl for both.
+    String referrer = initRes.configUrl
     String configUrl = initRes.configUrl
 
-    // Step 2: stage the JSON via settings[ruleUpload]= — twice (same
-    // state-machine race; the upload-and-process needs a second cycle to
-    // commit before the importRule sub-page becomes available).
-    def uploadExtras = [
+    // Step 2: stage the JSON via settings[ruleUpload]= — single POST. The
+    // UI fires this exactly once (file picker change → FileReader → one
+    // jsonSubmit). A second pass is harmful here: the cloner has already
+    // transitioned to restore-or-import state and the source-state form
+    // body no longer matches.
+    _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, [
         ("settings[ruleUpload]".toString()): jsonContent
-    ]
-    for (int attempt = 0; attempt < 2; attempt++) {
-        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, uploadExtras)
-        pauseExecution(500)
-    }
+    ])
+    // Cloner needs time to JSON-parse the upload + transition to the
+    // restore-or-import page before our discovery sees the new sections.
+    // Larger JSON inputs (full canonical exports) need more — 500ms is
+    // enough for trivial JSON but races on a 3KB rule body.
+    pauseExecution(2000)
 
     // Steps 3-5: navigate importRule, optional rename, click importNow.
     _appClonerCommitImportRule(clonerAppId, originalSourceId, newName, referrer, configUrl)
