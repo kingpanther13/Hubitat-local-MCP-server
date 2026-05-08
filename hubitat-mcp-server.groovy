@@ -18086,7 +18086,7 @@ def toolCheckRuleHealth(args) {
  *   /apps/api/<clonerId>/app/<sourceId>?access_token=...   (current)
  *   /installedapp/configure/<clonerId>                      (older)
  */
-private Integer _appClonerInit(Integer sourceAppId) {
+private Map _appClonerInit(Integer sourceAppId) {
     def resp
     try {
         resp = hubInternalGetRaw("/installedapp/sysAppApi/appCloner/app/${sourceAppId}")
@@ -18102,7 +18102,48 @@ private Integer _appClonerInit(Integer sourceAppId) {
     if (clonerId == null) {
         throw new IllegalStateException("Unexpected appCloner Location: ${loc}")
     }
-    return clonerId
+    // Capture the full OAuth source-context URL — the cloner state machine
+    // requires this as the `referrer` field on subsequent form POSTs to
+    // verify they originate from the source-authorized session. Without
+    // it, every state transition is silently rejected even though POSTs
+    // return 200. Hubitat's UI reads this from window.location after
+    // following the 302; we capture it directly from the redirect target.
+    String sourceContextUrl = loc.startsWith("http") ? loc : "http://192.168.1.133${loc}"
+    // CRITICAL: follow the redirect target. The cloner's `app(sourceId)`
+    // mapping renders the source-context page and sets internal state
+    // (state.cloneSource, etc.). Without this GET, the cloner accepts our
+    // form POSTs but its state machine never knows what rule to clone, so
+    // cloneRuleButton/importNow clicks register but no new rule appears.
+    // The Location is OAuth-token-protected (/apps/api/<clonerId>/app/<sourceId>
+    // ?access_token=...) — split path + query so HTTPBuilder doesn't URL-encode
+    // the `?` and break the access_token lookup.
+    try {
+        def relPath = loc.replaceFirst(/^https?:\/\/[^\/]+/, '')
+        def parts = relPath.split(/\?/, 2)
+        def justPath = parts[0]
+        def query = [:]
+        if (parts.length > 1) {
+            parts[1].split('&').each { kv ->
+                def eq = kv.indexOf('=')
+                if (eq > 0) {
+                    def k = kv.substring(0, eq)
+                    def v = kv.substring(eq + 1)
+                    // values aren't url-encoded in the redirect Location — pass through
+                    query[k] = v
+                }
+            }
+        }
+        hubInternalGet(justPath, query)
+        mcpLog("debug", "rm-native", "appCloner: source-context render of ${justPath} succeeded for cloner ${clonerId}")
+        // Cloner appears to need a beat to commit state.cloneSource after
+        // the source-context render before subsequent clicks are honored.
+        pauseExecution(1000)
+    } catch (Exception followErr) {
+        // Source-context render is best-effort. If it fails, the click POSTs
+        // still try; some firmwares may seed source context differently.
+        mcpLog("warn", "rm-native", "appCloner: source-context render of ${loc} failed for cloner ${clonerId}: ${followErr.message}")
+    }
+    return [clonerAppId: clonerId, referrer: sourceContextUrl, configUrl: "http://192.168.1.133/installedapp/configure/${clonerId}/main".toString()]
 }
 
 /**
@@ -18111,14 +18152,56 @@ private Integer _appClonerInit(Integer sourceAppId) {
  * Mirrors the form refresh the UI fires automatically after every click —
  * required to advance the cloner's server-side state machine.
  */
-private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, Map extras = null, String pageBreadcrumbs = null) {
+private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String formState, String referrer, String configUrl, Map extras = null) {
+    // Build a form-refresh body that mirrors the Hubitat UI's POST shape
+    // for the cloner's current rendering state. Each formState corresponds
+    // to a distinct view the cloner can render at /main:
+    //   "source"        — initial source-context view (3 buttons)
+    //   "confirmation"  — after cloneRuleButton: "Clone..." + Cancel
+    //   "importRule"    — after navigation: name editor + importNow button
+    // Each POST must emit the input triplets matching the rendered view —
+    // sending the WRONG view's fields stalls the state machine silently.
+    def pageBreadcrumbs = currentPage == "main" ? "[]" : '["main"]'
     def body = [
         formAction: "update",
         id: clonerAppId.toString(),
+        version: "1",
+        appTypeId: "",
+        appTypeName: "",
         currentPage: currentPage,
-        pageBreadcrumbs: pageBreadcrumbs ?: (currentPage == "main" ? "[]" : '["main"]'),
-        version: "1"
+        pageBreadcrumbs: pageBreadcrumbs,
+        // The cloner state machine validates that subsequent form POSTs
+        // come from the source-authorized session. The UI's referrer is the
+        // OAuth-tokened source-context URL (.../apps/api/<cloner>/app/
+        // <source>?access_token=...); without it the cloner silently rejects
+        // state transitions. Captured during _appClonerInit.
+        referrer: referrer ?: "",
+        url: configUrl ?: "",
+        _cancellable: "false"
     ]
+    switch (formState) {
+        case "source":
+            body["exportRuleButton.type"] = "button"
+            body["exportRuleButton.multiple"] = "false"
+            body["settings[exportRuleButton]"] = ""
+            body["ruleUpload.type"] = "file-text"
+            body["ruleUpload.multiple"] = "false"
+            body["settings[ruleUpload]"] = ""
+            body["cloneRuleButton.type"] = "button"
+            body["cloneRuleButton.multiple"] = "false"
+            body["settings[cloneRuleButton]"] = ""
+            break
+        case "confirmation":
+            body["cancelUpload.type"] = "button"
+            body["cancelUpload.multiple"] = "false"
+            body["settings[cancelUpload]"] = ""
+            break
+        case "importRule":
+            // importRule fields are dynamic per source — caller passes them via extras
+            break
+        default:
+            break
+    }
     if (extras) body.putAll(extras)
     def resp = hubInternalPostForm("/installedapp/update/json", body)
     return resp ?: [:]
@@ -18134,49 +18217,59 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, Map ex
  * it's the source rule's id; for import it's the original source id from
  * the JSON's `appReplacements` map.
  */
-private void _appClonerCommitImportRule(Integer clonerAppId, Integer sourceAppId, String newName) {
-    // Step 3: navigate /main -> /main/importRule via _action_href_name. The
-    // <idx> in the field name is the embedded-action index in the page's
-    // action list; the hub accepts any value as long as the page name matches.
-    _appClonerSubmitForm(clonerAppId, "main", [
+private void _appClonerCommitImportRule(Integer clonerAppId, Integer sourceAppId, String newName, String referrer, String configUrl) {
+    // Step 3: navigate /main → /main/importRule via _action_href_name. The
+    // cloner is in "confirmation" state at this point — its form has
+    // cancelUpload as the only schema-input; the "Clone..." button is an
+    // href submission that submits with name=_action_href_name|importRule|N.
+    _appClonerSubmitForm(clonerAppId, "main", "confirmation", referrer, configUrl, [
         ("_action_href_name|importRule|0".toString()): "",
         ("params_for_action_href_name|importRule|0".toString()): ""
     ])
+    pauseExecution(500)
 
     // Step 4 (optional): override the cloner's default new-app label. The
     // setting name is dynamic per source: settings[newName<sourceId>].
+    def newNameField = "settings[newName${sourceAppId}]".toString()
+    def newNameTypeKey = "newName${sourceAppId}.type".toString()
+    def newNameMultKey = "newName${sourceAppId}.multiple".toString()
     if (newName) {
-        def field = "settings[newName${sourceAppId}]".toString()
-        def typeKey = "newName${sourceAppId}.type".toString()
-        def multipleKey = "newName${sourceAppId}.multiple".toString()
-        _appClonerSubmitForm(clonerAppId, "importRule", [
-            (field): newName,
-            (typeKey): "text",
-            (multipleKey): "false"
+        _appClonerSubmitForm(clonerAppId, "importRule", "importRule", referrer, configUrl, [
+            (newNameField): newName,
+            (newNameTypeKey): "text",
+            (newNameMultKey): "false"
         ])
     }
 
     // Step 5: click importNow — fires the actual create. The button is
     // named `importNow` regardless of which path (clone vs import) brought
-    // us here — both surfaces converge on this final commit.
+    // us here. Same double-click pattern: first click drops, second commits.
     def btnBody = [
         id: clonerAppId.toString(),
         name: "importNow",
         ("settings[importNow]".toString()): "clicked",
         ("importNow.type".toString()): "button"
     ]
-    def resp = hubInternalPostForm("/installedapp/btn", btnBody)
-    if (resp?.status != null && resp.status >= 400) {
-        throw new IllegalStateException("appCloner importNow click failed: status=${resp.status}")
-    }
-
-    // Step 5 follow-up: form refresh on importRule that the UI fires after
-    // the click. The actual create on the hub side completes here.
-    _appClonerSubmitForm(clonerAppId, "importRule", [
+    def finalExtras = [
+        (newNameField): (newName ?: ""),
+        (newNameTypeKey): "text",
+        (newNameMultKey): "false",
         ("importNow.type".toString()): "button",
         ("importNow.multiple".toString()): "false",
         ("settings[importNow]".toString()): ""
-    ])
+    ]
+    for (int attempt = 0; attempt < 2; attempt++) {
+        def resp = hubInternalPostForm("/installedapp/btn", btnBody)
+        if (resp?.status != null && resp.status >= 400) {
+            throw new IllegalStateException("appCloner importNow click failed: status=${resp.status}")
+        }
+        pauseExecution(500)
+        // Form refresh on importRule that the UI fires after the click.
+        // Body includes newName and importNow fields. The actual create
+        // commits on the hub side during the second pass's form refresh.
+        _appClonerSubmitForm(clonerAppId, "importRule", "importRule", referrer, configUrl, finalExtras)
+        pauseExecution(500)
+    }
 }
 
 /**
@@ -18247,24 +18340,32 @@ def toolCloneNativeApp(args) {
         }
     }
 
-    Integer clonerAppId = _appClonerInit(sourceAppId)
+    def initRes = _appClonerInit(sourceAppId)
+    Integer clonerAppId = initRes.clonerAppId
+    String referrer = initRes.referrer
+    String configUrl = initRes.configUrl
 
-    // Step 2: click cloneRuleButton + form refresh.
+    // Step 2: click cloneRuleButton + form refresh — TWICE. Hubitat's
+    // appCloner state machine drops the first click event silently
+    // (verified live via Chrome XHR sniffing — same race the
+    // delete_variable wizard works around with a retry-once loop).
+    // The second click+refresh commits the state transition to the
+    // confirmation page.
     def btnBody = [
         id: clonerAppId.toString(),
         name: "cloneRuleButton",
         ("settings[cloneRuleButton]".toString()): "clicked",
         ("cloneRuleButton.type".toString()): "button"
     ]
-    hubInternalPostForm("/installedapp/btn", btnBody)
-    _appClonerSubmitForm(clonerAppId, "main", [
-        ("cloneRuleButton.type".toString()): "button",
-        ("cloneRuleButton.multiple".toString()): "false",
-        ("settings[cloneRuleButton]".toString()): ""
-    ])
+    for (int attempt = 0; attempt < 2; attempt++) {
+        hubInternalPostForm("/installedapp/btn", btnBody)
+        pauseExecution(500)
+        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
+        pauseExecution(500)
+    }
 
     // Steps 3-5: navigate importRule, optional rename, click importNow.
-    _appClonerCommitImportRule(clonerAppId, sourceAppId, newName)
+    _appClonerCommitImportRule(clonerAppId, sourceAppId, newName, referrer, configUrl)
 
     Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
 
@@ -18301,21 +18402,25 @@ def toolExportNativeApp(args) {
     }
     def sourceLabel = sourceCfg.app.label?.toString() ?: "app-${sourceAppId}"
 
-    Integer clonerAppId = _appClonerInit(sourceAppId)
+    def initRes = _appClonerInit(sourceAppId)
+    Integer clonerAppId = initRes.clonerAppId
+    String referrer = initRes.referrer
+    String configUrl = initRes.configUrl
 
-    // Step 2: click exportRuleButton + form refresh.
+    // Step 2: click exportRuleButton + form refresh — twice (state-machine
+    // race; first click drops, second commits).
     def btnBody = [
         id: clonerAppId.toString(),
         name: "exportRuleButton",
         ("settings[exportRuleButton]".toString()): "clicked",
         ("exportRuleButton.type".toString()): "button"
     ]
-    hubInternalPostForm("/installedapp/btn", btnBody)
-    _appClonerSubmitForm(clonerAppId, "main", [
-        ("exportRuleButton.type".toString()): "button",
-        ("exportRuleButton.multiple".toString()): "false",
-        ("settings[exportRuleButton]".toString()): ""
-    ])
+    for (int attempt = 0; attempt < 2; attempt++) {
+        hubInternalPostForm("/installedapp/btn", btnBody)
+        pauseExecution(500)
+        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
+        pauseExecution(500)
+    }
 
     // Step 3: read the cloner's settings to extract the JSON. The export
     // content lives in a setting whose name varies by firmware — search for
@@ -18447,18 +18552,24 @@ def toolImportNativeApp(args) {
         } catch (Exception ignored) { /* heuristic */ }
     }
 
-    Integer clonerAppId = _appClonerInit(parentHintAppId)
+    def initRes = _appClonerInit(parentHintAppId)
+    Integer clonerAppId = initRes.clonerAppId
+    String referrer = initRes.referrer
+    String configUrl = initRes.configUrl
 
-    // Step 2: stage the JSON via settings[ruleUpload]=. Hubitat accepts
-    // urlencoded form fields with the full JSON content inline.
-    _appClonerSubmitForm(clonerAppId, "main", [
-        ("settings[ruleUpload]".toString()): jsonContent,
-        ("ruleUpload.type".toString()): "file-text",
-        ("ruleUpload.multiple".toString()): "false"
-    ])
+    // Step 2: stage the JSON via settings[ruleUpload]= — twice (same
+    // state-machine race; the upload-and-process needs a second cycle to
+    // commit before the importRule sub-page becomes available).
+    def uploadExtras = [
+        ("settings[ruleUpload]".toString()): jsonContent
+    ]
+    for (int attempt = 0; attempt < 2; attempt++) {
+        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, uploadExtras)
+        pauseExecution(500)
+    }
 
     // Steps 3-5: navigate importRule, optional rename, click importNow.
-    _appClonerCommitImportRule(clonerAppId, originalSourceId, newName)
+    _appClonerCommitImportRule(clonerAppId, originalSourceId, newName, referrer, configUrl)
 
     Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
 
