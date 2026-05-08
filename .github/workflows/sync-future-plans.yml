@@ -5,12 +5,23 @@ on:
     branches: [main]
     paths: [futureplans.md]
 
+permissions:
+  contents: read
+
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
+      - name: Verify deploy key secret is set
+        env:
+          SECRET: ${{ secrets.SYNC_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SECRET:-}" ]; then
+            echo "::error::SYNC_DEPLOY_KEY secret is empty or unset — actions/checkout would silently fall back to GITHUB_TOKEN HTTPS, which is rejected by the main-required-checks ruleset. Re-add the secret per the deploy-key playbook."
+            exit 1
+          fi
+
       - uses: actions/checkout@v6
         with:
           # SSH deploy key (write-enabled) so the bot's push satisfies the
@@ -20,6 +31,7 @@ jobs:
 
       - name: Sync futureplans.md into README
         run: |
+          set -euo pipefail
           # Read futureplans.md, strip the top-level heading (line 1),
           # and demote all headings by one level (## -> ###, ### -> ####)
           CONTENT=$(tail -n +2 futureplans.md | sed 's/^### /#### /; s/^## /### /')
@@ -35,7 +47,11 @@ jobs:
           REPLACEMENT+=$'\n\n'"</details>"
           REPLACEMENT+=$'\n'"<!-- FUTURE_PLANS_END -->"
 
-          # Replace everything between the markers in README.md
+          # Replace everything between the markers in README.md.
+          # The marker-existence guard distinguishes "regex matched but content
+          # identical" (legitimate no-op) from "markers missing" (broken README)
+          # so a future README edit that drops the markers fails loudly here
+          # instead of silently no-op'ing every subsequent sync run.
           python3 -c "
           import re, sys
 
@@ -46,6 +62,9 @@ jobs:
               replacement = f.read()
 
           pattern = r'<!-- FUTURE_PLANS_START -->.*?<!-- FUTURE_PLANS_END -->'
+          if not re.search(pattern, readme, flags=re.DOTALL):
+              sys.exit('ERROR: FUTURE_PLANS markers missing in README.md — restore the <!-- FUTURE_PLANS_START --> / <!-- FUTURE_PLANS_END --> comment pair before this workflow can run.')
+
           updated = re.sub(pattern, replacement, readme, flags=re.DOTALL)
 
           if updated == readme:
@@ -61,6 +80,7 @@ jobs:
       - name: Check for changes
         id: diff
         run: |
+          set -euo pipefail
           if git diff --quiet README.md; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -70,8 +90,12 @@ jobs:
       - name: Commit and push
         if: steps.diff.outputs.changed == 'true'
         run: |
+          set -euo pipefail
+          # Canonical noreply form (with the bot's user-ID prefix) so GitHub's
+          # UI attributes the commit to github-actions[bot] rather than showing
+          # "unrecognized author".
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add README.md
           git commit -m "docs: sync Future Plans from futureplans.md"
           git push
