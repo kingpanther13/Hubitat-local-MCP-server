@@ -1472,6 +1472,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.1.0** - feat(devices): add poll_until_attribute -- block-poll until attribute matches; PR #92. PRs: [#157](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/157)
 - **v1.0.5** - docs: correct AGENTS.md falsehoods and auto-sync CLAUDE.md; feat(get-hub-logs): server-side regex / multi-pattern / time-window filters. PRs: [#156](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/156), [#155](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/155)
 - **v1.0.4** - feat(list-devices): server-side label/capability filters + format/fields projection. PRs: [#153](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/153)
 - **v1.0.3** - feat(rule-tools): redirect hint when caller passes a built-in RM rule id (addresses #118 Option A). PRs: [#135](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/135)
