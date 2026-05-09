@@ -9629,12 +9629,17 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                 success: false,
                 error: errorMsg ?: "Update failed - the hub returned an error",
                 (idParam): itemId,
-                note: "Check the Groovy source code for syntax errors or compilation issues."
+                note: "Check the Groovy source code for syntax errors or compilation issues.",
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
         }
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "${type} update failed: ${e.message}")
-        return [success: false, error: "${type.capitalize()} update failed: ${e.message}"]
+        return [
+            success: false,
+            error: "${type.capitalize()} update failed: ${e.message}",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
     }
 }
 

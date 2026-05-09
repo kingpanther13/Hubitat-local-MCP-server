@@ -1124,6 +1124,71 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         postedSources[2].contains('inline')     // source passed inline
     }
 
+    def "update_driver_code bulk mode: per-item update failure propagates note and lastBackup on the failed entry"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "metadata { }"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        // Middle item's hub POST returns status=failure body — reaches toolUpdateItemCodeInner's
+        // else branch (now carrying note + lastBackup after this PR's symmetry fix).
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            if (body.id == '402') {
+                [status: 200, location: null, data: '{"status": "failure", "errorMessage": "version conflict"}']
+            } else {
+                [status: 200, location: null, data: '{"status": "success"}']
+            }
+        }
+
+        when:
+        def result = script.toolUpdateDriverCode([
+            updates: [
+                [driverId: '401', source: 'metadata { name "a" }'],
+                [driverId: '402', source: 'metadata { name "b" }'],
+                [driverId: '403', source: 'metadata { name "c" }']
+            ],
+            confirm: true
+        ])
+
+        then: 'overall partial: 2 of 3 succeeded'
+        result.success == false
+        result.updates.size() == 3
+        result.updates[0].success == true
+        result.updates[1].success == false
+        result.updates[2].success == true
+
+        and: 'failed entry propagates error, note (anti-retry), and lastBackup from the inner failure return'
+        result.updates[1].error != null
+        result.updates[1].error.toLowerCase().contains('version conflict')
+        result.updates[1].note != null
+        result.updates[1].note.contains('compilation issues')
+        result.updates[1].lastBackup != null
+    }
+
+    def "install_driver returns success=false when verify endpoint returns clean JSON with empty source field"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: '/driver/editor/4444', data: '']
+        }
+        // Verify response parses cleanly but reports empty source — driver slot created but
+        // no body persisted. Distinct from status:"error" and from empty/unparseable body.
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "source": "", "version": 1}'
+        }
+
+        when:
+        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
+
+        then:
+        result.success == false
+        result.error.toLowerCase().contains('installation failed')
+        result.driverId == '4444'
+        result.note.contains('compilation issues')
+        result.lastBackup != null
+    }
+
     // -------- toolDeleteApp / toolDeleteDriver --------
 
     def "delete_app throws when confirm is not provided"() {
