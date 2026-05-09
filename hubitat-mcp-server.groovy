@@ -9360,6 +9360,7 @@ private Map toolInstallItem(String type, args) {
                     if (r.verifyError) entry.verifyError = r.verifyError
                 } else {
                     entry.error = r.error ?: "Install failed"
+                    if (r.note) entry.note = r.note
                     allSucceeded = false
                 }
                 itemResults << entry
@@ -9679,6 +9680,7 @@ def toolUpdateDriverCode(args) {
                     entry.sourceLength = r.sourceLength
                 } else {
                     entry.error = r.error ?: "Update failed"
+                    if (r.note) entry.note = r.note
                     allSucceeded = false
                 }
                 itemResults << entry

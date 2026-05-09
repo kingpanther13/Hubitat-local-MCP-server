@@ -88,7 +88,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/4242', data: '']
         }
         hubGet.register('/app/ajax/code') { params ->
-            '{"status": "ok", "source": "definition(name: \"Hello\")", "version": 1}'
+            '{"status": "ok", "source": "stub-app-source", "version": 1}'
         }
 
         when:
@@ -115,7 +115,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/5555', data: '']
         }
         hubGet.register('/app/ajax/code') { params ->
-            '{"status": "ok", "source": "definition(name: \"FromFile\")", "version": 1}'
+            '{"status": "ok", "source": "stub-app-source-from-file", "version": 1}'
         }
 
         when:
