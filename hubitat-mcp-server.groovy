@@ -9361,6 +9361,7 @@ private Map toolInstallItem(String type, args) {
                 } else {
                     entry.error = r.error ?: "Install failed"
                     if (r.note) entry.note = r.note
+                    if (r.lastBackup) entry.lastBackup = r.lastBackup
                     allSucceeded = false
                 }
                 itemResults << entry
@@ -9681,6 +9682,7 @@ def toolUpdateDriverCode(args) {
                 } else {
                     entry.error = r.error ?: "Update failed"
                     if (r.note) entry.note = r.note
+                    if (r.lastBackup) entry.lastBackup = r.lastBackup
                     allSucceeded = false
                 }
                 itemResults << entry

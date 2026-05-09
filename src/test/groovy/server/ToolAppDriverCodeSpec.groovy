@@ -715,6 +715,48 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.installs[2].verifyError == null
     }
 
+    def "install_driver bulk mode: per-item verify status=error propagates error, note, and lastBackup on the failed entry"() {
+        given:
+        enableHubAdminWrite()
+        def callNum = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            callNum++
+            [status: 302, location: "/driver/editor/${9400 + callNum}", data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params ->
+            // middle item's verify returns status=error (compile failure surfaced post-install)
+            if (params?.id?.toString() == '9402') {
+                '{"status": "error", "errorMessage": "compile failed: bad syntax"}'
+            } else {
+                '{"status": "ok", "source": "metadata { }", "version": 1}'
+            }
+        }
+
+        when:
+        def result = script.toolInstallDriver([
+            installs: [
+                [source: 'metadata { name "a" }'],
+                [source: 'metadata { name "b" }'],
+                [source: 'metadata { name "c" }']
+            ],
+            confirm: true
+        ])
+
+        then: 'overall partial: 2 of 3 succeeded'
+        result.success == false
+        result.installs.size() == 3
+        result.installs[0].success == true
+        result.installs[1].success == false
+        result.installs[2].success == true
+
+        and: 'failed entry propagates error, note (anti-retry), and lastBackup from the inner failure return'
+        result.installs[1].error != null
+        result.installs[1].error.toLowerCase().contains('compile failed')
+        result.installs[1].note != null
+        result.installs[1].note.contains('compilation issues')
+        result.installs[1].lastBackup != null
+    }
+
     // -------- toolUpdateAppCode / toolUpdateDriverCode --------
 
     def "update_app_code throws when confirm is not provided"() {
