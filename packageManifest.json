@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-05-08",
+    "dateReleased": "2026-05-09",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v1.1.1 - 2026-05-08\n- ci: consolidate post-merge automation into release workflow (closes race) (#160)\n  - Internal CI fix; no end-user changes.\n\nv1.1.0 - 2026-05-08\n- feat(devices): add poll_until_attribute -- block-poll until attribute matches (#157)\n  - New `poll_until_attribute` tool blocks until a device attribute matches an expected value (or list of values), or a timeout elapses. Replaces client-side polling loops with a single server-side call.\n  - Common use: verify a `send_command` actually took effect on flaky Z-Wave/Zigbee meshes, wait for a sensor to cross a threshold, or wait for a state transition.\n  - Cost profile: BLOCKS up to `timeoutMs` (default 5s, max 60s). Use sparingly; prefer event-driven flows when available.\n- PR #92",
+    "releaseNotes": "v1.1.2 - 2026-05-09\n- docs(futureplans): align rule-tool names with PR #134 custom_ rename (#162)\n  - Internal docs only; no end-user changes.\n- feat(manage_app_driver_code): driver-code lifecycle improvements -- sourceFile + bulk + token-economy (#163)\n  - `install_app` and `install_driver` now accept a `sourceFile` parameter — install drivers/apps from File Manager files instead of inline source strings (matches existing `update_*_code` pattern). Tool descriptions prescribe the curl-upload + sourceFile workflow that bypasses agent transcript bytes.\n  - `install_driver` now verifies the driver was actually persisted to the hub before returning success (fixes a false-positive failure mode).\n  - `update_driver_code` now accepts an `updates` array of `{driverId, sourceFile|source|resave}` pairs for bulk multi-driver updates in a single tool call (single round-trip vs N).\n  - `install_driver` now accepts an `installs` array of `{source|sourceFile}` items for bulk multi-driver install (driver families).\n\nv1.1.1 - 2026-05-08\n- ci: consolidate post-merge automation into release workflow (closes race) (#160)\n  - Internal CI fix; no end-user changes.\n\nv1.1.0 - 2026-05-08\n- feat(devices): add poll_until_attribute -- block-poll until attribute matches (#157)\n  - New `poll_until_attribute` tool blocks until a device attribute matches an expected value (or list of values), or a timeout elapses. Replaces client-side polling loops with a single server-side call.\n  - Common use: verify a `send_command` actually took effect on flaky Z-Wave/Zigbee meshes, wait for a sensor to cross a threshold, or wait for a state transition.\n  - Cost profile: BLOCKS up to `timeoutMs` (default 5s, max 60s). Use sparingly; prefer event-driven flows when available.\n- PR #92",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
