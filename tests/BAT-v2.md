@@ -4,7 +4,7 @@ Updated for the installed-apps + Rule Machine interop + native CRUD architecture
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
-> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the native-RM CRUD suite (T300+) -- acceptance gate for the `manage_native_rules_and_apps` CRUD tools (`create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health`). Those tools are shipped; all scenarios in that file should pass against the current codebase.
+> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the native-RM CRUD suite (T300-T399) -- acceptance gate for the `manage_native_rules_and_apps` CRUD tools (`create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health`). Those tools are shipped; all scenarios in that file should pass against the current codebase.
 
 Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt`, and optional `teardown_prompt`. Run each prompt in the same AI session (setup → test → teardown). Each TEST SCENARIO starts a fresh session.
 
@@ -2267,6 +2267,7 @@ These operations are too destructive for automated testing. Test manually with e
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
 | 12. Developer Mode | T219-T226 | Self-administration: update_mcp_settings + delete_variable |
+| 13. Driver Code Lifecycle | T400-T406 | install_driver (single + bulk), update_driver_code (bulk), delete |
 
 ### Architecture (post installed-apps + RM interop + Developer Mode)
 
@@ -2652,6 +2653,92 @@ These tests exercise the Developer Mode self-administration surface — the `man
 ```
 
 **Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter(s): confirm"` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+
+---
+
+## Section 13: Driver Code Lifecycle Tests (manage_app_driver_code)
+
+All tests below require Hub Admin Write enabled and a recent backup. Tests are excluded from the auto-exercise sweep (destructive to hub code). Test artifacts use the `BAT_` name prefix per BAT convention so they can be identified and cleaned up independently.
+
+### T400 — install_driver via sourceFile (File Manager path)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write a minimal driver stub to File Manager: write_file(fileName='bat-test-driver.groovy', content='metadata { definition(name: \"BAT_DriverCodeLifecycle\", namespace: \"bat\", author: \"test\") { } }').",
+  "test_prompt": "Install the driver using install_driver with sourceFile='bat-test-driver.groovy' and confirm=true. Report the new driver ID.",
+  "teardown_prompt": "Delete the driver installed in this test using delete_driver with the driverId returned above and confirm=true. Also delete the File Manager file bat-test-driver.groovy using delete_file."
+}
+```
+
+**Expected**: Tool resolves the file from File Manager, POSTs to `/driver/save`, fetches the new driver back to verify it compiled, and returns `success: true` with `driverId` set and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
+
+### T401 — install_driver compile failure detected (post-install verification)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. This test intentionally installs broken Groovy source -- the hub creates a stub slot in an error state (BAT_BrokenInstallStub). Note the driver ID returned for cleanup.",
+  "test_prompt": "Install a driver with deliberately broken syntax using install_driver(source='this is not valid groovy {{ }}', confirm=true). Report what happens.",
+  "teardown_prompt": "Delete the error-state driver slot created in this test using delete_driver with the driverId returned and confirm=true."
+}
+```
+
+**Expected**: Hub creates an item slot (returns a redirect with an ID) but the post-install verification detects `status: error` from `/driver/ajax/code`. Tool returns `success: false` with the compile error message and the item ID in the response. AI reports the error and does not claim success.
+
+### T402 — update_driver_code bulk mode (happy path)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install two minimal BAT_ driver stubs via install_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
+  "test_prompt": "Update both drivers in a single call using update_driver_code with updates=[{driverId: '<id1>', sourceFile: 'bat-bulk-1.groovy'}, {driverId: '<id2>', sourceFile: 'bat-bulk-2.groovy'}] and confirm=true.",
+  "teardown_prompt": "Delete both BAT_ drivers using delete_driver with confirm=true for each driverId. Also delete the File Manager files bat-bulk-1.groovy and bat-bulk-2.groovy using delete_file."
+}
+```
+
+**Expected**: Tool applies both updates sequentially. Returns `success: true` with `updates` array containing two entries, each with `success: true`, `driverId`, and `sourceMode: 'sourceFile'`. `message` says "All 2 driver(s) updated successfully."
+
+### T403 — update_driver_code bulk mode rejects mixed single+bulk args
+
+```json
+{
+  "test_prompt": "Call update_driver_code with both driverId='123' AND updates=[{driverId: '456', sourceFile: 'f.groovy'}] and confirm=true."
+}
+```
+
+**Expected**: Tool throws `IllegalArgumentException` (JSON-RPC -32602) with a message containing 'bulk mode' and 'driverId'. No update is performed.
+
+### T404 — install_driver bulk mode (happy path)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write two minimal driver stubs to File Manager: write_file(fileName='bat-bulk-install-1.groovy', content='metadata { definition(name: \"BAT_BulkInstall1\", namespace: \"bat\", author: \"test\") { } }') and write_file(fileName='bat-bulk-install-2.groovy', content='metadata { definition(name: \"BAT_BulkInstall2\", namespace: \"bat\", author: \"test\") { } }').",
+  "test_prompt": "Install both drivers in a single call using install_driver with installs=[{sourceFile: 'bat-bulk-install-1.groovy'}, {sourceFile: 'bat-bulk-install-2.groovy'}] and confirm=true. Report the driver IDs returned.",
+  "teardown_prompt": "Delete both BAT_ drivers installed above using delete_driver with confirm=true for each driverId. Also delete the File Manager files bat-bulk-install-1.groovy and bat-bulk-install-2.groovy using delete_file."
+}
+```
+
+**Expected**: Tool installs both drivers in a single call, resolving each from File Manager. Returns `success: true` with `installs` array containing two entries, each with `success: true`, a non-null `driverId`, and `sourceMode: 'sourceFile'`. `message` says "All 2 driver(s) installed successfully." No inline source was passed in the call.
+
+### T405 — install_driver bulk mode partial failure
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write one driver stub to File Manager: write_file(fileName='bat-bulk-partial.groovy', content='metadata { definition(name: \"BAT_BulkPartial\", namespace: \"bat\", author: \"test\") { } }'). Do NOT write 'bat-bulk-missing.groovy'.",
+  "test_prompt": "Install two drivers in a single bulk call: install_driver with installs=[{sourceFile: 'bat-bulk-partial.groovy'}, {sourceFile: 'bat-bulk-missing.groovy'}] and confirm=true. Report what happens for each item.",
+  "teardown_prompt": "Delete the successfully installed BAT_BulkPartial driver using delete_driver with confirm=true. Delete the File Manager file bat-bulk-partial.groovy using delete_file."
+}
+```
+
+**Expected**: Tool attempts both installs. First item succeeds (driverId returned, success: true). Second item fails because the file is absent (success: false, error contains 'not found in File Manager'). Top-level `success: false` with `message` containing '1 of 2'. Continue-on-error: first driver still installed despite second failure.
+
+### T406 — install_driver bulk mode rejects mixed single+bulk args
+
+```json
+{
+  "test_prompt": "Call install_driver with both sourceFile='x.groovy' AND installs=[{sourceFile: 'f.groovy'}] and confirm=true."
+}
+```
+
+**Expected**: Tool throws `IllegalArgumentException` (JSON-RPC -32602) with a message containing 'bulk mode' and 'source'. No install is attempted.
 
 ---
 

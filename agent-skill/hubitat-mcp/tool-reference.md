@@ -131,10 +131,10 @@ Write operations for apps and drivers: install, update, delete, and restore code
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `install_app` | Install a new Groovy app from source. | Hub Admin Write |
-| `install_driver` | Install a new Groovy driver from source. | Hub Admin Write |
-| `update_app_code` | Update existing app source code. | Hub Admin Write |
-| `update_driver_code` | Update existing driver source code. | Hub Admin Write |
+| `install_app` | Install a new Groovy app from `source` (inline) or `sourceFile` (File Manager filename). Verifies install compiled cleanly. | Hub Admin Write |
+| `install_driver` | Install a new Groovy driver from `source` (inline) or `sourceFile` (File Manager filename). Bulk mode: `installs=[{source|sourceFile},...]` (continue-on-error). Verifies each install compiled cleanly. | Hub Admin Write |
+| `update_app_code` | Update existing app source code (source, sourceFile, or resave). | Hub Admin Write |
+| `update_driver_code` | Update existing driver source code. Single-driver mode (driverId + source/sourceFile/resave) or bulk mode (updates array of {driverId, sourceFile} pairs, continue-on-error). | Hub Admin Write |
 | `delete_app` | Delete an installed app (auto-backs up). | Hub Admin Write |
 | `delete_driver` | Delete an installed driver (auto-backs up). | Hub Admin Write |
 | `restore_item_backup` | Restore app/driver to backed-up version. | Hub Admin Write |

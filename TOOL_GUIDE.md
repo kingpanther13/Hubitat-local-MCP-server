@@ -81,6 +81,30 @@ All Hub Admin Write tools require these steps:
 - List affected devices to user before proceeding
 - Dashboard layouts and automations referencing room may be affected
 
+**install_app** (via `manage_app_driver_code`)
+- Accepts `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
+- Token-economy tip: upload large source via local CLI first, then pass the filename as `sourceFile`. Avoids re-sending multi-KB source strings on each install attempt.
+- Performs post-install verification: after the hub creates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `appId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_app_source`. If the hub returns no item ID at all (no `Location` header), `appId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
+- Requires Hub Admin Write + confirm + backup <24h.
+
+**install_driver** (via `manage_app_driver_code`)
+- Single-driver mode: supply `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
+- Bulk mode: supply an `installs` array of objects, each with `source` or `sourceFile`. Cannot combine with single-driver fields.
+  - Continue-on-error: errors on individual items do not abort remaining installs. Returns a per-item status array with each item's `driverId`.
+  - Top-level `success: true` only if ALL items succeeded.
+  - Practical limit: ~10-20 drivers per call (each install is a sequential on-hub compilation, ~1-5 seconds each).
+  - Token-economy pattern: upload all driver source files via local CLI, then call bulk `install_driver` once with all `{sourceFile}` entries.
+- Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_driver_source`. If the hub returns no item ID at all (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
+- Requires Hub Admin Write + confirm + backup <24h.
+
+**update_driver_code** (via `manage_app_driver_code`)
+- Single-driver mode (unchanged): supply `driverId` + one of `source` / `sourceFile` / `resave`.
+- Bulk mode: supply an `updates` array of objects, each with `driverId` and one of `sourceFile` / `source` / `resave`. Cannot combine with single-driver fields.
+  - Continue-on-error: errors on individual items do not abort remaining updates. Returns a per-item status array.
+  - Top-level `success: true` only if ALL items succeeded.
+  - Practical limit: ~20 drivers per call (each update is a sequential on-hub compilation, ~1-5 seconds each).
+  - Token-economy pattern: upload all updated driver files via local CLI (curl -F / PowerShell Invoke-RestMethod), then call bulk `update_driver_code` once with all `{driverId, sourceFile}` pairs.
+
 **delete_app / delete_driver** (via `manage_app_driver_code`)
 - Remove app instances via Hubitat UI first (for apps)
 - Change devices to different driver first (for drivers)
