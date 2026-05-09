@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 94 MCP tools. The server exposes **35 items on `tools/list`**: 23 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 101 MCP tools. The server exposes **35 items on `tools/list`**: 23 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -57,7 +57,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 94 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 101 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -81,18 +81,18 @@ Rule administration: delete, test, export, import, and clone rules.
 
 ### manage_hub_variables (8 tools)
 
-Manage hub connector and rule engine variables.
+Manage hub variables (every type — Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Full read/write CRUD via the modern Hub Variable API; observe changes via `get_variable_history`.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `list_variables` | List all hub connector and rule engine variables. | None |
-| `get_variable` | Get a specific variable value and metadata. | None |
-| `set_variable` | Set a variable value. | None |
-| `create_variable` | Create a new hub variable (type: Number/Decimal/String/Boolean/DateTime). | Hub Admin Write |
-| `delete_variable` | Permanently delete a hub variable (DESTRUCTIVE). | Hub Admin Write + recent backup |
-| `create_connector` | Create a virtual-device connector for a hub variable. | Hub Admin Write |
-| `remove_connector` | Remove the connector device for a hub variable. | Hub Admin Write |
-| `get_variable_history` | Recent hub-variable changes since the MCP app started. | None |
+| `list_variables` | List all hub variables (with type/connector linkage) and rule-engine variables. | None |
+| `get_variable` | Get a variable's value + metadata (type, deviceId, attribute). | None |
+| `set_variable` | Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. | None |
+| `create_variable` | Create a new hub variable. Type enum: Number / Decimal / String / Boolean / DateTime. | Hub Admin Write |
+| `delete_variable` | Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). `force=true` if rules reference it. | Hub Admin Write + recent backup |
+| `create_connector` | Create a virtual-device connector for an existing hub variable. | Hub Admin Write |
+| `remove_connector` | Remove the connector device for a hub variable (the variable itself is unchanged). | Hub Admin Write |
+| `get_variable_history` | Recent hub-variable changes since the MCP app last started. Filter by name, sinceMs, limit. | None |
 
 ### manage_rooms (5 tools)
 
@@ -126,7 +126,7 @@ Read-only access to hub apps, drivers, and libraries: list, view source, and bro
 | `list_hub_drivers` | List installed user drivers. | Hub Admin Read |
 | `get_app_source` | Get app source code. Large files auto-saved to File Manager. | Hub Admin Read |
 | `get_driver_source` | Get driver source code. Large files auto-saved to File Manager. | Hub Admin Read |
-| `get_library_source` | Get library source code with chunked reading. Large files auto-saved to File Manager. | Hub Admin Read |
+| `get_library_source` | Get library source code with chunked-read support (`offset`/`length`). Large files auto-saved to File Manager. | Hub Admin Read |
 | `list_item_backups` | List all source code backups. | None |
 | `get_item_backup` | Retrieve source from a backup. | None |
 
@@ -138,14 +138,14 @@ Write operations for apps, drivers, and libraries: install, update, delete, and 
 |------|-------------|-------------|
 | `install_app` | Install a new Groovy app from `source` (inline) or `sourceFile` (File Manager filename). Verifies install compiled cleanly. | Hub Admin Write |
 | `install_driver` | Install a new Groovy driver from `source` (inline) or `sourceFile` (File Manager filename). Bulk mode: `installs=[{source|sourceFile},...]` (continue-on-error). Verifies each install compiled cleanly. | Hub Admin Write |
+| `install_library` | Install a new Groovy library (`#include namespace.Name`). Library source must include a `library()` block with `name`, `namespace`, `author`, `description` (4 required; `category` optional). | Hub Admin Write |
 | `update_app_code` | Update existing app source code (source, sourceFile, or resave). | Hub Admin Write |
 | `update_driver_code` | Update existing driver source code. Single-driver mode (driverId + source/sourceFile/resave) or bulk mode (updates array of {driverId, sourceFile} pairs, continue-on-error). | Hub Admin Write |
+| `update_library_code` | Update existing library source code (libraryId + source/sourceFile/resave). Auto-backs up before modifying. | Hub Admin Write |
 | `delete_app` | Delete an installed app (auto-backs up). | Hub Admin Write |
 | `delete_driver` | Delete an installed driver (auto-backs up). | Hub Admin Write |
-| `restore_item_backup` | Restore app/driver to backed-up version (libraries: see `update_library_code`). | Hub Admin Write |
-| `install_library` | Install a new Groovy library (#include namespace.Name). | Hub Admin Write |
-| `update_library_code` | Update existing library source (source/sourceFile/resave modes). | Hub Admin Write |
-| `delete_library` | Delete a library (auto-backs up source). | Hub Admin Write |
+| `delete_library` | Delete an installed library (auto-backs up). Ensure no apps/drivers `#include` it first. | Hub Admin Write |
+| `restore_item_backup` | Restore app/driver to backed-up version. | Hub Admin Write |
 
 ### manage_logs (8 tools)
 
@@ -170,7 +170,7 @@ Performance monitoring, health checks, diagnostics, radio info, memory / GC, and
 |------|-------------|-------------|
 | `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history. | Hub Admin Read |
 | `device_health_check` | Find stale/offline devices. | Hub Admin Read |
-| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule. | None |
+| `custom_get_rule_diagnostics` | Comprehensive diagnostics for a specific custom rule. | None |
 | `get_zwave_details` | Z-Wave radio info. | Hub Admin Read |
 | `get_zigbee_details` | Zigbee radio info. | Hub Admin Read |
 | `get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Hub Admin Read |
@@ -202,7 +202,7 @@ Read-only visibility into all installed apps (built-in + user): enumerate with p
 | `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: list_installed_apps or list_rm_rules -> get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before get_app_config on multi-page apps. | Hub Admin Read |
 
-### manage_native_rules_and_apps (9 tools)
+### manage_native_rules_and_apps (12 tools)
 
 Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause/resume) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). Requires Built-in App Tools enabled; CRUD operations additionally require Hub Admin Write.
 
@@ -216,6 +216,9 @@ Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause/res
 | `create_native_app` | Create a new empty classic SmartApp (RM 5.1 by default; `appType` enum extends to other types). Returns `appId`. | Built-in App Tools + Hub Admin Write |
 | `update_native_app` | Modify any classic native app by appId. Structured shortcuts: addTrigger, addAction, addRequiredExpression, clearActions, replaceActions, patches, etc. Auto-snapshots before writing. | Built-in App Tools + Hub Admin Write |
 | `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Built-in App Tools + Hub Admin Write |
+| `clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. | Built-in App Tools + Hub Admin Write |
+| `export_native_app` | Export a classic SmartApp to JSON, round-trippable with `import_native_app`. Useful for backup, sharing, or export-mutate-import editing of complex rules. | Built-in App Tools |
+| `import_native_app` | Import previously-exported app JSON into a new instance. Pairs with `export_native_app`. Returns the new `appId`. | Built-in App Tools + Hub Admin Write |
 | `check_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Built-in App Tools |
 
 ### manage_mcp_self (1 tool)

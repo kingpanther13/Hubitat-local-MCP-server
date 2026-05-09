@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 98 tools (35 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 101 tools (35 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 98 tools (35 on tools/list + gateways) │  │
+│  │  - 101 tools (35 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,19 +93,19 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 90 items to 35. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 101 items to 35. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 12 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 23 core tools + 12 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 98 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 101 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
 
-**12 gateways (75 proxied tools):**
+**12 gateways (78 proxied tools):**
 | Gateway | Tools | Domain |
 |---------|-------|--------|
 | `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
@@ -118,7 +118,7 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 | `manage_diagnostics` | 11 | Diagnostics, state capture, zwave/zigbee details, zwave repair, memory history, GC |
 | `manage_files` | 4 | File Manager CRUD |
 | `manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
-| `manage_native_rules_and_apps` | 9 | Rule Machine interop (RMUtils: list/run/pause/resume/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete_native_app + check_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
+| `manage_native_rules_and_apps` | 12 | Rule Machine interop (RMUtils: list/run/pause/resume/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete/clone/export/import_native_app + check_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
 | `manage_mcp_self` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |
 
 **Core tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `poll_until_attribute` (block-poll attribute until expected value or timeout; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; at least one of `expectedValue`/`expectedValues` required; BLOCKS the MCP request -- use sparingly, prefer event-driven flows), `custom_list_rules`, `custom_get_rule`, `custom_create_rule`, `custom_update_rule` (the MCP custom rule engine — distinct from native Rule Machine; native-RM CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `manage_native_rules_and_apps` gateway via `create_native_app` / `update_native_app` / `delete_native_app` / `check_rule_health`), `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`, `search_tools` (BM25 natural language search across all tools)

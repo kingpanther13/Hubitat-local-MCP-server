@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 94 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **12 domain-named gateways** that proxy 71 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 101 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **12 domain-named gateways** that proxy 78 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -161,14 +161,18 @@ Core tool: `get_device_events` (always visible)
 Via `manage_logs` gateway (8 tools):
 - `get_hub_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
 - `get_device_history` - Device event history (up to 7 days)
+- `get_performance_stats` - Device/app performance stats (count, % busy, total ms, state size, events). Sortable by pct/count/stateSize/totalMs/name
+- `get_hub_jobs` - Scheduled jobs, running jobs, and hub actions
 - `get_debug_logs` / `clear_debug_logs` - MCP-specific debug logs
 - `set_log_level` - Set MCP log level
 - `get_logging_status` - View logging system statistics
 
 Via `manage_diagnostics` gateway (11 tools):
 - `get_set_hub_metrics` - Record/retrieve hub metrics with CSV trend history
-- `device_health_check` - Find stale/offline devices
-- `get_rule_diagnostics` - Comprehensive diagnostics for a specific rule
+- `get_memory_history` - Free OS memory and CPU load history with summary stats (Hub Admin Read)
+- `force_garbage_collection` - Force JVM GC; returns before/after free memory (Hub Admin Read)
+- `device_health_check` - Find stale/offline devices; optional ICMP ping for arbitrary IPs
+- `custom_get_rule_diagnostics` - Comprehensive diagnostics for a specific rule
 - `get_zwave_details` / `get_zigbee_details` - Radio info (Z-Wave and Zigbee)
 - `zwave_repair` - Start Z-Wave network repair (5-30 min)
 - `list_captured_states` / `delete_captured_state` / `clear_captured_states` - State snapshots
