@@ -372,4 +372,36 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.message.contains('60001')
         result.manualDownload.contains('mcp-backup-driver-9.groovy')
     }
+
+    def "get_item_backup library-type uses update_library_code restore path, not restore_item_backup"() {
+        given:
+        // Library backups cannot go through restore_item_backup -- that tool only handles
+        // apps and drivers. The howToRestore text must point to update_library_code.
+        atomicStateMap.itemBackupManifest = [
+            'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
+                           version: 3, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass.downloadHubFile = { String fileName ->
+            fileName == 'mcp-backup-library-42.groovy' ? 'library(name:"Foo")'.getBytes('UTF-8') : null
+        }
+
+        when:
+        def result = script.toolGetItemBackup([backupKey: 'library_42'])
+
+        then: 'standard fields are present'
+        result.backupKey == 'library_42'
+        result.type == 'library'
+        result.id == '42'
+        result.version == 3
+        result.source == 'library(name:"Foo")'
+        result.directDownload.contains('mcp-backup-library-42.groovy')
+
+        and: 'restore path names update_library_code as the action; restore_item_backup mentioned only as not applicable'
+        result.howToRestore.contains('update_library_code')
+        result.howToRestore.contains('cannot be restored via restore_item_backup')
+
+        and: 'restore path includes the correct library ID and file reference'
+        result.howToRestore.contains("libraryId='42'")
+        result.howToRestore.contains("sourceFile='mcp-backup-library-42.groovy'")
+    }
 }

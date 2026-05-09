@@ -345,4 +345,85 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         result.success == true
         result.previousVersion == 5
     }
+
+    // --- update_library_code dedup-path version correctness ------------------
+    //
+    // When the 1-hour backup dedup window is active, update_library_code must
+    // still fetch the CURRENT version from the hub (via /library/list/single/data/<id>)
+    // for the optimistic-locking POST field -- not reuse the stale version
+    // stored in the backup manifest. If the fresh fetch fails, it falls back
+    // to the cached manifest version rather than aborting.
+    //
+    // These two tests pin both branches of that version-resolution path,
+    // mirroring the v0.4.6 regression tests for update_app_code above.
+
+    def "update_library_code dedup path uses the fresh version from the hub, not the stale backup-manifest cache"() {
+        given: 'a recent cached backup whose manifest carries a stale version=1'
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [library_42: [
+            type: 'library', id: '42',
+            fileName: 'mcp-backup-library-42.groovy',
+            version: 1,                                    // stale -- hub has been edited since
+            timestamp: 1234567890000L - 60_000L,           // 1 minute ago -- inside the 1-hour window
+            sourceLength: 100
+        ]]
+
+        and: '/library/list/single/data/42 returns version=9 -- the current value'
+        hubGet.register('/library/list/single/data/42') { params ->
+            groovy.json.JsonOutput.toJson([[id: 42, version: 9, source: 'library(name:"L")', name: 'L', namespace: 'n']])
+        }
+
+        and: 'capture the JSON body posted to saveOrUpdateJson'
+        def capturedBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            capturedBody = new groovy.json.JsonSlurper().parseText(body)
+            [success: true, message: '', id: 42, version: 10]
+        }
+
+        when:
+        def result = script.toolUpdateLibraryCode([libraryId: '42', source: 'new source', confirm: true])
+
+        then: 'POST body carries the fresh version=9, NOT the cached stale version=1'
+        capturedBody.version == 9
+
+        and: 'the tool reports the fresh previousVersion'
+        result.success == true
+        result.previousVersion == 9
+    }
+
+    def "update_library_code dedup path falls back to the cached backup version when the fresh-fetch fails"() {
+        given: 'a recent cached backup with version=7 (stale, but the only value available)'
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [library_42: [
+            type: 'library', id: '42',
+            fileName: 'mcp-backup-library-42.groovy',
+            version: 7,
+            timestamp: 1234567890000L - 60_000L,
+            sourceLength: 100
+        ]]
+
+        and: '/library/list/single/data/42 throws (hub transiently offline)'
+        hubGet.register('/library/list/single/data/42') { params ->
+            throw new RuntimeException('hub offline')
+        }
+
+        and: 'capture the version in the update POST'
+        def capturedBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            capturedBody = new groovy.json.JsonSlurper().parseText(body)
+            [success: true, message: '', id: 42, version: 8]
+        }
+
+        when:
+        def result = script.toolUpdateLibraryCode([libraryId: '42', source: 'new source', confirm: true])
+
+        then: 'best-effort fallback -- use the cached version=7 rather than aborting'
+        capturedBody.version == 7
+
+        and: 'tool still reports success using the fallback version'
+        result.success == true
+        result.previousVersion == 7
+    }
 }

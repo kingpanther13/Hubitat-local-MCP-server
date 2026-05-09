@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 90 MCP tools (35 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 94 MCP tools (35 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 90 tools total — 23 core tools are always visible, while 67 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 94 tools total — 23 core tools are always visible, while 71 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (90 total — 35 on tools/list)
+### MCP Tools (98 total — 35 on tools/list)
 
-The server has 90 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **67 additional tools** are organized behind **12 domain-named gateways**. The AI sees 35 items on `tools/list` (23 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 98 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **75 additional tools** are organized behind **12 domain-named gateways**. The AI sees 35 items on `tools/list` (23 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (23) — Always visible on tools/list
 
@@ -327,14 +327,18 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>manage_hub_variables</b> (4) — Hub variables</summary>
+<summary><b>manage_hub_variables</b> (8) — Hub variables</summary>
 
 | Tool | Description |
 |------|-------------|
 | `list_variables` | List all hub connector and rule engine variables |
-| `get_variable` | Get a variable value |
-| `set_variable` | Set a variable value (creates if doesn't exist) |
-| `delete_variable` | Permanently delete a rule engine variable (DESTRUCTIVE) |
+| `get_variable` | Get a variable value and metadata |
+| `set_variable` | Set a variable value |
+| `create_variable` | Create a new hub variable |
+| `delete_variable` | Permanently delete a hub variable (DESTRUCTIVE) |
+| `create_connector` | Create a virtual-device connector for a hub variable |
+| `remove_connector` | Remove the connector device for a hub variable |
+| `get_variable_history` | Recent hub-variable changes since the MCP app last started |
 
 </details>
 
@@ -365,7 +369,7 @@ All operations are disruptive. Hub admin tools require Hub Admin Read/Write to b
 </details>
 
 <details>
-<summary><b>manage_apps_drivers</b> (6) — App/driver listing, source code, and backups (read-only)</summary>
+<summary><b>manage_apps_drivers</b> (7) — App/driver/library listing, source code, and backups (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -373,13 +377,14 @@ All operations are disruptive. Hub admin tools require Hub Admin Read/Write to b
 | `list_hub_drivers` | List all installed drivers on the hub |
 | `get_app_source` | Get app Groovy source code |
 | `get_driver_source` | Get driver Groovy source code |
+| `get_library_source` | Get library Groovy source code with chunked reading support |
 | `list_item_backups` | List auto-created source code backups |
 | `get_item_backup` | Get source from a backup |
 
 </details>
 
 <details>
-<summary><b>manage_app_driver_code</b> (7) — Install, update, delete apps/drivers and restore backups</summary>
+<summary><b>manage_app_driver_code</b> (10) — Install, update, delete apps/drivers/libraries and restore backups</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -389,7 +394,10 @@ All operations are disruptive. Hub admin tools require Hub Admin Read/Write to b
 | `update_driver_code` | Modify existing driver code (single-driver or bulk `updates` array) |
 | `delete_app` | Permanently delete an app (auto-backs up) |
 | `delete_driver` | Permanently delete a driver (auto-backs up) |
-| `restore_item_backup` | Restore app/driver to backed-up version |
+| `restore_item_backup` | Restore app/driver to backed-up version (libraries: see `update_library_code`) |
+| `install_library` | Install new Groovy library (#include namespace.Name) |
+| `update_library_code` | Modify existing library code |
+| `delete_library` | Permanently delete a library (auto-backs up) |
 
 Source code is automatically backed up before any modify/delete operation.
 

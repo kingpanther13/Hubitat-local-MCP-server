@@ -4,13 +4,13 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 35 items (23 core + 12 gateways) covering 90 total tools. Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 35 items (23 core + 12 gateways) covering 98 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (9), `manage_mcp_self` (1)
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (9), `manage_mcp_self` (1)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -105,9 +105,10 @@ All Hub Admin Write tools require these steps:
   - Practical limit: ~20 drivers per call (each update is a sequential on-hub compilation, ~1-5 seconds each).
   - Token-economy pattern: upload all updated driver files via local CLI (curl -F / PowerShell Invoke-RestMethod), then call bulk `update_driver_code` once with all `{driverId, sourceFile}` pairs.
 
-**delete_app / delete_driver** (via `manage_app_driver_code`)
+**delete_app / delete_driver / delete_library** (via `manage_app_driver_code`)
 - Remove app instances via Hubitat UI first (for apps)
 - Change devices to different driver first (for drivers)
+- Ensure no drivers/apps reference the library via #include before deleting (for libraries)
 - Source code auto-backed up before deletion
 
 ---
@@ -230,11 +231,11 @@ Offset is in minutes (positive = after, negative = before)
 
 ---
 
-## App/Driver Code Management
+## App/Driver/Library Code Management
 
 ### Reading Source Code
-- `get_app_source` / `get_driver_source` support chunked reading for large files
-- Large files auto-saved to File Manager as `mcp-source-app-{id}.groovy` or `mcp-source-driver-{id}.groovy`
+- `get_app_source` / `get_driver_source` (via `manage_apps_drivers`) / `get_library_source` (via `manage_apps_drivers`) support chunked reading for large files
+- Large files auto-saved to File Manager as `mcp-source-app-{id}.groovy`, `mcp-source-driver-{id}.groovy`, or `mcp-source-library-{id}.groovy`
 - Use this saved file with `sourceFile` parameter in update tools
 
 ### Updating Code
@@ -245,9 +246,32 @@ Three modes available:
 
 Auto-backs up before modifying. Rapid edits within 1 hour preserve the original.
 
+### Libraries
+Hubitat Groovy libraries are shared code modules included by drivers and apps via `#include namespace.LibraryName`. The library management tools mirror the app/driver pattern:
+- `install_library` - Install a new library from Groovy source (inline or via File Manager file)
+- `update_library_code` - Update existing library source (source/sourceFile/resave modes)
+- `delete_library` - Delete a library (auto-backs up source first)
+- `get_library_source` - Read library source with chunked reading support
+
+Libraries must include a valid `library()` definition block. Before deleting a library, ensure no installed drivers or apps reference it via `#include` -- deleting a library in use causes compilation errors in the referencing code.
+
+PREFER curl-upload + sourceFile (bypasses agent context, no transcript size limits). Use inline `source` only for stub-size snippets:
+```bash
+# Without Hub Security:
+curl -F "uploadFile=@mylib.groovy" -F "folder=/" http://<HUB_IP>/hub/fileManager/upload
+
+# With Hub Security enabled (cookie-based):
+curl -c cookies.txt -d "username=USER&password=PASS" http://<HUB_IP>/login
+curl -b cookies.txt -F "uploadFile=@mylib.groovy" -F "folder=/" http://<HUB_IP>/hub/fileManager/upload
+```
+Then call `install_library` or `update_library_code` with `sourceFile: 'mylib.groovy'`.
+
+Note: `get_library_source` (read-only, Hub Admin Read) lives in `manage_apps_drivers` alongside `get_app_source` and `get_driver_source`. The write operations (`install_library`, `update_library_code`, `delete_library`) live in `manage_app_driver_code` (Hub Admin Write).
+
 ### After Installation
 - Apps: Add via Apps > Add User App in Hubitat web UI
 - Drivers: Can be assigned to devices immediately
+- Libraries: Available immediately for `#include` in driver/app source
 
 ---
 
@@ -259,7 +283,7 @@ Auto-backs up before modifying. Rapid edits within 1 hour preserve the original.
 - Only Hub Admin Write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)
-- Created automatically when using update_app_code, update_driver_code, delete_app, delete_driver
+- Created automatically when using update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, delete_library
 - Stored in File Manager as `.groovy` files
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned
