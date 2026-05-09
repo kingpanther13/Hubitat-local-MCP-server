@@ -2703,7 +2703,9 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["parentHintAppId", "confirm"],
-                oneOf: [
+                // anyOf (not oneOf) — the impl accepts either field and prefers
+                // jsonContent if both are present; oneOf would reject that.
+                anyOf: [
                     [required: ["jsonContent"]],
                     [required: ["fromFile"]]
                 ]
@@ -18143,18 +18145,21 @@ private Map _appClonerInit(Integer sourceAppId) {
     if (!loc) {
         throw new IllegalStateException("appCloner entry returned no Location header for source ${sourceAppId} (status=${resp?.status})")
     }
+    // regex covers two redirect shapes seen across firmwares (apps/api/* current, installedapp/configure/* older)
     def m = (loc =~ /\/(?:apps\/api|installedapp\/configure)\/(\d+)/)
     Integer clonerId = m.find() ? (m[0][1] as Integer) : null
     if (clonerId == null) {
         throw new IllegalStateException("Unexpected appCloner Location: ${loc}")
     }
-    // Capture the full OAuth source-context URL — the cloner state machine
-    // requires this as the `referrer` field on subsequent form POSTs to
-    // verify they originate from the source-authorized session. Without
-    // it, every state transition is silently rejected even though POSTs
-    // return 200. Hubitat's UI reads this from window.location after
-    // following the 302; we capture it directly from the redirect target.
-    String sourceContextUrl = loc.startsWith("http") ? loc : "http://192.168.1.133${loc}"
+    // Cloner state machine validates `referrer`/`url` against the session that
+    // opened the cloner. Use the running hub's IP — hardcoding fails for any
+    // other deployment. Falls back to 127.0.0.1 (the loopback the parent app
+    // already uses for hubInternal* calls) if location.hub.localIP is null.
+    String hubIp = null
+    try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
+    if (!hubIp) hubIp = "127.0.0.1"
+    String sourceContextUrl = loc.startsWith("http") ? loc : "http://${hubIp}${loc}"
+    String configUrl = "http://${hubIp}/installedapp/configure/${clonerId}/main".toString()
     // CRITICAL: follow the redirect target. The cloner's `app(sourceId)`
     // mapping renders the source-context page and sets internal state
     // (state.cloneSource, etc.). Without this GET, the cloner accepts our
@@ -18163,46 +18168,35 @@ private Map _appClonerInit(Integer sourceAppId) {
     // The Location is OAuth-token-protected (/apps/api/<clonerId>/app/<sourceId>
     // ?access_token=...) — split path + query so HTTPBuilder doesn't URL-encode
     // the `?` and break the access_token lookup.
-    try {
-        def relPath = loc.replaceFirst(/^https?:\/\/[^\/]+/, '')
-        def parts = relPath.split(/\?/, 2)
-        def justPath = parts[0]
-        def query = [:]
-        if (parts.length > 1) {
-            parts[1].split('&').each { kv ->
-                def eq = kv.indexOf('=')
-                if (eq > 0) {
-                    def k = kv.substring(0, eq)
-                    def v = kv.substring(eq + 1)
-                    // values aren't url-encoded in the redirect Location — pass through
-                    query[k] = v
-                }
-            }
+    def relPath = loc.replaceFirst(/^https?:\/\/[^\/]+/, '')
+    def parts = relPath.split(/\?/, 2)
+    def justPath = parts[0]
+    def query = [:]
+    if (parts.length > 1) {
+        parts[1].split('&').each { kv ->
+            def eq = kv.indexOf('=')
+            if (eq > 0) query[kv.substring(0, eq)] = kv.substring(eq + 1)
         }
-        hubInternalGet(justPath, query)
-        mcpLog("debug", "rm-native", "appCloner: source-context render of ${justPath} succeeded for cloner ${clonerId}")
-        // Cloner appears to need a beat to commit state.cloneSource after
-        // the source-context render before subsequent clicks are honored.
-        pauseExecution(1000)
-        // Mimic browser flow: fetch the configPage JSON before any settings
-        // POSTs. Without this, file-text widgets (`settings[ruleUpload]`)
-        // silently drop their values — the cloner accepts the POST (200,
-        // ruleUpload key registered) but stores null. The browser's main
-        // page render fires this XHR after navigation; settings writes
-        // sent before it land in a half-initialized cloner that can't
-        // receive uploads. Required for import_native_app; harmless for
-        // clone/export.
-        try {
-            hubInternalGet("/installedapp/configure/json/${clonerId}/main", [:])
-        } catch (Exception primeErr) {
-            mcpLog("warn", "rm-native", "appCloner: configPage JSON prime failed for cloner ${clonerId}: ${primeErr.message}")
-        }
-    } catch (Exception followErr) {
-        // Source-context render is best-effort. If it fails, the click POSTs
-        // still try; some firmwares may seed source context differently.
-        mcpLog("warn", "rm-native", "appCloner: source-context render of ${loc} failed for cloner ${clonerId}: ${followErr.message}")
     }
-    return [clonerAppId: clonerId, referrer: sourceContextUrl, configUrl: "http://192.168.1.133/installedapp/configure/${clonerId}/main".toString()]
+    try {
+        hubInternalGet(justPath, query)
+    } catch (Exception followErr) {
+        // Source-context render is load-bearing — clone/import will silently
+        // produce no new rule without it. Surface the failure instead of
+        // letting the wizard fire and reporting "no new child appeared".
+        throw new IllegalStateException("appCloner source-context render failed for source ${sourceAppId} (cloner ${clonerId}): ${followErr.message}. Without this step the cloner state machine never seeds state.cloneSource and subsequent clicks silently produce no rule.")
+    }
+    pauseExecution(1000)
+    // Mimic browser flow: fetch the configPage JSON before any settings POSTs.
+    // Without this, file-text widgets (`settings[ruleUpload]`) silently drop
+    // their values — the cloner accepts the POST (200, ruleUpload key
+    // registered) but stores null. Required for import_native_app.
+    try {
+        hubInternalGet("/installedapp/configure/json/${clonerId}/main", [:])
+    } catch (Exception primeErr) {
+        throw new IllegalStateException("appCloner configPage prime failed for cloner ${clonerId}: ${primeErr.message}. Without this step settings[ruleUpload] writes are silently dropped on the import path.")
+    }
+    return [clonerAppId: clonerId, referrer: sourceContextUrl, configUrl: configUrl]
 }
 
 /**
@@ -18276,7 +18270,13 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
         sb.append(v == null ? "" : URLEncoder.encode(v.toString(), "UTF-8"))
     }
     def resp = hubInternalPostFormRaw("/installedapp/update/json", sb.toString())
-    return resp ?: [:]
+    if (resp == null) {
+        // Closure never ran -> network call produced no response. Don't coerce
+        // to [:] (export's "no JSON content" error would point at the wrong
+        // root cause). Bubble so callers see the real failure.
+        throw new IllegalStateException("appCloner POST /installedapp/update/json returned no response (cloner ${clonerAppId}, currentPage=${currentPage}, formState=${formState}). Network call failed before delivering a status.")
+    }
+    return resp
 }
 
 /**
@@ -18319,14 +18319,16 @@ private void _appClonerCommitImportRule(Integer clonerAppId, Integer sourceAppId
     // different session-scoped indices.
     // The cloner re-renders asynchronously after a state-transition POST;
     // poll the page state a few times to give the action_href button time
-    // to appear before falling back to 0 (which would only succeed for
-    // the clone path's confirmation page).
+    // to appear. Fail loudly if it never shows — the import path silently
+    // no-ops when this idx is wrong (the very symptom we're fighting).
     Integer hrefIdx = null
     for (int attempt = 0; attempt < 4 && hrefIdx == null; attempt++) {
         if (attempt > 0) pauseExecution(500)
         hrefIdx = _appClonerFindActionHrefIdx(clonerAppId, "main", "importRule")
     }
-    if (hrefIdx == null) hrefIdx = 0
+    if (hrefIdx == null) {
+        throw new IllegalStateException("appCloner importRule action_href not found on cloner ${clonerAppId} main page after 4 polls (~2s). The cloner did not transition to the expected confirmation/restore-or-import state — clicking importNow now would silently no-op.")
+    }
     _appClonerSubmitForm(clonerAppId, "main", "confirmation", referrer, configUrl, [
         ("_action_href_name|importRule|${hrefIdx}".toString()): "",
         ("params_for_action_href_name|importRule|${hrefIdx}".toString()): ""
@@ -18486,13 +18488,10 @@ def toolCloneNativeApp(args) {
 }
 
 /**
- * export_native_app — wraps the appCloner's Export path.
- *
- * After clicking exportRuleButton the cloner renders a download button whose
- * onclick reads the JSON from a hidden input. The JSON also lands in the
- * cloner's settings as `ruleDownload` (or similar) and is exposed via
- * /installedapp/configure/json/<clonerId> with includeSettings. We read it
- * from there directly — no HTML scraping required.
+ * export_native_app — wraps the appCloner's Export path. JSON is captured
+ * from the form-refresh response body of the click POST itself; see
+ * `_appClonerExtractJsonFromResponse` for why settings/HTML scraping doesn't
+ * work (the filecontent is session-keyed, only present in the same request).
  */
 def toolExportNativeApp(args) {
     requireBuiltinApp()
@@ -18501,7 +18500,12 @@ def toolExportNativeApp(args) {
     def saveAs = args?.saveAs?.toString()?.trim()
 
     def sourceCfg
-    try { sourceCfg = _rmFetchConfigJson(sourceAppId) } catch (Exception ignored) { sourceCfg = null }
+    try {
+        sourceCfg = _rmFetchConfigJson(sourceAppId)
+    } catch (Exception sourceErr) {
+        mcpLog("warn", "rm-native", "export_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
+        sourceCfg = null
+    }
     if (!sourceCfg?.app) {
         throw new IllegalArgumentException("Source app ${sourceAppId} not found or unreadable")
     }
@@ -18549,8 +18553,14 @@ def toolExportNativeApp(args) {
             uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
             result.savedAs = saveAs
             String hubIp = null
-            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall back below */ }
-            result.savedUrl = "http://${hubIp ?: '<HUB_IP>'}/local/${saveAs}"
+            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
+            if (hubIp) {
+                result.savedUrl = "http://${hubIp}/local/${saveAs}"
+            } else {
+                // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
+                // the lookup failure instead.
+                mcpLog("warn", "rm-native", "export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
+            }
         } catch (Exception fileErr) {
             result.saveError = fileErr.message
             mcpLog("warn", "rm-native", "export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
@@ -18605,42 +18615,6 @@ private String _appClonerExtractJsonFromResponse(String responseBody) {
 }
 
 /**
- * Legacy: pull the exported JSON from the cloner's persisted settings. Kept
- * as a fallback for firmwares that may persist the content there. The
- * primary extraction path is now from the form-refresh response body.
- */
-private String _appClonerExtractJsonFromSettings(Integer clonerAppId) {
-    def cfg
-    try {
-        cfg = _rmFetchConfigJson(clonerAppId)
-    } catch (Exception e) {
-        mcpLog("warn", "rm-native", "appCloner: extract config fetch failed for ${clonerAppId}: ${e.message}")
-        return null
-    }
-    def settings = (cfg?.settings instanceof Map) ? cfg.settings : [:]
-    for (entry in settings) {
-        def v = entry?.value
-        if (v instanceof String && v.startsWith("{") && v.contains("appReplacements")) {
-            return v
-        }
-    }
-    // Fallback: parse the rendered HTML page for <input id="ruledownload-value" value="...">
-    try {
-        def html = hubInternalGet("/installedapp/configure/${clonerAppId}")
-        if (html instanceof String) {
-            def m = (html =~ /id="ruledownload-value"[^>]*value="([^"]+)"/)
-            if (m.find()) {
-                def encoded = m[0][1]
-                return encoded.replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-            }
-        }
-    } catch (Exception htmlErr) {
-        mcpLog("debug", "rm-native", "appCloner: HTML scrape fallback failed for ${clonerAppId}: ${htmlErr.message}")
-    }
-    return null
-}
-
-/**
  * import_native_app — wraps the appCloner's Import path.
  *
  * Stages the JSON via settings[ruleUpload]= (urlencoded, NOT multipart),
@@ -18687,20 +18661,32 @@ def toolImportNativeApp(args) {
 
     // Snapshot pre-import children of the target parent.
     def parentHintCfg
-    try { parentHintCfg = _rmFetchConfigJson(parentHintAppId) } catch (Exception ignored) { parentHintCfg = null }
+    try {
+        parentHintCfg = _rmFetchConfigJson(parentHintAppId)
+    } catch (Exception hintErr) {
+        mcpLog("warn", "rm-native", "import_native_app: parentHintAppId ${parentHintAppId} fetch failed: ${hintErr.message}")
+        parentHintCfg = null
+    }
     if (!parentHintCfg?.app) {
         throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} not found or unreadable")
     }
     Integer parentAppId = null
     try {
         parentAppId = (parentHintCfg.app.parentAppId != null) ? (parentHintCfg.app.parentAppId.toString() as Integer) : null
-    } catch (NumberFormatException ignored) { /* fall through */ }
+    } catch (NumberFormatException nfe) {
+        mcpLog("warn", "rm-native", "import_native_app: parentHintAppId ${parentHintAppId} parentAppId not numeric: ${parentHintCfg.app.parentAppId}; new-child discovery will be skipped")
+    }
+    if (parentAppId == null) {
+        // Without a parent we can't diff children to identify the new rule.
+        // Refuse rather than firing the wizard and reporting a false failure.
+        throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} has no numeric parentAppId — pass a hint that's a child of the target parent app (e.g. an existing RM rule for an RM import).")
+    }
     def preIds = [] as Set
-    if (parentAppId != null) {
-        try {
-            def pc = _rmFetchConfigJson(parentAppId)
-            preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
-        } catch (Exception ignored) { /* heuristic */ }
+    try {
+        def pc = _rmFetchConfigJson(parentAppId)
+        preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
+    } catch (Exception preErr) {
+        mcpLog("warn", "rm-native", "import_native_app: pre-import parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
     }
 
     def initRes = _appClonerInit(parentHintAppId)
@@ -18722,10 +18708,8 @@ def toolImportNativeApp(args) {
     _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, [
         ("settings[ruleUpload]".toString()): jsonContent
     ])
-    // Cloner needs time to JSON-parse the upload + transition to the
-    // restore-or-import page before our discovery sees the new sections.
-    // Larger JSON inputs (full canonical exports) need more — 500ms is
-    // enough for trivial JSON but races on a 3KB rule body.
+    // Cloner needs ~2s to JSON-parse large uploads + transition to
+    // restore-or-import; <1s races on multi-KB exports.
     pauseExecution(2000)
 
     // Steps 3-5: navigate importRule, optional rename, click importNow.
