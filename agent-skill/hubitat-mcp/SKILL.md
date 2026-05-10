@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 90 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **12 domain-named gateways** that proxy 67 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 94 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **12 domain-named gateways** that proxy 71 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -126,13 +126,13 @@ Additional hub admin tools are accessed via gateways:
 
 Destructive write operations (require Hub Admin Write): `reboot_hub`, `shutdown_hub`, `delete_device`
 
-### Via `manage_apps_drivers` gateway (6 tools — read-only)
+### Via `manage_apps_drivers` gateway (7 tools — read-only)
 
-`list_hub_apps`, `list_hub_drivers`, `get_app_source`, `get_driver_source`, `list_item_backups`, `get_item_backup`
+`list_hub_apps`, `list_hub_drivers`, `get_app_source`, `get_driver_source`, `get_library_source`, `list_item_backups`, `get_item_backup`
 
-### Via `manage_app_driver_code` gateway (7 tools — write operations)
+### Via `manage_app_driver_code` gateway (10 tools — write operations)
 
-`install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`, `restore_item_backup`
+`install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`, `restore_item_backup`, `install_library`, `update_library_code`, `delete_library`
 
 - `install_app` / `install_driver` accept `source` (inline) OR `sourceFile` (File Manager filename). Token-economy tip: upload source via local CLI first, then pass filename. Includes post-install verification -- returns `success: false` if the Groovy failed to compile, even when the hub returned a redirect.
 - `install_driver` supports bulk mode via an `installs` array of `{source|sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields. Returns per-item `driverId`. Practical limit ~10-20 drivers/call. (`install_app` is single-item only -- apps are typically one-of-a-kind installs.)
@@ -158,14 +158,14 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 
 Core tool: `get_device_events` (always visible)
 
-Via `manage_logs` gateway (6 tools):
+Via `manage_logs` gateway (8 tools):
 - `get_hub_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
 - `get_device_history` - Device event history (up to 7 days)
 - `get_debug_logs` / `clear_debug_logs` - MCP-specific debug logs
 - `set_log_level` - Set MCP log level
 - `get_logging_status` - View logging system statistics
 
-Via `manage_diagnostics` gateway (9 tools):
+Via `manage_diagnostics` gateway (11 tools):
 - `get_set_hub_metrics` - Record/retrieve hub metrics with CSV trend history
 - `device_health_check` - Find stale/offline devices
 - `get_rule_diagnostics` - Comprehensive diagnostics for a specific rule
@@ -179,7 +179,7 @@ Via `manage_files` gateway: `list_files`, `read_file`, `write_file`, `delete_fil
 
 ## Item Backup System
 
-Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup` (via `manage_apps_drivers` gateway) to view backups, and `restore_item_backup` (via `manage_app_driver_code` gateway) to restore.
+Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup` (via `manage_apps_drivers` gateway) to view backups, and `restore_item_backup` (via `manage_app_driver_code` gateway) to restore apps and drivers. For libraries, restore via `update_library_code` with the backup file.
 
 ## System Tools
 

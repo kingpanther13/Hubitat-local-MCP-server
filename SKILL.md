@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 90 tools (35 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver management, installed-app visibility, Rule Machine interoperability, native rule CRUD, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 98 tools (35 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 90 tools (35 on tools/list + gateways) │  │
+│  │  - 98 tools (35 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -98,22 +98,22 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 **Architecture:**
 - `getGatewayConfig()` — defines 12 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 23 core tools + 12 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 90 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 98 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
 
-**12 gateways (67 proxied tools):**
+**12 gateways (75 proxied tools):**
 | Gateway | Tools | Domain |
 |---------|-------|--------|
 | `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
-| `manage_hub_variables` | 4 | Hub connector and rule engine variables (incl. delete) |
+| `manage_hub_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history) |
 | `manage_rooms` | 5 | Room CRUD |
 | `manage_destructive_hub_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
-| `manage_apps_drivers` | 6 | List/get apps, drivers, backups (read-only) |
-| `manage_app_driver_code` | 7 | Install/update/delete apps+drivers, restore backup (write) |
+| `manage_apps_drivers` | 7 | List/get apps, drivers, libraries, backups (read-only) |
+| `manage_app_driver_code` | 10 | Install/update/delete apps+drivers+libraries, restore backup (write) |
 | `manage_logs` | 8 | Logs, monitoring, performance stats, hub jobs, debug tools |
 | `manage_diagnostics` | 11 | Diagnostics, state capture, zwave/zigbee details, zwave repair, memory history, GC |
 | `manage_files` | 4 | File Manager CRUD |
@@ -308,6 +308,7 @@ All three:
 | `buildRuleExport(ruleData)` | Build portable rule export map (used by export and delete backup) |
 | `toolInstallItem(type, args)` | Shared install logic for apps and drivers |
 | `toolDeleteItem(type, idParam, deletePath, args)` | Shared delete logic for apps and drivers |
+| `hubInternalPostJson(path, jsonBody, isRetry?)` | POST to hub internal API with JSON body (used by library endpoints); returns parsed Map/List or null |
 | `updateRuleFromParent(data)` | Child app method — handles all rule updates including enable/disable via `enabled=true/false` |
 | `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |
 | `clampPercent(value)` | Clamp integer to 0-100 range (in rule.groovy) |
@@ -341,7 +342,7 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 | `hubSecurityCookie` | String | Cached auth cookie |
 | `hubSecurityCookieExpiry` | Long | Cookie expiry epoch ms |
 | `lastBackupTimestamp` | Long | Last hub backup epoch ms (24-hour write safety gate) |
-| `itemBackupManifest` | Map | Metadata for source code backups stored in File Manager, keyed by `"app_<id>"` / `"driver_<id>"`, max 20 entries |
+| `itemBackupManifest` | Map | Metadata for source code backups stored in File Manager, keyed by `"app_<id>"` / `"driver_<id>"` / `"library_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
 
 **Child app uses `atomicState`** for `triggers`, `conditions`, `actions`, `localVariables`, `durationTimers`, `durationFired`, and `cancelledDelayIds`. This is critical — `atomicState` provides immediate persistence and prevents race conditions when scheduled callbacks (`runIn`) fire in separate execution contexts. Always use read-modify-write pattern with atomicState maps:
@@ -491,6 +492,8 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub2/zigbeeInfo` | Zigbee radio details (JSON) |
 | `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
 | `/driver/ajax/code` with query `id=<id>` | Driver source code (JSON: source, version, status) |
+| `/hub2/userLibraries` | Installed user libraries (JSON array: id, version, name, namespace, author, description, usedByAppTypes, usedByDeviceTypes -- no source field) |
+| `/library/list/single/data/<id>` | Single library with full source (JSON array of one: id, version, name, namespace, source, lastModified, usedByDeviceTypes, etc.) |
 | `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
 | `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
 | `/hub2/roomsList` | List of rooms as JSON (alternative to `getRooms()` SDK method) |
@@ -509,6 +512,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/driver/save` | `id="", version="", create="", source=<code>` | Install new driver |
 | `/app/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update app code |
 | `/driver/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update driver code |
+| `/library/saveOrUpdateJson` | JSON: `{"id": null, "source": "<code>", "version": null}` | Install new library (id=null creates; id=N updates with version=N for optimistic lock). Returns `{success, message, id, version}`. MUST use `Content-Type: application/json`. |
 | `/login` | `username=<u>, password=<p>, submit=Login` | Hub Security login |
 | `/device/save` | `id=<deviceId>, label=<label>, name=<name>, deviceNetworkId=<dni>, type.id=<typeId>` | Update device properties (flat field names, Grails convention). NOTE: silently ignores `roomId` — use `/room/save` instead |
 | `/device/disable` | `id=<deviceId>, disable=<true\|false>` | Enable or disable a device (MUST be POST, not GET) |
@@ -519,6 +523,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 |------|--------|---------|
 | `/app/edit/deleteJsonSafe/<id>` | GET | Delete app (returns JSON with `status: true`) |
 | `/driver/editor/deleteJson/<id>` | GET | Delete driver (returns JSON with `status: true`) |
+| `/library/edit/deleteJson/<id>` | GET | Delete library (returns JSON with `success: true, message: null`) |
 | `/room/delete/<roomId>` | POST or GET | Delete room (try POST first, fall back to GET) |
 
 ### MCP Protocol Implementation

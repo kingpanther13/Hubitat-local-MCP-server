@@ -72,6 +72,11 @@ ALL Hub Admin Write tools require these steps in order:
 - For apps: Remind user to remove app instances via Hubitat UI first
 - For drivers: Remind user to switch devices to a different driver first
 
+#### delete_library
+- Source code is auto-backed up before deletion
+- Check that no apps or drivers reference the library via `#include namespace.LibraryName` before deleting -- deletion breaks any code that still includes it
+- Deletion is permanent; restore requires `update_library_code` with the backup source
+
 #### delete_room
 - Devices become unassigned (not deleted)
 - List affected devices to the user before proceeding
@@ -81,8 +86,17 @@ ALL Hub Admin Write tools require these steps in order:
 - Verify source code looks reasonable before installing
 - Warn about namespace conflicts with existing apps/drivers
 
+#### install_library
+- Verify source includes a valid `library()` definition block before installing
+- Warn about namespace conflicts with existing libraries (`#include namespace.LibraryName` references must match exactly)
+
 #### update_app_code / update_driver_code
 - Source is auto-backed up before update (1-hour protection window preserves original)
+- Uses optimistic locking to prevent concurrent edit conflicts
+- Supports three modes: `source` (direct), `sourceFile` (from File Manager), `resave` (recompile)
+
+#### update_library_code
+- Source is auto-backed up before update (1-hour protection window preserves original); backup failure aborts the update
 - Uses optimistic locking to prevent concurrent edit conflicts
 - Supports three modes: `source` (direct), `sourceFile` (from File Manager), `resave` (recompile)
 
@@ -144,9 +158,9 @@ Source code backups are created automatically before modify/delete operations.
 
 If MCP itself is broken:
 1. Go to Hubitat web UI > Settings > File Manager
-2. Find backup files (named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`)
+2. Find backup files (named `mcp-backup-app-<id>.groovy`, `mcp-backup-driver-<id>.groovy`, or `mcp-backup-library-<id>.groovy`)
 3. Download the file
-4. Go to Apps Code (or Drivers Code) > select the item > paste source > Save
+4. Go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste source > Save
 
 ---
 

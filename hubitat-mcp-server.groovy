@@ -804,13 +804,14 @@ def getGatewayConfig() {
         ],
         // Option B: manage_apps_drivers split into browse (read) + changes (write)
         manage_apps_drivers: [
-            description: "Browse installed apps and drivers: list, view source code, and view code backups.",
-            tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "list_item_backups", "get_item_backup"],
+            description: "Browse installed apps, drivers, and libraries: list, view source code, and view code backups. All operations are read-only. Write operations (install, update, delete) live in the manage_app_driver_code gateway.",
+            tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "get_library_source", "list_item_backups", "get_item_backup"],
             summaries: [
                 list_hub_apps: "List all installed apps on the hub",
                 list_hub_drivers: "List all installed drivers on the hub",
                 get_app_source: "Get app Groovy source code. Args: appId",
                 get_driver_source: "Get driver Groovy source code. Args: driverId",
+                get_library_source: "Get library Groovy source with chunked reading support. Args: libraryId, offset?, length?",
                 list_item_backups: "List auto-created source code backups",
                 get_item_backup: "Get source from a backup. Args: backupId"
             ],
@@ -819,13 +820,14 @@ def getGatewayConfig() {
                 list_hub_drivers: "show installed device handlers types",
                 get_app_source: "view read application groovy code",
                 get_driver_source: "view read device handler type groovy code",
+                get_library_source: "view read groovy library shared code namespace include",
                 list_item_backups: "show saved previous versions revisions",
                 get_item_backup: "view read saved previous version revision"
             ]
         ],
         manage_app_driver_code: [
-            description: "Install, update, and delete hub apps and drivers. All operations modify hub code and require Hub Admin Write.",
-            tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup"],
+            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Hub Admin Write. Read-only counterparts (get_app_source, get_driver_source, get_library_source, list_*) live in the manage_apps_drivers gateway.",
+            tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup", "install_library", "update_library_code", "delete_library"],
             summaries: [
                 install_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
                 install_driver: "Install new driver. PREFER curl-upload + sourceFile. For 1: source|sourceFile. For >1: USE BULK (single round-trip: installs=[{source|sourceFile},...]). confirm=true",
@@ -833,7 +835,10 @@ def getGatewayConfig() {
                 update_driver_code: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile},...]). PREFER sourceFile + curl-upload over inline. confirm=true",
                 delete_app: "Permanently delete an app (DESTRUCTIVE). Args: appId, confirm=true",
                 delete_driver: "Permanently delete a driver (DESTRUCTIVE). Args: driverId, confirm=true",
-                restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true"
+                restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true",
+                install_library: "Install new Groovy library (#include namespace.Name). PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
+                update_library_code: "Modify existing library code. PREFER curl-upload + sourceFile. Args: libraryId, source|sourceFile|resave, confirm=true",
+                delete_library: "Permanently delete a library (DESTRUCTIVE). Args: libraryId, confirm=true"
             ],
             searchHints: [
                 install_app: "add new application integration groovy",
@@ -842,7 +847,10 @@ def getGatewayConfig() {
                 update_driver_code: "modify change edit device handler type groovy push deploy",
                 delete_app: "remove uninstall application integration",
                 delete_driver: "remove uninstall device handler type",
-                restore_item_backup: "rollback revert undo previous version"
+                restore_item_backup: "rollback revert undo previous version",
+                install_library: "add new shared groovy library include namespace",
+                update_library_code: "modify change edit groovy library shared code push deploy",
+                delete_library: "remove uninstall groovy library shared"
             ]
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
@@ -1974,7 +1982,7 @@ Requires Hub Admin Write.""",
 PREFERRED workflow (avoids reading source into agent transcript):
   1) Upload bytes to File Manager via local CLI tool that bypasses agent context:
        curl -F 'uploadFile=@./app.groovy' -F 'folder=/' 'http://<hub>/hub/fileManager/upload'
-       (Add '-u admin:PASS' if Hub Security is enabled. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
+       (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
   2) install_app(sourceFile: 'app.groovy', confirm: true)
 
 Inline 'source' is acceptable for stub-size snippets only. The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
@@ -1984,7 +1992,7 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
                 type: "object",
                 properties: [
                     source: [type: "string", description: "Inline Groovy source. ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install/redeploy. For non-trivial apps, prefer sourceFile (recipe in tool description)."],
-                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (add '-u admin:PASS' if Hub Security is enabled; PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
@@ -1997,7 +2005,7 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
 PREFERRED workflow (avoids reading source into agent transcript):
   1) Upload bytes to File Manager via local CLI tool that bypasses agent context:
        curl -F 'uploadFile=@./driver.groovy' -F 'folder=/' 'http://<hub>/hub/fileManager/upload'
-       (Add '-u admin:PASS' if Hub Security is enabled. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
+       (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
   2) install_driver(sourceFile: 'driver.groovy', confirm: true)
 
 Inline 'source' is acceptable for stub-size snippets only. The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
@@ -2012,7 +2020,7 @@ Verifies install succeeded: if the hub accepted the request but the driver faile
                 type: "object",
                 properties: [
                     source: [type: "string", description: "Inline Groovy source (single-driver mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install/redeploy. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
-                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (add '-u admin:PASS' if Hub Security is enabled; PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
                     installs: [
                         type: "array",
                         description: "BULK MODE -- USE THIS WHEN INSTALLING >1 DRIVER (single round-trip vs N separate calls; same arg structure, just an array). Each entry: {source|sourceFile}. Cannot mix with single-driver fields (source/sourceFile). Continue-on-error: failures on individual items don't abort the rest. Practical limit ~10-20 drivers/call. Authorization is controlled by top-level 'confirm' only. PREFER each item's sourceFile (after CLI upload per recipe in tool description) over inline source.",
@@ -2034,7 +2042,7 @@ Verifies install succeeded: if the hub accepted the request but the driver faile
             description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
 
 PREFERRED workflow for any iterative app dev (avoids reading source into agent transcript):
-  1) Upload bytes via local CLI: 'curl -F uploadFile=@./app.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (add '-u admin:PASS' if Hub Security is enabled; PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
+  1) Upload bytes via local CLI: 'curl -F uploadFile=@./app.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
   2) update_app_code(appId: <id>, sourceFile: 'app.groovy', confirm: true)
 
 Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
@@ -2044,7 +2052,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                 properties: [
                     appId: [type: "string", description: "The app ID to update"],
                     source: [type: "string", description: "Inline Groovy source. ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial apps, prefer sourceFile (recipe in tool description)."],
-                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (add '-u admin:PASS' if Hub Security is enabled; PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
                     resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub -- no source touches the agent transcript."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
@@ -2056,7 +2064,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
             description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
 
 PREFERRED workflow for any iterative driver dev (avoids reading source into agent transcript):
-  1) Upload bytes via local CLI: 'curl -F uploadFile=@./driver.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (add '-u admin:PASS' if Hub Security is enabled; PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
+  1) Upload bytes via local CLI: 'curl -F uploadFile=@./driver.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
   2) update_driver_code(driverId: <id>, sourceFile: 'driver.groovy', confirm: true)
 
 For >1 driver: USE BULK mode (single round-trip, not N): updates=[{driverId, sourceFile}, ...]. Each driver's bytes still uploaded once via CLI per the same recipe -- bulk-mode references them by filename.
@@ -2071,7 +2079,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                 properties: [
                     driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array for bulk."],
                     source: [type: "string", description: "Inline Groovy source (single-driver mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
-                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (add '-u admin:PASS' if Hub Security is enabled; PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
                     resave: [type: "boolean", description: "Re-save the current source code without changes (single-driver mode). Runs entirely on-hub -- no source touches the agent transcript."],
                     updates: [
                         type: "array",
@@ -2121,6 +2129,88 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
             ]
         ],
 
+        // Hub Admin Library Management Tools
+        [
+            name: "get_library_source",
+            description: "Get library Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_library_code sourceFile mode. Requires Hub Admin Read.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    libraryId: [type: "string", description: "The library ID (from install_library response, or check Hubitat web UI > FOR DEVELOPERS > Libraries code for installed library IDs)"],
+                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
+                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
+                ],
+                required: ["libraryId"]
+            ]
+        ],
+        [
+            name: "install_library",
+            description: """⚠️ Install new Groovy library code. Libraries are shared code modules included by drivers/apps via the #include namespace.LibraryName directive. Show code to user and get confirmation first.
+
+PREFERRED workflow (avoids reading source into agent transcript):
+  1) Upload bytes to File Manager via a local CLI tool that bypasses agent context:
+       curl -F "uploadFile=@library.groovy" -F "folder=/" "http://<HUB_IP>/hub/fileManager/upload"
+       (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
+  2) install_library(sourceFile: 'library.groovy', confirm: true)
+
+Inline 'source' is acceptable for stub-size snippets only.
+The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
+
+Library source must include a library() definition block with these 4 required fields: name, namespace, author, description. The `category` field is optional. Hubitat rejects missing required fields with errors like "author cannot be empty in library section" or "description,author cannot be empty in library section". NOTE: the hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library. install_library returns verified:true when the library record exists in the hub catalog; that does NOT guarantee the Groovy compiles. Requires Hub Admin Write + confirm + backup <24h. Returns new libraryId.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    source: [type: "string", description: "ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install. For non-trivial libraries, prefer sourceFile (curl recipe in tool description). Must include a library() definition block with these 4 required fields: name, namespace, author, description (category is optional). Install fails with 'author cannot be empty in library section' (or similar for the missing field) if any required field is absent."],
+                    sourceFile: [type: "string", description: "PREFERRED: File Manager filename after curl upload (e.g., 'my-library.groovy'). Upload first: curl -F 'uploadFile=@mylib.groovy' -F 'folder=/' http://<HUB_IP>/hub/fileManager/upload (Hub Security: run 'curl -c cookies.txt -d username=USER&password=PASS http://<HUB_IP>/login' first, then add '-b cookies.txt' to the upload; no auth needed without Hub Security)"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "update_library_code",
+            description: """⚠️ CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.
+
+PREFERRED workflow for any iterative library dev (avoids reading source into agent transcript):
+  1) Upload bytes to File Manager via a local CLI tool that bypasses agent context:
+       curl -F "uploadFile=@library.groovy" -F "folder=/" "http://<HUB_IP>/hub/fileManager/upload"
+       (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
+  2) update_library_code(libraryId: '<id>', sourceFile: 'library.groovy', confirm: true)
+
+Inline 'source' is acceptable for stub-size snippets only.
+The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
+
+Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
+Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    libraryId: [type: "string", description: "The library ID to update"],
+                    source: [type: "string", description: "ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial libraries, prefer sourceFile (curl recipe in tool description)."],
+                    sourceFile: [type: "string", description: "PREFERRED: File Manager filename after curl upload (e.g., 'mcp-source-library-123.groovy'). Upload first: curl -F 'uploadFile=@mylib.groovy' -F 'folder=/' http://<HUB_IP>/hub/fileManager/upload (Hub Security: run 'curl -c cookies.txt -d username=USER&password=PASS http://<HUB_IP>/login' first, then add '-b cookies.txt' to the upload; no auth needed without Hub Security)"],
+                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub -- no cloud round-trip needed."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["libraryId", "confirm"]
+            ]
+        ],
+        [
+            name: "delete_library",
+            description: """⚠️ DESTRUCTIVE: Permanently delete a library. Auto-backs up source before deletion.
+
+Ensure no drivers or apps include this library before deleting (#include namespace.LibraryName references). Deleting a library used by installed code causes compilation errors.
+
+Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    libraryId: [type: "string", description: "The library ID to delete"],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["libraryId", "confirm"]
+            ]
+        ],
+
         // ==================== Item Backup Tools ====================
         [
             name: "list_item_backups",
@@ -2137,18 +2227,18 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
             inputSchema: [
                 type: "object",
                 properties: [
-                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123' or 'driver_456')"]
+                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
                 ],
                 required: ["backupKey"]
             ]
         ],
         [
             name: "restore_item_backup",
-            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use install_app/install_driver instead. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use install_app/install_driver/install_library instead. Library backups return a clear error directing you to update_library_code. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123' or 'driver_456')"],
+                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123', 'driver_456', or 'library_42')"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the restore."]
                 ],
                 required: ["backupKey", "confirm"]
@@ -2967,6 +3057,12 @@ def executeTool(toolName, args) {
         case "update_driver_code": return toolUpdateDriverCode(args)
         case "delete_app": return toolDeleteApp(args)
         case "delete_driver": return toolDeleteDriver(args)
+
+        // Hub Admin Library Management
+        case "get_library_source": return toolGetLibrarySource(args)
+        case "install_library": return toolInstallLibrary(args)
+        case "update_library_code": return toolUpdateLibraryCode(args)
+        case "delete_library": return toolDeleteLibrary(args)
 
         // Item Backup Tools
         case "list_item_backups": return toolListItemBackups()
@@ -6377,6 +6473,57 @@ def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetr
 }
 
 /**
+ * POST to the hub's internal API with a JSON body. Used by library management endpoints
+ * which accept Content-Type: application/json (unlike app/driver endpoints that use form-encoded).
+ * Returns a parsed Map/List from the JSON response body, or null on empty response.
+ */
+def hubInternalPostJson(String path, String jsonBody, boolean isRetry = false) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: "http://127.0.0.1:8080",
+        path: path,
+        requestContentType: "application/json",
+        textParser: true, // Prevent sandbox from auto-parsing JSON response; read raw text then parse ourselves
+        headers: [
+            "Connection": "keep-alive"
+        ],
+        body: jsonBody,
+        timeout: 420,
+        ignoreSSLIssues: true
+    ]
+    if (cookie) {
+        params.headers["Cookie"] = cookie
+    }
+
+    def result = null
+    try {
+        httpPost(params) { resp ->
+            def responseData = resp.data
+            try {
+                responseData = responseData.text
+            } catch (Exception readErr) {
+                responseData = responseData?.toString()
+            }
+            if (responseData) {
+                try {
+                    result = new groovy.json.JsonSlurper().parseText(responseData)
+                } catch (Exception parseErr) {
+                    mcpLog("warn", "hub-admin", "hubInternalPostJson response not JSON: ${responseData?.take(200)}")
+                    result = null
+                }
+            }
+        }
+    } catch (Exception e) {
+        if (shouldRetryWithFreshCookie(e, isRetry)) {
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST-json ${path}")
+            return hubInternalPostJson(path, jsonBody, true)
+        }
+        throw e
+    }
+    return result
+}
+
+/**
  * Check if Hub Admin Read access is enabled. Throws if not.
  */
 def requireHubAdminRead() {
@@ -6498,10 +6645,10 @@ def toolListItemBackups() {
         return [
             backups: [],
             total: 0,
-            message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, delete_app, or delete_driver.",
+            message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, or delete_library.",
             maxBackups: 20,
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
-            howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore. For deleted items, use 'install_app' or 'install_driver' with the backup source."
+            howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore (apps/drivers). For deleted apps or drivers, use 'install_app' or 'install_driver' with the backup source. For deleted libraries, use 'install_library' with the backup source."
         ]
     }
 
@@ -6536,8 +6683,8 @@ def toolListItemBackups() {
         total: backupList.size(),
         maxBackups: 20,
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
-        howToRestore: "Use 'restore_item_backup' with a backupKey to restore via MCP. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code manually.",
-        manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code) > select the app/driver > paste the source > click Save."
+        howToRestore: "Use 'restore_item_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'update_library_code' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
+        manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
 }
 
@@ -6547,7 +6694,7 @@ def toolListItemBackups() {
  * Does not require Hub Admin Read/Write.
  */
 def toolGetItemBackup(args) {
-    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123' or 'driver_456')")
+    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
 
     def manifest = atomicState.itemBackupManifest ?: [:]
     def entry = manifest[args.backupKey]
@@ -6600,9 +6747,13 @@ def toolGetItemBackup(args) {
         result.manualDownload = "Go to http://<HUB_IP>/local/${entry.fileName} in your browser, or find it in Hubitat > Settings > File Manager."
     }
 
-    result.howToRestore = (entry.type == "app")
-        ? "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
-        : "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Drivers Code > driver ID ${entry.id} > paste source > Save."
+    if (entry.type == "app") {
+        result.howToRestore = "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
+    } else if (entry.type == "library") {
+        result.howToRestore = "Library backups cannot be restored via restore_item_backup. To restore: call 'update_library_code' with libraryId='${entry.id}' and sourceFile='${entry.fileName}' (confirm=true). To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > FOR DEVELOPERS > Libraries code > library ID ${entry.id} > paste source > Save."
+    } else {
+        result.howToRestore = "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Drivers Code > driver ID ${entry.id} > paste source > Save."
+    }
 
     return result
 }
@@ -6616,7 +6767,7 @@ def toolGetItemBackup(args) {
 def toolRestoreItemBackup(args) {
     requireHubAdminWrite(args.confirm)
 
-    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'rm-rule_<id>_<ts>')")
+    if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
     def manifest = atomicState.itemBackupManifest ?: [:]
     def entry = manifest[args.backupKey]
@@ -6628,6 +6779,20 @@ def toolRestoreItemBackup(args) {
             success: false,
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
+        ]
+    }
+
+    // Library backups cannot be restored via the app/driver ajax/update endpoint.
+    // Direct the caller to use install_library or update_library_code with the backup source.
+    if (entry.type == "library") {
+        return [
+            success: false,
+            error: "Library backups cannot be restored via restore_item_backup -- use install_library or update_library_code with the backup source from '${entry.fileName}' instead.",
+            backupKey: args.backupKey,
+            type: "library",
+            backupFile: entry.fileName,
+            directDownload: "http://<HUB_IP>/local/${entry.fileName}",
+            hint: "Download the backup from File Manager or use get_item_backup to retrieve the source, then call update_library_code with sourceFile mode."
         ]
     }
 
@@ -9874,6 +10039,523 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "${type.capitalize()} deletion failed: ${e.message}")
         return [success: false, error: "${type.capitalize()} deletion failed: ${e.message}"]
+    }
+}
+
+// ==================== HUB ADMIN LIBRARY MANAGEMENT ====================
+
+/**
+ * Backs up a library's current source to File Manager, recording metadata in
+ * atomicState.itemBackupManifest. Throws on empty or unparseable hub response,
+ * matching backupItemSource semantics for apps and drivers. Respects the 1-hour
+ * dedup window to preserve the pre-edit baseline through rapid successive updates.
+ * Returns the manifest entry on success.
+ */
+private Map backupLibrarySource(String libraryId) {
+    def manifest = atomicState.itemBackupManifest ?: [:]
+    def key = "library_${libraryId}"
+    def existing = manifest[key]
+
+    if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
+        mcpLog("debug", "hub-admin", "Library backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
+        return existing
+    }
+
+    def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
+    if (!responseText) {
+        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: empty response from hub")
+    }
+
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception parseEx) {
+        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: failed to parse hub response: ${parseEx.message}")
+    }
+
+    if (!(parsed instanceof List) || parsed.isEmpty()) {
+        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: library not found")
+    }
+
+    def libData = parsed[0]
+    def backupSource = libData.source ?: ""
+    def fileName = "mcp-backup-library-${libraryId}.groovy"
+    try {
+        uploadHubFile(fileName, backupSource.getBytes("UTF-8"))
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to save library backup file '${fileName}': ${e.message}")
+        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: file upload failed -- ${e.message}")
+    }
+
+    def entry = [
+        type: "library",
+        id: libraryId.toString(),
+        fileName: fileName,
+        version: libData.version,
+        timestamp: now(),
+        sourceLength: backupSource.length()
+    ]
+    manifest[key] = entry
+
+    if (manifest.size() > 20) {
+        def sortedKeys = manifest.entrySet().sort { a, b -> a.value.timestamp <=> b.value.timestamp }*.key
+        def toRemove = sortedKeys.take(manifest.size() - 20)
+        toRemove.each { k ->
+            def e2 = manifest[k]
+            if (e2?.fileName) {
+                try { deleteHubFile(e2.fileName) } catch (Exception ex) { mcpLog("warn", "hub-admin", "Could not delete pruned library backup file '${e2.fileName}': ${ex.message}") }
+            }
+            manifest.remove(k)
+        }
+    }
+
+    atomicState.itemBackupManifest = manifest
+    mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
+    return entry
+}
+
+/**
+ * Get library Groovy source. Supports chunked reading (offset/length).
+ * Large files are auto-saved to File Manager for use with update_library_code sourceFile mode.
+ * Hub endpoint: GET /library/list/single/data/<id> returns [{id, source, version, ...}]
+ */
+def toolGetLibrarySource(args) {
+    requireHubAdminRead()
+    def libraryId = args.libraryId
+    if (!libraryId) throw new IllegalArgumentException("libraryId is required")
+    if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
+
+    def maxChunkSize = 64000
+    def requestedOffset = args.offset ? args.offset as int : 0
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+
+    try {
+        def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
+        if (!responseText) return [success: false, error: "Empty response from hub for library ${libraryId}"]
+
+        def parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        } catch (Exception parseErr) {
+            return [success: false, error: "Failed to parse library response: ${parseErr.message}"]
+        }
+
+        if (!(parsed instanceof List) || parsed.isEmpty()) {
+            return [success: false, error: "Library ${libraryId} not found"]
+        }
+
+        def libraryData = parsed[0]
+        def fullSource = libraryData?.source ?: ""
+        def totalLength = fullSource.length()
+
+        // For large sources, save full copy to File Manager so update can use sourceFile
+        def savedToFile = null
+        def savedToFileError = null
+        if (totalLength > maxChunkSize) {
+            def sourceFileName = "mcp-source-library-${libraryId}.groovy"
+            try {
+                uploadHubFile(sourceFileName, fullSource.getBytes("UTF-8"))
+                savedToFile = sourceFileName
+                mcpLog("info", "hub-admin", "Saved full library ID ${libraryId} source to File Manager: ${sourceFileName} (${totalLength} chars)")
+            } catch (Exception saveErr) {
+                savedToFileError = saveErr.message ?: saveErr.toString()
+                mcpLog("warn", "hub-admin", "Could not save library source to File Manager: ${savedToFileError}")
+            }
+        }
+
+        // Extract the requested chunk
+        def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
+        def chunk = (requestedOffset < totalLength) ? fullSource.substring(requestedOffset, endIndex) : ""
+        def hasMore = endIndex < totalLength
+
+        mcpLog("info", "hub-admin", "Retrieved library ID ${libraryId} source: ${totalLength} chars total, returning offset ${requestedOffset}..${endIndex}${hasMore ? ' (more available)' : ''}")
+
+        def result = [
+            success: true,
+            libraryId: libraryId,
+            source: chunk,
+            version: libraryData?.version,
+            name: libraryData?.name,
+            namespace: libraryData?.namespace,
+            totalLength: totalLength,
+            offset: requestedOffset,
+            chunkLength: chunk.length(),
+            hasMore: hasMore
+        ]
+        if (hasMore) {
+            result.nextOffset = endIndex
+            result.remainingChars = totalLength - endIndex
+            result.hint = "Call again with offset: ${endIndex} to get the next chunk."
+        }
+        if (savedToFile) {
+            result.sourceFile = savedToFile
+            result.sourceFileHint = "Full source saved to File Manager. Use update_library_code with sourceFile: '${savedToFile}' to update without cloud size limits."
+        }
+        if (savedToFileError) {
+            result.sourceFileError = "Failed to auto-save full source to File Manager: ${savedToFileError}. Use chunked reads (offset/length) to retrieve the full source."
+        }
+        return result
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Failed to get library source: ${e.message}")
+        return [success: false, error: "Failed to get library source: ${e.message}"]
+    }
+}
+
+/**
+ * Install a new Groovy library from inline source or a File Manager file.
+ * Hub endpoint: POST /library/saveOrUpdateJson with {id: null, source, version: null}
+ * Returns: {success, message, id, version}
+ */
+def toolInstallLibrary(args) {
+    requireHubAdminWrite(args.confirm)
+
+    // Resolve source: sourceFile takes precedence over inline source
+    def sourceCode = null
+    def sourceMode = null
+
+    if (args.sourceFile && args.source) {
+        throw new IllegalArgumentException("Provide either 'source' or 'sourceFile', not both")
+    }
+    if (args.sourceFile) {
+        sourceMode = "sourceFile"
+        mcpLog("info", "hub-admin", "Reading library source from File Manager: ${args.sourceFile}")
+        def bytes = downloadHubFile(args.sourceFile)
+        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        sourceCode = new String(bytes, "UTF-8")
+        mcpLog("info", "hub-admin", "Read ${sourceCode.length()} chars from ${args.sourceFile}")
+    } else if (args.source) {
+        sourceMode = "source"
+        sourceCode = args.source
+    } else {
+        throw new IllegalArgumentException("One of 'source' or 'sourceFile' is required")
+    }
+
+    mcpLog("info", "hub-admin", "Installing new library (mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
+    try {
+        def body = groovy.json.JsonOutput.toJson([id: null, source: sourceCode, version: null])
+        def result = hubInternalPostJson("/library/saveOrUpdateJson", body)
+
+        def newLibraryId = result?.id?.toString()
+        def newVersion = result?.version
+
+        if (result?.success == false) {
+            def msg = result?.message ?: "Hub returned failure"
+            mcpLog("warn", "hub-admin", "Library install failed: ${msg}")
+            return [
+                success: false,
+                error: "Library installation failed: ${msg}",
+                note: "Check that the Groovy source includes a valid library() definition block and has no syntax errors.",
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        }
+
+        // Fail-closed when hub gives us nothing concrete to confirm the install:
+        // either no response at all, or a response without an id. The library
+        // may or may not have persisted -- the agent must check the UI rather
+        // than retry blindly (which could create a duplicate at a fresh id).
+        if (result == null || !newLibraryId) {
+            def detail = result == null ? "empty/null response" : "response missing id field"
+            mcpLog("warn", "hub-admin", "Library install: hub returned ${detail} -- cannot confirm install")
+            return [
+                success: false,
+                error: "Library install unverified: hub returned ${detail}",
+                note: "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) to confirm whether the library was actually persisted. Do NOT retry without checking first -- a duplicate library may result.",
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        }
+
+        mcpLog("info", "hub-admin", "Library installed successfully (ID: ${newLibraryId}, version: ${newVersion})")
+
+        // Post-install verification: confirm library persists in the hub list.
+        // Mirrors toolInstallItemSingle semantics: empty/unparseable verify response or a hub
+        // compile-error signal both return success=false (with libraryId populated so the
+        // caller can inspect via get_library_source). Transient fetch failures return
+        // success=true with verified=false + verifyError.
+        def verifyText = null
+        def verifyError = null
+        try {
+            verifyText = hubInternalGet("/hub2/userLibraries")
+        } catch (Exception verifyErr) {
+            verifyError = verifyErr.message ?: verifyErr.toString()
+            mcpLog("warn", "hub-admin", "Library post-install verification fetch failed for ID ${newLibraryId}: ${verifyError}")
+        }
+
+        if (verifyError == null) {
+            if (!verifyText) {
+                mcpLog("warn", "hub-admin", "Library ID ${newLibraryId}: verify endpoint returned empty body -- cannot confirm install")
+                return [
+                    success: false,
+                    error: "Library install unverified: hub returned empty verify body for ID ${newLibraryId}",
+                    libraryId: newLibraryId,
+                    note: "Hub created a library slot but the verify fetch returned no content. Use get_library_source with ID ${newLibraryId} to confirm whether the library persisted. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
+                    lastBackup: formatTimestamp(state.lastBackupTimestamp)
+                ]
+            }
+            def libraries
+            try {
+                libraries = new groovy.json.JsonSlurper().parseText(verifyText)
+            } catch (Exception parseErr) {
+                mcpLog("warn", "hub-admin", "Library ID ${newLibraryId}: verify body unparseable: ${parseErr.message}")
+                return [
+                    success: false,
+                    error: "Library install unverified: hub returned unparseable verify body for ID ${newLibraryId}",
+                    libraryId: newLibraryId,
+                    note: "Hub created a library slot but the verify response was not valid JSON. Use get_library_source with ID ${newLibraryId} to confirm whether the library persisted. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
+                    lastBackup: formatTimestamp(state.lastBackupTimestamp)
+                ]
+            }
+            def found = (libraries instanceof List) && libraries.any { it.id?.toString() == newLibraryId }
+            if (!found) {
+                mcpLog("warn", "hub-admin", "Library ID ${newLibraryId} not found in post-install library list")
+                return [
+                    success: false,
+                    error: "Library install unverified: ID ${newLibraryId} not found in post-install library list",
+                    libraryId: newLibraryId,
+                    note: "Hub created a library slot but the verify list did not include it. Use get_library_source with ID ${newLibraryId} to confirm. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
+                    lastBackup: formatTimestamp(state.lastBackupTimestamp)
+                ]
+            }
+        }
+
+        mcpLog("info", "hub-admin", "Library installed (ID: ${newLibraryId}, mode: ${sourceMode}, verified: ${verifyError == null})")
+        def installResult = [
+            success: true,
+            message: "Library installed successfully",
+            libraryId: newLibraryId,
+            version: newVersion,
+            sourceMode: sourceMode,
+            sourceLength: sourceCode.length(),
+            verified: (verifyError == null),
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+        if (verifyError != null) installResult.verifyError = "${verifyError} -- use get_library_source with ID ${newLibraryId} to confirm."
+        return installResult
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Library installation failed: ${e.message}")
+        return [
+            success: false,
+            error: "Library installation failed: ${e.message}",
+            note: "Check that the Groovy source includes a valid library() definition block and has no syntax errors."
+        ]
+    }
+}
+
+/**
+ * Update an existing library's source code.
+ * Hub endpoint: POST /library/saveOrUpdateJson with {id, source, version}
+ * Three modes: source (direct), sourceFile (from File Manager), resave (re-save current).
+ * Backs up current source before modifying.
+ */
+def toolUpdateLibraryCode(args) {
+    requireHubAdminWrite(args.confirm)
+    def libraryId = args.libraryId
+    if (!libraryId) throw new IllegalArgumentException("libraryId is required")
+    if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
+
+    // Resolve source from one of three modes: source, sourceFile, or resave
+    def sourceCode = null
+    def sourceMode = null
+    def freshVersion = null
+
+    if (args.resave) {
+        sourceMode = "resave"
+        mcpLog("info", "hub-admin", "Resave mode: fetching current library ID ${libraryId} source locally")
+        def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
+        if (!responseText) throw new IllegalArgumentException("Could not fetch current source for library ID ${libraryId}")
+        def parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        } catch (Exception parseEx) {
+            throw new IllegalArgumentException("Could not parse library source response for ID ${libraryId}: ${parseEx.message}")
+        }
+        if (!(parsed instanceof List) || parsed.isEmpty()) {
+            throw new IllegalArgumentException("Library ID ${libraryId} not found")
+        }
+        def lib = parsed[0]
+        sourceCode = lib.source
+        freshVersion = lib.version
+        if (!sourceCode) throw new IllegalArgumentException("Library ID ${libraryId} has no source to resave")
+    } else if (args.sourceFile) {
+        sourceMode = "sourceFile"
+        mcpLog("info", "hub-admin", "Reading library source from File Manager: ${args.sourceFile}")
+        def bytes = downloadHubFile(args.sourceFile)
+        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        sourceCode = new String(bytes, "UTF-8")
+        mcpLog("info", "hub-admin", "Read ${sourceCode.length()} chars from ${args.sourceFile}")
+    } else if (args.source) {
+        sourceMode = "source"
+        sourceCode = args.source
+    } else {
+        throw new IllegalArgumentException("One of 'source', 'sourceFile', or 'resave' is required")
+    }
+
+    // Check 1-hour dedup BEFORE any backup-related fetch -- preserves the original
+    // pre-edit baseline through rapid edits AND avoids an unnecessary network round-trip.
+    // Fail-closed: backup-fetch failure (when needed) aborts the update, matching
+    // toolUpdateItemCodeInner which calls backupItemSource() without try/catch.
+    def backupFileName = null
+    def existingEntry = (atomicState.itemBackupManifest ?: [:])["library_${libraryId}"]
+    def skipBackup = (existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
+
+    def versionFetchError = null
+    if (skipBackup) {
+        mcpLog("debug", "hub-admin", "Library backup for library_${libraryId} already exists (${formatTimestamp(existingEntry.timestamp)}), skipping")
+        backupFileName = existingEntry.fileName
+        // Still need fresh version for optimistic locking when the source-resolution path
+        // didn't provide it (i.e., source/sourceFile modes -- resave already set it).
+        if (freshVersion == null) {
+            try {
+                def versionText = hubInternalGet("/library/list/single/data/${libraryId}")
+                if (versionText) {
+                    def versionParsed = new groovy.json.JsonSlurper().parseText(versionText)
+                    if (versionParsed instanceof List && !versionParsed.isEmpty()) {
+                        freshVersion = versionParsed[0]?.version
+                    }
+                }
+            } catch (Exception vErr) {
+                versionFetchError = vErr.message ?: vErr.toString()
+                mcpLog("warn", "hub-admin", "Could not fetch fresh version for library ID ${libraryId}, falling back to backup version: ${versionFetchError}")
+            }
+            // Fall back to cached backup version (matching toolUpdateItemCodeInner fallback)
+            if (freshVersion == null) freshVersion = existingEntry.version
+        }
+    } else {
+        // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
+        // Fail-closed: any throw propagates up and aborts the update -- same contract as
+        // toolUpdateItemCodeInner calling backupItemSource() without try/catch.
+        def backupEntry = backupLibrarySource(libraryId.toString())
+        backupFileName = backupEntry.fileName
+        if (freshVersion == null) freshVersion = backupEntry.version
+    }
+
+    if (freshVersion == null) {
+        // This path is only reachable when skipBackup=true (dedup window), freshVersion was null
+        // after the source-resolution step, AND the version-refetch failed AND existingEntry.version
+        // was also null. Surface the actual failure so the agent can diagnose.
+        throw new IllegalArgumentException("Could not determine current version for library ID ${libraryId} -- version fetch failed (${versionFetchError ?: 'unknown'}) and cached backup has no version. Check that the library exists.")
+    }
+    def currentVersion = freshVersion
+
+    mcpLog("info", "hub-admin", "Updating library ID: ${libraryId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
+    try {
+        def body = groovy.json.JsonOutput.toJson([id: libraryId as Integer, source: sourceCode, version: currentVersion as Integer])
+        def result = hubInternalPostJson("/library/saveOrUpdateJson", body)
+
+        if (result?.success == false) {
+            def msg = result?.message ?: "Hub returned failure"
+            mcpLog("warn", "hub-admin", "Library update failed: ${msg}")
+            return [
+                success: false,
+                error: "Library update failed: ${msg}",
+                libraryId: libraryId,
+                note: "Check the Groovy source code for syntax errors or compilation issues."
+            ]
+        }
+
+        mcpLog("info", "hub-admin", "Library ID ${libraryId} updated successfully (mode: ${sourceMode})")
+        def successResult = [
+            success: true,
+            message: "Library code updated successfully",
+            libraryId: libraryId,
+            previousVersion: currentVersion,
+            newVersion: result?.version,
+            sourceMode: sourceMode,
+            sourceLength: sourceCode.length(),
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+        if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub -- no cloud round-trip."
+        if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' -- no cloud size limits."
+        return successResult
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Library update failed: ${e.message}")
+        return [success: false, error: "Library update failed: ${e.message}"]
+    }
+}
+
+/**
+ * Delete a library from the hub.
+ * Backs up source to File Manager before deletion via backupLibrarySource().
+ * Hub endpoint: GET /library/edit/deleteJson/<id>
+ * Returns: {success, message: null}
+ */
+def toolDeleteLibrary(args) {
+    requireHubAdminWrite(args.confirm)
+    def libraryId = args.libraryId
+    if (!libraryId) throw new IllegalArgumentException("libraryId is required")
+    if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
+
+    // Initialize to false -- assume backup failed; only flip to true on confirmed completion so the success message and backupFile field stay consistent on every exit path.
+    def backupSucceeded = false
+    def backupFileName = null
+    try {
+        def backupEntry = backupLibrarySource(libraryId.toString())
+        backupFileName = backupEntry.fileName
+        backupSucceeded = true
+    } catch (Exception backupErr) {
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for library ${libraryId}: ${backupErr.message} -- proceeding with delete")
+    }
+
+    mcpLog("warn", "hub-admin", "Deleting library ID: ${libraryId}")
+    try {
+        def responseText = hubInternalGet("/library/edit/deleteJson/${libraryId}")
+        mcpLog("debug", "hub-admin", "Delete library ${libraryId} response: ${responseText?.take(200)}")
+
+        // Fail-closed: only treat the delete as successful when the hub returns parseable
+        // JSON with an explicit success==true. Substring fallback is unsafe -- hub rejection
+        // bodies like "Library is in use by..." don't contain the word "error" and would
+        // produce a false success.
+        def success = false
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                // Hub returns {success: true, message: null} on success
+                if (parsed?.success == true) {
+                    success = true
+                } else {
+                    def hubMsg = parsed?.message ?: parsed?.error ?: "Hub returned success=false"
+                    mcpLog("warn", "hub-admin", "Delete library ${libraryId}: hub indicated failure: ${hubMsg}")
+                    return [
+                        success: false,
+                        error: hubMsg,
+                        libraryId: libraryId,
+                        note: "Hub rejected the delete request. If the library is in use, remove all #include references from apps and drivers before deleting."
+                    ]
+                }
+            } catch (Exception parseErr) {
+                mcpLog("warn", "hub-admin", "Delete library ${libraryId}: response not parseable as JSON -- treating as failure. Response: ${responseText?.take(200)}")
+                return [
+                    success: false,
+                    error: "Delete response was not valid JSON -- cannot confirm deletion. Response: ${responseText?.take(200)}",
+                    libraryId: libraryId,
+                    note: "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) to verify whether the library was deleted."
+                ]
+            }
+        }
+
+        if (success) {
+            mcpLog("info", "hub-admin", "Library ID ${libraryId} deleted successfully")
+            def backupEntry = (atomicState.itemBackupManifest ?: [:])?.get("library_${libraryId}".toString())
+            def result = [
+                success: true,
+                message: backupSucceeded ? "Library deleted successfully. Source code backed up to File Manager." : "Library deleted successfully. WARNING: Pre-delete backup failed -- source code may not be recoverable.",
+                libraryId: libraryId,
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                backupFile: backupEntry?.fileName ?: backupFileName,
+                restoreHint: backupEntry ? "To restore: use 'install_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+            ]
+            if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
+            return result
+        } else {
+            return [
+                success: false,
+                error: "Delete may have failed - check the Hubitat web UI (FOR DEVELOPERS > Libraries code) to verify",
+                libraryId: libraryId,
+                response: responseText?.take(500)
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Library deletion failed: ${e.message}")
+        return [success: false, error: "Library deletion failed: ${e.message}"]
     }
 }
 
@@ -19502,7 +20184,7 @@ All Hub Admin Write tools require these steps:
 
 **delete_room** - Devices become unassigned (not deleted). List affected devices first.
 
-**delete_app/delete_driver** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). Auto-backs up before deletion.''',
+**delete_app/delete_driver/delete_library** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.''',
 
         virtual_devices: '''## Virtual Device Types
 
@@ -19602,7 +20284,7 @@ MCP-managed virtual devices:
 - Only write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)
-- Created when using update_app_code, update_driver_code, delete_app, delete_driver
+- Created when using update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, delete_library
 - Stored in File Manager as .groovy files
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned

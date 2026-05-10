@@ -1440,4 +1440,22 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.message.contains('preserved')
         atomicStateMap.itemBackupManifest.containsKey('driver_88')
     }
+
+    def "restore_item_backup returns clear error for library type and directs user to update_library_code"() {
+        given:
+        enableHubAdminWrite()
+        atomicStateMap.itemBackupManifest = [
+            'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
+                           version: 3, timestamp: 1L, sourceLength: 200]
+        ]
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'library_42', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('use install_library or update_library_code')
+        result.backupFile == 'mcp-backup-library-42.groovy'
+        result.type == 'library'
+    }
 }

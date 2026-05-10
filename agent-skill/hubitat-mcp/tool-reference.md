@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 90 MCP tools. The server exposes **35 items on `tools/list`**: 23 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 94 MCP tools. The server exposes **35 items on `tools/list`**: 23 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -57,7 +57,7 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 90 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 94 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -79,16 +79,20 @@ Rule administration: delete, test, export, import, and clone rules.
 
 > **Built-in rule redirect:** `custom_get_rule`, `custom_export_rule`, `custom_update_rule`, `custom_delete_rule`, `custom_test_rule`, and `custom_clone_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `manage_installed_apps -> get_app_config(appId=<id>)` (read) or, for write and delete verbs, the appropriate `manage_native_rules_and_apps` CRUD tool. The test verb hint includes `run_rm_rule` only for Rule Machine rules; other built-in rule-likes receive `get_app_config` for inspection because `run_rm_rule` is RM-only. This redirect fires only when Built-in App Tools are enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
 
-### manage_hub_variables (4 tools)
+### manage_hub_variables (8 tools)
 
 Manage hub connector and rule engine variables.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `list_variables` | List all hub connector and rule engine variables. | None |
-| `get_variable` | Get a specific variable value. | None |
-| `set_variable` | Set a variable value (creates if doesn't exist). | None |
-| `delete_variable` | Permanently delete a rule engine variable (DESTRUCTIVE — no undo). Connector-namespace deletion not yet supported via MCP. | Hub Admin Write + recent backup |
+| `get_variable` | Get a specific variable value and metadata. | None |
+| `set_variable` | Set a variable value. | None |
+| `create_variable` | Create a new hub variable (type: Number/Decimal/String/Boolean/DateTime). | Hub Admin Write |
+| `delete_variable` | Permanently delete a hub variable (DESTRUCTIVE). | Hub Admin Write + recent backup |
+| `create_connector` | Create a virtual-device connector for a hub variable. | Hub Admin Write |
+| `remove_connector` | Remove the connector device for a hub variable. | Hub Admin Write |
+| `get_variable_history` | Recent hub-variable changes since the MCP app started. | None |
 
 ### manage_rooms (5 tools)
 
@@ -112,9 +116,9 @@ Destructive hub operations: reboot, shutdown, and device deletion.
 | `shutdown_hub` | Power off hub (needs manual restart). | Hub Admin Write |
 | `delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Hub Admin Write |
 
-### manage_apps_drivers (6 tools)
+### manage_apps_drivers (7 tools)
 
-Read-only access to hub apps and drivers: list, view source, and browse backups.
+Read-only access to hub apps, drivers, and libraries: list, view source, and browse backups.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -122,12 +126,13 @@ Read-only access to hub apps and drivers: list, view source, and browse backups.
 | `list_hub_drivers` | List installed user drivers. | Hub Admin Read |
 | `get_app_source` | Get app source code. Large files auto-saved to File Manager. | Hub Admin Read |
 | `get_driver_source` | Get driver source code. Large files auto-saved to File Manager. | Hub Admin Read |
+| `get_library_source` | Get library source code with chunked reading. Large files auto-saved to File Manager. | Hub Admin Read |
 | `list_item_backups` | List all source code backups. | None |
 | `get_item_backup` | Retrieve source from a backup. | None |
 
-### manage_app_driver_code (7 tools)
+### manage_app_driver_code (10 tools)
 
-Write operations for apps and drivers: install, update, delete, and restore code.
+Write operations for apps, drivers, and libraries: install, update, delete, and restore code.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -137,7 +142,10 @@ Write operations for apps and drivers: install, update, delete, and restore code
 | `update_driver_code` | Update existing driver source code. Single-driver mode (driverId + source/sourceFile/resave) or bulk mode (updates array of {driverId, sourceFile} pairs, continue-on-error). | Hub Admin Write |
 | `delete_app` | Delete an installed app (auto-backs up). | Hub Admin Write |
 | `delete_driver` | Delete an installed driver (auto-backs up). | Hub Admin Write |
-| `restore_item_backup` | Restore app/driver to backed-up version. | Hub Admin Write |
+| `restore_item_backup` | Restore app/driver to backed-up version (libraries: see `update_library_code`). | Hub Admin Write |
+| `install_library` | Install a new Groovy library (#include namespace.Name). | Hub Admin Write |
+| `update_library_code` | Update existing library source (source/sourceFile/resave modes). | Hub Admin Write |
+| `delete_library` | Delete a library (auto-backs up source). | Hub Admin Write |
 
 ### manage_logs (8 tools)
 

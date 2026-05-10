@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD architecture (23 core + 12 gateways = 35 on tools/list, 67 proxied, 90 total).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management architecture (23 core + 12 gateways = 35 on tools/list, 75 proxied, 98 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2268,6 +2268,7 @@ These operations are too destructive for automated testing. Test manually with e
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
 | 12. Developer Mode | T219-T226 | Self-administration: update_mcp_settings + delete_variable |
 | 13. Driver Code Lifecycle | T400-T406 | install_driver (single + bulk), update_driver_code (bulk), delete |
+| 14. Library Management | T500-T508 | Library CRUD: install, update, delete, get_source |
 
 ### Architecture (post installed-apps + RM interop + Developer Mode)
 
@@ -2276,18 +2277,18 @@ These operations are too destructive for automated testing. Test manually with e
 | Core tools on `tools/list` | 23 |
 | Gateways on `tools/list` | 12 |
 | Total visible on `tools/list` | 35 |
-| Tools proxied behind gateways | 67 |
-| Total tools in codebase | 90 |
+| Tools proxied behind gateways | 71 |
+| Total tools in codebase | 94 |
 
-**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (7), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (9), `manage_mcp_self` (1)
+**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (11), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (9), `manage_mcp_self` (1)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 86 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 94 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 193 test scenarios** (107 explicit + 65 natural language + 21 built-in-app integration) plus 13 excluded destructive operations documented for manual testing
+**Total: 202 test scenarios** (107 explicit + 65 natural language + 21 built-in-app integration + 9 library management) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -2742,16 +2743,126 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ---
 
+## Section 14: Library Management Tests
+
+Write tools (`install_library`, `update_library_code`, `delete_library`) live in the `manage_app_driver_code` gateway and require Hub Admin Write + confirm + a hub backup within the last 24 hours. `get_library_source` (read-only) lives in the `manage_apps_drivers` gateway and requires Hub Admin Read only. Tests use the `BAT_` prefix and clean up after themselves.
+
+**Pre-flight (manual one-time):**
+1. Enable **Hub Admin Read Tools** and **Hub Admin Write Tools** in MCP Rule Server settings.
+2. Create a hub backup via `create_hub_backup`.
+
+**Safety note:** Tests only create/modify/delete test-prefixed libraries. They do not touch any library with `usedByDeviceTypes` or `usedByAppTypes` populated.
+
+### T500 — get_library_source reads library source
+
+```json
+{
+  "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using install_library.",
+  "test_prompt": "Get the source of the first library returned by hub2/userLibraries. Use manage_apps_drivers -> get_library_source."
+}
+```
+
+**Expected**: AI calls `manage_apps_drivers(tool='get_library_source', args={libraryId:'<id>'})`. Result includes `success: true`, `source` (non-empty string), `version`, `name`, `namespace`, `totalLength`. If total length exceeds 64KB, `sourceFile` and `sourceFileHint` fields are present.
+
+### T501 — install_library installs new library from inline source
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists.",
+  "test_prompt": "Install a new Groovy library with name='BATTestLibInstall', namespace='bat_test', description='BAT test library for install scenario'. The library should define a single method `batHelper()` that returns 'bat_ok'.",
+  "teardown_prompt": "Delete the BATTestLibInstall library (find it by name in the library list)."
+}
+```
+
+**Expected**: AI calls `manage_app_driver_code(tool='install_library', args={source:'library(...) { } def batHelper() { return "bat_ok" }', confirm:true})`. Result: `{success:true, libraryId:'<id>', version:<positive integer>, sourceMode:'source', message:'Library installed successfully'}`. No `verifyWarning` or `verifyError` field if verification succeeds. `verified: true`.
+
+### T502 — update_library_code updates existing library source
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Use install_library to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
+  "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2'. Use update_library_code with source mode.",
+  "teardown_prompt": "Delete BATTestLibUpdate library."
+}
+```
+
+**Expected**: AI finds the library ID, calls `manage_app_driver_code(tool='update_library_code', args={libraryId:'<id>', source:'<updated source with v2Method>', confirm:true})`. Result: `{success:true, previousVersion:<N>, newVersion:<N+1>, sourceMode:'source'}` where `newVersion > previousVersion` (both positive integers). Pre-update backup appears in `list_item_backups` as a `library_<id>` key.
+
+### T503 — update_library_code resave mode recompiles without external source
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. A library named 'BATTestLibResave' exists (install it if not).",
+  "test_prompt": "Use update_library_code with resave=true on BATTestLibResave to trigger recompilation without changing the source.",
+  "teardown_prompt": "Delete BATTestLibResave library."
+}
+```
+
+**Expected**: AI calls `manage_app_driver_code(tool='update_library_code', args={libraryId:'<id>', resave:true, confirm:true})`. Result: `{success:true, sourceMode:'resave', note:'...no cloud round-trip...'}`. `newVersion` is a positive integer greater than `previousVersion`.
+
+### T504 — delete_library deletes and auto-backs up source
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install a library named 'BATTestLibDelete', namespace='bat_test'.",
+  "test_prompt": "Delete the BATTestLibDelete library. Confirm it no longer appears in the hub library list.",
+  "teardown_prompt": "(Library is already deleted — no teardown needed.)"
+}
+```
+
+**Expected**: AI calls `manage_app_driver_code(tool='delete_library', args={libraryId:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>.groovy', restoreHint:...}`. Backup file appears in `list_item_backups`. Subsequent `get_library_source` for the same ID returns `success:false` with "not found".
+
+### T505 — install_library refuses without confirm flag
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled.",
+  "test_prompt": "Try to install a library with valid source but without setting confirm=true. Observe the error."
+}
+```
+
+**Expected**: Gateway (or tool) returns an error (isError or -32602) containing "SAFETY CHECK FAILED" or "confirm". No library is created. AI explains the confirm requirement and the mandatory pre-flight checklist (backup).
+
+### T506 — get_library_source returns error for non-existent library
+
+```json
+{
+  "test_prompt": "Try to get library source for libraryId='999999'. What does the tool return?"
+}
+```
+
+**Expected**: AI calls `manage_apps_drivers(tool='get_library_source', args={libraryId:'999999'})`. Result: `{success:false, error:'...not found...'}` or similar. AI reports the error clearly and suggests using hub2/userLibraries or the Hubitat web UI (FOR DEVELOPERS > Libraries code) to find valid library IDs.
+
+### T507 — update_library_code sourceFile mode reads from File Manager
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install 'BATTestLibSourceFile' library. Upload a file named 'bat-lib-update.groovy' to File Manager via write_file with updated library source.",
+  "test_prompt": "Update BATTestLibSourceFile library using update_library_code with sourceFile='bat-lib-update.groovy'.",
+  "teardown_prompt": "Delete BATTestLibSourceFile library. Delete bat-lib-update.groovy from File Manager."
+}
+```
+
+**Expected**: AI calls `manage_app_driver_code(tool='update_library_code', args={libraryId:'<id>', sourceFile:'bat-lib-update.groovy', confirm:true})`. Result: `{success:true, sourceMode:'sourceFile', note:'...File Manager...'}`.
+
+### T508 — delete_library proceeds with warning when backup fails
+
+(Manual test -- not automatable without simulating File Manager failure.)
+
+**Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `delete_library` still proceeds and sets `backupWarning` in the response. The deletion is not blocked by a backup failure. The response message contains "WARNING: Pre-delete backup failed".
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 12 gateways (35 total, 90 tools)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 12 gateways (35 total, 98 tools)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute + library management (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `custom_update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
-5. **Gateway renames**: `manage_hub_maintenance` → `manage_destructive_hub_ops` (3 tools); `manage_code_changes` → `manage_app_driver_code` (7 tools)
-6. **Gateway splits from v1**: `manage_apps_drivers` → `manage_apps_drivers` (6 read) + `manage_app_driver_code` (7 write); `manage_logs_diagnostics` → `manage_logs` (6) + `manage_diagnostics` (9)
+5. **Gateway renames**: `manage_hub_maintenance` → `manage_destructive_hub_ops` (3 tools); `manage_code_changes` → `manage_app_driver_code` (11 tools, 7 original + 4 library tools)
+6. **Gateway splits from v1**: `manage_apps_drivers` → `manage_apps_drivers` (6 read) + `manage_app_driver_code` (11 write); `manage_logs_diagnostics` → `manage_logs` (8) + `manage_diagnostics` (11)
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
