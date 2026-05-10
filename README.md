@@ -1464,6 +1464,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.2.1** - feat(manage_app_driver_code): library management (install/update/delete/get_source). PRs: [#164](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/164)
 - **v1.2.0** - feat: add clone/export/import_native_app via Hubitat appCloner. PRs: [#158](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/158)
 - **v1.1.2** - docs(futureplans): align rule-tool names with PR #134 custom_ rename; feat(manage_app_driver_code): driver-code lifecycle improvements -- sourceFile + bulk + token-economy. PRs: [#162](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/162), [#163](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/163)
 - **v1.1.1** - ci: consolidate post-merge automation into release workflow (closes race). PRs: [#160](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/160)
