@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management architecture (23 core + 12 gateways = 35 on tools/list, 75 proxied, 98 total).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management architecture (23 core + 12 gateways = 35 on tools/list, 78 proxied, 101 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -1343,7 +1343,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 
 ## Section 9: Stress Tests
 
-### T120 — All 10 gateways in one session (v0.8.0)
+### T120 — Many-gateway stress (7 of 12 gateways)
 
 ```json
 {
@@ -1353,7 +1353,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 }
 ```
 
-**Expected**: 10 calls across core tools and gateways (manage_rooms, manage_hub_variables, get_hub_info (core), create_hub_backup (core), manage_files, manage_apps_drivers, manage_diagnostics, manage_logs, check_for_update (core), manage_rules_admin). `manage_app_driver_code` excluded — all its tools are destructive. All should succeed.
+**Expected**: 10 calls across core tools and gateways (manage_rooms, manage_hub_variables, get_hub_info (core), create_hub_backup (core), manage_files, manage_apps_drivers, manage_diagnostics, manage_logs, check_for_update (core), manage_rules_admin). Excluded: `manage_app_driver_code` (all tools destructive), `manage_destructive_hub_ops` (destructive ops), `manage_installed_apps` (separate T205 scenarios), `manage_native_rules_and_apps` (separate T200-series scenarios), `manage_mcp_self` (separate T102 scenarios). All 7 exercised gateways should succeed.
 
 ### T121 — Rapid rule create-delete cycles
 
@@ -2256,7 +2256,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Section | Tests | Purpose |
 |---------|-------|---------|
-| 1. Core Tools | T01-T19c | 21 core tools work directly |
+| 1. Core Tools | T01-T19c | 23 core tools work directly |
 | 2. Gateway Discovery | T20-T31, T35-T59 | LLM finds all proxied tools without hints |
 | 3. Gateway Behavior | T60-T65 | Catalog mode, skip-catalog, errors |
 | 4. Natural Language | T70-T79 | Casual prompts route correctly |
@@ -2277,14 +2277,14 @@ These operations are too destructive for automated testing. Test manually with e
 | Core tools on `tools/list` | 23 |
 | Gateways on `tools/list` | 12 |
 | Total visible on `tools/list` | 35 |
-| Tools proxied behind gateways | 71 |
-| Total tools in codebase | 94 |
+| Tools proxied behind gateways | 78 |
+| Total tools in codebase | 101 |
 
-**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (4), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (6), `manage_app_driver_code` (11), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (9), `manage_mcp_self` (1)
+**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 94 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 101 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2361,7 +2361,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: AI calls `manage_installed_apps` with no args, sees catalog of 2 tools (`list_installed_apps`, `get_device_in_use_by`) with full parameter schemas.
+**Expected**: AI calls `manage_installed_apps` with no args, sees catalog of 4 tools (`list_installed_apps`, `get_device_in_use_by`, `get_app_config`, `list_app_pages`) with full parameter schemas.
 
 ### T206 — Gateway catalog discovery (manage_native_rules_and_apps)
 
@@ -2371,7 +2371,7 @@ Tools in this section have mixed gate requirements. `list_installed_apps` and `g
 }
 ```
 
-**Expected**: AI calls `manage_native_rules_and_apps` with no args, sees 9 tools. AI describes them (list/run/pause/resume/set_boolean + create/update/delete native app + check_rule_health).
+**Expected**: AI calls `manage_native_rules_and_apps` with no args, sees 12 tools. AI describes them (list/run/pause/resume/set_boolean + create/update/delete/clone/export/import_native_app + check_rule_health).
 
 ### T207 — AI uses native RM rule creation via manage_native_rules_and_apps
 
@@ -2857,12 +2857,12 @@ Write tools (`install_library`, `update_library_code`, `delete_library`) live in
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 12 gateways (35 total, 98 tools)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute + library management (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 12 gateways (35 on tools/list, 101 total)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute + library management (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `custom_update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
-5. **Gateway renames**: `manage_hub_maintenance` → `manage_destructive_hub_ops` (3 tools); `manage_code_changes` → `manage_app_driver_code` (11 tools, 7 original + 4 library tools)
-6. **Gateway splits from v1**: `manage_apps_drivers` → `manage_apps_drivers` (6 read) + `manage_app_driver_code` (11 write); `manage_logs_diagnostics` → `manage_logs` (8) + `manage_diagnostics` (11)
+5. **Gateway renames**: `manage_hub_maintenance` → `manage_destructive_hub_ops` (3 tools); `manage_code_changes` → `manage_app_driver_code` (10 tools, 7 original + 3 library tools)
+6. **Gateway splits from v1**: `manage_apps_drivers` → `manage_apps_drivers` (7 read) + `manage_app_driver_code` (10 write); `manage_logs_diagnostics` → `manage_logs` (8) + `manage_diagnostics` (11)
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)

@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 94 MCP tools (35 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 101 MCP tools (35 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 94 tools total — 23 core tools are always visible, while 71 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 101 tools total — 23 core tools are always visible, while 78 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (98 total — 35 on tools/list)
+### MCP Tools (101 total — 35 on tools/list)
 
-The server has 98 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **75 additional tools** are organized behind **12 domain-named gateways**. The AI sees 35 items on `tools/list` (23 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 101 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **78 additional tools** are organized behind **12 domain-named gateways**. The AI sees 35 items on `tools/list` (23 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (23) — Always visible on tools/list
 
@@ -430,7 +430,7 @@ Monitoring tools require Hub Admin Read to be enabled.
 | `get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
 | `force_garbage_collection` | Force JVM garbage collection; returns before/after free memory (Hub Admin Read) |
 | `device_health_check` | Find stale/offline devices |
-| `get_rule_diagnostics` | Comprehensive diagnostics for a specific rule |
+| `custom_get_rule_diagnostics` | Comprehensive diagnostics for a specific custom rule |
 | `get_zwave_details` | Z-Wave radio info (firmware, devices) |
 | `get_zigbee_details` | Zigbee radio info (channel, PAN ID, devices) |
 | `zwave_repair` | Z-Wave network repair (5-30 min) |
@@ -469,7 +469,7 @@ Write/delete require Hub Admin Write + confirm.
 </details>
 
 <details>
-<summary><b>manage_native_rules_and_apps</b> (9) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
+<summary><b>manage_native_rules_and_apps</b> (12) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -481,6 +481,9 @@ Write/delete require Hub Admin Write + confirm.
 | `create_native_app` | Create a new empty native automation app (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / etc.). Returns `appId`. |
 | `update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. |
 | `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
+| `clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
+| `export_native_app` | Export a classic SmartApp to JSON (round-trippable with `import_native_app`). |
+| `import_native_app` | Import previously-exported app JSON into a new instance. Returns the new `appId`. |
 | `check_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
 
 Requires opt-in **Enable Built-in App Tools** setting. Create/update/delete additionally requires Hub Admin Write.
