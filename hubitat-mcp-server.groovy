@@ -940,6 +940,18 @@ def getGatewayConfig() {
                 list_app_pages: "page names sub-pages pageName multi-page hpm prefPkgUninstall prefPkgModify prefOptions navigation discover"
             ]
         ],
+        manage_hpm: [
+            description: "Hubitat Package Manager (HPM) state introspection -- read-only. Tracks installed packages, their manifest versions, and per-component drift signals (missing-required, orphan-app). HPM-managed code lives in the same Apps/Drivers registries as everything else, but its lifecycle is owned by HPM; this gateway surfaces that ownership state for diagnostic and drift-detection purposes without write side-effects. Requires Hub Admin Read.",
+            tools: ["list_hpm_packages", "get_hpm_drift"],
+            summaries: [
+                list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). Args: hpmAppId (optional -- auto-discovered if omitted). Hub Admin Read.",
+                get_hpm_drift: "Cross-reference HPM-tracked packages against installed apps to surface missing-required components and orphan apps. Args: hpmAppId (optional), packageFilter (optional substring match). Hub Admin Read."
+            ],
+            searchHints: [
+                list_hpm_packages: "package manager HPM tracked installed manifest version inventory dcmeglio community apps drivers",
+                get_hpm_drift: "package manager HPM drift orphan missing required manifest divergence inconsistency check verify"
+            ]
+        ],
         manage_native_rules_and_apps: [
             description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"],
@@ -2364,6 +2376,47 @@ Requires Hub Admin Read.""",
                 required: ["appId"]
             ]
         ],
+        // HPM Package State Tools
+        [
+            name: "list_hpm_packages",
+            description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
+
+App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not).
+
+File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
+
+If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call.
+
+Requires Hub Admin Read. HPM itself must be installed.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted by scanning installed apps for type='Hubitat Package Manager'. Pass explicitly to skip the discovery call."]
+                ]
+            ]
+        ],
+        [
+            name: "get_hpm_drift",
+            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces two classes of drift signal:
+
+- missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
+- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall, which removes the code definition from /apps/code/ but leaves the HPM manifest entry pointing at the now-gone heID).
+
+Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced. Orphan-driver detection is not included in this version.
+
+If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked.
+
+Response fields: packagesChecked, totalDriftSignals, drift[] (one entry per drifted package -- each has manifestUrl, packageName, version, signals[]), summary sentence, orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed and orphan signals were skipped this call), limitations note. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[] so you can check your filter spelling.
+
+Requires Hub Admin Read. HPM itself must be installed.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted."],
+                    packageFilter: [type: "string", description: "Optional case-insensitive substring filter on packageName. When supplied, only matching packages are analyzed. Omit to check all tracked packages."]
+                ]
+            ]
+        ],
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "list_rm_rules",
@@ -3079,6 +3132,10 @@ def executeTool(toolName, args) {
         case "list_installed_apps": return toolListInstalledApps(args)
         case "get_device_in_use_by": return toolGetDeviceInUseBy(args)
 
+        // HPM Package State
+        case "list_hpm_packages": return toolListHpmPackages(args)
+        case "get_hpm_drift": return toolGetHpmDrift(args)
+
         // Rule Machine Integration (via RMUtils)
         case "list_rm_rules": return toolListRmRules(args)
         case "run_rm_rule": return toolRunRmRule(args)
@@ -3113,6 +3170,7 @@ def executeTool(toolName, args) {
         case "manage_diagnostics":
         case "manage_files":
         case "manage_installed_apps":
+        case "manage_hpm":
         case "manage_native_rules_and_apps":
         case "manage_mcp_self":
             // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
@@ -11785,6 +11843,425 @@ def toolGetDeviceInUseBy(args) {
     }
 }
 
+// ==================== HPM PACKAGE STATE TOOL IMPLEMENTATIONS ====================
+
+/**
+ * Fetch and parse the /hub2/appsList response. Single source of truth for the
+ * apps instance tree used by both HPM auto-discovery and explicit-ID validation.
+ * Throws IllegalArgumentException on transport or parse failure.
+ */
+private Map _fetchAppsListTree(String caller) {
+    def responseText
+    try {
+        responseText = hubInternalGet("/hub2/appsList")
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to fetch installed apps for ${caller} [${e.class.simpleName}]: ${e.message ?: e.toString()}")
+    }
+    if (!responseText) {
+        throw new IllegalArgumentException("Empty response from /hub2/appsList during ${caller} -- hub internal API may be unavailable")
+    }
+    try {
+        return new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to parse /hub2/appsList for ${caller}: ${e.message ?: e.toString()}")
+    }
+}
+
+/**
+ * Auto-discover HPM's installed-app ID by walking the apps[] tree from /hub2/appsList
+ * and matching the installed-instance node whose data.type == "Hubitat Package Manager".
+ * The type field on installed instances is the canonical identifier -- userAppTypes[]
+ * has no namespace field on real hubs and cannot be used for matching.
+ * Returns the appId as a String, or throws IllegalArgumentException if not found.
+ */
+private String _hpmDiscoverAppId() {
+    def parsed = _fetchAppsListTree("HPM discovery")
+    // Walk the installed-app instance tree (apps[]) using a plain List as a BFS work queue.
+    // Match on data.type == "Hubitat Package Manager" -- this is the app-type name as set
+    // on the installed instance, not a namespace lookup. userAppTypes[] entries do not carry
+    // a namespace field in real hub responses.
+    // Collect ALL matches: two HPM instances (e.g. duplicate install, partial migration) must
+    // be surfaced explicitly rather than silently picking the first.
+    def hpmMatches = []
+    def workQueue = [] + (parsed?.apps ?: [])
+    int qi = 0
+    while (qi < workQueue.size()) {
+        def node = workQueue[qi++]
+        def d = node?.data ?: [:]
+        if (d.type?.toString() == "Hubitat Package Manager") {
+            if (d.id == null) throw new IllegalArgumentException("HPM entry found but has no id field -- cannot determine hpmAppId; pass hpmAppId explicitly")
+            hpmMatches << d.id.toString()
+        }
+        (node?.children ?: []).each { workQueue << it }
+    }
+    if (hpmMatches.isEmpty()) {
+        throw new IllegalArgumentException("HPM not found in installed apps -- Hubitat Package Manager does not appear to be installed")
+    }
+    if (hpmMatches.size() > 1) {
+        throw new IllegalArgumentException("Multiple HPM instances found: [${hpmMatches.join(', ')}] -- pass hpmAppId explicitly to select one")
+    }
+    return hpmMatches[0]
+}
+
+/**
+ * Validate that an explicitly-supplied appId belongs to an installed HPM instance.
+ * Walks the apps[] tree from /hub2/appsList; throws IllegalArgumentException when the id
+ * is not found or when its data.type is not "Hubitat Package Manager".
+ * Only called on the explicit-hpmAppId path -- auto-discovery already filters on type.
+ */
+private void _hpmAssertAppIsHpm(String explicitAppId) {
+    def parsed = _fetchAppsListTree("hpmAppId validation")
+    // Walk the installed-app instance tree looking for the entry with the given id.
+    def workQueue = [] + (parsed?.apps ?: [])
+    int qi = 0
+    def foundEntry = null
+    while (qi < workQueue.size() && foundEntry == null) {
+        def node = workQueue[qi++]
+        def d = node?.data ?: [:]
+        if (d.id?.toString() == explicitAppId) {
+            foundEntry = d
+        } else {
+            (node?.children ?: []).each { workQueue << it }
+        }
+    }
+    if (foundEntry == null) {
+        throw new IllegalArgumentException("hpmAppId ${explicitAppId} not found in installed apps -- verify the ID or omit hpmAppId to use auto-discovery")
+    }
+    def actualType = foundEntry.type?.toString() ?: "unknown"
+    if (actualType != "Hubitat Package Manager") {
+        throw new IllegalArgumentException("hpmAppId ${explicitAppId} is not Hubitat Package Manager (actual type: ${actualType}) -- verify the ID or omit hpmAppId to use auto-discovery")
+    }
+}
+
+/**
+ * Fetch and double-decode the 'manifests' state entry from HPM's statusJson.
+ * Returns the parsed manifests Map (manifestUrl -> manifest Map), or an empty Map if
+ * HPM has no tracked packages yet. Throws IllegalArgumentException on transport or
+ * parse failure.
+ */
+private Map _hpmFetchManifests(String hpmAppId) {
+    def responseText
+    try {
+        responseText = hubInternalGet("/installedapp/statusJson/${hpmAppId}")
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to fetch HPM statusJson [${e.class.simpleName}]: ${e.message ?: e.toString()}")
+    }
+    if (!responseText) {
+        throw new IllegalArgumentException("Empty response from /installedapp/statusJson/${hpmAppId} -- app may not exist or hub internal API is unavailable")
+    }
+    def outer
+    try {
+        outer = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to parse HPM statusJson: ${e.message ?: e.toString()}")
+    }
+    if (!(outer instanceof Map)) {
+        throw new IllegalArgumentException("Unexpected HPM statusJson shape: expected a JSON object")
+    }
+    // Find the 'manifests' entry in appState[].
+    // appState[].value shape varies by firmware: live hubs typically return the value already
+    // as a Map (JsonSlurper recursively parsed the inner JSON). Older firmware or large payloads
+    // may leave it as a JSON-encoded String. Handle both: if it's already a Map, use it directly.
+    def appState = outer.appState ?: []
+    def manifestsEntry = appState.find { it?.name?.toString() == "manifests" }
+    if (manifestsEntry == null) {
+        // HPM installed but no packages tracked yet.
+        return [:]
+    }
+    def rawValue = manifestsEntry.value
+    if (rawValue == null) {
+        return [:]
+    }
+    def manifests
+    if (rawValue instanceof Map) {
+        // JsonSlurper already parsed the inner JSON string into a Map.
+        manifests = rawValue
+    } else {
+        def rawStr = rawValue.toString().trim()
+        if (rawStr.isEmpty()) return [:]
+        try {
+            manifests = new groovy.json.JsonSlurper().parseText(rawStr)
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to parse HPM manifests value: ${e.message ?: e.toString()}")
+        }
+    }
+    if (!(manifests instanceof Map)) {
+        throw new IllegalArgumentException("Unexpected HPM manifests shape: expected a JSON object keyed by manifest URL")
+    }
+    return manifests
+}
+
+/**
+ * Project HPM's tracked packages into a normalized list.
+ * Gate: requireHubAdminRead() -- reads internal app state via statusJson.
+ */
+def toolListHpmPackages(args) {
+    requireHubAdminRead()
+
+    def hpmAppId
+    if (args?.hpmAppId != null && args.hpmAppId.toString().trim() != "") {
+        hpmAppId = args.hpmAppId.toString().trim()
+        if (!hpmAppId.isInteger()) {
+            throw new IllegalArgumentException("hpmAppId must be numeric: ${hpmAppId}")
+        }
+        _hpmAssertAppIsHpm(hpmAppId)
+    } else {
+        hpmAppId = _hpmDiscoverAppId()
+    }
+
+    mcpLog("info", "hpm", "list_hpm_packages hpmAppId=${hpmAppId}")
+
+    def manifests
+    try {
+        manifests = _hpmFetchManifests(hpmAppId)
+    } catch (IllegalArgumentException e) {
+        return [success: false, error: e.message, hpmAppId: hpmAppId]
+    }
+
+    def skippedMalformed = []
+    def packages = manifests.collect { manifestUrl, manifest ->
+        if (!(manifest instanceof Map)) {
+            mcpLog("warn", "hpm", "list_hpm_packages: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
+            skippedMalformed << manifestUrl?.toString()
+            return null
+        }
+        def apps = (manifest.apps ?: []).collect { a ->
+            if (!(a instanceof Map)) return null
+            def heId = a.heID
+            def heIdStr = null
+            def heIdWarning = null
+            if (heId != null) {
+                if (heId instanceof Number || heId instanceof String) {
+                    heIdStr = heId.toString()
+                } else {
+                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
+                    mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID is not a Number or String -- skipping heID")
+                }
+            }
+            def entry = [
+                id      : a.id?.toString(),
+                name    : a.name?.toString(),
+                required: a.required == true,
+                version : a.version?.toString(),
+                heID    : heIdStr
+            ]
+            if (heIdWarning) entry._warning = heIdWarning
+            entry
+        }.findAll { it != null }
+
+        def drivers = (manifest.drivers ?: []).collect { d ->
+            if (!(d instanceof Map)) return null
+            def heId = d.heID
+            def heIdStr = null
+            def heIdWarning = null
+            if (heId != null) {
+                if (heId instanceof Number || heId instanceof String) {
+                    heIdStr = heId.toString()
+                } else {
+                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
+                    mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID is not a Number or String -- skipping heID")
+                }
+            }
+            def entry = [
+                id      : d.id?.toString(),
+                name    : d.name?.toString(),
+                required: d.required == true,
+                version : d.version?.toString(),
+                heID    : heIdStr
+            ]
+            if (heIdWarning) entry._warning = heIdWarning
+            entry
+        }.findAll { it != null }
+
+        def files = (manifest.files ?: []).collect { f ->
+            if (!(f instanceof Map)) return null
+            [
+                id  : f.id?.toString(),
+                name: f.name?.toString()
+            ]
+        }.findAll { it != null }
+
+        [
+            manifestUrl : manifestUrl?.toString(),
+            packageName : manifest.packageName?.toString(),
+            version     : manifest.version?.toString(),
+            beta        : manifest.beta == true,
+            author      : manifest.author?.toString(),
+            apps        : apps,
+            drivers     : drivers,
+            files       : files
+        ]
+    }.findAll { it != null }
+
+    def result = [
+        success   : true,
+        hpmAppId  : hpmAppId,
+        count     : packages.size(),
+        packages  : packages
+    ]
+    if (skippedMalformed) result.skippedMalformed = skippedMalformed
+    return result
+}
+
+/**
+ * Cross-reference HPM-tracked packages against the hub's Apps Code registry.
+ * Surfaces missing-required components (required=true with heID null) and
+ * orphan-app signals (heID present but app code definition absent from Apps Code).
+ * Gate: requireHubAdminRead() -- reads internal app state + Apps Code registry.
+ */
+def toolGetHpmDrift(args) {
+    requireHubAdminRead()
+
+    def hpmAppId
+    if (args?.hpmAppId != null && args.hpmAppId.toString().trim() != "") {
+        hpmAppId = args.hpmAppId.toString().trim()
+        if (!hpmAppId.isInteger()) {
+            throw new IllegalArgumentException("hpmAppId must be numeric: ${hpmAppId}")
+        }
+        _hpmAssertAppIsHpm(hpmAppId)
+    } else {
+        hpmAppId = _hpmDiscoverAppId()
+    }
+
+    def packageFilterRaw = args?.packageFilter?.toString()?.trim()
+    def packageFilter = packageFilterRaw ?: null
+
+    mcpLog("info", "hpm", "get_hpm_drift hpmAppId=${hpmAppId} packageFilter=${packageFilter ?: 'none'}")
+
+    def manifests
+    try {
+        manifests = _hpmFetchManifests(hpmAppId)
+    } catch (IllegalArgumentException e) {
+        return [success: false, error: e.message, hpmAppId: hpmAppId]
+    }
+
+    // Build the set of Apps Code definition IDs for orphan detection.
+    // /hub2/userAppTypes is the dedicated Apps Code registry endpoint -- each entry
+    // represents a code definition (whether or not it has any running instances).
+    // This is distinct from the userAppTypes[] array embedded in /hub2/appsList,
+    // which represents installed instances. Child-app templates (e.g. "MCP Rule")
+    // have code definitions here but zero installed instances in the apps[] tree,
+    // so orphan detection MUST use this endpoint to avoid false positives on
+    // HPM-managed child-app-template packages.
+    def installedAppCodeIds = [] as Set
+    def orphanDetection = [enabled: true]
+    try {
+        def userAppTypesText = hubInternalGet("/hub2/userAppTypes")
+        if (!userAppTypesText) {
+            orphanDetection = [enabled: false, reason: "Empty response from /hub2/userAppTypes -- orphan-app signals were not evaluated this call"]
+            mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userAppTypes response -- orphan detection disabled")
+        } else {
+            def userAppTypesParsed = new groovy.json.JsonSlurper().parseText(userAppTypesText)
+            if (!(userAppTypesParsed instanceof List)) {
+                orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array) -- orphan-app signals were not evaluated this call"]
+                mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape -- orphan detection disabled")
+            } else {
+                userAppTypesParsed.each { t ->
+                    def typeId = t?.id?.toString()
+                    if (typeId) installedAppCodeIds << typeId
+                }
+            }
+        }
+    } catch (Exception e) {
+        orphanDetection = [enabled: false, reason: "Failed to fetch /hub2/userAppTypes [${e.class.simpleName}]: ${e.message ?: e.toString()} -- orphan-app signals were not evaluated this call"]
+        mcpLog("warn", "hpm", "get_hpm_drift: could not fetch /hub2/userAppTypes for orphan-app detection: ${e.message ?: e.toString()}")
+    }
+
+    // Apply optional package filter before drift analysis.
+    def filteredManifests = packageFilter
+        ? manifests.findAll { url, m -> m instanceof Map && m.packageName?.toString()?.toLowerCase()?.contains(packageFilter.toLowerCase()) }
+        : manifests
+
+    def driftEntries = []
+    int totalSignals = 0
+
+    filteredManifests.each { manifestUrl, manifest ->
+        if (!(manifest instanceof Map)) return
+        def signals = []
+
+        // missing-required: required=true AND heID is null/absent
+        // orphan-app: heID present but not in Apps Code registry (/hub2/userAppTypes endpoint)
+        // Both checks share the per-component heID resolution loop below.
+        (manifest.apps ?: []).each { a ->
+            if (!(a instanceof Map)) return
+            def heId = a.heID
+            // Type-validate heID at the boundary: Number and String are the only valid scalar types.
+            // Non-scalar heID (List, Map, Boolean) cannot be matched against Apps Code IDs and
+            // would produce guaranteed false-positive orphan signals via .toString() coercion.
+            if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping component")
+                signals << [
+                    type         : "skipped-malformed-heid",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    _warning     : "non-scalar heID (not Number or String) -- component skipped"
+                ]
+                return
+            }
+            def heIdNull = heId == null || heId.toString().trim() == ""
+            if (a.required == true && heIdNull) {
+                signals << [
+                    type         : "missing-required",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    note         : "Component is required but heID is null/absent -- install never completed or component was removed."
+                ]
+            }
+            if (!heIdNull && installedAppCodeIds) {
+                def heIdStr = heId.toString()
+                if (!installedAppCodeIds.contains(heIdStr)) {
+                    signals << [
+                        type         : "orphan-app",
+                        componentType: "app",
+                        componentName: a.name?.toString(),
+                        componentId  : a.id?.toString(),
+                        heID         : heIdStr,
+                        note         : "HPM tracks heID ${heIdStr} but the app code definition is no longer in Apps Code -- likely deleted via Apps Code without using HPM Uninstall."
+                    ]
+                }
+            }
+        }
+
+        if (signals) {
+            driftEntries << [
+                manifestUrl : manifestUrl?.toString(),
+                packageName : manifest.packageName?.toString(),
+                version     : manifest.version?.toString(),
+                signals     : signals
+            ]
+            totalSignals += signals.size()
+        }
+    }
+
+    int checked = filteredManifests.size()
+    int driftCount = driftEntries.size()
+    def summary = driftCount == 0
+        ? "No drift detected across ${checked} tracked package${checked == 1 ? '' : 's'}."
+        : "${driftCount} of ${checked} tracked package${checked == 1 ? '' : 's'} show drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
+
+    def result = [
+        success          : true,
+        hpmAppId         : hpmAppId,
+        packagesChecked  : checked,
+        drift            : driftEntries,
+        totalDriftSignals: totalSignals,
+        summary          : summary,
+        orphanDetection  : orphanDetection,
+        limitations      : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes. Orphan-driver detection deferred to follow-up."
+    ]
+    // When a packageFilter was supplied but matched nothing, surface that explicitly so
+    // the caller can distinguish "clean hub" from "typo in filter".
+    if (packageFilter && checked == 0) {
+        result.filterMatchedZero = true
+        result.availablePackages = manifests.findAll { url, m -> m instanceof Map }
+            .collect { url, m -> m.packageName?.toString() }
+            .findAll { it }
+    }
+    return result
+}
+
 /**
  * List all Rule Machine rules via the official hubitat.helper.RMUtils API.
  * Combines RM 4.x and RM 5.x rules (deduplicated by id).
@@ -20333,7 +20810,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         builtin_app_tools: '''## Built-in App Tools
 
-Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). All manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). Both manage_hpm tools (list_hpm_packages and get_hpm_drift) require Hub Admin Read. All manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" or "Hub Admin Read is disabled" errors, direct them to the MCP Rule Server app settings page.
 
 **manage_installed_apps (4 tools):**
 
@@ -20359,6 +20836,20 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
   - Input: appId
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
+
+**manage_hpm (2 tools) — HPM package state introspection (Hub Admin Read required):**
+
+- **list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
+  - If hpmAppId is omitted, HPM is auto-discovered by scanning installed apps for type="Hubitat Package Manager"
+  - Each package: manifestUrl, packageName, version, beta, author, apps[], drivers[], files[]
+  - Each app/driver component: id (UUID), name, heID (Hubitat code ID or null), required, version
+  - files[] entries have no heID (File Manager assets tracked by name only)
+
+- **get_hpm_drift** — cross-reference HPM tracked state against what is installed on the hub
+  - Surfaces missing-required (required=true but heID null) and orphan-app (heID recorded but code no longer in Apps Code registry) signals
+  - Optional packageFilter (case-insensitive substring) narrows to specific packages
+  - Response: packagesChecked, totalDriftSignals, drift[] array (one entry per package with signals), summary sentence, limitations note
+  - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via update_app_code are not detectable
 
 **manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 

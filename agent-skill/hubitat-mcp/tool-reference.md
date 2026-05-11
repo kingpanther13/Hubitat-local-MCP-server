@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 101 MCP tools. The server exposes **35 items on `tools/list`**: 23 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 103 MCP tools. The server exposes **36 items on `tools/list`**: 23 core tools + 13 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -57,11 +57,11 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 101 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 103 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
-## Gateway Tools (12) — Each proxies multiple tools
+## Gateway Tools (13) — Each proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas for all its tools. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -201,6 +201,15 @@ Read-only visibility into all installed apps (built-in + user): enumerate with p
 | `get_device_in_use_by` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Built-in App Read |
 | `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: list_installed_apps or list_rm_rules -> get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before get_app_config on multi-page apps. | Hub Admin Read |
+
+### manage_hpm (2 tools)
+
+HPM package state introspection -- read-only. Tracks installed packages, their manifest versions, and per-component drift signals. Both tools require Hub Admin Read and HPM itself must be installed on the hub. Auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied explicitly.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `list_hpm_packages` | List all HPM-tracked packages with full component inventory (apps, drivers, files). Each package: `packageName`, `version`, `beta`, `author`, components with `heID`. | Hub Admin Read |
+| `get_hpm_drift` | Cross-reference HPM-tracked state against the hub: surfaces `missing-required` (heID null on required component) and `orphan-app` (heID recorded but code no longer in Apps Code registry) signals. Optional `packageFilter` substring. Each drift entry includes `version`. Response includes `orphanDetection.enabled` (false when Apps Code registry fetch failed). | Hub Admin Read |
 
 ### manage_native_rules_and_apps (12 tools)
 

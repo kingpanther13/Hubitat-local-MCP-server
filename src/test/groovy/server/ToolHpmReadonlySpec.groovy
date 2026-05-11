@@ -1,0 +1,1066 @@
+package server
+
+import groovy.json.JsonOutput
+import support.ToolSpecBase
+
+/**
+ * Spec for toolListHpmPackages and toolGetHpmDrift.
+ * Gateway: manage_hpm -> list_hpm_packages / get_hpm_drift.
+ *
+ * HPM stores its tracked packages in state.manifests, which /installedapp/statusJson
+ * double-encodes: the appState entry named "manifests" holds a JSON-encoded string
+ * whose value is itself a JSON map from manifest URL to package map.
+ *
+ * Both tools share two private helpers (_hpmDiscoverAppId, _hpmFetchManifests)
+ * tested indirectly through the public tool methods.
+ */
+class ToolHpmReadonlySpec extends ToolSpecBase {
+
+    // -------------------------------------------------------------------------
+    // Fixture builders
+    // -------------------------------------------------------------------------
+
+    /**
+     * Minimal appsList response with HPM as a user app.
+     * Discovery matches on data.type == "Hubitat Package Manager" in the apps[] tree.
+     * userAppTypes[] does NOT carry a namespace field on real hubs -- the fixture
+     * reflects real hub data shape (id + name only, no namespace).
+     * The app-type-catalog id (101) differs from the installed-instance id (hpmAppId)
+     * to ensure the implementation returns the instance id, not the type-catalog id.
+     */
+    private static String makeAppsListWithHpm(String hpmAppId = "37") {
+        JsonOutput.toJson([
+            systemAppTypes: [],
+            userAppTypes  : [
+                [id: "101", name: "Hubitat Package Manager"]
+            ],
+            apps: [
+                [
+                    data    : [id: hpmAppId, name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true, disabled: false, hidden: false, appTypeId: "101"],
+                    children: []
+                ]
+            ]
+        ])
+    }
+
+    /**
+     * Minimal appsList response confirming a given id is HPM, with no other user apps.
+     * Used by explicit-hpmAppId tests that only need the type-assertion to pass
+     * and do not require userAppTypes[] entries for orphan-detection.
+     */
+    private static String makeAppsListWithHpmOnly(String hpmAppId = "37") {
+        JsonOutput.toJson([
+            systemAppTypes: [],
+            userAppTypes  : [],
+            apps: [
+                [
+                    data    : [id: hpmAppId, name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true, disabled: false, hidden: false],
+                    children: []
+                ]
+            ]
+        ])
+    }
+
+    /**
+     * /hub2/userAppTypes response: flat JSON array of code definitions.
+     * Each entry has at minimum an id field. This is the Apps Code registry
+     * (what list_hub_apps uses), not the installed-instances tree in appsList.
+     * Child-app templates appear here even with zero running instances.
+     */
+    private static String makeUserAppTypes(List<String> ids = []) {
+        JsonOutput.toJson(ids.collect { id -> [id: id, name: "App ${id}", namespace: "test"] })
+    }
+
+    /** appsList with no HPM entry. */
+    private static String makeAppsListNoHpm() {
+        JsonOutput.toJson([
+            systemAppTypes: [],
+            userAppTypes  : [[id: "200", name: "Some Other App"]],
+            apps: [
+                [
+                    data    : [id: "50", name: "Some Other App", type: "Other", user: true, disabled: false, hidden: false, appTypeId: "200"],
+                    children: []
+                ]
+            ]
+        ])
+    }
+
+    /**
+     * Build a statusJson response where appState[].value is a Map (already-parsed shape).
+     * This matches the live-hub shape: the outer JsonSlurper recursively parses the
+     * inner JSON string, so entry.value arrives as a Map, not a String.
+     * Use this fixture for happy-path tests.
+     */
+    private static String makeHpmStatusJson(String hpmAppId, Map manifests) {
+        // value is the Map directly -- JsonOutput will serialize it as a nested JSON object,
+        // and the outer JsonSlurper will parse it back to a Map, matching real hub behavior.
+        JsonOutput.toJson([
+            id      : hpmAppId as Integer,
+            appState: [
+                [name: "manifests", value: manifests]
+            ],
+            appSettings: []
+        ])
+    }
+
+    /**
+     * Build a statusJson response where appState[].value is a JSON-encoded String
+     * (double-encoded / fallback shape). Exercises the String branch of the type-aware decode.
+     */
+    private static String makeHpmStatusJsonStringValue(String hpmAppId, Map manifests) {
+        def manifestsJson = JsonOutput.toJson(manifests)
+        JsonOutput.toJson([
+            id      : hpmAppId as Integer,
+            appState: [
+                [name: "manifests", value: manifestsJson]
+            ],
+            appSettings: []
+        ])
+    }
+
+    /** statusJson with no manifests entry (HPM installed but no packages tracked). */
+    private static String makeHpmStatusJsonEmpty(String hpmAppId) {
+        JsonOutput.toJson([
+            id      : hpmAppId as Integer,
+            appState: [],
+            appSettings: []
+        ])
+    }
+
+    /** One fully-populated package with one app, one driver, one file. */
+    private static Map onePackageManifests() {
+        [
+            "https://raw.githubusercontent.com/foo/bar/main/packageManifest.json": [
+                packageName: "BOND Home Integration",
+                version    : "1.1.2",
+                beta       : false,
+                author     : "Dominick Meglio",
+                apps: [
+                    [id: "bf7c20fb-0001-0001-0001-aabbccddeeff", name: "BOND Home App", namespace: "mavrrick", location: "https://raw.githubusercontent.com/foo/bar/main/bondApp.groovy", required: true, version: null, heID: "142"]
+                ],
+                drivers: [
+                    [id: "163f6821-0001-0001-0001-aabbccddeeff", name: "BOND Fan", namespace: "mavrrick", location: "https://raw.githubusercontent.com/foo/bar/main/bondDriver.groovy", required: true, version: "1.0.3", heID: "89"]
+                ],
+                files: [
+                    [id: "3f7ffb28-0001-0001-0001-aabbccddeeff", name: "bond.js"]
+                ]
+            ]
+        ]
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: Hub Admin Read gate
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages throws when Hub Admin Read is disabled"() {
+        given:
+        settingsMap.enableHubAdminRead = false
+
+        when:
+        script.toolListHpmPackages([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Hub Admin Read')
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: explicit hpmAppId validation
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages throws when hpmAppId is non-numeric"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        script.toolListHpmPackages([hpmAppId: "not-a-number"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('numeric')
+    }
+
+    def "list_hpm_packages throws when explicit hpmAppId exists but belongs to a different app type"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // App 999 exists but is type "Simple Automation Rules", not HPM
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "999", name: "Simple Automations", type: "Simple Automation Rules", user: true], children: []]
+                ]
+            ])
+        }
+
+        when:
+        script.toolListHpmPackages([hpmAppId: "999"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("999")
+        // Must name the actual type so the caller knows what they hit
+        ex.message.toLowerCase().contains("simple automation rules") || ex.message.toLowerCase().contains("actual type")
+    }
+
+    def "list_hpm_packages throws when explicit hpmAppId does not exist in installed apps"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Installed apps list has no entry with id "998"
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+
+        when:
+        script.toolListHpmPackages([hpmAppId: "998"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("998")
+        ex.message.toLowerCase().contains("not found") || ex.message.toLowerCase().contains("auto-discovery")
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: auto-discovery
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages auto-discovers hpmAppId when not supplied"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpm("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+
+        when:
+        def result = script.toolListHpmPackages([:])
+
+        then:
+        result.success == true
+        result.hpmAppId == "37"
+    }
+
+    /**
+     * Regression: discovery must return the installed-instance id from apps[].data.id ("37"),
+     * NOT the app-type-catalog id from userAppTypes[].id ("101"). Both are present in the
+     * fixture. The broken implementation incorrectly matched via userAppTypes[] and would have
+     * returned "101" or failed outright (real userAppTypes[] has no namespace field).
+     */
+    def "list_hpm_packages discovery returns installed-instance id, not app-type-catalog id"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Fixture: type-catalog id = "101", installed-instance id = "37"
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpm("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+
+        when:
+        def result = script.toolListHpmPackages([:])
+
+        then: 'returns the installed-instance id (37), not the type-catalog id (101)'
+        result.success == true
+        result.hpmAppId == "37"
+        result.hpmAppId != "101"
+    }
+
+    def "list_hpm_packages throws when HPM is not installed"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListNoHpm() }
+
+        when:
+        script.toolListHpmPackages([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('hpm') || ex.message.toLowerCase().contains('package manager') || ex.message.toLowerCase().contains('not found') || ex.message.toLowerCase().contains('not installed')
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: golden path with explicit hpmAppId
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages golden path: returns single package with apps, drivers, and files"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'top-level success and count'
+        result.success == true
+        result.hpmAppId == "37"
+        result.count == 1
+        result.packages.size() == 1
+
+        and: 'package-level fields'
+        def pkg = result.packages[0]
+        pkg.packageName == "BOND Home Integration"
+        pkg.version == "1.1.2"
+        pkg.beta == false
+        pkg.author == "Dominick Meglio"
+        pkg.manifestUrl == "https://raw.githubusercontent.com/foo/bar/main/packageManifest.json"
+
+        and: 'app component'
+        pkg.apps.size() == 1
+        pkg.apps[0].name == "BOND Home App"
+        pkg.apps[0].heID == "142"
+        pkg.apps[0].required == true
+        pkg.apps[0].version == null
+
+        and: 'driver component with per-component version'
+        pkg.drivers.size() == 1
+        pkg.drivers[0].name == "BOND Fan"
+        pkg.drivers[0].heID == "89"
+        pkg.drivers[0].version == "1.0.3"
+
+        and: 'file component (no heID field)'
+        pkg.files.size() == 1
+        pkg.files[0].name == "bond.js"
+        !pkg.files[0].containsKey('heID')
+    }
+
+    /**
+     * Regression: _hpmFetchManifests must handle appState[].value as a JSON-encoded String
+     * (double-encoded / fallback path). Real hubs return a Map (outer JsonSlurper parses it);
+     * the String path exists for any hub variant that leaves the inner value as a String.
+     * Both paths must produce the same package list.
+     */
+    def "list_hpm_packages handles appState value as JSON-encoded String (double-encoded fallback path)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        // makeHpmStatusJsonStringValue encodes manifests as a JSON string inside the outer JSON
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJsonStringValue("37", onePackageManifests()) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'String-value path produces the same output as the Map-value path'
+        result.success == true
+        result.count == 1
+        result.packages[0].packageName == "BOND Home Integration"
+        result.packages[0].apps[0].heID == "142"
+    }
+
+    def "list_hpm_packages handles multiple packages and returns correct count"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = onePackageManifests() + [
+            "https://raw.githubusercontent.com/baz/qux/main/packageManifest.json": [
+                packageName: "Second Package",
+                version    : "2.0.0",
+                beta       : true,
+                author     : "Someone Else",
+                apps: [], drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.count == 2
+        result.packages.size() == 2
+        result.packages.any { it.packageName == "BOND Home Integration" }
+        result.packages.any { it.packageName == "Second Package" }
+    }
+
+    def "list_hpm_packages handles package with no apps or drivers or files"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/empty/packageManifest.json": [
+                packageName: "Empty Package",
+                version    : "0.1.0",
+                beta       : false,
+                author     : "Test",
+                apps: [], drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.count == 1
+        def pkg = result.packages[0]
+        pkg.apps == []
+        pkg.drivers == []
+        pkg.files == []
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: no packages tracked (empty appState)
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages returns count=0 when no manifests entry in appState"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJsonEmpty("37") }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.count == 0
+        result.packages == []
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: error paths
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages returns success=false when statusJson body is empty"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { '' }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == false
+        result.error != null
+        result.error.toLowerCase().contains('empty')
+    }
+
+    def "list_hpm_packages returns success=false when manifests value is not parseable JSON"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') {
+            JsonOutput.toJson([
+                id: 37,
+                appState: [[name: "manifests", value: "{not valid json"]],
+                appSettings: []
+            ])
+        }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == false
+        result.error != null
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: heID type coercion
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages coerces Integer heID to String"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // HPM sometimes stores heID as an Integer (from Location header parsing).
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "IntID Package",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // heID as a raw Integer -- not a String
+                apps: [[id: "uuid-1", name: "Some App", namespace: "ns", location: "loc", required: true, version: null, heID: 999]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        def app = result.packages[0].apps[0]
+        app.heID instanceof String
+        app.heID == "999"
+    }
+
+    def "list_hpm_packages coerces Integer heID to String on a driver component"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "IntID Driver Package",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // heID as a raw Integer on a driver entry
+                drivers: [[id: "uuid-d1", name: "Some Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: 123]],
+                files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        def driver = result.packages[0].drivers[0]
+        driver.heID instanceof String
+        driver.heID == "123"
+    }
+
+    def "list_hpm_packages represents null heID as null (not string 'null')"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Optional Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [[id: "uuid-2", name: "Optional App", namespace: "ns", location: "loc", required: false, version: null, heID: null]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.packages[0].apps[0].heID == null
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: Hub Admin Read gate
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift throws when Hub Admin Read is disabled"() {
+        given:
+        settingsMap.enableHubAdminRead = false
+
+        when:
+        script.toolGetHpmDrift([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Hub Admin Read')
+    }
+
+    def "get_hpm_drift throws when hpmAppId is non-numeric"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        script.toolGetHpmDrift([hpmAppId: "not-a-number"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('numeric')
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: HPM not installed
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift throws when HPM is not installed (auto-discovery fails)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListNoHpm() }
+
+        when:
+        script.toolGetHpmDrift([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message != null
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: no drift (clean state)
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift happy path: no drift when all required components have heID and all heIDs present in Apps Code"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        // apps[] includes HPM so the explicit-id assert (_hpmAssertAppIsHpm) passes.
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // /hub2/userAppTypes (Apps Code registry): heID 142 is present -- no orphan signal.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.hpmAppId == "37"
+        result.packagesChecked == 1
+        result.totalDriftSignals == 0
+        result.drift == []
+        result.summary.contains("No drift")
+        result.orphanDetection?.enabled == true
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: missing-required signal
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift surfaces missing-required signal when required app has null heID"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Incomplete Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [
+                    [id: "app-uuid-1", name: "Required App", namespace: "ns", location: "loc", required: true, version: null, heID: null]
+                ],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps          : [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // All heIDs are null so orphan check never fires; empty Apps Code registry is fine.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.totalDriftSignals == 1
+        result.drift.size() == 1
+        def entry = result.drift[0]
+        entry.packageName == "Incomplete Pkg"
+        entry.signals.size() == 1
+        def sig = entry.signals[0]
+        sig.type == "missing-required"
+        sig.componentType == "app"
+        sig.componentName == "Required App"
+        sig.note != null
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: orphan-app signal
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift surfaces orphan-app signal when heID not in Apps Code registry"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Orphaned Pkg",
+                version    : "2.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [
+                    [id: "app-uuid-orphan", name: "Orphan App", namespace: "ns", location: "loc", required: true, version: null, heID: "999"]
+                ],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        // apps[] includes HPM so the explicit-id assert passes.
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Apps Code registry has a different app (100) but NOT 999 -- orphan signal fires.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["100"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.totalDriftSignals == 1
+        def sig = result.drift[0].signals[0]
+        sig.type == "orphan-app"
+        sig.heID == "999"
+        sig.componentName == "Orphan App"
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: both signals on same package
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift surfaces both missing-required and orphan-app signals on same package"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Mixed Signals",
+                version    : "3.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [
+                    [id: "app-req-null", name: "Missing Required", namespace: "ns", location: "loc", required: true, version: null, heID: null],
+                    [id: "app-orphan", name: "Orphan App", namespace: "ns", location: "loc", required: false, version: null, heID: "888"]
+                ],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        // apps[] includes HPM so the explicit-id assert passes.
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Apps Code registry has a different code def (999) but NOT 888 -- orphan signal fires.
+        // Non-empty so installedAppCodeIds is truthy and the orphan guard does not short-circuit.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["999"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.totalDriftSignals == 2
+        result.drift.size() == 1
+        def signals = result.drift[0].signals
+        signals.any { it.type == "missing-required" }
+        signals.any { it.type == "orphan-app" }
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: packageFilter
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift with packageFilter narrows to matching packages only"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = onePackageManifests() + [
+            "https://example.com/other/packageManifest.json": [
+                packageName: "Totally Different",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Other",
+                apps: [[id: "uuid-x", name: "Other App", namespace: "ns", location: "loc", required: true, version: null, heID: null]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // heID 142 (BOND app) is in Apps Code -- no orphan signal for the BOND package.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37", packageFilter: "BOND"])
+
+        then:
+        result.success == true
+        // Only the BOND package matches the filter
+        result.packagesChecked == 1
+        // BOND package has no drift (app heID 142 is in the installed list)
+        result.totalDriftSignals == 0
+    }
+
+    def "get_hpm_drift with packageFilter that matches nothing returns packagesChecked=0"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps          : [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37", packageFilter: "NoSuchPackageXYZ"])
+
+        then:
+        result.success == true
+        result.packagesChecked == 0
+        result.drift == []
+        result.totalDriftSignals == 0
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: limitations note is always present
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift always includes limitations note in response"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJsonEmpty("37") }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps          : [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.limitations != null
+        result.limitations.contains("heID-presence-only")
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: regression -- child-app template false-positive
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression pin: a component whose heID exists in Apps Code (/hub2/userAppTypes)
+     * but has NO running installed instance in the apps[] tree must NOT be flagged
+     * orphan-app. This was the live bug: "MCP Rule" (a child-app template) has a code
+     * definition in Apps Code (heID 179) but is never installed as a standalone instance
+     * -- it is instantiated dynamically by its parent. The original implementation used
+     * /hub2/appsList .userAppTypes[] (installed instances) instead of /hub2/userAppTypes
+     * (code definitions), which caused every child-app template to appear orphaned.
+     */
+    def "get_hpm_drift does not flag orphan-app for child-app template present in Apps Code but with no running instance"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Package has a child-app template component (heID 179) with no running instance.
+        def manifests = [
+            "https://raw.githubusercontent.com/example/main/packageManifest.json": [
+                packageName: "Parent + Child App Package",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [
+                    [id: "app-uuid-parent", name: "Parent App",     namespace: "ns", location: "loc", required: true,  version: null, heID: "178"],
+                    [id: "app-uuid-child",  name: "Child App Rule",  namespace: "ns", location: "loc", required: true,  version: null, heID: "179"]
+                ],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        // apps[] has only HPM (37) and the parent (178) as running instances.
+        // The child-app template (179) has NO entry in apps[] -- it is not a running instance.
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37",  name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: [
+                        [data: [id: "178", name: "Parent App",    type: "Parent App",    user: true], children: []]
+                    ]]
+                ]
+            ])
+        }
+        // Apps Code registry has BOTH the parent (178) and the child-app template (179).
+        // This is what the corrected implementation checks -- not installed instances.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["178", "179"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'no orphan-app signal for the child-app template'
+        result.success == true
+        result.totalDriftSignals == 0
+        result.drift == []
+        result.summary.contains("No drift")
+    }
+
+    // -------------------------------------------------------------------------
+    // Auto-discovery: BFS into children[] (I7)
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages auto-discovery finds HPM nested under a parent app in the apps tree"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // HPM (id "37") is a child of some parent app (id "10") in the instance tree.
+        // Discovery must walk children[] to find it, not just the top-level apps[].
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "10", name: "Some Parent App", type: "Some Parent", user: true], children: [
+                        [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                    ]]
+                ]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+
+        when:
+        def result = script.toolListHpmPackages([:])
+
+        then: 'found HPM nested under a parent app'
+        result.success == true
+        result.hpmAppId == "37"
+    }
+
+    // -------------------------------------------------------------------------
+    // Auto-discovery: multiple HPM instances throws (C2)
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages auto-discovery throws when multiple HPM instances are found"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []],
+                    [data: [id: "99", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+
+        when:
+        script.toolListHpmPackages([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("37")
+        ex.message.contains("99")
+        ex.message.toLowerCase().contains("multiple") || ex.message.toLowerCase().contains("explicit")
+    }
+
+    // -------------------------------------------------------------------------
+    // packageFilter case-insensitivity (I7)
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift packageFilter is case-insensitive (lowercase filter matches mixed-case packageName)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+
+        when:
+        // "bond" (lowercase) must match "BOND Home Integration" (mixed case)
+        def result = script.toolGetHpmDrift([hpmAppId: "37", packageFilter: "bond"])
+
+        then:
+        result.success == true
+        result.packagesChecked == 1
+        result.totalDriftSignals == 0
+    }
+
+    // -------------------------------------------------------------------------
+    // /hub2/userAppTypes fetch failure -- structured orphanDetection disclosure (C1 / I7)
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift surfaces orphanDetection.enabled=false when /hub2/userAppTypes fetch fails"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // /hub2/userAppTypes throws -- simulates transport failure
+        hubGet.register('/hub2/userAppTypes') { throw new RuntimeException("connection refused") }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'tool succeeds but discloses that orphan detection was skipped'
+        result.success == true
+        result.orphanDetection?.enabled == false
+        result.orphanDetection?.reason != null
+        // totalDriftSignals stays 0 -- no orphan signals without the registry
+        result.totalDriftSignals == 0
+    }
+
+    // -------------------------------------------------------------------------
+    // filterMatchedZero: packageFilter with no matching packages (I1)
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift with packageFilter that matches nothing includes filterMatchedZero and availablePackages"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37", packageFilter: "NoSuchPackageXYZ"])
+
+        then:
+        result.success == true
+        result.packagesChecked == 0
+        result.filterMatchedZero == true
+        result.availablePackages != null
+        result.availablePackages.contains("BOND Home Integration")
+    }
+}

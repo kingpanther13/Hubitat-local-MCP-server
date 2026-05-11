@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management architecture (23 core + 12 gateways = 35 on tools/list, 78 proxied, 101 total).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture (23 core + 13 gateways = 36 on tools/list, 80 proxied, 103 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -1343,7 +1343,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 
 ## Section 9: Stress Tests
 
-### T120 — Many-gateway stress (7 of 12 gateways)
+### T120 — Many-gateway stress (7 of 13 gateways)
 
 ```json
 {
@@ -1353,7 +1353,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (21 + 10 gate
 }
 ```
 
-**Expected**: 10 calls across core tools and gateways (manage_rooms, manage_hub_variables, get_hub_info (core), create_hub_backup (core), manage_files, manage_apps_drivers, manage_diagnostics, manage_logs, check_for_update (core), manage_rules_admin). Excluded: `manage_app_driver_code` (all tools destructive), `manage_destructive_hub_ops` (destructive ops), `manage_installed_apps` (separate T205 scenarios), `manage_native_rules_and_apps` (separate T200-series scenarios), `manage_mcp_self` (separate T102 scenarios). All 7 exercised gateways should succeed.
+**Expected**: 10 calls across core tools and gateways (manage_rooms, manage_hub_variables, get_hub_info (core), create_hub_backup (core), manage_files, manage_apps_drivers, manage_diagnostics, manage_logs, check_for_update (core), manage_rules_admin). Excluded: `manage_app_driver_code` (all tools destructive), `manage_destructive_hub_ops` (destructive ops), `manage_hpm` (separate T600-T602 scenarios), `manage_installed_apps` (separate T205 scenarios), `manage_native_rules_and_apps` (separate T200-series scenarios), `manage_mcp_self` (separate T102 scenarios). All 7 exercised gateways should succeed.
 
 ### T121 — Rapid rule create-delete cycles
 
@@ -2275,16 +2275,16 @@ These operations are too destructive for automated testing. Test manually with e
 | Component | Count |
 |-----------|-------|
 | Core tools on `tools/list` | 23 |
-| Gateways on `tools/list` | 12 |
-| Total visible on `tools/list` | 35 |
-| Tools proxied behind gateways | 78 |
-| Total tools in codebase | 101 |
+| Gateways on `tools/list` | 13 |
+| Total visible on `tools/list` | 36 |
+| Tools proxied behind gateways | 80 |
+| Total tools in codebase | 103 |
 
-**12 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
+**13 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_hpm` (2), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 101 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 103 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2853,11 +2853,57 @@ Write tools (`install_library`, `update_library_code`, `delete_library`) live in
 
 ---
 
+## Section 15: HPM Package State Tests
+
+Tools in this section require **Hub Admin Read** and HPM itself must be installed on the hub. Both tools live in the `manage_hpm` gateway. Tests assume at least one package has been installed via HPM.
+
+**Pre-flight (manual one-time):**
+1. Enable **Hub Admin Read Tools** in MCP Rule Server settings.
+2. Verify HPM is installed (`list_installed_apps` should show "Hubitat Package Manager").
+
+### T600 — list_hpm_packages: enumerate all HPM-tracked packages
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. HPM is installed with at least one package.",
+  "test_prompt": "List all packages tracked by Hubitat Package Manager. Include their names, versions, and whether they are beta.",
+  "teardown_prompt": "No teardown needed."
+}
+```
+
+**Expected**: AI calls `manage_hpm(tool='list_hpm_packages')` (hpmAppId auto-discovered). Returns `success=true`, `count` (number of packages), and `packages` array. Each entry has `packageName`, `version`, `beta`, `author`, `apps`, `drivers`, `files`. AI summarizes the count and names, and flags any beta packages.
+
+**Failure modes**: AI calls `get_app_config` with `pageName='prefPkgUninstall'` instead (works but slower and returns the page-rendered enum/option list rather than structured package records). `list_hpm_packages` is the right tool for programmatic enumeration.
+
+### T601 — get_hpm_drift: surface drift signals
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. HPM is installed with at least one package.",
+  "test_prompt": "Check for any HPM package drift -- missing required components or orphaned app code definitions. Summarize what you find.",
+  "teardown_prompt": "No teardown needed."
+}
+```
+
+**Expected**: AI calls `manage_hpm(tool='get_hpm_drift')`. Returns `success=true`, `summary` sentence, `drift` array (may be empty), `totalDriftSignals`, and `limitations` note. AI interprets the summary and describes any drift signals found (type, packageName, componentName). If no drift, AI confirms the packages are clean and mentions the heID-presence-only detection limitation.
+
+### T602 — manage_hpm gateway catalog discovery
+
+```json
+{
+  "test_prompt": "What can the manage_hpm gateway do?"
+}
+```
+
+**Expected**: AI calls `manage_hpm` with no args, sees catalog of 2 tools (`list_hpm_packages`, `get_hpm_drift`) with full parameter schemas. AI describes both tools and their shared Hub Admin Read requirement.
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 12 gateways (35 on tools/list, 101 total)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute + library management (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 13 gateways (36 on tools/list, 103 total)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute + library management + HPM package state (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `custom_update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted
