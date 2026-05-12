@@ -45,6 +45,10 @@ After sending a command, use `poll_until_attribute` to verify the state change t
 
 MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, etc.) via `manage_virtual_device` (a core tool, always visible) using `action="create"` or `action="delete"`. These are automatically accessible without manual selection. Use `list_virtual_devices` to see MCP-managed virtual devices. Do not use `delete_device` for MCP-managed virtual devices. Both virtual device tools are core tools on `tools/list`.
 
+For `action="create"`, provide exactly ONE of:
+- `deviceType` -- one of the 15 built-in virtual driver names (see `get_tool_guide` for the full list)
+- `customDriver={namespace, name}` -- a user-installed driver; use `manage_apps_drivers(tool="list_hub_drivers")` to find installed namespace + name values
+
 ## Automation Rules
 
 Rules are the core automation primitive. Each rule has **triggers** (what starts it), **conditions** (what must be true), and **actions** (what to do).

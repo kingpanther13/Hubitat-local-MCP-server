@@ -17,6 +17,7 @@ class TestDevice {
     String name
     String label
     String roomName
+    String deviceNetworkId
     List capabilities = []
     List supportedAttributes = []
     List supportedCommands = []

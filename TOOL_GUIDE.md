@@ -115,7 +115,9 @@ All Hub Admin Write tools require these steps:
 
 ## Virtual Device Types
 
-When using `manage_virtual_device` (action: "create"), these types are available:
+`manage_virtual_device` (action: "create") supports two mutually exclusive driver selection methods:
+
+**Option A: deviceType** -- built-in Hubitat virtual drivers (pass one of the values below):
 
 | Type | Description | Common Use Case |
 |------|-------------|-----------------|
@@ -134,6 +136,17 @@ When using `manage_virtual_device` (action: "create"), these types are available
 | Virtual Water Sensor | wet/dry | Water leak simulation |
 | Virtual Omni Sensor | multi-purpose | Combined sensor types |
 | Virtual Fan Controller | fan speed control | Fan simulation |
+
+**Option B: customDriver** -- user-installed drivers (pass `{namespace, name}`):
+```json
+{
+  "action": "create",
+  "deviceLabel": "Kitchen Humidifier Test",
+  "customDriver": { "namespace": "level99-vesync", "name": "Levoit Classic 200S Humidifier" },
+  "confirm": true
+}
+```
+Use `manage_apps_drivers(tool="list_hub_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found, `addChildDevice` throws and the tool surfaces an `IllegalArgumentException` pointing to `list_hub_drivers`.
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP device tools without manual selection

@@ -343,6 +343,26 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `manage_virtual_device` with `action="delete"`. Deletes virtual device.
 
+### T19d — manage_virtual_device customDriver (not found error)
+
+```json
+{
+  "test_prompt": "Create a test device using namespace 'fake-namespace' and driver name 'fake-driver', label it 'BAT Custom Driver Test'."
+}
+```
+
+**Expected**: Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace: "fake-namespace", name: "fake-driver"}`. Hub returns UnknownDeviceTypeException; tool surfaces `IllegalArgumentException` containing "list_hub_drivers". Agent reports the failure to the user and does NOT silently substitute a different device.
+
+### T19e — manage_virtual_device customDriver mutually exclusive
+
+```json
+{
+  "test_prompt": "Create a virtual switch called 'Test' using deviceType='Virtual Switch' AND also set customDriver={namespace:'x',name:'y'}."
+}
+```
+
+**Expected**: Tool throws `IllegalArgumentException` with "mutually exclusive" in the message. Agent reports the error.
+
 ---
 
 ## Section 2: Gateway Discovery Tests

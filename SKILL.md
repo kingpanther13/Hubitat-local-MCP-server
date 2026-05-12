@@ -394,12 +394,15 @@ Devices are accessible from two sources:
 
 Virtual devices are managed via the unified `manage_virtual_device` tool (action enum: "create", "delete") as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
 
-- **`addChildDevice("hubitat", driverName, dni, null, [name: ..., label: ..., isComponent: false])`** — creates a device using a built-in Hubitat driver (5-argument form with `null` hub ID for cross-firmware compatibility)
+- **`addChildDevice(namespace, driverName, dni, null, [name: ..., label: ..., isComponent: false])`** — 5-argument form with `null` hub ID for cross-firmware compatibility. Namespace is `"hubitat"` for built-in virtual drivers, or the user-supplied namespace for custom drivers.
+- **Two mutually exclusive create modes**: `deviceType` (one of 15 built-in virtual driver names, namespace hardcoded to `"hubitat"`) OR `customDriver={namespace, name}` (user-installed driver with any namespace). Exactly one must be provided.
 - **`isComponent: false`** — device appears independently in the Hubitat UI, can be edited/deleted, and can be shared with other apps (Maker API, Dashboard, Rule Machine, HA, etc.)
 - **`getChildDevices()`** returns only child *devices* (not child apps/rules — those use `getChildApps()`)
 - **`deleteChildDevice(dni)`** removes by device network ID
 - Auto-generated DNIs use format `mcp-virtual-<hex-timestamp>-<hex-random>` with retry logic to avoid collisions
 - Supports 15 built-in virtual device types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller
+- For custom drivers: `customDriver={namespace, name}` -- namespace + name must match exactly as registered. `UnknownDeviceTypeException` from `addChildDevice` is translated to an `IllegalArgumentException` pointing to `list_hub_drivers`.
+- Response shape includes `driverNamespace` and `driverType` (both paths).
 - Requires Hub Admin Write access (with backup verification) for create/delete operations
 
 #### update_device Tool
