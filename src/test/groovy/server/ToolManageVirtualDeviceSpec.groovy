@@ -234,6 +234,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedArgs.namespace == 'level99-vesync'
         capturedArgs.name      == 'Levoit Classic 200S Humidifier'
         capturedArgs.hubId     == null  // always null per 5-arg form convention
+        capturedArgs.props?.label == 'Kitchen Humidifier Test'  // label propagates to addChildDevice props map
         result.success == true
         result.device.id == '77'
         result.device.driverNamespace == 'level99-vesync'
@@ -286,7 +287,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "create with built-in deviceType still works after dual-path refactor"() {
         given:
         enableHubAdminWrite()
-        def capturedNamespace = null
+        def capturedArgs = [:]
         def fakeDevice = Mock(ChildDeviceWrapper) {
             getId() >> '42'
             getIdAsLong() >> 42L
@@ -299,7 +300,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             currentValue(_) >> null
         }
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
-            capturedNamespace = ns
+            capturedArgs.namespace = ns
+            capturedArgs.props     = props
             fakeDevice
         }
 
@@ -311,7 +313,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        capturedNamespace == 'hubitat'
+        capturedArgs.namespace == 'hubitat'
+        capturedArgs.props?.label == 'BAT Test Switch'  // label propagates to addChildDevice props map
         result.success == true
         result.device.id == '42'
         result.device.driverNamespace == 'hubitat'
