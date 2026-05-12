@@ -208,8 +208,8 @@ HPM package state introspection -- read-only. Tracks installed packages, their m
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `list_hpm_packages` | List all HPM-tracked packages with full component inventory (apps, drivers, files). Each package: `packageName`, `version`, `beta`, `author`, components with `heID`. | Hub Admin Read |
-| `get_hpm_drift` | Cross-reference HPM-tracked state against the hub: surfaces `missing-required` (heID null on required component) and `orphan-app` (heID recorded but code no longer in Apps Code registry) signals. Optional `packageFilter` substring. Each drift entry includes `version`. Response includes `orphanDetection.enabled` (false when Apps Code registry fetch failed). | Hub Admin Read |
+| `list_hpm_packages` | List all HPM-tracked packages with full component inventory (apps, drivers, files). Each package: `packageName`, `version`, `beta`, `author`, components with `heID` (null if not installed; non-scalar or empty/whitespace heID cleared to null + `_warning`). Top-level `skippedMalformed[]` lists URLs skipped due to non-Map manifest value. Per-package `skippedComponentCount` when > 0. | Hub Admin Read |
+| `get_hpm_drift` | Cross-reference HPM-tracked state against the hub: surfaces `missing-required` (heID null on required component) and `orphan-app` (heID recorded but code no longer in Apps Code registry) signals. Optional `packageFilter` substring. Each drift entry includes `version`, `signals[]`, and optionally `dataQualityWarnings[]`. `totalDriftSignals` counts only actionable drift -- data-quality issues (non-scalar heID) go to `dataQualityWarnings[]` on the entry and top-level. Top-level `skippedMalformed[]` for non-Map manifest values. Response includes `orphanDetection.enabled` (false when Apps Code registry fetch failed), `orphanDetection.reason`, `filterMatchedZero` + `availablePackages[]` when filter matches nothing. | Hub Admin Read |
 
 ### manage_native_rules_and_apps (12 tools)
 

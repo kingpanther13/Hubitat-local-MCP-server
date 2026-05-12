@@ -2381,9 +2381,11 @@ Requires Hub Admin Read.""",
             name: "list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
 
-App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not).
+App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is a non-scalar type (not Number or String) or an empty/whitespace string, heID is cleared to null and a _warning field is added to that component entry.
 
 File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
+
+Response also includes: skippedMalformed (array of manifest URLs whose top-level value was not a Map -- package skipped entirely); skippedComponentCount per package when > 0 (count of app/driver/file entries that were not Maps and thus skipped).
 
 If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call.
 
@@ -2406,7 +2408,7 @@ Drift detection is heID-presence-only. HPM stores no source hashes so post-insta
 
 If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked.
 
-Response fields: packagesChecked, totalDriftSignals, drift[] (one entry per drifted package -- each has manifestUrl, packageName, version, signals[]), summary sentence, orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed and orphan signals were skipped this call), limitations note. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[] so you can check your filter spelling.
+Response fields: packagesChecked, totalDriftSignals (counts only actionable drift signals -- missing-required and orphan-app -- not data-quality warnings), drift[] (one entry per package with any signal or warning -- each has manifestUrl, packageName, version, signals[], and optionally dataQualityWarnings[]), summary sentence, orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed and orphan signals were skipped this call), limitations note. Data-quality issues (e.g. non-scalar heID) land in dataQualityWarnings[] on the per-package entry and in the top-level dataQualityWarnings[] array -- they do NOT inflate totalDriftSignals. Top-level skippedMalformed[] lists manifest URLs whose value was not a Map. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[] so you can check your filter spelling.
 
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
@@ -11877,11 +11879,9 @@ private Map _fetchAppsListTree(String caller) {
 private String _hpmDiscoverAppId() {
     def parsed = _fetchAppsListTree("HPM discovery")
     // Walk the installed-app instance tree (apps[]) using a plain List as a BFS work queue.
-    // Match on data.type == "Hubitat Package Manager" -- this is the app-type name as set
-    // on the installed instance, not a namespace lookup. userAppTypes[] entries do not carry
-    // a namespace field in real hub responses.
-    // Collect ALL matches: two HPM instances (e.g. duplicate install, partial migration) must
-    // be surfaced explicitly rather than silently picking the first.
+    // Collects ALL matches unconditionally so duplicate HPM installs are surfaced as an error
+    // rather than silently returning the first. BFS walks children[] at every node to handle
+    // HPM nested under a parent app.
     def hpmMatches = []
     def workQueue = [] + (parsed?.apps ?: [])
     int qi = 0
@@ -11898,7 +11898,10 @@ private String _hpmDiscoverAppId() {
         throw new IllegalArgumentException("HPM not found in installed apps -- Hubitat Package Manager does not appear to be installed")
     }
     if (hpmMatches.size() > 1) {
-        throw new IllegalArgumentException("Multiple HPM instances found: [${hpmMatches.join(', ')}] -- pass hpmAppId explicitly to select one")
+        def cap = 10
+        def shown = hpmMatches.take(cap).join(', ')
+        def extra = hpmMatches.size() > cap ? " and ${hpmMatches.size() - cap} more" : ""
+        throw new IllegalArgumentException("Multiple HPM instances found: [${shown}]${extra} -- pass hpmAppId explicitly to select one")
     }
     return hpmMatches[0]
 }
@@ -11912,6 +11915,8 @@ private String _hpmDiscoverAppId() {
 private void _hpmAssertAppIsHpm(String explicitAppId) {
     def parsed = _fetchAppsListTree("hpmAppId validation")
     // Walk the installed-app instance tree looking for the entry with the given id.
+    // Early-exit on match: children[] are only enqueued when the current node does NOT match,
+    // avoiding unnecessary BFS expansion after the target is found.
     def workQueue = [] + (parsed?.apps ?: [])
     int qi = 0
     def foundEntry = null
@@ -12025,11 +12030,19 @@ def toolListHpmPackages(args) {
             skippedMalformed << manifestUrl?.toString()
             return null
         }
+        int skippedComponents = 0
         def apps = (manifest.apps ?: []).collect { a ->
-            if (!(a instanceof Map)) return null
+            if (!(a instanceof Map)) { skippedComponents++; return null }
             def heId = a.heID
             def heIdStr = null
             def heIdWarning = null
+            if (heId instanceof String && heId.trim() == "") {
+                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
+                // issue without breaking the consumer (matches drift treatment).
+                heIdWarning = "empty heID string normalized to null"
+                heId = null
+                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID is empty/whitespace -- normalized to null")
+            }
             if (heId != null) {
                 if (heId instanceof Number || heId instanceof String) {
                     heIdStr = heId.toString()
@@ -12050,10 +12063,17 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def drivers = (manifest.drivers ?: []).collect { d ->
-            if (!(d instanceof Map)) return null
+            if (!(d instanceof Map)) { skippedComponents++; return null }
             def heId = d.heID
             def heIdStr = null
             def heIdWarning = null
+            if (heId instanceof String && heId.trim() == "") {
+                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
+                // issue without breaking the consumer (matches drift treatment).
+                heIdWarning = "empty heID string normalized to null"
+                heId = null
+                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID is empty/whitespace -- normalized to null")
+            }
             if (heId != null) {
                 if (heId instanceof Number || heId instanceof String) {
                     heIdStr = heId.toString()
@@ -12074,14 +12094,14 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def files = (manifest.files ?: []).collect { f ->
-            if (!(f instanceof Map)) return null
+            if (!(f instanceof Map)) { skippedComponents++; return null }
             [
                 id  : f.id?.toString(),
                 name: f.name?.toString()
             ]
         }.findAll { it != null }
 
-        [
+        def pkg = [
             manifestUrl : manifestUrl?.toString(),
             packageName : manifest.packageName?.toString(),
             version     : manifest.version?.toString(),
@@ -12091,6 +12111,8 @@ def toolListHpmPackages(args) {
             drivers     : drivers,
             files       : files
         ]
+        if (skippedComponents > 0) pkg.skippedComponentCount = skippedComponents
+        pkg
     }.findAll { it != null }
 
     def result = [
@@ -12153,8 +12175,10 @@ def toolGetHpmDrift(args) {
         } else {
             def userAppTypesParsed = new groovy.json.JsonSlurper().parseText(userAppTypesText)
             if (!(userAppTypesParsed instanceof List)) {
-                orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array) -- orphan-app signals were not evaluated this call"]
-                mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape -- orphan detection disabled")
+                def actualTypeName = (userAppTypesParsed instanceof Map) ? "Map" : (userAppTypesParsed == null ? "null" : "unknown")
+                def actualPreview = userAppTypesParsed?.toString()?.take(200) ?: ""
+                orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-app signals were not evaluated this call"]
+                mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape (${actualTypeName}) -- orphan detection disabled")
             } else {
                 userAppTypesParsed.each { t ->
                     def typeId = t?.id?.toString()
@@ -12173,11 +12197,21 @@ def toolGetHpmDrift(args) {
         : manifests
 
     def driftEntries = []
+    def driftSkippedMalformed = []
+    def driftDataQualityWarnings = []
     int totalSignals = 0
 
     filteredManifests.each { manifestUrl, manifest ->
-        if (!(manifest instanceof Map)) return
+        if (!(manifest instanceof Map)) {
+            mcpLog("warn", "hpm", "get_hpm_drift: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
+            driftSkippedMalformed << manifestUrl?.toString()
+            return
+        }
         def signals = []
+        // Data-quality warnings are collected separately and do NOT roll up into totalDriftSignals.
+        // This keeps the contract clean: totalDriftSignals counts actionable drift (missing-required,
+        // orphan-app) and does not inflate for data-quality issues in the HPM manifest itself.
+        def dataQualityWarnings = []
 
         // missing-required: required=true AND heID is null/absent
         // orphan-app: heID present but not in Apps Code registry (/hub2/userAppTypes endpoint)
@@ -12185,12 +12219,14 @@ def toolGetHpmDrift(args) {
         (manifest.apps ?: []).each { a ->
             if (!(a instanceof Map)) return
             def heId = a.heID
+            // Normalize empty/whitespace-only String heID to null -- matches drift treatment.
+            if (heId instanceof String && heId.trim() == "") heId = null
             // Type-validate heID at the boundary: Number and String are the only valid scalar types.
             // Non-scalar heID (List, Map, Boolean) cannot be matched against Apps Code IDs and
             // would produce guaranteed false-positive orphan signals via .toString() coercion.
             if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
                 mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping component")
-                signals << [
+                dataQualityWarnings << [
                     type         : "skipped-malformed-heid",
                     componentType: "app",
                     componentName: a.name?.toString(),
@@ -12199,7 +12235,7 @@ def toolGetHpmDrift(args) {
                 ]
                 return
             }
-            def heIdNull = heId == null || heId.toString().trim() == ""
+            def heIdNull = heId == null
             if (a.required == true && heIdNull) {
                 signals << [
                     type         : "missing-required",
@@ -12209,7 +12245,7 @@ def toolGetHpmDrift(args) {
                     note         : "Component is required but heID is null/absent -- install never completed or component was removed."
                 ]
             }
-            if (!heIdNull && installedAppCodeIds) {
+            if (!heIdNull && orphanDetection.enabled) {
                 def heIdStr = heId.toString()
                 if (!installedAppCodeIds.contains(heIdStr)) {
                     signals << [
@@ -12224,22 +12260,28 @@ def toolGetHpmDrift(args) {
             }
         }
 
-        if (signals) {
-            driftEntries << [
+        if (signals || dataQualityWarnings) {
+            def entry = [
                 manifestUrl : manifestUrl?.toString(),
                 packageName : manifest.packageName?.toString(),
                 version     : manifest.version?.toString(),
                 signals     : signals
             ]
+            if (dataQualityWarnings) entry.dataQualityWarnings = dataQualityWarnings
+            driftEntries << entry
             totalSignals += signals.size()
+            if (dataQualityWarnings) driftDataQualityWarnings.addAll(dataQualityWarnings)
         }
     }
 
     int checked = filteredManifests.size()
-    int driftCount = driftEntries.size()
-    def summary = driftCount == 0
+    // Count only packages with actionable drift signals (not data-quality-only entries).
+    // A package with only dataQualityWarnings contributes to driftEntries[] for visibility
+    // but must not appear in the summary as "showing drift" when totalDriftSignals is 0.
+    int packagesWithActionableDrift = driftEntries.count { it.signals }
+    def summary = packagesWithActionableDrift == 0
         ? "No drift detected across ${checked} tracked package${checked == 1 ? '' : 's'}."
-        : "${driftCount} of ${checked} tracked package${checked == 1 ? '' : 's'} show drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
+        : "${packagesWithActionableDrift} of ${checked} tracked package${checked == 1 ? '' : 's'} show drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
 
     def result = [
         success          : true,
@@ -12251,6 +12293,8 @@ def toolGetHpmDrift(args) {
         orphanDetection  : orphanDetection,
         limitations      : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes. Orphan-driver detection deferred to follow-up."
     ]
+    if (driftSkippedMalformed) result.skippedMalformed = driftSkippedMalformed
+    if (driftDataQualityWarnings) result.dataQualityWarnings = driftDataQualityWarnings
     // When a packageFilter was supplied but matched nothing, surface that explicitly so
     // the caller can distinguish "clean hub" from "typo in filter".
     if (packageFilter && checked == 0) {

@@ -7,12 +7,13 @@ import support.ToolSpecBase
  * Spec for toolListHpmPackages and toolGetHpmDrift.
  * Gateway: manage_hpm -> list_hpm_packages / get_hpm_drift.
  *
- * HPM stores its tracked packages in state.manifests, which /installedapp/statusJson
- * double-encodes: the appState entry named "manifests" holds a JSON-encoded string
- * whose value is itself a JSON map from manifest URL to package map.
+ * HPM stores its tracked packages in state.manifests. The /installedapp/statusJson
+ * endpoint returns this as appState[].value, which is typically a Map on live hubs
+ * (JsonSlurper recursively parses the inner JSON) but may be a JSON-encoded String
+ * on older firmware. Both shapes are handled and tested.
  *
- * Both tools share two private helpers (_hpmDiscoverAppId, _hpmFetchManifests)
- * tested indirectly through the public tool methods.
+ * Both tools share private helpers (_hpmDiscoverAppId, _hpmAssertAppIsHpm,
+ * _hpmFetchManifests) tested indirectly through the public tool methods.
  */
 class ToolHpmReadonlySpec extends ToolSpecBase {
 
@@ -661,9 +662,11 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         result.success == true
         result.totalDriftSignals == 1
+        result.orphanDetection?.enabled == true
         result.drift.size() == 1
         def entry = result.drift[0]
         entry.packageName == "Incomplete Pkg"
+        entry.version == "1.0.0"
         entry.signals.size() == 1
         def sig = entry.signals[0]
         sig.type == "missing-required"
@@ -711,6 +714,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         result.success == true
         result.totalDriftSignals == 1
+        result.orphanDetection?.enabled == true
         def sig = result.drift[0].signals[0]
         sig.type == "orphan-app"
         sig.heID == "999"
@@ -758,6 +762,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         result.success == true
         result.totalDriftSignals == 2
+        result.orphanDetection?.enabled == true
         result.drift.size() == 1
         def signals = result.drift[0].signals
         signals.any { it.type == "missing-required" }
@@ -1062,5 +1067,323 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.filterMatchedZero == true
         result.availablePackages != null
         result.availablePackages.contains("BOND Home Integration")
+    }
+
+    // -------------------------------------------------------------------------
+    // Regression pin: orphan-app fires on empty registry (enabled=true path)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression pin: when orphanDetection.enabled=true AND installedAppCodeIds is an
+     * empty Set (fresh hub, or Apps Code registry returns []), every HPM-tracked heID
+     * that is non-null must be flagged as orphan-app.
+     * Guard must be `if (!heIdNull && orphanDetection.enabled)`, NOT a Groovy-truthy
+     * check on the Set itself (empty collection is falsy -- silently drops orphan signals).
+     */
+    def "get_hpm_drift reports orphan-app when orphanDetection.enabled=true and Apps Code registry is empty (fresh hub)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Orphaned On Fresh Hub",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [
+                    [id: "app-uuid-1", name: "Orphan App", namespace: "ns", location: "loc", required: false, version: null, heID: "777"]
+                ],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Empty Apps Code registry -- successful fetch, just no entries.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'orphanDetection.enabled=true AND heID 777 not in empty registry -> orphan-app signal'
+        result.success == true
+        result.orphanDetection?.enabled == true
+        result.totalDriftSignals == 1
+        result.drift.size() == 1
+        result.drift[0].signals[0].type == "orphan-app"
+        result.drift[0].signals[0].heID == "777"
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: non-scalar heID handling on app and driver entries
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages adds _warning to app entry when heID is a non-scalar type"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Bad HeID Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // heID is a List -- non-scalar, should be cleared and flagged
+                apps: [[id: "uuid-1", name: "Weird App", namespace: "ns", location: "loc", required: true, version: null, heID: [1, 2, 3]]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        def app = result.packages[0].apps[0]
+        app.heID == null
+        app._warning != null
+        app._warning.toLowerCase().contains("non-scalar") || app._warning.toLowerCase().contains("heID") || app._warning.toLowerCase().contains("cleared")
+    }
+
+    def "list_hpm_packages adds _warning to driver entry when heID is a non-scalar type"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Bad Driver HeID Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // heID is a Map -- non-scalar
+                drivers: [[id: "uuid-d1", name: "Weird Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: [nested: "map"]]],
+                files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        def driver = result.packages[0].drivers[0]
+        driver.heID == null
+        driver._warning != null
+        driver._warning.toLowerCase().contains("non-scalar") || driver._warning.toLowerCase().contains("heid") || driver._warning.toLowerCase().contains("cleared")
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: non-scalar heID lands in dataQualityWarnings, not signals
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression pin: a component with non-scalar heID must land in dataQualityWarnings[]
+     * on the drift entry and in the top-level dataQualityWarnings[], NOT in signals[],
+     * and must NOT inflate totalDriftSignals.
+     * Data-quality entries (skipped-malformed-heid type) are classified separately from
+     * actionable drift signals and must not roll up into totalDriftSignals.
+     */
+    def "get_hpm_drift places non-scalar heID component in dataQualityWarnings, not signals, and does not inflate totalDriftSignals"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Malformed HeID Pkg",
+                version    : "2.0.0",
+                beta       : false,
+                author     : "Tester",
+                // heID is a List -- non-scalar; must go to dataQualityWarnings
+                apps: [[id: "app-uuid-bad", name: "Bad HeID App", namespace: "ns", location: "loc", required: false, version: null, heID: [99, 100]]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["100"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'non-scalar heID goes to dataQualityWarnings, not signals'
+        result.success == true
+        result.totalDriftSignals == 0
+        result.drift.size() == 1
+        result.drift[0].signals == []
+        result.drift[0].dataQualityWarnings?.size() == 1
+        result.drift[0].dataQualityWarnings[0].type == "skipped-malformed-heid"
+        result.dataQualityWarnings != null
+        result.dataQualityWarnings.size() == 1
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: data-quality-only package does not inflate summary drift count
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression pin: a package with only dataQualityWarnings and no actionable signals
+     * must produce summary "No drift detected" (not "1 package shows drift") and must
+     * leave totalDriftSignals == 0. The drift[] entry is still present for visibility.
+     */
+    def "get_hpm_drift summary says No drift detected when only data-quality warnings exist (no actionable signals)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Data Quality Only Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // heID is a List -- goes to dataQualityWarnings, not signals
+                apps: [[id: "app-uuid-dq", name: "DQ App", namespace: "ns", location: "loc", required: false, version: null, heID: [42, 43]]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["100"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'summary reflects no actionable drift; dataQualityWarnings entry still present'
+        result.success == true
+        result.totalDriftSignals == 0
+        result.summary.contains("No drift")
+        result.drift.size() == 1
+        result.drift[0].signals == []
+        result.drift[0].dataQualityWarnings?.size() == 1
+        result.dataQualityWarnings?.size() == 1
+    }
+
+    // -------------------------------------------------------------------------
+    // list_hpm_packages: per-entry malformed manifest entries land in skippedMalformed[]
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages skips non-Map manifest entry into skippedMalformed and keeps well-formed neighbors"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/good/packageManifest.json": [
+                packageName: "Good Package",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Author",
+                apps: [], drivers: [], files: []
+            ],
+            // Malformed entry: value is a String, not a Map
+            "https://example.com/bad/packageManifest.json": "this is not a map"
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'malformed entry listed in skippedMalformed; well-formed neighbor present in packages'
+        result.success == true
+        result.count == 1
+        result.packages.size() == 1
+        result.packages[0].packageName == "Good Package"
+        result.skippedMalformed != null
+        result.skippedMalformed.contains("https://example.com/bad/packageManifest.json")
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: skippedMalformed mirror for per-entry malformed manifests
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift includes skippedMalformed for non-Map manifest entries"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/good/packageManifest.json": [
+                packageName: "Good Drift Package",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Author",
+                apps: [[id: "app-ok", name: "OK App", namespace: "ns", location: "loc", required: true, version: null, heID: "50"]],
+                drivers: [], files: []
+            ],
+            // Malformed entry: String value
+            "https://example.com/bad/packageManifest.json": "not a map"
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // heID 50 is present -- no orphan signal for the good package
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["50"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'malformed URL in top-level skippedMalformed; good package analyzed without drift'
+        result.success == true
+        result.packagesChecked == 2   // filteredManifests includes both entries (skipping happens inside the loop)
+        result.totalDriftSignals == 0
+        result.skippedMalformed != null
+        result.skippedMalformed.contains("https://example.com/bad/packageManifest.json")
+    }
+
+    // -------------------------------------------------------------------------
+    // _hpmDiscoverAppId: nested-under-children[] duplicate detected (BFS walks unconditionally)
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages auto-discovery throws when duplicate HPM app is nested under a parent"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // One HPM at top level (37), one nested under a parent (88).
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []],
+                    [data: [id: "10", name: "Some Parent", type: "Some Parent", user: true], children: [
+                        [data: [id: "88", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                    ]]
+                ]
+            ])
+        }
+
+        when:
+        script.toolListHpmPackages([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("37")
+        ex.message.contains("88")
+        ex.message.toLowerCase().contains("multiple") || ex.message.toLowerCase().contains("explicit")
     }
 }
