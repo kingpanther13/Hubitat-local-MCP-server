@@ -2885,7 +2885,19 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: AI calls `manage_hpm(tool='get_hpm_drift')`. Returns `success=true`, `summary` sentence, `drift` array (may be empty), `totalDriftSignals`, and `limitations` note. AI interprets the summary and describes any drift signals found (type, packageName, componentName). If no drift, AI confirms the packages are clean and mentions the heID-presence-only detection limitation.
+**Expected**: AI calls `manage_hpm(tool='get_hpm_drift')`. Returns `success=true`, `summary` sentence, `drift` array (may be empty), `totalDriftSignals`, `orphanDetection`, `orphanDriverDetection`, and `limitations` note. AI interprets the summary and describes any drift signals found (type, packageName, componentName). If no drift, AI confirms the packages are clean and mentions the heID-presence-only detection limitation. Response may also include `dataQualityWarnings[]` and `skippedMalformed[]` if manifest data quality issues exist.
+
+### T603 — get_hpm_drift: data-quality-only entry does not inflate summary drift count
+
+```json
+{
+  "setup_prompt": "Hub Admin Read is enabled. HPM is installed. At least one HPM-tracked package has a non-scalar or empty heID on a component.",
+  "test_prompt": "Check HPM drift. If a package has only dataQualityWarnings and no actionable signals, confirm the summary says No drift detected even though drift[] has an entry for that package.",
+  "teardown_prompt": "No teardown needed."
+}
+```
+
+**Expected**: When a package has only `dataQualityWarnings[]` and no actionable `signals[]`, `totalDriftSignals` is 0 and `summary` reads "No drift detected..." even if `drift[]` has one entry (data-quality entry for visibility). Drift signal type strings: `missing-required`, `orphan-app`, `orphan-driver`. Data-quality warning type strings: `skipped-malformed-heid`, `empty-heid`, `skipped-malformed-component`. `drift[].length` may exceed the actionable-drift package count in this scenario.
 
 ### T602 — manage_hpm gateway catalog discovery
 

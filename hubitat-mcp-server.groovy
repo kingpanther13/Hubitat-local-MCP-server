@@ -941,11 +941,11 @@ def getGatewayConfig() {
             ]
         ],
         manage_hpm: [
-            description: "Hubitat Package Manager (HPM) state introspection -- read-only. Tracks installed packages, their manifest versions, and per-component drift signals (missing-required, orphan-app). HPM-managed code lives in the same Apps/Drivers registries as everything else, but its lifecycle is owned by HPM; this gateway surfaces that ownership state for diagnostic and drift-detection purposes without write side-effects. Requires Hub Admin Read.",
+            description: "Hubitat Package Manager (HPM) state introspection -- read-only. Tracks installed packages, their manifest versions, and per-component drift signals (missing-required, orphan-app, orphan-driver). HPM-managed code lives in the same Apps/Drivers registries as everything else, but its lifecycle is owned by HPM; this gateway surfaces that ownership state for diagnostic and drift-detection purposes without write side-effects. Requires Hub Admin Read.",
             tools: ["list_hpm_packages", "get_hpm_drift"],
             summaries: [
                 list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). Args: hpmAppId (optional -- auto-discovered if omitted). Hub Admin Read.",
-                get_hpm_drift: "Cross-reference HPM-tracked packages against installed apps to surface missing-required components and orphan apps. Args: hpmAppId (optional), packageFilter (optional substring match). Hub Admin Read."
+                get_hpm_drift: "Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Args: hpmAppId (optional), packageFilter (optional substring match). Hub Admin Read."
             ],
             searchHints: [
                 list_hpm_packages: "package manager HPM tracked installed manifest version inventory dcmeglio community apps drivers",
@@ -2385,7 +2385,7 @@ App and driver components include: manifest-internal id (UUID), name, heID (Hubi
 
 File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
 
-Response also includes: skippedMalformed (array of manifest URLs whose top-level value was not a Map -- package skipped entirely); skippedComponentCount per package when > 0 (count of app/driver/file entries that were not Maps and thus skipped).
+Response also includes: skippedMalformed (array of manifest URLs whose top-level value was not a Map -- package skipped entirely); per-package skippedAppCount, skippedDriverCount, skippedFileCount (each omitted when 0) -- count of app/driver/file entries that were not Maps and thus skipped.
 
 If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call.
 
@@ -2399,16 +2399,17 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         ],
         [
             name: "get_hpm_drift",
-            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces two classes of drift signal:
+            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces three classes of drift signal:
 
 - missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
-- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall, which removes the code definition from /apps/code/ but leaves the HPM manifest entry pointing at the now-gone heID).
+- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall).
+- orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
 
-Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced. Orphan-driver detection is not included in this version.
+Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced.
 
 If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked.
 
-Response fields: packagesChecked, totalDriftSignals (counts only actionable drift signals -- missing-required and orphan-app -- not data-quality warnings), drift[] (one entry per package with any signal or warning -- each has manifestUrl, packageName, version, signals[], and optionally dataQualityWarnings[]), summary sentence, orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed and orphan signals were skipped this call), limitations note. Data-quality issues (e.g. non-scalar heID) land in dataQualityWarnings[] on the per-package entry and in the top-level dataQualityWarnings[] array -- they do NOT inflate totalDriftSignals. Top-level skippedMalformed[] lists manifest URLs whose value was not a Map. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[] so you can check your filter spelling.
+Response fields: packagesChecked, totalDriftSignals (counts only actionable drift signals -- missing-required, orphan-app, orphan-driver -- not data-quality warnings), drift[] (one entry per package with any signal or warning -- each has manifestUrl, packageName, version, signals[], and optionally dataQualityWarnings[], skippedAppCount, skippedDriverCount), summary sentence. Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only packages are present -- those entries appear for visibility but are not counted in the summary. orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed), orphanDriverDetection ({enabled: bool, reason?} -- enabled=false means the Drivers Code registry fetch failed), limitations note. Data-quality warning types: skipped-malformed-heid (non-scalar heID), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry). Top-level skippedMalformed[] lists manifest URLs whose value was not a Map. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[].
 
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
@@ -11900,7 +11901,7 @@ private String _hpmDiscoverAppId() {
     if (hpmMatches.size() > 1) {
         def cap = 10
         def shown = hpmMatches.take(cap).join(', ')
-        def extra = hpmMatches.size() > cap ? " and ${hpmMatches.size() - cap} more" : ""
+        def extra = hpmMatches.size() > cap ? " and ${hpmMatches.size() - cap} more (total ${hpmMatches.size()})" : ""
         throw new IllegalArgumentException("Multiple HPM instances found: [${shown}]${extra} -- pass hpmAppId explicitly to select one")
     }
     return hpmMatches[0]
@@ -12030,16 +12031,18 @@ def toolListHpmPackages(args) {
             skippedMalformed << manifestUrl?.toString()
             return null
         }
-        int skippedComponents = 0
+        int skippedAppCount = 0
+        int skippedDriverCount = 0
+        int skippedFileCount = 0
         def apps = (manifest.apps ?: []).collect { a ->
-            if (!(a instanceof Map)) { skippedComponents++; return null }
+            if (!(a instanceof Map)) { skippedAppCount++; return null }
             def heId = a.heID
             def heIdStr = null
             def heIdWarning = null
             if (heId instanceof String && heId.trim() == "") {
                 // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
                 // issue without breaking the consumer (matches drift treatment).
-                heIdWarning = "empty heID string normalized to null"
+                heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
                 mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID is empty/whitespace -- normalized to null")
             }
@@ -12063,14 +12066,14 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def drivers = (manifest.drivers ?: []).collect { d ->
-            if (!(d instanceof Map)) { skippedComponents++; return null }
+            if (!(d instanceof Map)) { skippedDriverCount++; return null }
             def heId = d.heID
             def heIdStr = null
             def heIdWarning = null
             if (heId instanceof String && heId.trim() == "") {
                 // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
                 // issue without breaking the consumer (matches drift treatment).
-                heIdWarning = "empty heID string normalized to null"
+                heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
                 mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID is empty/whitespace -- normalized to null")
             }
@@ -12094,7 +12097,7 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def files = (manifest.files ?: []).collect { f ->
-            if (!(f instanceof Map)) { skippedComponents++; return null }
+            if (!(f instanceof Map)) { skippedFileCount++; return null }
             [
                 id  : f.id?.toString(),
                 name: f.name?.toString()
@@ -12111,7 +12114,9 @@ def toolListHpmPackages(args) {
             drivers     : drivers,
             files       : files
         ]
-        if (skippedComponents > 0) pkg.skippedComponentCount = skippedComponents
+        if (skippedAppCount > 0)    pkg.skippedAppCount    = skippedAppCount
+        if (skippedDriverCount > 0) pkg.skippedDriverCount = skippedDriverCount
+        if (skippedFileCount > 0)   pkg.skippedFileCount   = skippedFileCount
         pkg
     }.findAll { it != null }
 
@@ -12126,10 +12131,10 @@ def toolListHpmPackages(args) {
 }
 
 /**
- * Cross-reference HPM-tracked packages against the hub's Apps Code registry.
- * Surfaces missing-required components (required=true with heID null) and
- * orphan-app signals (heID present but app code definition absent from Apps Code).
- * Gate: requireHubAdminRead() -- reads internal app state + Apps Code registry.
+ * Cross-reference HPM-tracked packages against the hub's Apps Code and Drivers Code registries.
+ * Surfaces missing-required components (required=true with heID null) and orphan signals
+ * (heID present but code definition absent from the registry). Covers both apps and drivers.
+ * Gate: requireHubAdminRead() -- reads internal app state + Apps Code + Drivers Code registries.
  */
 def toolGetHpmDrift(args) {
     requireHubAdminRead()
@@ -12157,7 +12162,7 @@ def toolGetHpmDrift(args) {
         return [success: false, error: e.message, hpmAppId: hpmAppId]
     }
 
-    // Build the set of Apps Code definition IDs for orphan detection.
+    // Build the set of Apps Code definition IDs for orphan-app detection.
     // /hub2/userAppTypes is the dedicated Apps Code registry endpoint -- each entry
     // represents a code definition (whether or not it has any running instances).
     // This is distinct from the userAppTypes[] array embedded in /hub2/appsList,
@@ -12176,7 +12181,8 @@ def toolGetHpmDrift(args) {
             def userAppTypesParsed = new groovy.json.JsonSlurper().parseText(userAppTypesText)
             if (!(userAppTypesParsed instanceof List)) {
                 def actualTypeName = (userAppTypesParsed instanceof Map) ? "Map" : (userAppTypesParsed == null ? "null" : "unknown")
-                def actualPreview = userAppTypesParsed?.toString()?.take(200) ?: ""
+                def rawPreview = userAppTypesParsed?.toString() ?: ""
+                def actualPreview = rawPreview.length() > 200 ? rawPreview.take(200) + " (truncated)" : rawPreview
                 orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-app signals were not evaluated this call"]
                 mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape (${actualTypeName}) -- orphan detection disabled")
             } else {
@@ -12189,6 +12195,38 @@ def toolGetHpmDrift(args) {
     } catch (Exception e) {
         orphanDetection = [enabled: false, reason: "Failed to fetch /hub2/userAppTypes [${e.class.simpleName}]: ${e.message ?: e.toString()} -- orphan-app signals were not evaluated this call"]
         mcpLog("warn", "hpm", "get_hpm_drift: could not fetch /hub2/userAppTypes for orphan-app detection: ${e.message ?: e.toString()}")
+    }
+
+    // Build the set of Drivers Code definition IDs for orphan-driver detection.
+    // /hub2/userDeviceTypes is the Drivers Code registry endpoint -- each entry
+    // represents a driver code definition (whether or not any devices use it).
+    // Note: the endpoint name follows the hub's naming convention (userDeviceTypes, not
+    // userDriverTypes); this is the same endpoint used by list_hub_drivers.
+    def installedDriverCodeIds = [] as Set
+    def orphanDriverDetection = [enabled: true]
+    try {
+        def userDeviceTypesText = hubInternalGet("/hub2/userDeviceTypes")
+        if (!userDeviceTypesText) {
+            orphanDriverDetection = [enabled: false, reason: "Empty response from /hub2/userDeviceTypes -- orphan-driver signals were not evaluated this call"]
+            mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userDeviceTypes response -- orphan driver detection disabled")
+        } else {
+            def userDeviceTypesParsed = new groovy.json.JsonSlurper().parseText(userDeviceTypesText)
+            if (!(userDeviceTypesParsed instanceof List)) {
+                def actualTypeName = (userDeviceTypesParsed instanceof Map) ? "Map" : (userDeviceTypesParsed == null ? "null" : "unknown")
+                def rawPreview = userDeviceTypesParsed?.toString() ?: ""
+                def actualPreview = rawPreview.length() > 200 ? rawPreview.take(200) + " (truncated)" : rawPreview
+                orphanDriverDetection = [enabled: false, reason: "Unexpected /hub2/userDeviceTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-driver signals were not evaluated this call"]
+                mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userDeviceTypes returned non-List shape (${actualTypeName}) -- orphan driver detection disabled")
+            } else {
+                userDeviceTypesParsed.each { t ->
+                    def typeId = t?.id?.toString()
+                    if (typeId) installedDriverCodeIds << typeId
+                }
+            }
+        }
+    } catch (Exception e) {
+        orphanDriverDetection = [enabled: false, reason: "Failed to fetch /hub2/userDeviceTypes [${e.class.simpleName}]: ${e.message ?: e.toString()} -- orphan-driver signals were not evaluated this call"]
+        mcpLog("warn", "hpm", "get_hpm_drift: could not fetch /hub2/userDeviceTypes for orphan-driver detection: ${e.message ?: e.toString()}")
     }
 
     // Apply optional package filter before drift analysis.
@@ -12210,17 +12248,39 @@ def toolGetHpmDrift(args) {
         def signals = []
         // Data-quality warnings are collected separately and do NOT roll up into totalDriftSignals.
         // This keeps the contract clean: totalDriftSignals counts actionable drift (missing-required,
-        // orphan-app) and does not inflate for data-quality issues in the HPM manifest itself.
+        // orphan-app, orphan-driver) and does not inflate for data-quality issues in the manifest.
         def dataQualityWarnings = []
+        int skippedAppCount = 0
+        int skippedDriverCount = 0
 
         // missing-required: required=true AND heID is null/absent
         // orphan-app: heID present but not in Apps Code registry (/hub2/userAppTypes endpoint)
         // Both checks share the per-component heID resolution loop below.
         (manifest.apps ?: []).each { a ->
-            if (!(a instanceof Map)) return
+            if (!(a instanceof Map)) {
+                skippedAppCount++
+                dataQualityWarnings << [
+                    type         : "skipped-malformed-component",
+                    componentType: "app",
+                    _warning     : "app component entry is not a Map -- skipped"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' -- skipped")
+                return
+            }
             def heId = a.heID
-            // Normalize empty/whitespace-only String heID to null -- matches drift treatment.
-            if (heId instanceof String && heId.trim() == "") heId = null
+            // Normalize empty/whitespace-only String heID to null and surface as data-quality warning
+            // so the consumer knows the manifest has a blank heID (matches list_hpm_packages treatment).
+            if (heId instanceof String && heId.trim() == "") {
+                dataQualityWarnings << [
+                    type         : "empty-heid",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    _warning     : "empty heID string '${heId}' normalized to null"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+                heId = null
+            }
             // Type-validate heID at the boundary: Number and String are the only valid scalar types.
             // Non-scalar heID (List, Map, Boolean) cannot be matched against Apps Code IDs and
             // would produce guaranteed false-positive orphan signals via .toString() coercion.
@@ -12260,6 +12320,68 @@ def toolGetHpmDrift(args) {
             }
         }
 
+        // missing-required: required=true AND heID is null/absent (drivers)
+        // orphan-driver: heID present but not in Drivers Code registry (/hub2/userDeviceTypes endpoint)
+        (manifest.drivers ?: []).each { d ->
+            if (!(d instanceof Map)) {
+                skippedDriverCount++
+                dataQualityWarnings << [
+                    type         : "skipped-malformed-component",
+                    componentType: "driver",
+                    _warning     : "driver component entry is not a Map -- skipped"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' -- skipped")
+                return
+            }
+            def heId = d.heID
+            // Normalize empty/whitespace-only String heID to null and surface as data-quality warning.
+            if (heId instanceof String && heId.trim() == "") {
+                dataQualityWarnings << [
+                    type         : "empty-heid",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    _warning     : "empty heID string '${heId}' normalized to null"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+                heId = null
+            }
+            if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping component")
+                dataQualityWarnings << [
+                    type         : "skipped-malformed-heid",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    _warning     : "non-scalar heID (not Number or String) -- component skipped"
+                ]
+                return
+            }
+            def heIdNull = heId == null
+            if (d.required == true && heIdNull) {
+                signals << [
+                    type         : "missing-required",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    note         : "Component is required but heID is null/absent -- install never completed or component was removed."
+                ]
+            }
+            if (!heIdNull && orphanDriverDetection.enabled) {
+                def heIdStr = heId.toString()
+                if (!installedDriverCodeIds.contains(heIdStr)) {
+                    signals << [
+                        type         : "orphan-driver",
+                        componentType: "driver",
+                        componentName: d.name?.toString(),
+                        componentId  : d.id?.toString(),
+                        heID         : heIdStr,
+                        note         : "HPM tracks heID ${heIdStr} but the driver code definition is no longer in Drivers Code -- likely deleted via Drivers Code without using HPM Uninstall."
+                    ]
+                }
+            }
+        }
+
         if (signals || dataQualityWarnings) {
             def entry = [
                 manifestUrl : manifestUrl?.toString(),
@@ -12268,6 +12390,8 @@ def toolGetHpmDrift(args) {
                 signals     : signals
             ]
             if (dataQualityWarnings) entry.dataQualityWarnings = dataQualityWarnings
+            if (skippedAppCount > 0)    entry.skippedAppCount    = skippedAppCount
+            if (skippedDriverCount > 0) entry.skippedDriverCount = skippedDriverCount
             driftEntries << entry
             totalSignals += signals.size()
             if (dataQualityWarnings) driftDataQualityWarnings.addAll(dataQualityWarnings)
@@ -12278,20 +12402,23 @@ def toolGetHpmDrift(args) {
     // Count only packages with actionable drift signals (not data-quality-only entries).
     // A package with only dataQualityWarnings contributes to driftEntries[] for visibility
     // but must not appear in the summary as "showing drift" when totalDriftSignals is 0.
+    // Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only
+    // packages are present -- those entries are included for visibility but not in the count.
     int packagesWithActionableDrift = driftEntries.count { it.signals }
     def summary = packagesWithActionableDrift == 0
         ? "No drift detected across ${checked} tracked package${checked == 1 ? '' : 's'}."
         : "${packagesWithActionableDrift} of ${checked} tracked package${checked == 1 ? '' : 's'} show drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
 
     def result = [
-        success          : true,
-        hpmAppId         : hpmAppId,
-        packagesChecked  : checked,
-        drift            : driftEntries,
-        totalDriftSignals: totalSignals,
-        summary          : summary,
-        orphanDetection  : orphanDetection,
-        limitations      : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes. Orphan-driver detection deferred to follow-up."
+        success               : true,
+        hpmAppId              : hpmAppId,
+        packagesChecked       : checked,
+        drift                 : driftEntries,
+        totalDriftSignals     : totalSignals,
+        summary               : summary,
+        orphanDetection       : orphanDetection,
+        orphanDriverDetection : orphanDriverDetection,
+        limitations           : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes."
     ]
     if (driftSkippedMalformed) result.skippedMalformed = driftSkippedMalformed
     if (driftDataQualityWarnings) result.dataQualityWarnings = driftDataQualityWarnings
@@ -20890,9 +21017,10 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
   - files[] entries have no heID (File Manager assets tracked by name only)
 
 - **get_hpm_drift** — cross-reference HPM tracked state against what is installed on the hub
-  - Surfaces missing-required (required=true but heID null) and orphan-app (heID recorded but code no longer in Apps Code registry) signals
+  - Surfaces missing-required (required=true but heID null), orphan-app (heID recorded but code no longer in Apps Code registry), and orphan-driver (heID recorded but code no longer in Drivers Code registry) signals
   - Optional packageFilter (case-insensitive substring) narrows to specific packages
-  - Response: packagesChecked, totalDriftSignals, drift[] array (one entry per package with signals), summary sentence, limitations note
+  - Response: packagesChecked, totalDriftSignals (actionable drift only -- not data-quality warnings), drift[] array (one entry per package with signals or dataQualityWarnings; drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist), summary sentence, orphanDetection ({enabled, reason?}), orphanDriverDetection ({enabled, reason?}), limitations note
+  - Data-quality warning types in dataQualityWarnings[]: skipped-malformed-heid, empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via update_app_code are not detectable
 
 **manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**

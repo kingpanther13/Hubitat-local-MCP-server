@@ -424,18 +424,20 @@ HPM package state introspection. Both tools require **Hub Admin Read** and HPM i
   - Each app/driver component: `id` (UUID from manifest), `name`, `heID` (Hubitat code ID or null if not installed), `required`, `version`; if `heID` is a non-scalar type or an empty/whitespace string it is cleared to null and `_warning` is added to that entry
   - `files[]` entries have no `heID` (File Manager assets tracked by name only)
   - Top-level `skippedMalformed[]`: manifest URLs whose value was not a Map (package skipped entirely)
-  - Per-package `skippedComponentCount` (omitted when 0): count of app/driver/file entries that were not Maps
+  - Per-package `skippedAppCount`, `skippedDriverCount`, `skippedFileCount` (each omitted when 0): counts of app/driver/file entries that were not Maps
   - Auto-discovers HPM if `hpmAppId` omitted
   - Use to audit what HPM-managed code is on the hub and compare against expected packages
 
 - **`get_hpm_drift`** — cross-reference HPM-tracked state against what is actually installed
-  - Two drift signal types: `missing-required` (required=true, heID null) and `orphan-app` (heID present but app code no longer in Apps Code registry)
+  - Three drift signal types: `missing-required` (required=true, heID null), `orphan-app` (heID present but app code no longer in Apps Code registry), `orphan-driver` (heID present but driver code no longer in Drivers Code registry)
   - Optional `packageFilter` (case-insensitive substring) narrows to specific packages
-  - Response: `packagesChecked`, `totalDriftSignals` (actionable drift only -- missing-required and orphan-app -- does NOT count data-quality warnings), `drift[]` (one entry per package with any signal or warning -- each has `manifestUrl`, `packageName`, `version`, `signals[]`, and optionally `dataQualityWarnings[]`), `summary` sentence, `orphanDetection` (`{enabled, reason?}` -- `enabled=false` means the Apps Code registry fetch failed and orphan signals were skipped this call), `limitations` note
-  - Data-quality issues (e.g. non-scalar heID in HPM manifest) land in `dataQualityWarnings[]` on the per-package entry and in the top-level `dataQualityWarnings[]` -- they do NOT inflate `totalDriftSignals`
+  - Response: `packagesChecked`, `totalDriftSignals` (actionable drift only -- missing-required, orphan-app, orphan-driver -- does NOT count data-quality warnings), `drift[]` (one entry per package with any signal or warning -- each has `manifestUrl`, `packageName`, `version`, `signals[]`, and optionally `dataQualityWarnings[]`, `skippedAppCount`, `skippedDriverCount`), `summary` sentence. Note: `drift[].length` may exceed `packagesWithActionableDrift` when data-quality-only packages exist -- those entries appear for visibility but are not counted in the summary.
+  - `orphanDetection` (`{enabled, reason?}`) -- `enabled=false` means the Apps Code registry fetch failed and orphan-app signals were skipped this call
+  - `orphanDriverDetection` (`{enabled, reason?}`) -- `enabled=false` means the Drivers Code registry fetch failed and orphan-driver signals were skipped this call
+  - Data-quality issues land in `dataQualityWarnings[]` on the per-package entry and in the top-level `dataQualityWarnings[]` -- they do NOT inflate `totalDriftSignals`. Data-quality warning types: `skipped-malformed-heid` (non-scalar heID), `empty-heid` (blank heID normalized to null), `skipped-malformed-component` (non-Map component entry)
   - Top-level `skippedMalformed[]`: manifest URLs whose value was not a Map (symmetric with `list_hpm_packages`)
   - When `packageFilter` matched nothing: `filterMatchedZero=true` plus `availablePackages[]` for filter-spelling sanity check
-  - Limitation: heID-presence-only. HPM stores no source hashes, so post-install edits via `update_app_code` are not detectable. Orphan-driver detection deferred.
+  - Limitation: heID-presence-only. HPM stores no source hashes, so post-install edits via `update_app_code` are not detectable.
   - Example call: `manage_hpm(tool="get_hpm_drift", args={packageFilter: "BOND"})` — checks only packages whose name contains "BOND"
 
 ### manage_native_rules_and_apps (12 tools)

@@ -72,6 +72,15 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         JsonOutput.toJson(ids.collect { id -> [id: id, name: "App ${id}", namespace: "test"] })
     }
 
+    /**
+     * /hub2/userDeviceTypes response: flat JSON array of driver code definitions.
+     * Despite the name, this is the Drivers Code registry (parallel role to /hub2/userAppTypes
+     * for apps). Used by get_hpm_drift for orphan-driver detection.
+     */
+    private static String makeUserDriverTypes(List<String> ids = []) {
+        JsonOutput.toJson(ids.collect { id -> [id: id, name: "Driver ${id}", namespace: "test"] })
+    }
+
     /** appsList with no HPM entry. */
     private static String makeAppsListNoHpm() {
         JsonOutput.toJson([
@@ -608,8 +617,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 ]
             ])
         }
-        // /hub2/userAppTypes (Apps Code registry): heID 142 is present -- no orphan signal.
+        // /hub2/userAppTypes (Apps Code registry): heID 142 is present -- no orphan-app signal.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        // /hub2/userDeviceTypes (Drivers Code registry): heID 89 is present -- no orphan-driver signal.
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -622,6 +633,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.drift == []
         result.summary.contains("No drift")
         result.orphanDetection?.enabled == true
+        result.orphanDriverDetection?.enabled == true
     }
 
     // -------------------------------------------------------------------------
@@ -653,8 +665,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 ]
             ])
         }
-        // All heIDs are null so orphan check never fires; empty Apps Code registry is fine.
+        // All heIDs are null so orphan check never fires; empty registries are fine.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -663,6 +676,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.success == true
         result.totalDriftSignals == 1
         result.orphanDetection?.enabled == true
+        result.orphanDriverDetection?.enabled == true
         result.drift.size() == 1
         def entry = result.drift[0]
         entry.packageName == "Incomplete Pkg"
@@ -673,6 +687,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         sig.componentType == "app"
         sig.componentName == "Required App"
         sig.note != null
+
+        and: 'summary reflects 1 of 1 tracked packages with 1 total signal'
+        result.summary.contains("1 of 1")
+        result.summary.contains("1 total signal")
     }
 
     // -------------------------------------------------------------------------
@@ -705,8 +723,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 ]
             ])
         }
-        // Apps Code registry has a different app (100) but NOT 999 -- orphan signal fires.
+        // Apps Code registry has a different app (100) but NOT 999 -- orphan-app signal fires.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["100"]) }
+        // Drivers Code registry -- no driver heIDs in this package so orphan-driver is irrelevant.
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -715,10 +735,12 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.success == true
         result.totalDriftSignals == 1
         result.orphanDetection?.enabled == true
+        result.orphanDriverDetection?.enabled == true
         def sig = result.drift[0].signals[0]
         sig.type == "orphan-app"
         sig.heID == "999"
         sig.componentName == "Orphan App"
+        result.drift[0].version == "2.0.0"
     }
 
     // -------------------------------------------------------------------------
@@ -752,9 +774,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 ]
             ])
         }
-        // Apps Code registry has a different code def (999) but NOT 888 -- orphan signal fires.
-        // Non-empty so installedAppCodeIds is truthy and the orphan guard does not short-circuit.
+        // Apps Code registry has a different code def (999) but NOT 888 -- orphan-app signal fires.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["999"]) }
+        // No drivers in this package -- Drivers Code registry is irrelevant.
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -764,6 +787,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.totalDriftSignals == 2
         result.orphanDetection?.enabled == true
         result.drift.size() == 1
+        result.drift[0].version == "3.0.0"
         def signals = result.drift[0].signals
         signals.any { it.type == "missing-required" }
         signals.any { it.type == "orphan-app" }
@@ -796,8 +820,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 ]
             ])
         }
-        // heID 142 (BOND app) is in Apps Code -- no orphan signal for the BOND package.
+        // heID 142 (BOND app) and 89 (BOND driver) are in the registries -- no orphan signals.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37", packageFilter: "BOND"])
@@ -806,7 +831,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.success == true
         // Only the BOND package matches the filter
         result.packagesChecked == 1
-        // BOND package has no drift (app heID 142 is in the installed list)
+        // BOND package has no drift (heIDs present in both registries)
         result.totalDriftSignals == 0
     }
 
@@ -824,6 +849,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37", packageFilter: "NoSuchPackageXYZ"])
@@ -853,6 +879,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -887,8 +914,8 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 beta       : false,
                 author     : "Tester",
                 apps: [
-                    [id: "app-uuid-parent", name: "Parent App",     namespace: "ns", location: "loc", required: true,  version: null, heID: "178"],
-                    [id: "app-uuid-child",  name: "Child App Rule",  namespace: "ns", location: "loc", required: true,  version: null, heID: "179"]
+                    [id: "app-uuid-parent", name: "Parent App",    namespace: "ns", location: "loc", required: true, version: null, heID: "178"],
+                    [id: "app-uuid-child",  name: "Child App Rule", namespace: "ns", location: "loc", required: true, version: null, heID: "179"]
                 ],
                 drivers: [], files: []
             ]
@@ -910,6 +937,8 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         // Apps Code registry has BOTH the parent (178) and the child-app template (179).
         // This is what the corrected implementation checks -- not installed instances.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["178", "179"]) }
+        // No drivers in this package.
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -997,6 +1026,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
         // "bond" (lowercase) must match "BOND Home Integration" (mixed case)
@@ -1027,15 +1057,17 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         }
         // /hub2/userAppTypes throws -- simulates transport failure
         hubGet.register('/hub2/userAppTypes') { throw new RuntimeException("connection refused") }
+        // /hub2/userDeviceTypes succeeds normally
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
 
-        then: 'tool succeeds but discloses that orphan detection was skipped'
+        then: 'tool succeeds but discloses that orphan-app detection was skipped'
         result.success == true
         result.orphanDetection?.enabled == false
         result.orphanDetection?.reason != null
-        // totalDriftSignals stays 0 -- no orphan signals without the registry
+        // totalDriftSignals stays 0 -- no orphan signals without the apps registry
         result.totalDriftSignals == 0
     }
 
@@ -1057,6 +1089,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37", packageFilter: "NoSuchPackageXYZ"])
@@ -1107,6 +1140,8 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         }
         // Empty Apps Code registry -- successful fetch, just no entries.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        // Empty Drivers Code registry -- no driver heIDs in this package.
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -1114,6 +1149,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then: 'orphanDetection.enabled=true AND heID 777 not in empty registry -> orphan-app signal'
         result.success == true
         result.orphanDetection?.enabled == true
+        result.orphanDriverDetection?.enabled == true
         result.totalDriftSignals == 1
         result.drift.size() == 1
         result.drift[0].signals[0].type == "orphan-app"
@@ -1124,7 +1160,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // list_hpm_packages: non-scalar heID handling on app and driver entries
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages adds _warning to app entry when heID is a non-scalar type"() {
+    def "list_hpm_packages adds _warning to app entry when heID is a non-scalar type (List)"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1149,10 +1185,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def app = result.packages[0].apps[0]
         app.heID == null
         app._warning != null
-        app._warning.toLowerCase().contains("non-scalar") || app._warning.toLowerCase().contains("heID") || app._warning.toLowerCase().contains("cleared")
+        app._warning.contains("non-scalar")
     }
 
-    def "list_hpm_packages adds _warning to driver entry when heID is a non-scalar type"() {
+    def "list_hpm_packages adds _warning to driver entry when heID is a non-scalar type (Map)"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1178,7 +1214,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def driver = result.packages[0].drivers[0]
         driver.heID == null
         driver._warning != null
-        driver._warning.toLowerCase().contains("non-scalar") || driver._warning.toLowerCase().contains("heid") || driver._warning.toLowerCase().contains("cleared")
+        driver._warning.contains("non-scalar")
     }
 
     // -------------------------------------------------------------------------
@@ -1192,7 +1228,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
      * Data-quality entries (skipped-malformed-heid type) are classified separately from
      * actionable drift signals and must not roll up into totalDriftSignals.
      */
-    def "get_hpm_drift places non-scalar heID component in dataQualityWarnings, not signals, and does not inflate totalDriftSignals"() {
+    def "get_hpm_drift places non-scalar heID app component in dataQualityWarnings, not signals, and does not inflate totalDriftSignals"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1217,6 +1253,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["100"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -1266,6 +1303,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["100"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -1342,8 +1380,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 ]
             ])
         }
-        // heID 50 is present -- no orphan signal for the good package
+        // heID 50 (app) is present -- no orphan-app signal for the good package.
         hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["50"]) }
+        // No driver heIDs in this package.
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
@@ -1385,5 +1425,597 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         ex.message.contains("37")
         ex.message.contains("88")
         ex.message.toLowerCase().contains("multiple") || ex.message.toLowerCase().contains("explicit")
+    }
+
+    // -------------------------------------------------------------------------
+    // Empty/whitespace heID normalization in list_hpm_packages
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages emits _warning and sets heID=null for empty-string heID on app component"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Empty HeID App Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // heID is an empty string -- must be normalized to null + _warning
+                apps: [[id: "uuid-1", name: "Empty HeID App", namespace: "ns", location: "loc", required: true, version: null, heID: ""]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'empty heID normalized to null and _warning added to the entry'
+        result.success == true
+        def app = result.packages[0].apps[0]
+        app.heID == null
+        app._warning != null
+        app._warning.contains("empty heID")
+        app._warning.contains("normalized to null")
+        app._warning.contains("''")
+    }
+
+    def "list_hpm_packages emits _warning and sets heID=null for whitespace-only heID on driver component"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Whitespace HeID Driver Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // heID is whitespace-only -- must be normalized to null + _warning
+                drivers: [[id: "uuid-d1", name: "Whitespace HeID Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: "  "]],
+                files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'whitespace heID normalized to null and _warning added to the driver entry'
+        result.success == true
+        def driver = result.packages[0].drivers[0]
+        driver.heID == null
+        driver._warning != null
+        driver._warning.contains("empty heID")
+        driver._warning.contains("normalized to null")
+        driver._warning.contains("'  '")
+    }
+
+    // -------------------------------------------------------------------------
+    // Empty/whitespace heID normalization in get_hpm_drift
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift places empty-string heID app component in dataQualityWarnings and normalizes to null (missing-required fires)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Empty HeID Required Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // required=true + empty heID: empty heID normalizes to null, triggering missing-required
+                apps: [[id: "uuid-1", name: "Empty HeID Required App", namespace: "ns", location: "loc", required: true, version: null, heID: "  "]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'empty heID emits empty-heid data-quality warning AND missing-required signal (heID normalized to null)'
+        result.success == true
+        def entry = result.drift[0]
+        def dqw = entry.dataQualityWarnings?.find { it.type == "empty-heid" && it.componentType == "app" }
+        dqw != null
+        dqw._warning.contains("'  '")
+        entry.signals.any { it.type == "missing-required" && it.componentName == "Empty HeID Required App" }
+    }
+
+    // -------------------------------------------------------------------------
+    // Orphan-driver detection via Drivers Code registry
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift surfaces orphan-driver signal when driver heID not in Drivers Code registry"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Orphan Driver Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                drivers: [[id: "drv-uuid-1", name: "Orphan Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: "555"]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Apps Code registry irrelevant (no apps in this package)
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        // Drivers Code registry has a different driver (999) but NOT 555 -- orphan-driver signal fires.
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["999"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.totalDriftSignals == 1
+        result.orphanDriverDetection?.enabled == true
+        result.drift.size() == 1
+        def sig = result.drift[0].signals[0]
+        sig.type == "orphan-driver"
+        sig.componentType == "driver"
+        sig.heID == "555"
+        sig.componentName == "Orphan Driver"
+        result.drift[0].version == "1.0.0"
+    }
+
+    def "get_hpm_drift surfaces missing-required signal for required driver with null heID"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Missing Required Driver Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                drivers: [[id: "drv-uuid-1", name: "Missing Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: null]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        result.totalDriftSignals == 1
+        def sig = result.drift[0].signals[0]
+        sig.type == "missing-required"
+        sig.componentType == "driver"
+        sig.componentName == "Missing Driver"
+    }
+
+    def "get_hpm_drift places non-scalar heID driver component in dataQualityWarnings, not signals"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Bad Driver HeID Drift Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // non-scalar heID on driver -- goes to dataQualityWarnings
+                drivers: [[id: "drv-uuid-1", name: "Bad HeID Driver", namespace: "ns", location: "loc", required: false, version: "1.0.0", heID: [7, 8]]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'non-scalar driver heID goes to dataQualityWarnings with skipped-malformed-heid type'
+        result.success == true
+        result.totalDriftSignals == 0
+        result.drift.size() == 1
+        result.drift[0].signals == []
+        result.drift[0].dataQualityWarnings?.any { it.type == "skipped-malformed-heid" && it.componentType == "driver" }
+    }
+
+    def "get_hpm_drift regression pin: orphanDriverDetection enabled=true with empty Drivers Code registry fires orphan-driver signal"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Orphan Driver Fresh Hub Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                drivers: [[id: "drv-uuid-1", name: "Orphan Driver", namespace: "ns", location: "loc", required: false, version: "1.0.0", heID: "888"]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        // Empty Drivers Code registry -- enabled=true, heID 888 not in empty set -> orphan-driver
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'orphanDriverDetection.enabled=true AND heID 888 not in empty registry -> orphan-driver signal'
+        result.success == true
+        result.orphanDriverDetection?.enabled == true
+        result.totalDriftSignals == 1
+        result.drift[0].signals[0].type == "orphan-driver"
+        result.drift[0].signals[0].heID == "888"
+    }
+
+    def "get_hpm_drift surfaces orphanDriverDetection.enabled=false when /hub2/userDeviceTypes fetch fails"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Apps Code registry succeeds with the app's heID (142) present -- no orphan-app signal
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        // Drivers Code registry throws -- simulates transport failure
+        hubGet.register('/hub2/userDeviceTypes') { throw new RuntimeException("connection refused") }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'tool succeeds; driver detection disabled with reason; apps-side detection unaffected'
+        result.success == true
+        result.orphanDriverDetection?.enabled == false
+        result.orphanDriverDetection?.reason != null
+        // apps-side orphan detection is unaffected by the driver fetch failure
+        result.orphanDetection?.enabled == true
+        // no actionable signals: apps-side passes (142 in registry), drivers-side detection disabled
+        result.totalDriftSignals == 0
+    }
+
+    // -------------------------------------------------------------------------
+    // Non-Map component skip tracking in drift entries
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift tracks skippedAppCount and emits skipped-malformed-component warning for non-Map app entries"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Malformed App Component Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // First entry is a String (not a Map) -- should be counted and warned
+                apps: ["not-a-map", [id: "uuid-ok", name: "OK App", namespace: "ns", location: "loc", required: false, version: null, heID: null]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'skippedAppCount present on drift entry; skipped-malformed-component in dataQualityWarnings'
+        result.success == true
+        result.drift.size() == 1
+        result.drift[0].skippedAppCount == 1
+        !result.drift[0].containsKey('skippedDriverCount')
+        result.drift[0].dataQualityWarnings?.any { it.type == "skipped-malformed-component" && it.componentType == "app" }
+    }
+
+    def "get_hpm_drift tracks skippedDriverCount and emits skipped-malformed-component warning for non-Map driver entries"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Malformed Driver Component Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // First entry is a String (not a Map) -- should be counted and warned
+                drivers: ["not-a-map", [id: "drv-uuid-ok", name: "OK Driver", namespace: "ns", location: "loc", required: false, version: "1.0.0", heID: null]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'skippedDriverCount present on drift entry; skippedAppCount absent; skipped-malformed-component (driver) in dataQualityWarnings'
+        result.success == true
+        result.drift.size() == 1
+        result.drift[0].skippedDriverCount == 1
+        !result.drift[0].containsKey('skippedAppCount')
+        result.drift[0].dataQualityWarnings?.any { it.type == "skipped-malformed-component" && it.componentType == "driver" }
+    }
+
+    // -------------------------------------------------------------------------
+    // Multi-instance HPM auto-discovery: truncated error message format
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages auto-discovery throws with truncated id list when more than 10 HPM instances found"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // 15 HPM instances -- discovery must truncate at 10 and report "and 5 more (total 15)"
+        def ids = (1..15).collect { it.toString() }
+        def apps = ids.collect { id ->
+            [data: [id: id, name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+        }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([systemAppTypes: [], userAppTypes: [], apps: apps])
+        }
+
+        when:
+        script.toolListHpmPackages([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        // First 10 ids must appear in the message
+        (1..10).every { ex.message.contains(it.toString()) }
+        // Truncation suffix must name the delta (5) and total (15)
+        ex.message.contains("and 5 more (total 15)")
+    }
+
+    // -------------------------------------------------------------------------
+    // Wrong-shape /hub2/userAppTypes: actualType and preview disclosed in orphanDetection.reason
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift discloses actualType and preview when /hub2/userAppTypes returns a Map instead of List"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Return a JSON object (Map) instead of array -- triggers the non-List branch
+        hubGet.register('/hub2/userAppTypes') {
+            JsonOutput.toJson([error: "unexpected", code: 500])
+        }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'orphanDetection disabled with reason disclosing actualType=Map and a preview substring'
+        result.success == true
+        result.orphanDetection?.enabled == false
+        result.orphanDetection?.reason != null
+        result.orphanDetection.reason.contains("Map")
+    }
+
+    // -------------------------------------------------------------------------
+    // skippedAppCount: emitted when > 0, omitted when all entries are well-formed
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages includes skippedAppCount on package entry when > 0"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Skipped App Entry Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // One well-formed app, one non-Map entry that should be counted
+                apps: [
+                    [id: "uuid-good", name: "Good App", namespace: "ns", location: "loc", required: true, version: null, heID: "10"],
+                    "not-a-map"
+                ],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'skippedAppCount == 1 and omitted fields are absent'
+        result.success == true
+        def pkg = result.packages[0]
+        pkg.skippedAppCount == 1
+        !pkg.containsKey('skippedDriverCount')
+        !pkg.containsKey('skippedFileCount')
+        pkg.apps.size() == 1
+        pkg.apps[0].name == "Good App"
+    }
+
+    def "list_hpm_packages includes skippedDriverCount on package entry when > 0 and omits skippedAppCount"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Skipped Driver Entry Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // One well-formed driver, one non-Map entry that should be counted
+                drivers: [
+                    "not-a-map",
+                    [id: "uuid-drv-good", name: "Good Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: "20"]
+                ],
+                files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'skippedDriverCount == 1 and skippedAppCount is absent'
+        result.success == true
+        def pkg = result.packages[0]
+        pkg.skippedDriverCount == 1
+        !pkg.containsKey('skippedAppCount')
+        pkg.drivers.size() == 1
+        pkg.drivers[0].name == "Good Driver"
+    }
+
+    def "list_hpm_packages omits skippedAppCount when all app entries are well-formed"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then: 'no skippedAppCount, skippedDriverCount, or skippedFileCount when all entries are Maps'
+        result.success == true
+        def pkg = result.packages[0]
+        !pkg.containsKey('skippedAppCount')
+        !pkg.containsKey('skippedDriverCount')
+        !pkg.containsKey('skippedFileCount')
+    }
+
+    // -------------------------------------------------------------------------
+    // Non-scalar heID _warning contains literal "non-scalar" (List and Map variants)
+    // -------------------------------------------------------------------------
+
+    def "list_hpm_packages _warning for non-scalar app heID contains literal 'non-scalar'"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Non-Scalar App HeID Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [[id: "uuid-1", name: "Weird App", namespace: "ns", location: "loc", required: true, version: null, heID: [1, 2, 3]]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        def app = result.packages[0].apps[0]
+        app.heID == null
+        app._warning != null
+        app._warning.contains("non-scalar")
+    }
+
+    def "list_hpm_packages _warning for non-scalar driver heID contains literal 'non-scalar'"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Non-Scalar Driver HeID Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                drivers: [[id: "uuid-d1", name: "Weird Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: [nested: "map"]]],
+                files: []
+            ]
+        ]
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == true
+        def driver = result.packages[0].drivers[0]
+        driver.heID == null
+        driver._warning != null
+        driver._warning.contains("non-scalar")
     }
 }
