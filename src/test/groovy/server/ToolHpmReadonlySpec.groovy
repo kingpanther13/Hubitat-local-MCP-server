@@ -786,6 +786,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.success == true
         result.totalDriftSignals == 2
         result.orphanDetection?.enabled == true
+        result.orphanDriverDetection?.enabled == true
         result.drift.size() == 1
         result.drift[0].version == "3.0.0"
         def signals = result.drift[0].signals
@@ -1069,6 +1070,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.orphanDetection?.reason != null
         // totalDriftSignals stays 0 -- no orphan signals without the apps registry
         result.totalDriftSignals == 0
+        // summary must flag partial detection so a consumer surfacing only the string isn't misled
+        result.summary.contains("partial:")
+        result.summary.contains("orphanDetection")
     }
 
     // -------------------------------------------------------------------------
@@ -1617,6 +1621,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         result.success == true
         result.totalDriftSignals == 1
+        result.drift[0].version == "1.0.0"
         def sig = result.drift[0].signals[0]
         sig.type == "missing-required"
         sig.componentType == "driver"
@@ -1730,6 +1735,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.orphanDetection?.enabled == true
         // no actionable signals: apps-side passes (142 in registry), drivers-side detection disabled
         result.totalDriftSignals == 0
+        // summary must flag partial detection so a consumer surfacing only the string isn't misled
+        result.summary.contains("partial:")
+        result.summary.contains("orphanDriverDetection")
     }
 
     // -------------------------------------------------------------------------
@@ -1834,8 +1842,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        // First 10 ids must appear in the message
-        (1..10).every { ex.message.contains(it.toString()) }
+        // The first 10 ids must appear as a literal bracketed list -- prevents id "1" substring
+        // matching "10" or "11" from masking a regression that outputs the wrong id set.
+        ex.message.contains("[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]")
         // Truncation suffix must name the delta (5) and total (15)
         ex.message.contains("and 5 more (total 15)")
     }
@@ -1857,20 +1866,31 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
                 ]
             ])
         }
-        // Return a JSON object (Map) instead of array -- triggers the non-List branch
+        // Return a JSON object (Map) instead of array -- triggers the non-List branch.
+        // The Map value must exceed 200 characters when .toString() is called so the (truncated)
+        // marker appended by actualPreview logic fires and can be asserted below.
         hubGet.register('/hub2/userAppTypes') {
-            JsonOutput.toJson([error: "unexpected", code: 500])
+            JsonOutput.toJson([
+                error  : "unexpected",
+                code   : 500,
+                detail : "a" * 210,
+                context: "This is a deliberately long error payload to push the preview past the 200-character truncation threshold in orphanDetection.reason"
+            ])
         }
         hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
 
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
 
-        then: 'orphanDetection disabled with reason disclosing actualType=Map and a preview substring'
+        then: 'orphanDetection disabled with reason disclosing actualType=Map and truncated preview'
         result.success == true
         result.orphanDetection?.enabled == false
         result.orphanDetection?.reason != null
         result.orphanDetection.reason.contains("Map")
+        result.orphanDetection.reason.contains("(truncated)")
+        // summary must flag partial detection so a consumer surfacing only the string isn't misled
+        result.summary.contains("partial:")
+        result.summary.contains("orphanDetection")
     }
 
     // -------------------------------------------------------------------------
@@ -1989,6 +2009,203 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         app.heID == null
         app._warning != null
         app._warning.contains("non-scalar")
+    }
+
+    // -------------------------------------------------------------------------
+    // Whitespace-padded heID normalization in get_hpm_drift (apps + drivers)
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift normalizes whitespace-padded app heID and emits skipped-malformed-heid warning without orphan-app signal"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Whitespace HeID App Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // " 142 " has surrounding whitespace -- would miss the registry lookup verbatim.
+                // After normalization to "142" it must match and NOT fire an orphan-app signal.
+                apps: [[id: "uuid-pad", name: "Padded App", namespace: "ns", location: "loc", required: false, version: null, heID: " 142 "]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Registry contains "142" (no padding) -- must match after normalization
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'whitespace-padded heID normalizes to trimmed value -- no orphan-app signal, skipped-malformed-heid warning emitted'
+        result.success == true
+        result.totalDriftSignals == 0
+        def entry = result.drift[0]
+        def dqw = entry.dataQualityWarnings?.find { it.type == "skipped-malformed-heid" && it.componentType == "app" }
+        dqw != null
+        dqw._warning.contains("142")
+    }
+
+    def "get_hpm_drift normalizes whitespace-padded driver heID and emits skipped-malformed-heid warning without orphan-driver signal"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Whitespace HeID Driver Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // " 89 " has surrounding whitespace -- would miss the registry lookup verbatim.
+                // After normalization to "89" it must match and NOT fire an orphan-driver signal.
+                drivers: [[id: "drv-uuid-pad", name: "Padded Driver", namespace: "ns", location: "loc", required: false, version: "1.0.0", heID: " 89 "]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        // Registry contains "89" (no padding) -- must match after normalization
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'whitespace-padded heID normalizes to trimmed value -- no orphan-driver signal, skipped-malformed-heid warning emitted'
+        result.success == true
+        result.totalDriftSignals == 0
+        def entry = result.drift[0]
+        def dqw = entry.dataQualityWarnings?.find { it.type == "skipped-malformed-heid" && it.componentType == "driver" }
+        dqw != null
+        dqw._warning.contains("89")
+    }
+
+    // -------------------------------------------------------------------------
+    // Driver-side empty-heid data-quality warning in get_hpm_drift
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift places empty-string heID driver component in dataQualityWarnings and normalizes to null"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Empty HeID Driver Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                // required=true + empty heID: empty heID normalizes to null, triggering missing-required
+                drivers: [[id: "drv-uuid-1", name: "Empty HeID Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: "  "]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'empty heID emits empty-heid data-quality warning AND missing-required signal (heID normalized to null)'
+        result.success == true
+        def entry = result.drift[0]
+        def dqw = entry.dataQualityWarnings?.find { it.type == "empty-heid" && it.componentType == "driver" }
+        dqw != null
+        dqw._warning.contains("'  '")
+        entry.signals.any { it.type == "missing-required" && it.componentName == "Empty HeID Driver" }
+    }
+
+    // -------------------------------------------------------------------------
+    // orphanDriverDetection.enabled=false: empty-body and non-List branches
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift surfaces orphanDriverDetection.enabled=false when /hub2/userDeviceTypes returns empty body"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Apps Code registry succeeds normally
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        // Empty response body -- triggers the !userDeviceTypesText branch
+        hubGet.register('/hub2/userDeviceTypes') { "" }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'tool succeeds; orphanDriverDetection disabled with reason indicating empty response'
+        result.success == true
+        result.orphanDriverDetection?.enabled == false
+        result.orphanDriverDetection?.reason != null
+        result.orphanDriverDetection.reason.toLowerCase().contains("empty")
+        result.summary.contains("partial:")
+        result.summary.contains("orphanDriverDetection")
+    }
+
+    def "get_hpm_drift surfaces orphanDriverDetection.enabled=false when /hub2/userDeviceTypes returns non-List JSON"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Apps Code registry succeeds normally
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        // Return a JSON object (Map) instead of array -- triggers the non-List branch for drivers
+        hubGet.register('/hub2/userDeviceTypes') {
+            JsonOutput.toJson([error: "unexpected shape", code: 500])
+        }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'tool succeeds; orphanDriverDetection disabled with reason disclosing actualType=Map'
+        result.success == true
+        result.orphanDriverDetection?.enabled == false
+        result.orphanDriverDetection?.reason != null
+        result.orphanDriverDetection.reason.contains("Map")
+        result.summary.contains("partial:")
+        result.summary.contains("orphanDriverDetection")
     }
 
     def "list_hpm_packages _warning for non-scalar driver heID contains literal 'non-scalar'"() {

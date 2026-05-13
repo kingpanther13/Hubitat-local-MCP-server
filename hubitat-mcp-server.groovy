@@ -949,7 +949,7 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 list_hpm_packages: "package manager HPM tracked installed manifest version inventory dcmeglio community apps drivers",
-                get_hpm_drift: "package manager HPM drift orphan missing required manifest divergence inconsistency check verify"
+                get_hpm_drift: "package manager HPM drift orphan missing required manifest divergence inconsistency check verify driver drivers"
             ]
         ],
         manage_native_rules_and_apps: [
@@ -12035,7 +12035,7 @@ def toolListHpmPackages(args) {
         int skippedDriverCount = 0
         int skippedFileCount = 0
         def apps = (manifest.apps ?: []).collect { a ->
-            if (!(a instanceof Map)) { skippedAppCount++; return null }
+            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map app component in '${manifest.packageName}' -- skipped"); return null }
             def heId = a.heID
             def heIdStr = null
             def heIdWarning = null
@@ -12045,6 +12045,14 @@ def toolListHpmPackages(args) {
                 heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
                 mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID is empty/whitespace -- normalized to null")
+            }
+            // Whitespace-padded String heID (e.g. " 142 ") is normalized to the trimmed value so
+            // that heID surfaces correctly to the consumer (matches get_hpm_drift treatment).
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
             }
             if (heId != null) {
                 if (heId instanceof Number || heId instanceof String) {
@@ -12066,7 +12074,7 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def drivers = (manifest.drivers ?: []).collect { d ->
-            if (!(d instanceof Map)) { skippedDriverCount++; return null }
+            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map driver component in '${manifest.packageName}' -- skipped"); return null }
             def heId = d.heID
             def heIdStr = null
             def heIdWarning = null
@@ -12076,6 +12084,13 @@ def toolListHpmPackages(args) {
                 heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
                 mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID is empty/whitespace -- normalized to null")
+            }
+            // Whitespace-padded String heID normalized to trimmed value (matches app treatment above).
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
             }
             if (heId != null) {
                 if (heId instanceof Number || heId instanceof String) {
@@ -12097,7 +12112,7 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def files = (manifest.files ?: []).collect { f ->
-            if (!(f instanceof Map)) { skippedFileCount++; return null }
+            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map file component in '${manifest.packageName}' -- skipped"); return null }
             [
                 id  : f.id?.toString(),
                 name: f.name?.toString()
@@ -12281,6 +12296,21 @@ def toolGetHpmDrift(args) {
                 mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
                 heId = null
             }
+            // Whitespace-padded String heID (e.g. " 142 ") would match nothing in the registry
+            // via verbatim .toString() lookup. Surface as a data-quality warning and normalize
+            // to the trimmed value so the lookup proceeds correctly.
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                dataQualityWarnings << [
+                    type         : "skipped-malformed-heid",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    _warning     : "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
             // Type-validate heID at the boundary: Number and String are the only valid scalar types.
             // Non-scalar heID (List, Map, Boolean) cannot be matched against Apps Code IDs and
             // would produce guaranteed false-positive orphan signals via .toString() coercion.
@@ -12346,6 +12376,20 @@ def toolGetHpmDrift(args) {
                 mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
                 heId = null
             }
+            // Whitespace-padded String heID (e.g. " 89 ") would produce a guaranteed false-positive
+            // orphan-driver signal. Surface as a data-quality warning and normalize to trimmed value.
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                dataQualityWarnings << [
+                    type         : "skipped-malformed-heid",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    _warning     : "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
             if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
                 mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping component")
                 dataQualityWarnings << [
@@ -12408,6 +12452,15 @@ def toolGetHpmDrift(args) {
     def summary = packagesWithActionableDrift == 0
         ? "No drift detected across ${checked} tracked package${checked == 1 ? '' : 's'}."
         : "${packagesWithActionableDrift} of ${checked} tracked package${checked == 1 ? '' : 's'} show drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
+    // When one or both detection systems were disabled this call, the summary could mislead a
+    // consumer that surfaces only the summary string. Append a partial-detection suffix so the
+    // human-readable summary matches the structured orphanDetection / orphanDriverDetection fields.
+    def partialSuffixParts = []
+    if (!orphanDetection.enabled)       partialSuffixParts << "orphanDetection"
+    if (!orphanDriverDetection.enabled) partialSuffixParts << "orphanDriverDetection"
+    if (partialSuffixParts) {
+        summary += " (partial: ${partialSuffixParts.join('/')} disabled this call -- see ${partialSuffixParts.join('/')} reason)"
+    }
 
     def result = [
         success               : true,
