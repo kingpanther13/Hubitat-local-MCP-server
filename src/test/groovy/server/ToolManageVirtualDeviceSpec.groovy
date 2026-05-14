@@ -399,7 +399,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             id: 99,
             name: 'Levoit Classic 200S Humidifier',
             label: 'Office Humidifier',
-            deviceNetworkId: 'mcp-virtual-test-99'
+            deviceNetworkId: 'mcp-virtual-test-99',
+            typeName: 'Levoit Classic 200S Humidifier'
         )
         fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
         childDevicesList << fakeDevice

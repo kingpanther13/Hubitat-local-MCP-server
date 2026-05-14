@@ -27,6 +27,10 @@ class TestDevice {
     // a list of maps like [[name: 'switch', value: 'on']].
     List currentStates = null
 
+    // Hub property read by toolListVirtualDevices (device.typeName ?: device.name).
+    // Default null so callers that don't set it fall through to the device.name fallback.
+    String typeName = null
+
     // Events returned by eventsSince(). Default [] keeps existing specs green;
     // rule-engine device_was tests seed this with maps like
     // [[name: 'switch', value: 'on'], ...] to drive the lookback check.
