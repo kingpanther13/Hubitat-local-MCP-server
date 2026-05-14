@@ -395,15 +395,18 @@ Devices are accessible from two sources:
 Virtual devices are managed via the unified `manage_virtual_device` tool (action enum: "create", "delete") as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
 
 - **`addChildDevice(namespace, driverName, dni, null, [name: ..., label: ..., isComponent: false])`** — 5-argument form with `null` hub ID for cross-firmware compatibility. Namespace is `"hubitat"` for built-in virtual drivers, or the user-supplied namespace for custom drivers.
-- **Two mutually exclusive create modes**: `deviceType` (one of 15 built-in virtual driver names, namespace hardcoded to `"hubitat"`) OR `customDriver={namespace, name}` (user-installed driver with any namespace). Exactly one must be provided.
+- **Two mutually exclusive create modes**: `deviceType` (one of 15 built-in virtual driver names, namespace hardcoded to `"hubitat"`) **because** built-in types are a finite validated set requiring only a type name; OR `customDriver={namespace, name}` (user-installed driver with any namespace) **because** custom drivers require both a namespace discriminator and a type name to be uniquely identified on the hub. Exactly one must be provided. Mutually exclusive with each other; supplying both is an error.
 - **`isComponent: false`** — device appears independently in the Hubitat UI, can be edited/deleted, and can be shared with other apps (Maker API, Dashboard, Rule Machine, HA, etc.)
 - **`getChildDevices()`** returns only child *devices* (not child apps/rules — those use `getChildApps()`)
 - **`deleteChildDevice(dni)`** removes by device network ID
 - Auto-generated DNIs use format `mcp-virtual-<hex-timestamp>-<hex-random>` with retry logic to avoid collisions
 - Supports 15 built-in virtual device types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller
-- For custom drivers: `customDriver={namespace, name}` -- namespace + name must match exactly as registered. `UnknownDeviceTypeException` from `addChildDevice` is translated to an `IllegalArgumentException` pointing to `list_hub_drivers`.
-- Response shape includes `driverNamespace` and `driverType` (both paths).
+- For custom drivers: `customDriver={namespace, name}` -- namespace + name must match exactly as registered. Any exception from `addChildDevice` on the custom-driver path is translated to an `IllegalArgumentException` pointing to `list_hub_drivers` (fail-closed regardless of hub error text).
+- **Response shape** (`manage_virtual_device create`): includes `driverNamespace` and `driverType` (both paths). `typeName` was removed from the create response in this version.
+- **Response shape** (`list_virtual_devices`): includes `driverNamespace`, `driverType`, and `typeName` (deprecated alias for `driverType` -- prefer `driverType` in new code; use `device.getDriverType()?.namespace` with `"hubitat"` fallback for namespace).
 - Requires Hub Admin Write access (with backup verification) for create/delete operations
+
+> **Breaking change:** `manage_virtual_device` create response no longer emits `typeName`. Callers reading `result.device.typeName` will get `null`. Migrate to `result.device.driverType` (same value). The `list_virtual_devices` response still emits `typeName` as a deprecated alias alongside the new `driverNamespace` and `driverType` fields.
 
 #### update_device Tool
 

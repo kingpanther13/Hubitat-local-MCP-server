@@ -137,7 +137,7 @@ All Hub Admin Write tools require these steps:
 | Virtual Omni Sensor | multi-purpose | Combined sensor types |
 | Virtual Fan Controller | fan speed control | Fan simulation |
 
-**Option B: customDriver** -- user-installed drivers (pass `{namespace, name}`):
+**Option B: customDriver** -- user-installed drivers (pass `{namespace, name}`); mutually exclusive with `deviceType`:
 ```json
 {
   "action": "create",
@@ -146,7 +146,11 @@ All Hub Admin Write tools require these steps:
   "confirm": true
 }
 ```
-Use `manage_apps_drivers(tool="list_hub_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found, `addChildDevice` throws and the tool surfaces an `IllegalArgumentException` pointing to `list_hub_drivers`.
+Use `manage_apps_drivers(tool="list_hub_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found (or any other hub error), the tool surfaces an `IllegalArgumentException` pointing to `list_hub_drivers`.
+
+**Create response shape** (both modes): `{ success, device: { id, name, label, deviceNetworkId, driverNamespace, driverType, capabilities, commands, attributes } }`
+
+**List response shape** (`list_virtual_devices`): each entry includes `driverNamespace`, `driverType`, and `typeName` (deprecated alias for `driverType` -- prefer `driverType` in new code).
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP device tools without manual selection

@@ -36,8 +36,8 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `manage_virtual_device` | Create or delete MCP-managed virtual devices (action="create"/"delete"). For create, use either deviceType (15 built-in types) or customDriver={namespace, name} for user-installed drivers. | Hub Admin Write |
-| `list_virtual_devices` | List all MCP-managed virtual devices. | None |
+| `manage_virtual_device` | Create or delete MCP-managed virtual devices (action="create"/"delete"). For create, use either `deviceType` (15 built-in types) or `customDriver={namespace, name}` for installed custom drivers (HPM or pasted); mutually exclusive with `deviceType`. Response includes `driverNamespace` + `driverType`. | Hub Admin Write |
+| `list_virtual_devices` | List all MCP-managed virtual devices. Each entry includes `driverNamespace`, `driverType`, and `typeName` (deprecated alias for `driverType`). | None |
 
 ### System Tools (8)
 

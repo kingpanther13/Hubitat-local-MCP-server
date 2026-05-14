@@ -357,11 +357,23 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 ```json
 {
-  "test_prompt": "Create a virtual switch called 'Test' using deviceType='Virtual Switch' AND also set customDriver={namespace:'x',name:'y'}."
+  "test_prompt": "Create a virtual switch called 'BAT Exclusive Test' using deviceType='Virtual Switch' AND also set customDriver={namespace:'x',name:'y'}."
 }
 ```
 
 **Expected**: Tool throws `IllegalArgumentException` with "mutually exclusive" in the message. Agent reports the error.
+
+### T19f — manage_virtual_device customDriver success path (conditional)
+
+```json
+{
+  "setup_prompt": "Use manage_apps_drivers(tool='list_hub_drivers') to find any installed custom driver. If none are installed, skip this test and say 'no custom drivers available'.",
+  "test_prompt": "Create a virtual device using the first available custom driver (use its namespace and name), label it 'BAT Custom Driver Success Test'. Then delete it.",
+  "teardown_prompt": "Delete the virtual device 'BAT Custom Driver Success Test' if it still exists."
+}
+```
+
+**Expected** (conditional -- skip if no custom drivers installed): Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace, name}` from a real installed driver. Response includes `driverNamespace` matching the supplied namespace and `driverType` matching the supplied name. No `typeName` in create response. Agent then calls `manage_virtual_device(action="delete")` to clean up.
 
 ---
 

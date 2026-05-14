@@ -1855,7 +1855,8 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
                         properties: [
                             namespace: [type: "string", description: "Driver namespace (e.g., 'level99-vesync')."],
                             name: [type: "string", description: "Driver type name as registered on the hub (e.g., 'Levoit Classic 200S Humidifier')."]
-                        ]
+                        ],
+                        required: ["namespace", "name"]
                     ],
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
                     deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
@@ -10832,7 +10833,7 @@ def toolCreateVirtualDevice(args) {
         namespace = cd.namespace.toString()
         typeName = cd.name.toString()
         displayType = "${namespace}:${typeName}"
-        mcpLog("info", "device", "Creating virtual device with custom driver: namespace='${namespace}', name='${typeName}', label='${deviceLabel}'")
+        mcpLog("info", "device", "Creating virtual device with custom driver: namespace='${namespace}', name='${typeName}', label='${deviceLabel}', dni='${dni ?: "(auto-generate)"}'")
     } else {
         def deviceType = args.deviceType
         if (!deviceType) throw new IllegalArgumentException("deviceType is required")  // defensive; dispatch already validated
@@ -10843,7 +10844,7 @@ def toolCreateVirtualDevice(args) {
         namespace = "hubitat"
         typeName = deviceType
         displayType = deviceType
-        mcpLog("info", "device", "Creating virtual device: type='${deviceType}', label='${deviceLabel}', dni='${dni}'")
+        mcpLog("info", "device", "Creating virtual device: type='${deviceType}', label='${deviceLabel}', dni='${dni ?: "(auto-generate)"}'")
     }
 
     // Fetch child devices once for DNI generation and validation
@@ -10870,6 +10871,9 @@ def toolCreateVirtualDevice(args) {
     }
 
     def newDevice = null
+    // Exception-class distinction: customDriver throws IllegalArgumentException because the bad driver spec is caller-supplied
+    // (recoverable by fixing args); built-in throws RuntimeException because the hub firmware not including a built-in driver
+    // is a platform condition, not a caller error.
     try {
         newDevice = addChildDevice(namespace, typeName, dni, null, [
             name: typeName,
@@ -10877,21 +10881,22 @@ def toolCreateVirtualDevice(args) {
             isComponent: false
         ])
     } catch (Exception e) {
-        mcpLog("error", "device", "Failed to create virtual device '${deviceLabel}' (${displayType}): ${e.message}")
+        mcpLog("error", "device", "Failed to create virtual device '${deviceLabel}' (${displayType}): ${e.class.simpleName}: ${e.message}")
+        if (args.customDriver != null) {
+            // Custom driver path: always surface the actionable hint regardless of how the hub phrased the error.
+            throw new IllegalArgumentException("Custom driver '${namespace}:${typeName}' not found on hub. Verify the driver is installed and namespace + name match exactly (use list_hub_drivers to check available drivers). (Hub reported: ${e.message})")
+        }
         if (e.message?.contains("UnknownDeviceTypeException") || e.message?.contains("not found")) {
-            if (args.customDriver != null) {
-                throw new IllegalArgumentException("Custom driver '${namespace}:${typeName}' not found on hub. Verify the driver is installed and namespace + name match exactly (use list_hub_drivers to check available drivers).")
-            }
-            throw new RuntimeException("Failed to create virtual device: Driver '${typeName}' not found on this hub. The hub firmware may not include this built-in driver.")
+            throw new RuntimeException("Driver '${typeName}' not found on this hub. The hub firmware may not include this built-in driver -- check the Hubitat docs for built-in virtual driver availability on your firmware version. (Hub reported: ${e.message})")
         }
         if (e.message?.contains("already exists") || e.message?.contains("unique")) {
-            throw new RuntimeException("Failed to create virtual device: Network ID '${dni}' already exists on the hub. Try again with a different deviceNetworkId.")
+            throw new RuntimeException("A device with network ID '${dni}' already exists or conflicts with an existing device. (Hub reported: ${e.message})")
         }
         throw new RuntimeException("Failed to create virtual device: ${e.message}")
     }
 
     if (!newDevice) {
-        throw new RuntimeException("Failed to create virtual device - addChildDevice returned null")
+        throw new RuntimeException("Failed to create virtual device -- addChildDevice returned null. A device with DNI '${dni}' may have been partially registered. Check list_virtual_devices and Hubitat UI before retrying with the same DNI.")
     }
 
     // Read back device info
@@ -10935,12 +10940,21 @@ def toolListVirtualDevices(args) {
     }
 
     def devices = childDevs.collect { device ->
+        // driverNamespace: attempt driver namespace lookup; fall back to "hubitat" when the property
+        // is unavailable (built-in virtual drivers don't expose a separate namespace on all firmware).
+        // driverType: the driver type name. typeName kept as deprecated alias -- prefer driverType in new code.
+        def devNamespace
+        try { devNamespace = device.getDriverType()?.namespace } catch (e) { devNamespace = null }
+        devNamespace = devNamespace ?: "hubitat"
+        def devTypeName  = device.typeName ?: device.name
         def info = [
             id: device.id.toString(),
             name: device.name,
             label: device.label ?: device.name,
             deviceNetworkId: device.deviceNetworkId,
-            typeName: device.typeName ?: device.name,
+            driverNamespace: devNamespace,
+            driverType: devTypeName,
+            typeName: devTypeName,  // deprecated alias; use driverType
             capabilities: device.capabilities?.collect { it.name } ?: [],
             commands: device.supportedCommands?.collect { it.name } ?: [],
             currentStates: [:]
@@ -20244,6 +20258,14 @@ All Hub Admin Write tools require these steps:
 | Virtual Water Sensor | wet/dry | Water leak simulation |
 | Virtual Omni Sensor | multi-purpose | Combined sensor types |
 | Virtual Fan Controller | fan speed | Fan simulation |
+
+### Custom drivers
+
+Use `customDriver={namespace, name}` instead of `deviceType` to instantiate any user-installed driver:
+- `namespace` and `name` must match exactly as the driver is registered on the hub
+- Use `manage_apps_drivers(tool="list_hub_drivers")` to discover installed driver namespace + name values
+- Mutually exclusive with `deviceType` -- supply exactly one
+- On failure, the tool surfaces an `IllegalArgumentException` with a `list_hub_drivers` hint
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP tools without manual selection
