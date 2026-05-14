@@ -1843,7 +1843,7 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
             name: "manage_virtual_device",
             description: """Create or delete MCP-managed virtual devices. Requires Hub Admin Write + confirm.
 
-action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive.
+action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive. Create response shape: {success, action, device: {id, name, label, deviceNetworkId, driverNamespace, driverType}}. Note: typeName field is not included in the create response -- use driverType instead.
 action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_devices to find DNIs.""",
             inputSchema: [
                 type: "object",
@@ -1867,7 +1867,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
         ],
         [
             name: "list_virtual_devices",
-            description: "List MCP-managed virtual devices with IDs, labels, types, states, and capabilities.",
+            description: "List MCP-managed virtual devices (children of this app). Response fields per device: id, name, label, deviceNetworkId, driverNamespace, driverType (driver type name), typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, currentStates.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -10884,7 +10884,7 @@ def toolCreateVirtualDevice(args) {
         mcpLog("error", "device", "Failed to create virtual device '${deviceLabel}' (${displayType}): ${e.class.simpleName}: ${e.message}")
         if (args.customDriver != null) {
             // Custom driver path: always surface the actionable hint regardless of how the hub phrased the error.
-            throw new IllegalArgumentException("Custom driver '${namespace}:${typeName}' not found on hub. Verify the driver is installed and namespace + name match exactly (use list_hub_drivers to check available drivers). (Hub reported: ${e.message})")
+            throw new IllegalArgumentException("Failed to create virtual device with custom driver '${namespace}:${typeName}'. If the driver is not installed, use list_hub_drivers to verify the namespace and name match. (Hub reported: ${e.message})")
         }
         if (e.message?.contains("UnknownDeviceTypeException") || e.message?.contains("not found")) {
             throw new RuntimeException("Driver '${typeName}' not found on this hub. The hub firmware may not include this built-in driver -- check the Hubitat docs for built-in virtual driver availability on your firmware version. (Hub reported: ${e.message})")
@@ -10944,7 +10944,12 @@ def toolListVirtualDevices(args) {
         // is unavailable (built-in virtual drivers don't expose a separate namespace on all firmware).
         // driverType: the driver type name. typeName kept as deprecated alias -- prefer driverType in new code.
         def devNamespace
-        try { devNamespace = device.getDriverType()?.namespace } catch (e) { devNamespace = null }
+        try {
+            devNamespace = device.getDriverType()?.namespace
+        } catch (Exception e) {
+            devNamespace = null
+            mcpLog("debug", "device", "getDriverType() unavailable for ${device.id}: ${e.class.simpleName}: ${e.message}")
+        }
         devNamespace = devNamespace ?: "hubitat"
         def devTypeName  = device.typeName ?: device.name
         def info = [

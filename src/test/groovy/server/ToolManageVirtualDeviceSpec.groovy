@@ -285,8 +285,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     def "create with customDriver: any hub exception always surfaces list_hub_drivers hint (fail-closed)"() {
-        // Pins B4: fail-closed routing -- any exception on the customDriver path becomes an
-        // IllegalArgumentException with a list_hub_drivers hint, regardless of the hub's error text.
+        // Invariant: any addChildDevice exception on the customDriver path surfaces as IllegalArgumentException
+        // with the list_hub_drivers hint regardless of the exception class or message text.
         given:
         enableHubAdminWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
@@ -366,8 +366,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     def "create with built-in deviceType: UnknownDeviceTypeException stays RuntimeException with firmware hint"() {
-        // Pins B2: built-in not-found throws RuntimeException (platform condition), NOT IllegalArgumentException
-        // (which would misclassify the hub firmware gap as a caller error).
+        // Invariant: built-in driver-not-found is a platform condition that throws RuntimeException,
+        // NOT IllegalArgumentException. The distinction preserves the semantic that caller-fixable
+        // errors (wrong args) become IAE, while platform/firmware gaps become RuntimeException.
         given:
         enableHubAdminWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
@@ -385,5 +386,64 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def ex = thrown(RuntimeException)
         !(ex instanceof IllegalArgumentException)  // pins the class distinction from customDriver path
         ex.message.contains('hub firmware')
+    }
+
+    // -------- toolListVirtualDevices --------
+
+    def "list_virtual_devices: success path with custom-driver device returns driverNamespace and driverType"() {
+        // Invariant: when getDriverType() returns a namespace-bearing object, driverNamespace is
+        // populated from it and driverType/typeName both reflect the driver type name.
+        given:
+        def fakeDriverType = [namespace: 'level99-vesync']
+        def fakeDevice = new support.TestDevice(
+            id: 99,
+            name: 'Levoit Classic 200S Humidifier',
+            label: 'Office Humidifier',
+            deviceNetworkId: 'mcp-virtual-test-99'
+        )
+        fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
+        childDevicesList << fakeDevice
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success != false
+        result.devices.size() >= 1
+        def d = result.devices.find { it.id == '99' }
+        d != null
+        d.driverNamespace == 'level99-vesync'
+        d.driverType      == 'Levoit Classic 200S Humidifier'
+        d.typeName        == 'Levoit Classic 200S Humidifier'  // deprecated alias present in list response
+        d.deviceNetworkId == 'mcp-virtual-test-99'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 99 }
+    }
+
+    def "list_virtual_devices: getDriverType() exception falls back to hubitat namespace without crashing"() {
+        // Invariant: on firmware where getDriverType() is unavailable or throws, the fallback
+        // namespace is 'hubitat' and the tool continues to return a valid response.
+        given:
+        def fakeDevice = new support.TestDevice(
+            id: 100,
+            name: 'Virtual Switch',
+            label: 'Fallback Test Switch',
+            deviceNetworkId: 'mcp-virtual-test-100'
+        )
+        fakeDevice.metaClass.getDriverType = { -> throw new MissingMethodException('getDriverType', Object, [] as Object[]) }
+        childDevicesList << fakeDevice
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success != false
+        def d = result.devices.find { it.id == '100' }
+        d != null
+        d.driverNamespace == 'hubitat'   // fallback when getDriverType() throws
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 100 }
     }
 }
