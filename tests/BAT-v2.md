@@ -2885,7 +2885,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: AI calls `manage_hpm(tool='get_hpm_drift')`. Returns `success=true`, `summary` sentence, `drift` array (may be empty), `totalDriftSignals`, `orphanDetection`, `orphanDriverDetection`, and `limitations` note. AI interprets the summary and describes any drift signals found (type, packageName, componentName). If no drift, AI confirms the packages are clean and mentions the heID-presence-only detection limitation. Response may also include `dataQualityWarnings[]` and `skippedMalformed[]` if manifest data quality issues exist. Per-package fields when emitted: `skippedAppCount`, `skippedDriverCount`, `skippedFileCount`. Response-level fields when filter matches nothing: `filterMatchedZero=true`, `availablePackages[]`. When either detection system was disabled, `summary` includes a `"(partial: ...)"` suffix naming which detection field was disabled.
+**Expected**: AI calls `manage_hpm(tool='get_hpm_drift')`. Returns `success=true`, `summary` sentence, `drift` array (may be empty), `packagesWithActionableDrift`, `totalDriftSignals`, `orphanDetection`, `orphanDriverDetection`, and `limitations` note. AI interprets the summary and describes any drift signals found (type, packageName, componentName). If no drift, AI confirms the packages are clean and mentions the heID-presence-only detection limitation. Response may also include `dataQualityWarnings[]` and `skippedMalformed[]` if manifest data quality issues exist. Per-package fields when emitted: `skippedAppCount`, `skippedDriverCount` (files are not iterated in drift -- no `skippedFileCount` on drift entries). Response-level fields when filter matches nothing: `filterMatchedZero=true`, `availablePackages[]`. When either detection system was disabled, `summary` includes a `"(partial: ...)"` suffix naming which detection field was disabled.
 
 ### T602 — manage_hpm gateway catalog discovery
 
@@ -2907,7 +2907,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: When a package has only `dataQualityWarnings[]` and no actionable `signals[]`, `totalDriftSignals` is 0 and `summary` reads "No drift detected..." even if `drift[]` has one entry (data-quality entry for visibility). Drift signal type strings: `missing-required`, `orphan-app`, `orphan-driver`. Data-quality warning type strings: `skipped-malformed-heid`, `empty-heid`, `skipped-malformed-component`. `drift[].length` may exceed the actionable-drift package count in this scenario.
+**Expected**: When a package has only `dataQualityWarnings[]` and no actionable `signals[]`, `totalDriftSignals` is 0 and `summary` reads "No drift detected..." even if `drift[]` has one entry (data-quality entry for visibility). Drift signal type strings: `missing-required`, `orphan-app`, `orphan-driver`. Data-quality warning type strings: `heid-whitespace-normalized` (padded heID normalized; component kept), `heid-non-scalar-dropped` (non-scalar heID; component dropped), `empty-heid`, `skipped-malformed-component`. `drift[].length` may exceed the actionable-drift package count in this scenario.
 
 ---
 

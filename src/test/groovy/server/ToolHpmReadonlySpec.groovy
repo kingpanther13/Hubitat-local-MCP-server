@@ -323,12 +323,15 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         pkg.apps[0].heID == "142"
         pkg.apps[0].required == true
         pkg.apps[0].version == null
+        // Canonical heID must not emit _warning -- a regression that always-fires the warning branch is silent without this pin
+        !pkg.apps[0].containsKey('_warning')
 
         and: 'driver component with per-component version'
         pkg.drivers.size() == 1
         pkg.drivers[0].name == "BOND Fan"
         pkg.drivers[0].heID == "89"
         pkg.drivers[0].version == "1.0.3"
+        !pkg.drivers[0].containsKey('_warning')
 
         and: 'file component (no heID field)'
         pkg.files.size() == 1
@@ -582,6 +585,53 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('numeric')
     }
 
+    def "get_hpm_drift throws when explicit hpmAppId does not exist in installed apps"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Installed apps list has no entry with id "998"
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+
+        when:
+        script.toolGetHpmDrift([hpmAppId: "998"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("998")
+        ex.message.toLowerCase().contains("not found") || ex.message.toLowerCase().contains("auto-discovery")
+    }
+
+    def "get_hpm_drift throws when explicit hpmAppId belongs to a different app type"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // App 999 exists but is type "Simple Automation Rules", not HPM
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "999", name: "Simple Automations", type: "Simple Automation Rules", user: true], children: []]
+                ]
+            ])
+        }
+
+        when:
+        script.toolGetHpmDrift([hpmAppId: "999"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("999")
+        // Must name the actual type so the caller knows what they hit
+        ex.message.toLowerCase().contains("simple automation rules") || ex.message.toLowerCase().contains("actual type")
+    }
+
     // -------------------------------------------------------------------------
     // get_hpm_drift: HPM not installed
     // -------------------------------------------------------------------------
@@ -596,7 +646,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message != null
+        ex.message.toLowerCase().contains('hpm') || ex.message.toLowerCase().contains('package manager') || ex.message.toLowerCase().contains('not found') || ex.message.toLowerCase().contains('not installed')
     }
 
     // -------------------------------------------------------------------------
@@ -629,6 +679,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.success == true
         result.hpmAppId == "37"
         result.packagesChecked == 1
+        result.packagesWithActionableDrift == 0
         result.totalDriftSignals == 0
         result.drift == []
         result.summary.contains("No drift")
@@ -674,6 +725,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
         then:
         result.success == true
+        result.packagesWithActionableDrift == 1
         result.totalDriftSignals == 1
         result.orphanDetection?.enabled == true
         result.orphanDriverDetection?.enabled == true
@@ -691,6 +743,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         and: 'summary reflects 1 of 1 tracked packages with 1 total signal'
         result.summary.contains("1 of 1")
         result.summary.contains("1 total signal")
+        result.summary.contains("shows")   // singular subject-verb agreement
     }
 
     // -------------------------------------------------------------------------
@@ -1229,7 +1282,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
      * Regression pin: a component with non-scalar heID must land in dataQualityWarnings[]
      * on the drift entry and in the top-level dataQualityWarnings[], NOT in signals[],
      * and must NOT inflate totalDriftSignals.
-     * Data-quality entries (skipped-malformed-heid type) are classified separately from
+     * Data-quality entries (heid-non-scalar-dropped type) are classified separately from
      * actionable drift signals and must not roll up into totalDriftSignals.
      */
     def "get_hpm_drift places non-scalar heID app component in dataQualityWarnings, not signals, and does not inflate totalDriftSignals"() {
@@ -1268,7 +1321,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.drift.size() == 1
         result.drift[0].signals == []
         result.drift[0].dataQualityWarnings?.size() == 1
-        result.drift[0].dataQualityWarnings[0].type == "skipped-malformed-heid"
+        result.drift[0].dataQualityWarnings[0].type == "heid-non-scalar-dropped"
         result.dataQualityWarnings != null
         result.dataQualityWarnings.size() == 1
     }
@@ -1659,12 +1712,12 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
 
-        then: 'non-scalar driver heID goes to dataQualityWarnings with skipped-malformed-heid type'
+        then: 'non-scalar driver heID goes to dataQualityWarnings with heid-non-scalar-dropped type'
         result.success == true
         result.totalDriftSignals == 0
         result.drift.size() == 1
         result.drift[0].signals == []
-        result.drift[0].dataQualityWarnings?.any { it.type == "skipped-malformed-heid" && it.componentType == "driver" }
+        result.drift[0].dataQualityWarnings?.any { it.type == "heid-non-scalar-dropped" && it.componentType == "driver" }
     }
 
     def "get_hpm_drift regression pin: orphanDriverDetection enabled=true with empty Drivers Code registry fires orphan-driver signal"() {
@@ -2015,7 +2068,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Whitespace-padded heID normalization in get_hpm_drift (apps + drivers)
     // -------------------------------------------------------------------------
 
-    def "get_hpm_drift normalizes whitespace-padded app heID and emits skipped-malformed-heid warning without orphan-app signal"() {
+    def "get_hpm_drift normalizes whitespace-padded app heID and emits heid-whitespace-normalized warning without orphan-app signal"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2047,16 +2100,16 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
 
-        then: 'whitespace-padded heID normalizes to trimmed value -- no orphan-app signal, skipped-malformed-heid warning emitted'
+        then: 'whitespace-padded heID normalizes to trimmed value -- no orphan-app signal, heid-whitespace-normalized warning emitted'
         result.success == true
         result.totalDriftSignals == 0
         def entry = result.drift[0]
-        def dqw = entry.dataQualityWarnings?.find { it.type == "skipped-malformed-heid" && it.componentType == "app" }
+        def dqw = entry.dataQualityWarnings?.find { it.type == "heid-whitespace-normalized" && it.componentType == "app" }
         dqw != null
         dqw._warning.contains("142")
     }
 
-    def "get_hpm_drift normalizes whitespace-padded driver heID and emits skipped-malformed-heid warning without orphan-driver signal"() {
+    def "get_hpm_drift normalizes whitespace-padded driver heID and emits heid-whitespace-normalized warning without orphan-driver signal"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2089,11 +2142,11 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         when:
         def result = script.toolGetHpmDrift([hpmAppId: "37"])
 
-        then: 'whitespace-padded heID normalizes to trimmed value -- no orphan-driver signal, skipped-malformed-heid warning emitted'
+        then: 'whitespace-padded heID normalizes to trimmed value -- no orphan-driver signal, heid-whitespace-normalized warning emitted'
         result.success == true
         result.totalDriftSignals == 0
         def entry = result.drift[0]
-        def dqw = entry.dataQualityWarnings?.find { it.type == "skipped-malformed-heid" && it.componentType == "driver" }
+        def dqw = entry.dataQualityWarnings?.find { it.type == "heid-whitespace-normalized" && it.componentType == "driver" }
         dqw != null
         dqw._warning.contains("89")
     }
@@ -2234,5 +2287,55 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         driver.heID == null
         driver._warning != null
         driver._warning.contains("non-scalar")
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: Integer heID is a valid scalar -- no data-quality warning (BLOCKING #7)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression pin: an Integer heID (e.g. 142 raw) must be treated as a valid scalar.
+     * The production guard is `instanceof Number || instanceof String`. If the Number check
+     * is dropped, Integer heIDs route to the heid-non-scalar-dropped path and silently
+     * disappear from drift checking, producing false-negatives for orphan detection.
+     */
+    def "get_hpm_drift treats Integer heID as valid scalar -- no heid-non-scalar-dropped warning and no orphan-app signal when heID matches registry"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Integer HeID Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // heID as raw Integer -- must be treated as valid scalar and matched against registry
+                apps: [[id: "uuid-int", name: "Integer HeID App", namespace: "ns", location: "loc", required: false, version: null, heID: 142]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Registry contains "142" -- Integer 142 must match via .toString() coercion
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'Integer heID 142 matches registry "142" -- no orphan signal and no data-quality warning'
+        result.success == true
+        result.totalDriftSignals == 0
+        // No drift entry because no signals and no dataQualityWarnings
+        result.drift == []
+        // No top-level data-quality warnings either
+        !result.containsKey('dataQualityWarnings')
     }
 }

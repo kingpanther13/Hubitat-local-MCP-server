@@ -2381,7 +2381,7 @@ Requires Hub Admin Read.""",
             name: "list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
 
-App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is a non-scalar type (not Number or String) or an empty/whitespace string, heID is cleared to null and a _warning field is added to that component entry.
+App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that component entry. If heID is a whitespace-padded string (e.g. ' 142 '), it is normalized to the trimmed value and _warning records the normalization; heID remains non-null. If heID is a non-scalar type (not Number or String), heID is cleared to null and a _warning field is added.
 
 File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
 
@@ -2409,7 +2409,7 @@ Drift detection is heID-presence-only. HPM stores no source hashes so post-insta
 
 If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked.
 
-Response fields: packagesChecked, totalDriftSignals (counts only actionable drift signals -- missing-required, orphan-app, orphan-driver -- not data-quality warnings), drift[] (one entry per package with any signal or warning -- each has manifestUrl, packageName, version, signals[], and optionally dataQualityWarnings[], skippedAppCount, skippedDriverCount), summary sentence. Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only packages are present -- those entries appear for visibility but are not counted in the summary. orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed), orphanDriverDetection ({enabled: bool, reason?} -- enabled=false means the Drivers Code registry fetch failed), limitations note. Data-quality warning types: skipped-malformed-heid (non-scalar heID), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry). Top-level skippedMalformed[] lists manifest URLs whose value was not a Map. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[].
+Response fields: packagesChecked, packagesWithActionableDrift (count of packages that have at least one actionable drift signal -- excludes data-quality-only packages), totalDriftSignals (counts only actionable drift signals -- missing-required, orphan-app, orphan-driver -- not data-quality warnings), drift[] (one entry per package with any signal or warning -- each has manifestUrl, packageName, version, signals[], and optionally dataQualityWarnings[], skippedAppCount, skippedDriverCount), summary sentence. Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only packages are present -- those entries appear for visibility but are not counted in the summary. orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed), orphanDriverDetection ({enabled: bool, reason?} -- enabled=false means the Drivers Code registry fetch failed), limitations note. Data-quality warning types: heid-whitespace-normalized (whitespace-padded heID normalized to trimmed value; component is KEPT, drift checks continue), heid-non-scalar-dropped (heID is not a Number or String; component is DROPPED, no drift checks run), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry). Top-level skippedMalformed[] lists manifest URLs whose value was not a Map. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[].
 
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
@@ -12035,7 +12035,7 @@ def toolListHpmPackages(args) {
         int skippedDriverCount = 0
         int skippedFileCount = 0
         def apps = (manifest.apps ?: []).collect { a ->
-            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map app component in '${manifest.packageName}' -- skipped"); return null }
+            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
             def heId = a.heID
             def heIdStr = null
             def heIdWarning = null
@@ -12074,7 +12074,7 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def drivers = (manifest.drivers ?: []).collect { d ->
-            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map driver component in '${manifest.packageName}' -- skipped"); return null }
+            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
             def heId = d.heID
             def heIdStr = null
             def heIdWarning = null
@@ -12112,7 +12112,7 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def files = (manifest.files ?: []).collect { f ->
-            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map file component in '${manifest.packageName}' -- skipped"); return null }
+            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map file component in '${manifest.packageName}' (value: ${f?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
             [
                 id  : f.id?.toString(),
                 name: f.name?.toString()
@@ -12279,7 +12279,7 @@ def toolGetHpmDrift(args) {
                     componentType: "app",
                     _warning     : "app component entry is not a Map -- skipped"
                 ]
-                mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' -- skipped")
+                mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped")
                 return
             }
             def heId = a.heID
@@ -12298,26 +12298,28 @@ def toolGetHpmDrift(args) {
             }
             // Whitespace-padded String heID (e.g. " 142 ") would match nothing in the registry
             // via verbatim .toString() lookup. Surface as a data-quality warning and normalize
-            // to the trimmed value so the lookup proceeds correctly.
+            // to the trimmed value so the lookup proceeds correctly. The component is KEPT --
+            // drift checks continue against the trimmed heID.
             if (heId instanceof String && heId.trim() != heId) {
                 def trimmed = heId.trim()
                 dataQualityWarnings << [
-                    type         : "skipped-malformed-heid",
+                    type         : "heid-whitespace-normalized",
                     componentType: "app",
                     componentName: a.name?.toString(),
                     componentId  : a.id?.toString(),
                     _warning     : "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
                 ]
-                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace ('${heId}') -- normalized to '${trimmed}'")
                 heId = trimmed
             }
             // Type-validate heID at the boundary: Number and String are the only valid scalar types.
             // Non-scalar heID (List, Map, Boolean) cannot be matched against Apps Code IDs and
             // would produce guaranteed false-positive orphan signals via .toString() coercion.
+            // The component is DROPPED -- drift checks do not run for this entry.
             if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
-                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping component")
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String (value: ${heId?.toString()?.take(60) ?: 'null'}) -- skipping component")
                 dataQualityWarnings << [
-                    type         : "skipped-malformed-heid",
+                    type         : "heid-non-scalar-dropped",
                     componentType: "app",
                     componentName: a.name?.toString(),
                     componentId  : a.id?.toString(),
@@ -12360,7 +12362,7 @@ def toolGetHpmDrift(args) {
                     componentType: "driver",
                     _warning     : "driver component entry is not a Map -- skipped"
                 ]
-                mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' -- skipped")
+                mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped")
                 return
             }
             def heId = d.heID
@@ -12378,22 +12380,25 @@ def toolGetHpmDrift(args) {
             }
             // Whitespace-padded String heID (e.g. " 89 ") would produce a guaranteed false-positive
             // orphan-driver signal. Surface as a data-quality warning and normalize to trimmed value.
+            // The component is KEPT -- drift checks continue against the trimmed heID.
             if (heId instanceof String && heId.trim() != heId) {
                 def trimmed = heId.trim()
                 dataQualityWarnings << [
-                    type         : "skipped-malformed-heid",
+                    type         : "heid-whitespace-normalized",
                     componentType: "driver",
                     componentName: d.name?.toString(),
                     componentId  : d.id?.toString(),
                     _warning     : "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
                 ]
-                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace ('${heId}') -- normalized to '${trimmed}'")
                 heId = trimmed
             }
+            // Non-scalar heID cannot be matched against Drivers Code IDs. The component is DROPPED
+            // -- drift checks do not run for this entry.
             if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
-                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping component")
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String (value: ${heId?.toString()?.take(60) ?: 'null'}) -- skipping component")
                 dataQualityWarnings << [
-                    type         : "skipped-malformed-heid",
+                    type         : "heid-non-scalar-dropped",
                     componentType: "driver",
                     componentName: d.name?.toString(),
                     componentId  : d.id?.toString(),
@@ -12451,7 +12456,7 @@ def toolGetHpmDrift(args) {
     int packagesWithActionableDrift = driftEntries.count { it.signals }
     def summary = packagesWithActionableDrift == 0
         ? "No drift detected across ${checked} tracked package${checked == 1 ? '' : 's'}."
-        : "${packagesWithActionableDrift} of ${checked} tracked package${checked == 1 ? '' : 's'} show drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
+        : "${packagesWithActionableDrift} of ${checked} tracked package${checked == 1 ? '' : 's'} ${packagesWithActionableDrift == 1 ? 'shows' : 'show'} drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
     // When one or both detection systems were disabled this call, the summary could mislead a
     // consumer that surfaces only the summary string. Append a partial-detection suffix so the
     // human-readable summary matches the structured orphanDetection / orphanDriverDetection fields.
@@ -12459,19 +12464,21 @@ def toolGetHpmDrift(args) {
     if (!orphanDetection.enabled)       partialSuffixParts << "orphanDetection"
     if (!orphanDriverDetection.enabled) partialSuffixParts << "orphanDriverDetection"
     if (partialSuffixParts) {
-        summary += " (partial: ${partialSuffixParts.join('/')} disabled this call -- see ${partialSuffixParts.join('/')} reason)"
+        def reasonNoun = partialSuffixParts.size() == 1 ? 'reason' : 'reasons'
+        summary += " (partial: ${partialSuffixParts.join('/')} disabled this call -- see ${partialSuffixParts.join('/')} ${reasonNoun})"
     }
 
     def result = [
-        success               : true,
-        hpmAppId              : hpmAppId,
-        packagesChecked       : checked,
-        drift                 : driftEntries,
-        totalDriftSignals     : totalSignals,
-        summary               : summary,
-        orphanDetection       : orphanDetection,
-        orphanDriverDetection : orphanDriverDetection,
-        limitations           : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes."
+        success                     : true,
+        hpmAppId                    : hpmAppId,
+        packagesChecked             : checked,
+        packagesWithActionableDrift : packagesWithActionableDrift,
+        drift                       : driftEntries,
+        totalDriftSignals           : totalSignals,
+        summary                     : summary,
+        orphanDetection             : orphanDetection,
+        orphanDriverDetection       : orphanDriverDetection,
+        limitations                 : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes."
     ]
     if (driftSkippedMalformed) result.skippedMalformed = driftSkippedMalformed
     if (driftDataQualityWarnings) result.dataQualityWarnings = driftDataQualityWarnings
@@ -21072,8 +21079,8 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
 - **get_hpm_drift** — cross-reference HPM tracked state against what is installed on the hub
   - Surfaces missing-required (required=true but heID null), orphan-app (heID recorded but code no longer in Apps Code registry), and orphan-driver (heID recorded but code no longer in Drivers Code registry) signals
   - Optional packageFilter (case-insensitive substring) narrows to specific packages
-  - Response: packagesChecked, totalDriftSignals (actionable drift only -- not data-quality warnings), drift[] array (one entry per package with signals or dataQualityWarnings; drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist), summary sentence, orphanDetection ({enabled, reason?}), orphanDriverDetection ({enabled, reason?}), limitations note
-  - Data-quality warning types in dataQualityWarnings[]: skipped-malformed-heid, empty-heid, skipped-malformed-component
+  - Response: packagesChecked, packagesWithActionableDrift (packages with at least one actionable signal), totalDriftSignals (actionable drift only -- not data-quality warnings), drift[] array (one entry per package with signals or dataQualityWarnings; drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist), summary sentence, orphanDetection ({enabled, reason?}), orphanDriverDetection ({enabled, reason?}), limitations note
+  - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via update_app_code are not detectable
 
 **manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
