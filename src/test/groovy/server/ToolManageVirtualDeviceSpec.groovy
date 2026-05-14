@@ -443,6 +443,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def d = result.devices.find { it.id == '100' }
         d != null
         d.driverNamespace == 'hubitat'   // fallback when getDriverType() throws
+        d.driverType == 'Virtual Switch' // Elvis fallback: typeName ?: name -- name wins when typeName is null
+        d.typeName == 'Virtual Switch'   // deprecated alias also derives from name via same fallback
 
         cleanup:
         childDevicesList.removeAll { it.id == 100 }
