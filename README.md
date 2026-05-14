@@ -473,8 +473,8 @@ Write/delete require Hub Admin Write + confirm.
 
 | Tool | Description |
 |------|-------------|
-| `list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Auto-discovers HPM's app ID. Hub Admin Read. |
-| `get_hpm_drift` | Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Optional `packageFilter` substring. Hub Admin Read. |
+| `list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Hub Admin Read. |
+| `get_hpm_drift` | Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Optional `packageFilter` substring. Surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail. Data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `get_tool_guide` section=manage_hpm for full details. Hub Admin Read. |
 
 Both tools require Hub Admin Read. HPM itself must be installed on the hub.
 
