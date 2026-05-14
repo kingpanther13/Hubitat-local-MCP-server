@@ -2381,7 +2381,7 @@ Requires Hub Admin Read.""",
             name: "list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
 
-App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that component entry. If heID is a whitespace-padded string (e.g. ' 142 '), it is normalized to the trimmed value and _warning records the normalization (e.g. "whitespace-padded heID ' 142 ' normalized to '142'"); heID remains non-null. If heID is a non-scalar type (not Number or String), heID is cleared to null and a _warning field is added.
+App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that component entry (e.g. "empty heID string '' normalized to null" for an empty string, or "empty heID string '  ' normalized to null" for a whitespace-only string). If heID is a whitespace-padded string (e.g. ' 142 '), it is normalized to the trimmed value and _warning records the normalization (e.g. "whitespace-padded heID ' 142 ' normalized to '142'"); heID remains non-null. If heID is a non-scalar type (not Number or String), heID is cleared to null and a _warning field is added.
 
 File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
 
@@ -12044,14 +12044,14 @@ def toolListHpmPackages(args) {
                 // issue without breaking the consumer (matches drift treatment).
                 heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
-                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID is empty/whitespace -- normalized to null")
+                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
             }
             // Whitespace-padded String heID (e.g. " 142 ") is normalized to the trimmed value so
             // that heID surfaces correctly to the consumer (matches get_hpm_drift treatment).
             if (heId instanceof String && heId.trim() != heId) {
                 def trimmed = heId.trim()
                 heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
-                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
                 heId = trimmed
             }
             if (heId != null) {
@@ -12059,7 +12059,7 @@ def toolListHpmPackages(args) {
                     heIdStr = heId.toString()
                 } else {
                     heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
-                    mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' heID is not a Number or String -- skipping heID")
+                    mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
                 }
             }
             def entry = [
@@ -12083,13 +12083,13 @@ def toolListHpmPackages(args) {
                 // issue without breaking the consumer (matches drift treatment).
                 heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
-                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID is empty/whitespace -- normalized to null")
+                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
             }
             // Whitespace-padded String heID normalized to trimmed value (matches app treatment above).
             if (heId instanceof String && heId.trim() != heId) {
                 def trimmed = heId.trim()
                 heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
-                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
                 heId = trimmed
             }
             if (heId != null) {
@@ -12097,7 +12097,7 @@ def toolListHpmPackages(args) {
                     heIdStr = heId.toString()
                 } else {
                     heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
-                    mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' heID is not a Number or String -- skipping heID")
+                    mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
                 }
             }
             def entry = [

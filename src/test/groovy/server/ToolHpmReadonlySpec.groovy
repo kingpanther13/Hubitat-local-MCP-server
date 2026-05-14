@@ -187,7 +187,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('numeric')
+        ex.message.contains("hpmAppId must be numeric")
     }
 
     def "list_hpm_packages throws when explicit hpmAppId exists but belongs to a different app type"() {
@@ -450,7 +450,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         result.success == false
         result.error != null
-        result.error.toLowerCase().contains('empty')
+        result.error.contains("Empty response from /installedapp/statusJson")
     }
 
     def "list_hpm_packages returns success=false when manifests value is not parseable JSON"() {
@@ -471,7 +471,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         result.success == false
         result.error != null
-        result.error.toLowerCase().contains("parse")
+        result.error.contains("Failed to parse HPM")
     }
 
     // -------------------------------------------------------------------------
@@ -583,7 +583,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('numeric')
+        ex.message.contains("hpmAppId must be numeric")
     }
 
     def "get_hpm_drift throws when explicit hpmAppId does not exist in installed apps"() {
@@ -739,12 +739,61 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         sig.type == "missing-required"
         sig.componentType == "app"
         sig.componentName == "Required App"
-        sig.note != null
+        sig.note.contains("Component is required but heID is null/absent")
 
         and: 'summary reflects 1 of 1 tracked packages with 1 total signal'
         result.summary.contains("1 of 1")
         result.summary.contains("1 total signal")
         result.summary.contains("shows")   // singular subject-verb agreement
+
+        and: 'orphan detection enabled (sanity check)'
+        result.orphanDetection?.enabled == true
+        result.orphanDriverDetection?.enabled == true
+    }
+
+    def "get_hpm_drift summary uses plural 'packages show drift' when multiple packages have actionable signals"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/pkg1/packageManifest.json": [
+                packageName: "Pkg With Missing Required App",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [[id: "app-uuid-1", name: "Required App", namespace: "ns", location: "loc", required: true, version: null, heID: null]],
+                drivers: [], files: []
+            ],
+            "https://example.com/pkg2/packageManifest.json": [
+                packageName: "Pkg With Missing Required Driver",
+                version    : "2.0.0",
+                beta       : false,
+                author     : "Tester",
+                apps: [],
+                drivers: [[id: "drv-uuid-1", name: "Required Driver", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: null]],
+                files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'two packages with actionable drift -- summary uses plural "packages show drift"'
+        result.success == true
+        result.packagesWithActionableDrift == 2
+        result.totalDriftSignals == 2
+        result.summary.contains("packages show drift")
     }
 
     // -------------------------------------------------------------------------
@@ -794,6 +843,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         sig.type == "orphan-app"
         sig.heID == "999"
         sig.componentName == "Orphan App"
+        sig.note.contains("no longer in Apps Code")
         result.drift[0].version == "2.0.0"
     }
 
@@ -1059,7 +1109,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("[37, 99]")
-        ex.message.toLowerCase().contains("multiple") || ex.message.toLowerCase().contains("explicit")
+        ex.message.contains("Multiple HPM instances found")
     }
 
     // -------------------------------------------------------------------------
@@ -1124,8 +1174,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         // totalDriftSignals stays 0 -- no orphan signals without the apps registry
         result.totalDriftSignals == 0
         // summary must flag partial detection so a consumer surfacing only the string isn't misled
-        result.summary.contains("partial:")
-        result.summary.contains("orphanDetection")
+        result.summary.contains("(partial: orphanDetection disabled this call -- see orphanDetection reason)")
     }
 
     // -------------------------------------------------------------------------
@@ -1242,7 +1291,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def app = result.packages[0].apps[0]
         app.heID == null
         app._warning != null
-        app._warning.contains("non-scalar")
+        app._warning.contains("non-scalar heID")
     }
 
     def "list_hpm_packages adds _warning to driver entry when heID is a non-scalar type (Map)"() {
@@ -1271,7 +1320,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def driver = result.packages[0].drivers[0]
         driver.heID == null
         driver._warning != null
-        driver._warning.contains("non-scalar")
+        driver._warning.contains("non-scalar heID")
     }
 
     // -------------------------------------------------------------------------
@@ -1480,7 +1529,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("[37, 88]")
-        ex.message.toLowerCase().contains("multiple") || ex.message.toLowerCase().contains("explicit")
+        ex.message.contains("Multiple HPM instances found")
     }
 
     // -------------------------------------------------------------------------
@@ -1637,6 +1686,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         sig.componentType == "driver"
         sig.heID == "555"
         sig.componentName == "Orphan Driver"
+        sig.note.contains("no longer in Drivers Code")
         result.drift[0].version == "1.0.0"
     }
 
@@ -1788,8 +1838,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         // no actionable signals: apps-side passes (142 in registry), drivers-side detection disabled
         result.totalDriftSignals == 0
         // summary must flag partial detection so a consumer surfacing only the string isn't misled
-        result.summary.contains("partial:")
-        result.summary.contains("orphanDriverDetection")
+        result.summary.contains("(partial: orphanDriverDetection disabled this call -- see orphanDriverDetection reason)")
     }
 
     // -------------------------------------------------------------------------
@@ -2036,7 +2085,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Non-scalar heID _warning contains literal "non-scalar" (List and Map variants)
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages _warning for non-scalar app heID contains literal 'non-scalar'"() {
+    def "list_hpm_packages _warning for non-scalar app heID contains literal 'non-scalar heID'"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2060,7 +2109,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def app = result.packages[0].apps[0]
         app.heID == null
         app._warning != null
-        app._warning.contains("non-scalar")
+        app._warning.contains("non-scalar heID")
     }
 
     // -------------------------------------------------------------------------
@@ -2260,7 +2309,61 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.summary.contains("orphanDriverDetection")
     }
 
-    def "list_hpm_packages _warning for non-scalar driver heID contains literal 'non-scalar'"() {
+    def "get_hpm_drift surfaces orphanDetection.enabled=false when /hub2/userAppTypes returns JSON null root"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // Return JSON literal null -- exercises the actualTypeName == "null" branch at line 12198
+        hubGet.register('/hub2/userAppTypes') { 'null' }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'orphanDetection disabled; reason contains "got null"'
+        result.success == true
+        result.orphanDetection?.enabled == false
+        result.orphanDetection?.reason != null
+        result.orphanDetection.reason.contains("got null")
+    }
+
+    def "get_hpm_drift surfaces orphanDriverDetection.enabled=false when /hub2/userDeviceTypes returns JSON null root"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        // Return JSON literal null -- exercises the actualTypeName == "null" branch at line 12230
+        hubGet.register('/hub2/userDeviceTypes') { 'null' }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'orphanDriverDetection disabled; reason contains "got null"'
+        result.success == true
+        result.orphanDriverDetection?.enabled == false
+        result.orphanDriverDetection?.reason != null
+        result.orphanDriverDetection.reason.contains("got null")
+    }
+
+    def "list_hpm_packages _warning for non-scalar driver heID contains literal 'non-scalar heID'"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2285,7 +2388,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def driver = result.packages[0].drivers[0]
         driver.heID == null
         driver._warning != null
-        driver._warning.contains("non-scalar")
+        driver._warning.contains("non-scalar heID")
     }
 
     // -------------------------------------------------------------------------
@@ -2553,12 +2656,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def direct  = script.toolListHpmPackages([hpmAppId: "37"])
         def gateway = script.executeTool('manage_hpm', [tool: 'list_hpm_packages', args: [hpmAppId: "37"]])
 
-        then: 'both paths return success=true with identical top-level shape'
+        then: 'both paths return success=true with deep structural equality'
         direct.success == true
         gateway.success == true
-        gateway.count == direct.count
-        gateway.hpmAppId == direct.hpmAppId
-        gateway.packages?.size() == direct.packages?.size()
+        gateway == direct
     }
 
     def "gateway dispatch: manage_hpm(tool='get_hpm_drift') produces same shape as direct toolGetHpmDrift call"() {
@@ -2581,11 +2682,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def direct  = script.toolGetHpmDrift([hpmAppId: "37"])
         def gateway = script.executeTool('manage_hpm', [tool: 'get_hpm_drift', args: [hpmAppId: "37"]])
 
-        then: 'both paths return success=true with identical top-level shape'
+        then: 'both paths return success=true with deep structural equality'
         direct.success == true
         gateway.success == true
-        gateway.packagesChecked == direct.packagesChecked
-        gateway.totalDriftSignals == direct.totalDriftSignals
-        gateway.hpmAppId == direct.hpmAppId
+        gateway == direct
     }
 }

@@ -195,6 +195,12 @@ Core tools (always visible):
 Via `manage_hub_variables` gateway:
 - `list_variables` / `get_variable` / `set_variable` - Hub variables
 
+## HPM Package Introspection
+
+Via `manage_hpm` gateway (2 tools, Hub Admin Read required):
+- `list_hpm_packages` - List all HPM-tracked packages with full component inventory. Data-quality issues (non-scalar heID, empty heID, whitespace-padded heID) emit inline `_warning` on each component **because** consumers enumerate components per-package and need the warning co-located.
+- `get_hpm_drift` - Cross-reference HPM state against the hub; surfaces `missing-required`, `orphan-app`, `orphan-driver` signals. Data-quality issues land in a separate `dataQualityWarnings[]` aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count.
+
 ## Performance Tips
 
 - Use `list_devices(detailed=false)` first, then paginate `detailed=true` in batches of 20-30
