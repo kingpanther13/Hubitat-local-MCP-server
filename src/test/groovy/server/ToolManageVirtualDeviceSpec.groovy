@@ -250,6 +250,52 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         result.device.typeName == result.device.driverType
     }
 
+    // -------- customDriver updateDataValue failure (defensive contract) --------
+
+    def "create succeeds even when updateDataValue throws -- warn fires and driverNamespace is still correct"() {
+        // Defensive contract: create must NOT fail just because the data-value persistence step fails.
+        // The namespace in the response is sourced from the validated arg, not from the data value,
+        // so it is unaffected by the persistence failure.
+        // A mcpLog("warn", ...) must fire so operators can diagnose the fallback condition.
+        given:
+        enableHubAdminWrite()
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
+        def fakeDevice = Mock(ChildDeviceWrapper) {
+            getId() >> '88'
+            getIdAsLong() >> 88L
+            getName() >> 'Levoit Classic 200S Humidifier'
+            getLabel() >> 'Persistence Failure Test'
+            getDeviceNetworkId() >> 'mcp-virtual-TEST-88'
+            getCapabilities() >> []
+            getSupportedCommands() >> []
+            getSupportedAttributes() >> []
+            currentValue(_) >> null
+            // Simulate persistence failure
+            updateDataValue(_, _) >> { String key, String val ->
+                throw new RuntimeException("simulated data-value persistence failure")
+            }
+        }
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> fakeDevice }
+
+        when:
+        def result = script.toolCreateVirtualDevice([
+            customDriver: [namespace: 'NiklasGustafsson', name: 'Levoit Classic 200S Humidifier'],
+            deviceLabel: 'Persistence Failure Test',
+            confirm: true
+        ])
+
+        then:
+        // (a) create still succeeds despite the persistence failure
+        result.success == true
+        // (b) driverNamespace in the response comes from the resolved arg, not the data value
+        result.device.driverNamespace == 'NiklasGustafsson'
+        // (c) a warn-level mcpLog fired mentioning mcpDriverNamespace
+        mcpLogCalls.any { it.level == 'warn' && it.msg.contains('mcpDriverNamespace') }
+    }
+
     // -------- customDriver not-found error path --------
 
     def "create with customDriver: UnknownDeviceTypeException translates to list_hub_drivers hint"() {
