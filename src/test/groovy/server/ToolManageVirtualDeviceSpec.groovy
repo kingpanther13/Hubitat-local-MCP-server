@@ -240,7 +240,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         result.device.id == '77'
         result.device.driverNamespace == 'level99-vesync'
         result.device.driverType      == 'Levoit Classic 200S Humidifier'
-        !result.device.containsKey('typeName')  // typeName removed from create response; use driverType
+        // typeName is a deprecated alias for driverType; both must be present and equal in create response
+        result.device.typeName == result.device.driverType
     }
 
     // -------- customDriver not-found error path --------
@@ -282,6 +283,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('list_hub_drivers')
+        ex.message.contains('my-ns:My Driver')  // namespace:name echo present (parity with sibling specs)
     }
 
     def "create with customDriver: any hub exception always surfaces list_hub_drivers hint (fail-closed)"() {
@@ -385,7 +387,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         def ex = thrown(RuntimeException)
         !(ex instanceof IllegalArgumentException)  // pins the class distinction from customDriver path
-        ex.message.contains('hub firmware')
+        ex.message.contains('may not include this built-in driver')
     }
 
     // -------- toolListVirtualDevices --------
@@ -431,6 +433,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             name: 'Virtual Switch',
             label: 'Fallback Test Switch',
             deviceNetworkId: 'mcp-virtual-test-100'
+            // typeName defaults to null in TestDevice fixture -- this exercises the
+            // Elvis chain: typeName ?: name. This is a fixture default, not a production
+            // guarantee that built-in devices always have null typeName.
         )
         fakeDevice.metaClass.getDriverType = { -> throw new MissingMethodException('getDriverType', Object, [] as Object[]) }
         childDevicesList << fakeDevice
@@ -443,10 +448,216 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def d = result.devices.find { it.id == '100' }
         d != null
         d.driverNamespace == 'hubitat'   // fallback when getDriverType() throws
-        d.driverType == 'Virtual Switch' // Elvis fallback: typeName ?: name -- name wins when typeName is null
-        d.typeName == 'Virtual Switch'   // deprecated alias also derives from name via same fallback
+        d.driverType == 'Virtual Switch' // fixture typeName is null so name wins via Elvis
+        d.typeName == 'Virtual Switch'   // deprecated alias derives from same Elvis result
 
         cleanup:
         childDevicesList.removeAll { it.id == 100 }
+    }
+
+    // N1: getDriverType() returns object with null namespace (common for built-ins on modern firmware)
+    def "list_virtual_devices: getDriverType() returns object with null namespace falls back to hubitat"() {
+        // Covers the non-exception Elvis path: device.getDriverType()?.namespace returns null
+        // (returns an object whose .namespace property is null) -- distinct from the throw path.
+        // This is the common case for built-in virtual drivers on modern firmware.
+        given:
+        def fakeDriverType = [namespace: null]  // object present, namespace null
+        def fakeDevice = new support.TestDevice(
+            id: 101,
+            name: 'Virtual Switch',
+            label: 'Built-in Modern Firmware Switch',
+            deviceNetworkId: 'mcp-virtual-test-101',
+            typeName: 'Virtual Switch'
+        )
+        fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
+        childDevicesList << fakeDevice
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success != false
+        def d = result.devices.find { it.id == '101' }
+        d != null
+        d.driverNamespace == 'hubitat'   // null namespace from getDriverType() triggers ?: "hubitat" fallback
+        d.driverType == 'Virtual Switch'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 101 }
+    }
+
+    // -------- M3: cause-chain probe (two-arg IllegalArgumentException/RuntimeException ctors) --------
+
+    def "create with customDriver: thrown IllegalArgumentException preserves cause chain"() {
+        // Verifies that the two-arg constructor IllegalArgumentException(msg, e) preserves the
+        // original exception as .cause. If the Hubitat sandbox strips cause chains, .cause would be
+        // null; this spec detects that regression.
+        given:
+        enableHubAdminWrite()
+        def originalEx = new Exception("root cause message")
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
+
+        when:
+        script.toolCreateVirtualDevice([
+            customDriver: [namespace: 'x-ns', name: 'X Driver'],
+            deviceLabel: 'Cause Test',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.cause != null           // two-arg ctor preserved the cause
+        ex.cause.is(originalEx)    // exact same instance
+    }
+
+    def "create with built-in: RuntimeException preserves cause chain"() {
+        // Mirrors the customDriver cause-chain probe for the built-in path RuntimeException.
+        given:
+        enableHubAdminWrite()
+        def originalEx = new Exception("UnknownDeviceTypeException: not found")
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
+
+        when:
+        script.toolCreateVirtualDevice([
+            deviceType: 'Virtual Switch',
+            deviceLabel: 'Cause Test Built-in',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(RuntimeException)
+        ex.cause != null
+        ex.cause.is(originalEx)
+    }
+
+    // -------- M6: blank deviceType + customDriver mutex, whitespace namespace/name, non-String --------
+
+    def "create: blank-after-trim deviceType with customDriver present triggers mutex error"() {
+        // Groovy truthiness: '  ' (whitespace) is truthy, so without explicit trimming
+        // the dispatch would silently route to customDriver, hiding a caller ambiguity.
+        // After trim '  ' becomes '' which is falsy -- but that alone would drop to the
+        // "both provided" false branch and silently take customDriver. The guard must reject explicitly.
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolManageVirtualDevice([
+            action: 'create',
+            deviceType: '   ',
+            customDriver: [namespace: 'x', name: 'y'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('mutually exclusive')
+    }
+
+    def "create: blank-after-trim deviceType without customDriver triggers missing-arg error"() {
+        // A blank-after-trim deviceType with no customDriver should surface the "either required" error,
+        // not a cryptic null/empty failure from deeper in the chain.
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolManageVirtualDevice([
+            action: 'create',
+            deviceType: '   ',
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Either deviceType or customDriver is required')
+    }
+
+    def "create: whitespace-only customDriver namespace throws descriptive error"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolCreateVirtualDevice([
+            customDriver: [namespace: '   ', name: 'My Driver'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('non-empty strings')
+    }
+
+    def "create: whitespace-only customDriver name throws descriptive error"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolCreateVirtualDevice([
+            customDriver: [namespace: 'my-ns', name: '   '],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('non-empty strings')
+    }
+
+    def "create: non-String (numeric) customDriver namespace coerces then rejects if blank"() {
+        // Non-String values (e.g. 123) coerce via toString() then trim() -- a numeric 123 is
+        // non-blank so it gets passed through to the hub (which will reject it with a clear error);
+        // a whitespace-only String gets caught here before reaching the hub.
+        given:
+        enableHubAdminWrite()
+        def capturedNs = null
+        def fakeDevice = Mock(me.biocomp.hubitat_ci.api.common_api.ChildDeviceWrapper) {
+            getId() >> '55'
+            getIdAsLong() >> 55L
+            getName() >> 'test-driver'
+            getLabel() >> 'Coerce Test'
+            getDeviceNetworkId() >> 'mcp-virtual-coerce'
+            getCapabilities() >> []
+            getSupportedCommands() >> []
+            getSupportedAttributes() >> []
+            currentValue(_) >> null
+        }
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            capturedNs = ns
+            fakeDevice
+        }
+
+        when:
+        def result = script.toolCreateVirtualDevice([
+            customDriver: [namespace: 123, name: 'test-driver'],
+            deviceLabel: 'Coerce Test',
+            confirm: true
+        ])
+
+        then:
+        // Numeric 123 coerces to String "123" -- non-blank, passes validation, reaches hub
+        capturedNs == '123'
+        result.success == true
+    }
+
+    // -------- M8: addChildDevice returns null --------
+
+    def "create: addChildDevice returning null throws RuntimeException with partial-registration guidance"() {
+        given:
+        enableHubAdminWrite()
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> null }
+
+        when:
+        script.toolCreateVirtualDevice([
+            deviceType: 'Virtual Switch',
+            deviceLabel: 'Null Return Test',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(RuntimeException)
+        ex.message.contains('addChildDevice returned null')
+        ex.message.contains('partially registered')
     }
 }

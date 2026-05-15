@@ -148,9 +148,9 @@ All Hub Admin Write tools require these steps:
 ```
 Use `manage_apps_drivers(tool="list_hub_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found (or any other hub error), the tool surfaces an `IllegalArgumentException` pointing to `list_hub_drivers`.
 
-**Create response shape** (both modes): `{ success, device: { id, name, label, deviceNetworkId, driverNamespace, driverType, capabilities, commands, attributes } }`
+**Create response shape** (both modes): `{ success, message, tips, device: { id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes } }`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
 
-**List response shape** (`list_virtual_devices`): each entry includes `driverNamespace`, `driverType`, and `typeName` (deprecated alias for `driverType` -- prefer `driverType` in new code).
+**List response shape** (`list_virtual_devices`): `{ devices: [...], count, message }`. Per-device: `{ id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates }`. `currentStates` is a map of attribute-name to current-value. Note: create returns device state as `attributes` (list) while list returns it as `currentStates` (map) -- different shapes for the same concept because create returns the freshly-read attribute list and list returns a compact state map. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP device tools without manual selection

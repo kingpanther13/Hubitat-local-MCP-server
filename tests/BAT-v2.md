@@ -351,7 +351,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace: "fake-namespace", name: "fake-driver"}`. Hub returns UnknownDeviceTypeException; tool surfaces `IllegalArgumentException` containing "list_hub_drivers". Agent reports the failure to the user and does NOT silently substitute a different device.
+**Expected**: Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace: "fake-namespace", name: "fake-driver"}`. Regardless of the hub's internal exception class, the tool surfaces `IllegalArgumentException` (JSON-RPC -32602) containing "list_hub_drivers". Agent reports the failure to the user and does NOT silently substitute a different device.
 
 ### T19e — manage_virtual_device customDriver mutually exclusive
 
@@ -361,19 +361,19 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Tool throws `IllegalArgumentException` with "mutually exclusive" in the message. Agent reports the error.
+**Expected**: Tool surfaces `IllegalArgumentException` (JSON-RPC -32602) with "mutually exclusive" in the message. Agent reports the error.
 
 ### T19f — manage_virtual_device customDriver success path (conditional)
 
 ```json
 {
   "setup_prompt": "Use manage_apps_drivers(tool='list_hub_drivers') to find any installed custom driver. If none are installed, skip this test and say 'no custom drivers available'.",
-  "test_prompt": "Create a virtual device using the first available custom driver (use its namespace and name), label it 'BAT Custom Driver Success Test'. Then delete it.",
+  "test_prompt": "Create a virtual device using the first available custom driver (use its namespace and name), label it 'BAT Custom Driver Success Test' (include confirm=true). Then delete it.",
   "teardown_prompt": "Delete the virtual device 'BAT Custom Driver Success Test' if it still exists."
 }
 ```
 
-**Expected** (conditional -- skip if no custom drivers installed): Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace, name}` from a real installed driver. Response includes `driverNamespace` matching the supplied namespace and `driverType` matching the supplied name. No `typeName` in create response. Agent then calls `manage_virtual_device(action="delete")` to clean up.
+**Expected** (conditional -- skip if no custom drivers installed): Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace, name}` from a real installed driver. Response includes `driverNamespace` matching the supplied namespace, `driverType` matching the supplied name, and `typeName` as a deprecated alias equal to `driverType`. Agent then calls `manage_virtual_device(action="delete")` to clean up.
 
 ---
 

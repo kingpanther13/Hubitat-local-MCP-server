@@ -47,9 +47,11 @@ MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, 
 
 For `action="create"`, provide exactly ONE of (mutually exclusive; supplying both is an error):
 - `deviceType` -- one of the 15 built-in virtual driver names (see `get_tool_guide` for the full list)
-- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); mutually exclusive with `deviceType`; use `manage_apps_drivers(tool="list_hub_drivers")` to find installed namespace + name values
+- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); use `manage_apps_drivers(tool="list_hub_drivers")` to find installed namespace + name values
 
-Create response includes `driverNamespace` and `driverType` (both modes). `list_virtual_devices` response includes `driverNamespace`, `driverType`, and `typeName` (deprecated alias; prefer `driverType`).
+Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
+
+`list_virtual_devices` response: `{devices: [...], count, message}`. Per-device includes `driverNamespace`, `driverType`, and `typeName` (deprecated alias; prefer `driverType`). `currentStates` is a map of attribute-name to current-value.
 
 ## Automation Rules
 
