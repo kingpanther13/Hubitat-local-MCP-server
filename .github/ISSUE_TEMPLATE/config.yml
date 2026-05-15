@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions, support, or general discussion
+    url: https://github.com/kingpanther13/Hubitat-local-MCP-server/discussions
+    about: Please ask questions in Discussions, not Issues.
