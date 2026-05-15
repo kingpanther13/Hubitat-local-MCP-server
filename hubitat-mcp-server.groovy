@@ -1862,13 +1862,12 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
                     deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
                 ],
-                required: ["action", "confirm"],
-                // oneOf encodes the mutually-exclusive create modes at schema level;
-                // runtime XOR check in toolManageVirtualDevice enforces this regardless.
-                oneOf: [
-                    [required: ["deviceType"]],
-                    [required: ["customDriver"]]
-                ]
+                required: ["action", "confirm"]
+                // deviceType/customDriver XOR is enforced at runtime in toolManageVirtualDevice
+                // (IllegalArgumentException -> -32602), NOT in the schema: this is an
+                // action-discriminated tool and a top-level oneOf would also reject valid delete
+                // calls (which carry neither field). Consistent with every other manage_* tool,
+                // which enforce action-conditional args at runtime.
             ]
         ],
         [

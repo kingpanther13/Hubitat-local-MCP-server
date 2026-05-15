@@ -348,6 +348,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         result.device.id == '42'
         result.device.driverNamespace == 'hubitat'
         result.device.driverType      == 'Virtual Switch'
+        // typeName is a deprecated alias for driverType; both must be present and equal in create response
+        result.device.typeName == result.device.driverType
     }
 
     def "create with unsupported built-in deviceType throws descriptive error"() {
