@@ -2919,7 +2919,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: Both `get_hpm_drift` and `list_hpm_packages` throw `IllegalArgumentException` with a message that includes both the supplied ID and the actual app type (e.g. `"hpmAppId <id> is not Hubitat Package Manager (actual type: MCP Rule Server) -- verify the ID or omit hpmAppId to use auto-discovery"`). AI explains the error and suggests either omitting `hpmAppId` (to let the tool auto-discover HPM) or supplying the correct HPM instance ID from `list_installed_apps`. The same `_hpmAssertAppIsHpm` validator runs in both tools, so the error shape is identical.
+**Expected**: Both `get_hpm_drift` and `list_hpm_packages` reject the call. Internally, `_hpmAssertAppIsHpm` throws `IllegalArgumentException` with a message that includes both the supplied ID and the actual app type (e.g. `"hpmAppId <id> is not Hubitat Package Manager (actual type: MCP Rule Server) -- verify the ID or omit hpmAppId to use auto-discovery"`). The MCP protocol surfaces this as a JSON-RPC error response (`-32602` invalid params), not as a tool-result Map with `success=false` and not as a raw exception. The error message contains the supplied id and the `actual type:` string. AI explains the rejection and suggests either omitting `hpmAppId` (to let the tool auto-discover HPM) or supplying the correct HPM instance ID from `list_installed_apps`. The same validator runs in both tools, so the error shape is identical.
 
 **Failure modes**: AI passes the wrong ID silently and returns an empty result (would indicate missing validation). AI reports a generic "tool failed" without extracting the `actual type` field from the error message. AI only tests one of the two tools instead of both.
 
@@ -2928,12 +2928,12 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 ```json
 {
   "setup_prompt": "Hub Admin Read is enabled. HPM is installed. Use list_installed_apps to find an app that is NOT Hubitat Package Manager (e.g. Simple Automation Rules or a user-installed app) and note its appId.",
-  "test_prompt": "Call list_hpm_packages with the non-HPM appId as hpmAppId. Confirm the tool rejects it with success=false and an error message that includes both the supplied ID and the actual type string.",
+  "test_prompt": "Call list_hpm_packages with the non-HPM appId as hpmAppId. Confirm the tool rejects it with a descriptive error that names the supplied ID and the actual app type.",
   "teardown_prompt": "No teardown needed."
 }
 ```
 
-**Expected**: `manage_hpm(tool='list_hpm_packages', args={hpmAppId: '<non-hpm-id>'})` throws `IllegalArgumentException`. Error contains the supplied id and `"actual type: <AppTypeName>"`. AI surfaces this as a clear rejection with guidance to omit `hpmAppId` for auto-discovery.
+**Expected**: `manage_hpm(tool='list_hpm_packages', args={hpmAppId: '<non-hpm-id>'})` is rejected. Internally, the tool throws `IllegalArgumentException` containing the supplied id and `"actual type: <AppTypeName>"`. The MCP protocol surfaces this as a JSON-RPC error response (`-32602` invalid params), not as a tool-result Map with `success=false` and not as a raw exception. AI surfaces this as a clear rejection with guidance to omit `hpmAppId` for auto-discovery.
 
 **Failure modes**: Tool returns an empty packages list without an error (validation skipped). Error message is present but missing the actual type name.
 
