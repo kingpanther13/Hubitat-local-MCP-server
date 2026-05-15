@@ -488,6 +488,37 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList.removeAll { it.id == 101 }
     }
 
+    // N.35 Elvis discriminator: typeName != name proves device.typeName ?: device.name returns typeName when non-null
+    def "list_virtual_devices: device with typeName distinct from name returns typeName as driverType"() {
+        // Invariant: the Elvis chain (device.typeName ?: device.name) returns typeName when it is
+        // non-null AND differs from name. Every prior fixture had typeName == name or typeName == null,
+        // leaving the discriminating branch unproven.
+        given:
+        def fakeDriverType = [namespace: 'my-ns']
+        def fakeDevice = new support.TestDevice(
+            id: 102,
+            name: 'Generic Component',
+            label: 'Elvis Discriminator Test',
+            deviceNetworkId: 'mcp-virtual-test-102',
+            typeName: 'My Custom Driver'
+        )
+        fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
+        childDevicesList << fakeDevice
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success != false
+        def d = result.devices.find { it.id == '102' }
+        d != null
+        d.driverType == 'My Custom Driver'   // typeName ('My Custom Driver') wins over name ('Generic Component')
+        d.typeName   == 'My Custom Driver'   // deprecated alias reflects same Elvis result
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 102 }
+    }
+
     // -------- M3: cause-chain probe (two-arg IllegalArgumentException/RuntimeException ctors) --------
 
     def "create with customDriver: thrown IllegalArgumentException preserves cause chain"() {
@@ -589,6 +620,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('non-empty strings')
+        ex.message.contains("'namespace'")
     }
 
     def "create: whitespace-only customDriver name throws descriptive error"() {
@@ -605,6 +637,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('non-empty strings')
+        ex.message.contains("'name'")
     }
 
     def "create: non-String (numeric) customDriver namespace coerces then rejects if blank"() {

@@ -146,11 +146,13 @@ All Hub Admin Write tools require these steps:
   "confirm": true
 }
 ```
-Use `manage_apps_drivers(tool="list_hub_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found (or any other hub error), the tool surfaces an `IllegalArgumentException` pointing to `list_hub_drivers`.
+Use `manage_apps_drivers(tool="list_hub_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found (or any other hub error), the tool surfaces an `IllegalArgumentException` (-32602) pointing to `list_hub_drivers`. If a built-in `deviceType` is not found on the hub, the tool surfaces an isError platform error (firmware gap, not a caller error).
 
 **Create response shape** (both modes): `{ success, message, tips, device: { id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes } }`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
 
-**List response shape** (`list_virtual_devices`): `{ devices: [...], count, message }`. Per-device: `{ id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates }`. `currentStates` is a map of attribute-name to current-value. Note: create returns device state as `attributes` (list) while list returns it as `currentStates` (map) -- different shapes for the same concept because create returns the freshly-read attribute list and list returns a compact state map. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
+**Delete response shape** (`action=delete`): `{ success, deviceId, deviceNetworkId, deviceLabel, message }`.
+
+**List response shape** (`list_virtual_devices`): `{ devices: [...], count, message }`. Per-device: `{ id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates }`. `currentStates` is a map of attribute-name to current-value. Note: create returns device state as `attributes` (list) while list returns it as `currentStates` (map) -- different shapes for the same concept because create returns the freshly-read attribute list and list returns a compact state map. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` falls back to `"hubitat"` when the hub does not expose a per-device namespace on older firmware -- not a reliable built-in/custom discriminator.
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP device tools without manual selection

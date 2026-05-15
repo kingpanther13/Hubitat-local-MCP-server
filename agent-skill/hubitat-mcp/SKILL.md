@@ -45,13 +45,15 @@ After sending a command, use `poll_until_attribute` to verify the state change t
 
 MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, etc.) via `manage_virtual_device` (a core tool, always visible) using `action="create"` or `action="delete"`. These are automatically accessible without manual selection. Use `list_virtual_devices` to see MCP-managed virtual devices. Do not use `delete_device` for MCP-managed virtual devices. Both virtual device tools are core tools on `tools/list`.
 
-For `action="create"`, provide exactly ONE of (mutually exclusive; supplying both is an error):
-- `deviceType` -- one of the 15 built-in virtual driver names (see `get_tool_guide` for the full list)
-- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); use `manage_apps_drivers(tool="list_hub_drivers")` to find installed namespace + name values
+For `action="create"`, provide exactly ONE of (mutually exclusive; supplying both -- including a blank/whitespace `deviceType` alongside `customDriver` -- is an error):
+- `deviceType` -- one of the 15 built-in virtual driver names (see `get_tool_guide` for the full list). Not-found surfaces as an isError platform error (firmware gap).
+- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); use `manage_apps_drivers(tool="list_hub_drivers")` to find installed namespace + name values. Not-found surfaces as an input error (-32602) with a `list_hub_drivers` hint.
 
 Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
 
-`list_virtual_devices` response: `{devices: [...], count, message}`. Per-device includes `driverNamespace`, `driverType`, and `typeName` (deprecated alias; prefer `driverType`). `currentStates` is a map of attribute-name to current-value.
+Delete response: `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
+
+`list_virtual_devices` response: `{devices: [...], count, message}`. Per-device includes `driverNamespace` (falls back to `"hubitat"` on older firmware where the hub does not expose a per-device namespace -- not a reliable built-in/custom discriminator), `driverType`, and `typeName` (deprecated alias; prefer `driverType`). `currentStates` is a map of attribute-name to current-value.
 
 ## Automation Rules
 

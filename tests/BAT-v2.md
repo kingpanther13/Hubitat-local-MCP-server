@@ -2288,7 +2288,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Section | Tests | Purpose |
 |---------|-------|---------|
-| 1. Core Tools | T01-T19c | 23 core tools work directly |
+| 1. Core Tools | T01-T19f | 23 core tools work directly |
 | 2. Gateway Discovery | T20-T31, T35-T59 | LLM finds all proxied tools without hints |
 | 3. Gateway Behavior | T60-T65 | Catalog mode, skip-catalog, errors |
 | 4. Natural Language | T70-T79 | Casual prompts route correctly |
@@ -2320,7 +2320,7 @@ All 101 tools are covered by at least one test, excluding the destructive operat
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 202 test scenarios** (107 explicit + 65 natural language + 21 built-in-app integration + 9 library management) plus 13 excluded destructive operations documented for manual testing
+**Total: 205 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management) plus 13 excluded destructive operations documented for manual testing
 
 ---
 

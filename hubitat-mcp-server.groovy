@@ -1843,8 +1843,8 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
             name: "manage_virtual_device",
             description: """Create or delete MCP-managed virtual devices. Requires Hub Admin Write + confirm.
 
-action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive -- supplying both is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}.
-action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_devices to find DNIs.""",
+action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive -- supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a list_hub_drivers hint.
+action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_devices to find DNIs. Delete response: {success, deviceId, deviceNetworkId, deviceLabel, message}.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1872,7 +1872,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
         ],
         [
             name: "list_virtual_devices",
-            description: "List MCP-managed virtual devices (children of this app). Response: {devices: [...], count, message}. Per-device fields: id, name, label, deviceNetworkId, driverNamespace, driverType (driver type name), typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, currentStates (map of attribute-name to current-value -- note: create uses attributes as a list while list uses currentStates as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map).",
+            description: "List MCP-managed virtual devices (children of this app). Response: {devices: [...], count, message}. Per-device fields: id, name, label, deviceNetworkId, driverNamespace (driver namespace; falls back to 'hubitat' when the hub does not expose a per-device namespace on older firmware -- not a reliable built-in/custom discriminator), driverType (driver type name), typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, currentStates (map of attribute-name to current-value -- note: create uses attributes as a list while list uses currentStates as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map).",
             inputSchema: [
                 type: "object",
                 properties: [:]
