@@ -827,10 +827,10 @@ COUNT_PATTERNS: list[tuple[re.Pattern, str]] = [
     # "from N items to M" — gateway-pattern explanation phrasing.
     (re.compile(r"\bfrom\s+(\d+)\s+items?\s+to\s+\d+\b", re.IGNORECASE), "total"),
     # "N proxied" anywhere (not just paren-prefix) — covers compact-summary
-    # phrasings like "(... 78 proxied, 101 total)".
+    # phrasings like "(... 80 proxied, 103 total)".
     (re.compile(r"\b(\d+)\s+proxied\b(?!\s+tools)", re.IGNORECASE), "proxied"),
     # "N total" when followed by punctuation or end-of-clause — catches
-    # the BAT-v2 header-style "78 proxied, 101 total)" without firing on
+    # the BAT-v2 header-style "80 proxied, 103 total)" without firing on
     # "30 total scenarios" / "13 total messages" qualifying-noun forms.
     (re.compile(r"\b(\d+)\s+total\b(?=\s*[.)\n,])"), "total"),
     # Core
@@ -1429,7 +1429,7 @@ COUNT_SELF_TEST_CASES = [
     ),
     (
         "proxied in `(N proxied)`",
-        "Architecture: 35 visible (78 proxied) tools.",
+        "Architecture: 35 visible (80 proxied) tools.",
         {"proxied": 79}, ["proxied"],
     ),
     (
@@ -1467,9 +1467,9 @@ COUNT_SELF_TEST_CASES = [
     # live count further out should still fire.
     (
         "NARROW skip: `was N` near match scopes the nearby count",
-        "We support 78 proxied tools (was 75 before bundling).",
-        # 78 is correct (skipped here), 75 is historical (skipped by `was N`)
-        {"proxied": 78}, [],
+        "We support 80 proxied tools (was 75 before bundling).",
+        # 80 matches canonical (skipped here), 75 is historical (skipped by `was N`)
+        {"proxied": 80}, [],
     ),
     (
         "NARROW skip does NOT swallow a live count further away",
@@ -1611,7 +1611,7 @@ COUNT_SELF_TEST_CASES = [
     ),
     (
         "proxied in bare `N proxied` (not paren-prefix, named fixture)",
-        "Summary: 23 core + 12 gateways, 78 proxied, 101 total tools.",
+        "Summary: 23 core + 13 gateways, 80 proxied, 103 total tools.",
         {"proxied": 79}, ["proxied"],
     ),
     (
@@ -1626,7 +1626,7 @@ COUNT_SELF_TEST_CASES = [
     ),
     (
         "proxied in `N proxied tools` (named fixture)",
-        "The server routes calls to 78 proxied tools inside gateways.",
+        "The server routes calls to 80 proxied tools inside gateways.",
         {"proxied": 79}, ["proxied"],
     ),
     (

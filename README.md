@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 101 MCP tools (35 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 103 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 101 tools total — 23 core tools are always visible, while 78 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 103 tools total — 23 core tools are always visible, while 80 additional tools are organized behind 13 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (101 total — 35 on tools/list)
+### MCP Tools (103 total — 36 on tools/list)
 
-The server has 101 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **78 additional tools** are organized behind **12 domain-named gateways**. The AI sees 35 items on `tools/list` (23 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **80 additional tools** are organized behind **13 domain-named gateways**. The AI sees 36 items on `tools/list` (23 + 13 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (23) — Always visible on tools/list
 
@@ -309,7 +309,7 @@ The server has 101 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 </details>
 
-#### Gateway Tools (12) — Each gateway proxies multiple tools
+#### Gateway Tools (13) — Each gateway proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -465,6 +465,18 @@ Write/delete require Hub Admin Write + confirm.
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
 
 `list_installed_apps` and `get_device_in_use_by` require opt-in **Enable Built-in App Tools** setting. `get_app_config` and `list_app_pages` require Hub Admin Read.
+
+</details>
+
+<details>
+<summary><b>manage_hpm</b> (2) — Hubitat Package Manager state introspection (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Hub Admin Read. |
+| `get_hpm_drift` | Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Optional `packageFilter` substring. Surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail. Data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `get_tool_guide` section=manage_hpm for full details. Hub Admin Read. |
+
+Both tools require Hub Admin Read. HPM itself must be installed on the hub.
 
 </details>
 

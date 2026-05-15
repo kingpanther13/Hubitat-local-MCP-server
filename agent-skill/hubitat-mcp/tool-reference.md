@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 101 MCP tools. The server exposes **35 items on `tools/list`**: 23 core tools + 12 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 103 MCP tools. The server exposes **36 items on `tools/list`**: 23 core tools + 13 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -57,11 +57,11 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 101 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 103 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
-## Gateway Tools (12) — Each proxies multiple tools
+## Gateway Tools (13) — Each proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas for all its tools. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -201,6 +201,15 @@ Read-only visibility into all installed apps (built-in + user): enumerate with p
 | `get_device_in_use_by` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Built-in App Read |
 | `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: list_installed_apps or list_rm_rules -> get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before get_app_config on multi-page apps. | Hub Admin Read |
+
+### manage_hpm (2 tools)
+
+HPM package state introspection -- read-only. Tracks installed packages, their manifest versions, and per-component drift signals. Both tools require Hub Admin Read and HPM itself must be installed on the hub. Auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied explicitly.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `list_hpm_packages` | List all HPM-tracked packages with full component inventory (apps, drivers, files). Each package: `packageName`, `version`, `beta`, `author`, components with `heID` (null if not installed; empty/whitespace-only heID cleared to null + `_warning` e.g. `"empty heID string '' normalized to null"`; whitespace-padded heID normalized to trimmed value + `_warning` recording e.g. `"whitespace-padded heID ' 142 ' normalized to '142'"`, heID remains non-null; non-scalar heID cleared to null + `_warning`). Inline `_warning` per component **because** consumers typically enumerate components per-package and need the warning co-located with the component. Top-level `count` (number of packages returned); `hpmAppId` (echoed, for caching); `skippedMalformed[]` lists URLs skipped due to non-Map manifest value. Per-package `skippedAppCount`, `skippedDriverCount`, `skippedFileCount` (each omitted when 0). When multiple HPM instances are found, throws with a bracketed ID list capped at 10 with `"and N more (total M)"` suffix. When `hpmAppId` is supplied explicitly but points at an app that is not Hubitat Package Manager, throws `IllegalArgumentException` with the actual type disclosed (e.g. `"hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules)"`). | Hub Admin Read |
+| `get_hpm_drift` | Cross-reference HPM-tracked state against the hub. Currently the only drift signal types are: `missing-required` (heID null on required component), `orphan-app` (heID recorded but app code no longer in Apps Code registry), `orphan-driver` (heID recorded but driver code no longer in Drivers Code registry). Optional `packageFilter` substring. Auto-discovers HPM if `hpmAppId` omitted (including multi-instance throw); when `hpmAppId` supplied explicitly but points at a non-HPM app, throws with actual type disclosed. Data-quality issues land in a separate `dataQualityWarnings[]` aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count. Response includes `hpmAppId` (echoed); `packagesChecked` (not `count` -- **because** `packageFilter` may narrow the set examined); `packagesWithActionableDrift` (packages with at least one actionable signal); `totalDriftSignals` (actionable drift only). Each drift entry includes `version`, `signals[]`, and optionally `dataQualityWarnings[]`, `skippedAppCount`, `skippedDriverCount`. Each `signals[]` entry has: `type`, `componentType`, `componentName`, `componentId`, `note`; `orphan-app`/`orphan-driver` entries additionally carry `heID`; `missing-required` entries omit `heID`. Data-quality warnings also aggregated at top-level `result.dataQualityWarnings[]`. Currently the only data-quality warning types are: `heid-whitespace-normalized` (padded heID normalized; component KEPT), `heid-non-scalar-dropped` (non-scalar heID; component DROPPED), `empty-heid` (blank heID normalized to null), `skipped-malformed-component` (non-Map component; entry lacks `componentName`/`componentId` because the source was not a Map). Files are not checked for drift (no heID in HPM's file tracking). `orphanDetection` / `orphanDriverDetection` (`{enabled, reason?}`): when disabled, `reason` includes "Empty response from /hub2/user{App,Device}Types" or "expected JSON array, got Map: ... (truncated)". When either is disabled the `summary` appends a `"(partial: ...)"` suffix; when both disabled, suffix uses `"reasons"` plural. Note: when either detection system is disabled, `packagesWithActionableDrift` may UNDER-COUNT actual drift -- inspect `orphanDetection`/`orphanDriverDetection` before treating a zero count as 'clean'. `filterMatchedZero` + `availablePackages[]` when filter matches nothing; in that case `packagesChecked == 0`. | Hub Admin Read |
 
 ### manage_native_rules_and_apps (12 tools)
 

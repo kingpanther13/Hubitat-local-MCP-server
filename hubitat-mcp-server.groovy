@@ -940,6 +940,18 @@ def getGatewayConfig() {
                 list_app_pages: "page names sub-pages pageName multi-page hpm prefPkgUninstall prefPkgModify prefOptions navigation discover"
             ]
         ],
+        manage_hpm: [
+            description: "Hubitat Package Manager (HPM) state introspection -- read-only. Tracks installed packages, their manifest versions, and per-component drift signals (missing-required, orphan-app, orphan-driver). HPM-managed code lives in the same Apps/Drivers registries as everything else, but its lifecycle is owned by HPM; this gateway surfaces that ownership state for diagnostic and drift-detection purposes without write side-effects. Requires Hub Admin Read.",
+            tools: ["list_hpm_packages", "get_hpm_drift"],
+            summaries: [
+                list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). Args: hpmAppId (optional -- auto-discovered if omitted). Hub Admin Read.",
+                get_hpm_drift: "Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Args: hpmAppId (optional), packageFilter (optional substring match). Hub Admin Read."
+            ],
+            searchHints: [
+                list_hpm_packages: "package manager HPM tracked installed manifest version inventory dcmeglio community apps drivers",
+                get_hpm_drift: "package manager HPM drift orphan missing required manifest divergence inconsistency check verify driver drivers"
+            ]
+        ],
         manage_native_rules_and_apps: [
             description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"],
@@ -2364,6 +2376,50 @@ Requires Hub Admin Read.""",
                 required: ["appId"]
             ]
         ],
+        // HPM Package State Tools
+        [
+            name: "list_hpm_packages",
+            description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
+
+App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that component entry (e.g. "empty heID string '' normalized to null" for an empty string, or "empty heID string '  ' normalized to null" for a whitespace-only string). If heID is a whitespace-padded string (e.g. ' 142 '), it is normalized to the trimmed value and _warning records the normalization (e.g. "whitespace-padded heID ' 142 ' normalized to '142'"); heID remains non-null. If heID is a non-scalar type (not Number or String), heID is cleared to null and a _warning field is added.
+
+File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
+
+Response also includes: count (number of packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery on subsequent calls); skippedMalformed (array of manifest URLs whose top-level value was not a Map -- package skipped entirely); per-package skippedAppCount, skippedDriverCount, skippedFileCount (each omitted when 0) -- count of app/driver/file entries that were not Maps and thus skipped.
+
+If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call. When multiple HPM instances are found, throws IllegalArgumentException listing up to 10 instance IDs in bracket notation (e.g. [37, 99]) with a "and N more (total M)" suffix when more than 10 exist. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery").
+
+Requires Hub Admin Read. HPM itself must be installed.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted by scanning installed apps for type='Hubitat Package Manager'. Pass explicitly to skip the discovery call."]
+                ]
+            ]
+        ],
+        [
+            name: "get_hpm_drift",
+            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces three classes of drift signal:
+
+- missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
+- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall).
+- orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
+
+Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced.
+
+If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages, including the multi-instance throw with up to 10 ids and an "and N more (total M)" suffix). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery").
+
+Response fields: hpmAppId (HPM's installed-app ID, echoed so callers can cache it); packagesChecked (note: packagesChecked rather than count because packageFilter may narrow the set examined -- 'checked' reflects the filtered population, distinguishing it from list_hpm_packages's naive count); packagesWithActionableDrift (count of packages that have at least one actionable drift signal -- excludes data-quality-only packages); totalDriftSignals (counts only actionable drift signals -- missing-required, orphan-app, orphan-driver -- not data-quality warnings); drift[] (one entry per package with any signal or warning -- each has manifestUrl, packageName, version, signals[], and optionally dataQualityWarnings[], skippedAppCount, skippedDriverCount); summary sentence. Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only packages are present -- those entries appear for visibility but are not counted in the summary. If any data-quality warnings exist across packages, they are also aggregated at result.dataQualityWarnings[]. orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed; reason discloses whether the body was empty or had an unexpected shape; when the shape was wrong the reason includes "expected JSON array, got Map" and a preview truncated at 200 chars with "(truncated)" appended). orphanDriverDetection ({enabled: bool, reason?} -- same structure as orphanDetection but for the Drivers Code registry). When one detection system is disabled the summary appends "(partial: <name> disabled this call -- see <name> reason)"; when both are disabled, "(partial: orphanDetection/orphanDriverDetection disabled this call -- see orphanDetection/orphanDriverDetection reasons)". Note: when orphanDetection.enabled or orphanDriverDetection.enabled is false (registry fetch failed), the corresponding orphan-* signals cannot fire. packagesWithActionableDrift will reflect only the missing-required signals that did evaluate, and may UNDER-COUNT the actual drift state. Inspect orphanDetection / orphanDriverDetection before treating packagesWithActionableDrift == 0 as 'clean'. limitations note. Currently the only drift signal types are: missing-required, orphan-app, orphan-driver. Data-quality issues (see below) are emitted in a separate dataQualityWarnings[] aggregate and do NOT inflate totalDriftSignals. Currently the only data-quality warning types are: heid-whitespace-normalized (whitespace-padded heID normalized to trimmed value; component is KEPT, drift checks continue), heid-non-scalar-dropped (heID is not a Number or String; component is DROPPED, no drift checks run), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; entry has only type, componentType, _warning -- no componentName/componentId because the source was not a Map). Each signals[] entry has: type, componentType, componentName, componentId, note. orphan-app and orphan-driver entries additionally carry heID (the orphaned id); missing-required entries omit heID (the value is null by definition of the signal). Top-level skippedMalformed[] lists manifest URLs whose value was not a Map. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[]; in this case packagesChecked == 0 and summary reads "No drift detected across 0 tracked packages."
+
+Requires Hub Admin Read. HPM itself must be installed.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted."],
+                    packageFilter: [type: "string", description: "Optional case-insensitive substring filter on packageName. When supplied, only matching packages are analyzed. Omit to check all tracked packages."]
+                ]
+            ]
+        ],
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "list_rm_rules",
@@ -3079,6 +3135,10 @@ def executeTool(toolName, args) {
         case "list_installed_apps": return toolListInstalledApps(args)
         case "get_device_in_use_by": return toolGetDeviceInUseBy(args)
 
+        // HPM Package State
+        case "list_hpm_packages": return toolListHpmPackages(args)
+        case "get_hpm_drift": return toolGetHpmDrift(args)
+
         // Rule Machine Integration (via RMUtils)
         case "list_rm_rules": return toolListRmRules(args)
         case "run_rm_rule": return toolRunRmRule(args)
@@ -3113,6 +3173,7 @@ def executeTool(toolName, args) {
         case "manage_diagnostics":
         case "manage_files":
         case "manage_installed_apps":
+        case "manage_hpm":
         case "manage_native_rules_and_apps":
         case "manage_mcp_self":
             // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
@@ -11785,6 +11846,655 @@ def toolGetDeviceInUseBy(args) {
     }
 }
 
+// ==================== HPM PACKAGE STATE TOOL IMPLEMENTATIONS ====================
+
+/**
+ * Fetch and parse the /hub2/appsList response. Single source of truth for the
+ * apps instance tree used by both HPM auto-discovery and explicit-ID validation.
+ * Throws IllegalArgumentException on transport or parse failure.
+ */
+private Map _fetchAppsListTree(String caller) {
+    def responseText
+    try {
+        responseText = hubInternalGet("/hub2/appsList")
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to fetch installed apps for ${caller} [${e.class.simpleName}]: ${e.message ?: e.toString()}")
+    }
+    if (!responseText) {
+        throw new IllegalArgumentException("Empty response from /hub2/appsList during ${caller} -- hub internal API may be unavailable")
+    }
+    try {
+        return new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to parse /hub2/appsList for ${caller}: ${e.message ?: e.toString()}")
+    }
+}
+
+/**
+ * Auto-discover HPM's installed-app ID by walking the apps[] tree from /hub2/appsList
+ * and matching the installed-instance node whose data.type == "Hubitat Package Manager".
+ * The type field on installed instances is the canonical identifier -- userAppTypes[]
+ * has no namespace field on real hubs and cannot be used for matching.
+ * Returns the appId as a String, or throws IllegalArgumentException if not found.
+ */
+private String _hpmDiscoverAppId() {
+    def parsed = _fetchAppsListTree("HPM discovery")
+    // Walk the installed-app instance tree (apps[]) using a plain List as a BFS work queue.
+    // Collects ALL matches unconditionally so duplicate HPM installs are surfaced as an error
+    // rather than silently returning the first. BFS walks children[] at every node to handle
+    // HPM nested under a parent app.
+    def hpmMatches = []
+    def workQueue = [] + (parsed?.apps ?: [])
+    int qi = 0
+    while (qi < workQueue.size()) {
+        def node = workQueue[qi++]
+        def d = node?.data ?: [:]
+        if (d.type?.toString() == "Hubitat Package Manager") {
+            if (d.id == null) throw new IllegalArgumentException("HPM entry found but has no id field -- cannot determine hpmAppId; pass hpmAppId explicitly")
+            hpmMatches << d.id.toString()
+        }
+        (node?.children ?: []).each { workQueue << it }
+    }
+    if (hpmMatches.isEmpty()) {
+        throw new IllegalArgumentException("HPM not found in installed apps -- Hubitat Package Manager does not appear to be installed")
+    }
+    if (hpmMatches.size() > 1) {
+        def cap = 10
+        def shown = hpmMatches.take(cap).join(', ')
+        def extra = hpmMatches.size() > cap ? " and ${hpmMatches.size() - cap} more (total ${hpmMatches.size()})" : ""
+        throw new IllegalArgumentException("Multiple HPM instances found: [${shown}]${extra} -- pass hpmAppId explicitly to select one")
+    }
+    return hpmMatches[0]
+}
+
+/**
+ * Validate that an explicitly-supplied appId belongs to an installed HPM instance.
+ * Walks the apps[] tree from /hub2/appsList; throws IllegalArgumentException when the id
+ * is not found or when its data.type is not "Hubitat Package Manager".
+ * Only called on the explicit-hpmAppId path -- auto-discovery already filters on type.
+ */
+private void _hpmAssertAppIsHpm(String explicitAppId) {
+    def parsed = _fetchAppsListTree("hpmAppId validation")
+    // Walk the installed-app instance tree looking for the entry with the given id.
+    // Early-exit on match: children[] are only enqueued when the current node does NOT match,
+    // avoiding unnecessary BFS expansion after the target is found.
+    def workQueue = [] + (parsed?.apps ?: [])
+    int qi = 0
+    def foundEntry = null
+    while (qi < workQueue.size() && foundEntry == null) {
+        def node = workQueue[qi++]
+        def d = node?.data ?: [:]
+        if (d.id?.toString() == explicitAppId) {
+            foundEntry = d
+        } else {
+            (node?.children ?: []).each { workQueue << it }
+        }
+    }
+    if (foundEntry == null) {
+        throw new IllegalArgumentException("hpmAppId ${explicitAppId} not found in installed apps -- verify the ID or omit hpmAppId to use auto-discovery")
+    }
+    def actualType = foundEntry.type?.toString() ?: "unknown"
+    if (actualType != "Hubitat Package Manager") {
+        throw new IllegalArgumentException("hpmAppId ${explicitAppId} is not Hubitat Package Manager (actual type: ${actualType}) -- verify the ID or omit hpmAppId to use auto-discovery")
+    }
+}
+
+/**
+ * Fetch and double-decode the 'manifests' state entry from HPM's statusJson.
+ * Returns the parsed manifests Map (manifestUrl -> manifest Map), or an empty Map if
+ * HPM has no tracked packages yet. Throws IllegalArgumentException on transport or
+ * parse failure.
+ */
+private Map _hpmFetchManifests(String hpmAppId) {
+    def responseText
+    try {
+        responseText = hubInternalGet("/installedapp/statusJson/${hpmAppId}")
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to fetch HPM statusJson [${e.class.simpleName}]: ${e.message ?: e.toString()}")
+    }
+    if (!responseText) {
+        throw new IllegalArgumentException("Empty response from /installedapp/statusJson/${hpmAppId} -- app may not exist or hub internal API is unavailable")
+    }
+    def outer
+    try {
+        outer = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Failed to parse HPM statusJson [${e.class.simpleName}]: ${e.message ?: e.toString()}")
+    }
+    if (!(outer instanceof Map)) {
+        def actualTypeName = (outer instanceof List) ? "List" : (outer == null ? "null" : "non-object")
+        throw new IllegalArgumentException("Unexpected HPM statusJson shape: expected a JSON object, got ${actualTypeName}")
+    }
+    // Find the 'manifests' entry in appState[].
+    // appState[].value shape varies by firmware: live hubs typically return the value already
+    // as a Map (JsonSlurper recursively parsed the inner JSON). Older firmware or large payloads
+    // may leave it as a JSON-encoded String. Handle both: if it's already a Map, use it directly.
+    def appState = outer.appState ?: []
+    def manifestsEntry = appState.find { it?.name?.toString() == "manifests" }
+    if (manifestsEntry == null) {
+        // HPM installed but no packages tracked yet.
+        return [:]
+    }
+    def rawValue = manifestsEntry.value
+    if (rawValue == null) {
+        return [:]
+    }
+    def manifests
+    if (rawValue instanceof Map) {
+        // JsonSlurper already parsed the inner JSON string into a Map.
+        manifests = rawValue
+    } else {
+        def rawStr = rawValue.toString().trim()
+        if (rawStr.isEmpty()) return [:]
+        try {
+            manifests = new groovy.json.JsonSlurper().parseText(rawStr)
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to parse HPM manifests value [${e.class.simpleName}]: ${e.message ?: e.toString()}")
+        }
+    }
+    if (!(manifests instanceof Map)) {
+        def actualTypeName = (manifests instanceof List) ? "List" : (manifests == null ? "null" : "non-object")
+        throw new IllegalArgumentException("Unexpected HPM manifests shape: expected a JSON object keyed by manifest URL, got ${actualTypeName}")
+    }
+    return manifests
+}
+
+/**
+ * Project HPM's tracked packages into a normalized list.
+ * Gate: requireHubAdminRead() -- reads internal app state via statusJson.
+ */
+def toolListHpmPackages(args) {
+    requireHubAdminRead()
+
+    def hpmAppId
+    if (args?.hpmAppId != null && args.hpmAppId.toString().trim() != "") {
+        hpmAppId = args.hpmAppId.toString().trim()
+        if (!hpmAppId.isInteger()) {
+            throw new IllegalArgumentException("hpmAppId must be numeric: ${hpmAppId}")
+        }
+        _hpmAssertAppIsHpm(hpmAppId)
+    } else {
+        hpmAppId = _hpmDiscoverAppId()
+    }
+
+    mcpLog("info", "hpm", "list_hpm_packages hpmAppId=${hpmAppId}")
+
+    def manifests
+    try {
+        manifests = _hpmFetchManifests(hpmAppId)
+    } catch (IllegalArgumentException e) {
+        return [success: false, error: e.message, hpmAppId: hpmAppId]
+    }
+
+    def skippedMalformed = []
+    def packages = manifests.collect { manifestUrl, manifest ->
+        if (!(manifest instanceof Map)) {
+            mcpLog("warn", "hpm", "list_hpm_packages: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
+            skippedMalformed << manifestUrl?.toString()
+            return null
+        }
+        int skippedAppCount = 0
+        int skippedDriverCount = 0
+        int skippedFileCount = 0
+        def apps = (manifest.apps ?: []).collect { a ->
+            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            def heId = a.heID
+            def heIdStr = null
+            def heIdWarning = null
+            if (heId instanceof String && heId.trim() == "") {
+                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
+                // issue without breaking the consumer (matches drift treatment).
+                heIdWarning = "empty heID string '${heId}' normalized to null"
+                heId = null
+                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+            }
+            // Whitespace-padded String heID (e.g. " 142 ") is normalized to the trimmed value so
+            // that heID surfaces correctly to the consumer (matches get_hpm_drift treatment).
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
+            if (heId != null) {
+                if (heId instanceof Number || heId instanceof String) {
+                    heIdStr = heId.toString()
+                } else {
+                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
+                    mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
+                }
+            }
+            def entry = [
+                id      : a.id?.toString(),
+                name    : a.name?.toString(),
+                required: a.required == true,
+                version : a.version?.toString(),
+                heID    : heIdStr
+            ]
+            if (heIdWarning) entry._warning = heIdWarning
+            entry
+        }.findAll { it != null }
+
+        def drivers = (manifest.drivers ?: []).collect { d ->
+            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            def heId = d.heID
+            def heIdStr = null
+            def heIdWarning = null
+            if (heId instanceof String && heId.trim() == "") {
+                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
+                // issue without breaking the consumer (matches drift treatment).
+                heIdWarning = "empty heID string '${heId}' normalized to null"
+                heId = null
+                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+            }
+            // Whitespace-padded String heID normalized to trimmed value (matches app treatment above).
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
+            if (heId != null) {
+                if (heId instanceof Number || heId instanceof String) {
+                    heIdStr = heId.toString()
+                } else {
+                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
+                    mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
+                }
+            }
+            def entry = [
+                id      : d.id?.toString(),
+                name    : d.name?.toString(),
+                required: d.required == true,
+                version : d.version?.toString(),
+                heID    : heIdStr
+            ]
+            if (heIdWarning) entry._warning = heIdWarning
+            entry
+        }.findAll { it != null }
+
+        def files = (manifest.files ?: []).collect { f ->
+            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map file component in '${manifest.packageName}' (value: ${f?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            [
+                id  : f.id?.toString(),
+                name: f.name?.toString()
+            ]
+        }.findAll { it != null }
+
+        def pkg = [
+            manifestUrl : manifestUrl?.toString(),
+            packageName : manifest.packageName?.toString(),
+            version     : manifest.version?.toString(),
+            beta        : manifest.beta == true,
+            author      : manifest.author?.toString(),
+            apps        : apps,
+            drivers     : drivers,
+            files       : files
+        ]
+        if (skippedAppCount > 0)    pkg.skippedAppCount    = skippedAppCount
+        if (skippedDriverCount > 0) pkg.skippedDriverCount = skippedDriverCount
+        if (skippedFileCount > 0)   pkg.skippedFileCount   = skippedFileCount
+        pkg
+    }.findAll { it != null }
+
+    def result = [
+        success   : true,
+        hpmAppId  : hpmAppId,
+        count     : packages.size(),
+        packages  : packages
+    ]
+    if (skippedMalformed) result.skippedMalformed = skippedMalformed
+    return result
+}
+
+/**
+ * Cross-reference HPM-tracked packages against the hub's Apps Code and Drivers Code registries.
+ * Surfaces missing-required components (required=true with heID null) and orphan signals
+ * (heID present but code definition absent from the registry). Covers both apps and drivers.
+ * Gate: requireHubAdminRead() -- reads internal app state + Apps Code + Drivers Code registries.
+ */
+def toolGetHpmDrift(args) {
+    requireHubAdminRead()
+
+    def hpmAppId
+    if (args?.hpmAppId != null && args.hpmAppId.toString().trim() != "") {
+        hpmAppId = args.hpmAppId.toString().trim()
+        if (!hpmAppId.isInteger()) {
+            throw new IllegalArgumentException("hpmAppId must be numeric: ${hpmAppId}")
+        }
+        _hpmAssertAppIsHpm(hpmAppId)
+    } else {
+        hpmAppId = _hpmDiscoverAppId()
+    }
+
+    def packageFilterRaw = args?.packageFilter?.toString()?.trim()
+    def packageFilter = packageFilterRaw ?: null
+
+    mcpLog("info", "hpm", "get_hpm_drift hpmAppId=${hpmAppId} packageFilter=${packageFilter ?: 'none'}")
+
+    def manifests
+    try {
+        manifests = _hpmFetchManifests(hpmAppId)
+    } catch (IllegalArgumentException e) {
+        return [success: false, error: e.message, hpmAppId: hpmAppId]
+    }
+
+    // Build the set of Apps Code definition IDs for orphan-app detection.
+    // /hub2/userAppTypes is the dedicated Apps Code registry endpoint -- each entry
+    // represents a code definition (whether or not it has any running instances).
+    // This is distinct from the userAppTypes[] array embedded in /hub2/appsList,
+    // which represents installed instances. Child-app templates (e.g. "MCP Rule")
+    // have code definitions here but zero installed instances in the apps[] tree,
+    // so orphan detection MUST use this endpoint to avoid false positives on
+    // HPM-managed child-app-template packages.
+    def installedAppCodeIds = [] as Set
+    def orphanDetection = [enabled: true]
+    try {
+        def userAppTypesText = hubInternalGet("/hub2/userAppTypes")
+        if (!userAppTypesText) {
+            orphanDetection = [enabled: false, reason: "Empty response from /hub2/userAppTypes -- orphan-app signals were not evaluated this call"]
+            mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userAppTypes response -- orphan detection disabled")
+        } else {
+            def userAppTypesParsed = new groovy.json.JsonSlurper().parseText(userAppTypesText)
+            if (!(userAppTypesParsed instanceof List)) {
+                def actualTypeName = (userAppTypesParsed instanceof Map) ? "Map" : (userAppTypesParsed == null ? "null" : "unknown")
+                def rawPreview = userAppTypesParsed?.toString() ?: ""
+                def actualPreview = rawPreview.length() > 200 ? rawPreview.take(200) + " (truncated)" : rawPreview
+                orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-app signals were not evaluated this call"]
+                mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape (${actualTypeName}) -- orphan detection disabled")
+            } else {
+                userAppTypesParsed.each { t ->
+                    def typeId = t?.id?.toString()
+                    if (typeId) installedAppCodeIds << typeId
+                }
+            }
+        }
+    } catch (Exception e) {
+        orphanDetection = [enabled: false, reason: "Failed to fetch /hub2/userAppTypes [${e.class.simpleName}]: ${e.message ?: e.toString()} -- orphan-app signals were not evaluated this call"]
+        mcpLog("warn", "hpm", "get_hpm_drift: could not fetch /hub2/userAppTypes for orphan-app detection: ${e.message ?: e.toString()}")
+    }
+
+    // Build the set of Drivers Code definition IDs for orphan-driver detection.
+    // /hub2/userDeviceTypes is the Drivers Code registry endpoint -- each entry
+    // represents a driver code definition (whether or not any devices use it).
+    // Note: the endpoint name follows the hub's naming convention (userDeviceTypes, not
+    // userDriverTypes); this is the same endpoint used by list_hub_drivers.
+    def installedDriverCodeIds = [] as Set
+    def orphanDriverDetection = [enabled: true]
+    try {
+        def userDeviceTypesText = hubInternalGet("/hub2/userDeviceTypes")
+        if (!userDeviceTypesText) {
+            orphanDriverDetection = [enabled: false, reason: "Empty response from /hub2/userDeviceTypes -- orphan-driver signals were not evaluated this call"]
+            mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userDeviceTypes response -- orphan driver detection disabled")
+        } else {
+            def userDeviceTypesParsed = new groovy.json.JsonSlurper().parseText(userDeviceTypesText)
+            if (!(userDeviceTypesParsed instanceof List)) {
+                def actualTypeName = (userDeviceTypesParsed instanceof Map) ? "Map" : (userDeviceTypesParsed == null ? "null" : "unknown")
+                def rawPreview = userDeviceTypesParsed?.toString() ?: ""
+                def actualPreview = rawPreview.length() > 200 ? rawPreview.take(200) + " (truncated)" : rawPreview
+                orphanDriverDetection = [enabled: false, reason: "Unexpected /hub2/userDeviceTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-driver signals were not evaluated this call"]
+                mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userDeviceTypes returned non-List shape (${actualTypeName}) -- orphan driver detection disabled")
+            } else {
+                userDeviceTypesParsed.each { t ->
+                    def typeId = t?.id?.toString()
+                    if (typeId) installedDriverCodeIds << typeId
+                }
+            }
+        }
+    } catch (Exception e) {
+        orphanDriverDetection = [enabled: false, reason: "Failed to fetch /hub2/userDeviceTypes [${e.class.simpleName}]: ${e.message ?: e.toString()} -- orphan-driver signals were not evaluated this call"]
+        mcpLog("warn", "hpm", "get_hpm_drift: could not fetch /hub2/userDeviceTypes for orphan-driver detection: ${e.message ?: e.toString()}")
+    }
+
+    // Apply optional package filter before drift analysis.
+    def filteredManifests = packageFilter
+        ? manifests.findAll { url, m -> m instanceof Map && m.packageName?.toString()?.toLowerCase()?.contains(packageFilter.toLowerCase()) }
+        : manifests
+
+    def driftEntries = []
+    def driftSkippedMalformed = []
+    def driftDataQualityWarnings = []
+    int totalSignals = 0
+
+    filteredManifests.each { manifestUrl, manifest ->
+        if (!(manifest instanceof Map)) {
+            mcpLog("warn", "hpm", "get_hpm_drift: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
+            driftSkippedMalformed << manifestUrl?.toString()
+            return
+        }
+        def signals = []
+        // Data-quality warnings are collected separately and do NOT roll up into totalDriftSignals.
+        // This keeps the contract clean: totalDriftSignals counts actionable drift (missing-required,
+        // orphan-app, orphan-driver) and does not inflate for data-quality issues in the manifest.
+        def dataQualityWarnings = []
+        int skippedAppCount = 0
+        int skippedDriverCount = 0
+
+        // missing-required: required=true AND heID is null/absent
+        // orphan-app: heID present but not in Apps Code registry (/hub2/userAppTypes endpoint)
+        // Both checks share the per-component heID resolution loop below.
+        (manifest.apps ?: []).each { a ->
+            if (!(a instanceof Map)) {
+                skippedAppCount++
+                dataQualityWarnings << [
+                    type         : "skipped-malformed-component",
+                    componentType: "app",
+                    _warning     : "app component entry is not a Map -- skipped"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped")
+                return
+            }
+            def heId = a.heID
+            // Normalize empty/whitespace-only String heID to null and surface as data-quality warning
+            // so the consumer knows the manifest has a blank heID (matches list_hpm_packages treatment).
+            if (heId instanceof String && heId.trim() == "") {
+                dataQualityWarnings << [
+                    type         : "empty-heid",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    _warning     : "empty heID string '${heId}' normalized to null"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+                heId = null
+            }
+            // Whitespace-padded String heID (e.g. " 142 ") would match nothing in the registry
+            // via verbatim .toString() lookup. Surface as a data-quality warning and normalize
+            // to the trimmed value so the lookup proceeds correctly. The component is KEPT --
+            // drift checks continue against the trimmed heID.
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                dataQualityWarnings << [
+                    type         : "heid-whitespace-normalized",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    _warning     : "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace ('${heId}') -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
+            // Type-validate heID at the boundary: Number and String are the only valid scalar types.
+            // Non-scalar heID (List, Map, Boolean) cannot be matched against Apps Code IDs and
+            // would produce guaranteed false-positive orphan signals via .toString() coercion.
+            // The component is DROPPED -- drift checks do not run for this entry.
+            if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
+                mcpLog("warn", "hpm", "get_hpm_drift: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String (value: ${heId?.toString()?.take(60) ?: 'null'}) -- skipping component")
+                dataQualityWarnings << [
+                    type         : "heid-non-scalar-dropped",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    _warning     : "non-scalar heID (not Number or String) -- component skipped"
+                ]
+                return
+            }
+            def heIdNull = heId == null
+            if (a.required == true && heIdNull) {
+                signals << [
+                    type         : "missing-required",
+                    componentType: "app",
+                    componentName: a.name?.toString(),
+                    componentId  : a.id?.toString(),
+                    note         : "Component is required but heID is null/absent -- install never completed or component was removed."
+                ]
+            }
+            if (!heIdNull && orphanDetection.enabled) {
+                def heIdStr = heId.toString()
+                if (!installedAppCodeIds.contains(heIdStr)) {
+                    signals << [
+                        type         : "orphan-app",
+                        componentType: "app",
+                        componentName: a.name?.toString(),
+                        componentId  : a.id?.toString(),
+                        heID         : heIdStr,
+                        note         : "HPM tracks heID ${heIdStr} but the app code definition is no longer in Apps Code -- likely deleted via Apps Code without using HPM Uninstall."
+                    ]
+                }
+            }
+        }
+
+        // missing-required: required=true AND heID is null/absent (drivers)
+        // orphan-driver: heID present but not in Drivers Code registry (/hub2/userDeviceTypes endpoint)
+        (manifest.drivers ?: []).each { d ->
+            if (!(d instanceof Map)) {
+                skippedDriverCount++
+                dataQualityWarnings << [
+                    type         : "skipped-malformed-component",
+                    componentType: "driver",
+                    _warning     : "driver component entry is not a Map -- skipped"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped")
+                return
+            }
+            def heId = d.heID
+            // Normalize empty/whitespace-only String heID to null and surface as data-quality warning.
+            if (heId instanceof String && heId.trim() == "") {
+                dataQualityWarnings << [
+                    type         : "empty-heid",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    _warning     : "empty heID string '${heId}' normalized to null"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+                heId = null
+            }
+            // Whitespace-padded String heID (e.g. " 89 ") would produce a guaranteed false-positive
+            // orphan-driver signal. Surface as a data-quality warning and normalize to trimmed value.
+            // The component is KEPT -- drift checks continue against the trimmed heID.
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                dataQualityWarnings << [
+                    type         : "heid-whitespace-normalized",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    _warning     : "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                ]
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace ('${heId}') -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
+            // Non-scalar heID cannot be matched against Drivers Code IDs. The component is DROPPED
+            // -- drift checks do not run for this entry.
+            if (heId != null && !(heId instanceof Number) && !(heId instanceof String)) {
+                mcpLog("warn", "hpm", "get_hpm_drift: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String (value: ${heId?.toString()?.take(60) ?: 'null'}) -- skipping component")
+                dataQualityWarnings << [
+                    type         : "heid-non-scalar-dropped",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    _warning     : "non-scalar heID (not Number or String) -- component skipped"
+                ]
+                return
+            }
+            def heIdNull = heId == null
+            if (d.required == true && heIdNull) {
+                signals << [
+                    type         : "missing-required",
+                    componentType: "driver",
+                    componentName: d.name?.toString(),
+                    componentId  : d.id?.toString(),
+                    note         : "Component is required but heID is null/absent -- install never completed or component was removed."
+                ]
+            }
+            if (!heIdNull && orphanDriverDetection.enabled) {
+                def heIdStr = heId.toString()
+                if (!installedDriverCodeIds.contains(heIdStr)) {
+                    signals << [
+                        type         : "orphan-driver",
+                        componentType: "driver",
+                        componentName: d.name?.toString(),
+                        componentId  : d.id?.toString(),
+                        heID         : heIdStr,
+                        note         : "HPM tracks heID ${heIdStr} but the driver code definition is no longer in Drivers Code -- likely deleted via Drivers Code without using HPM Uninstall."
+                    ]
+                }
+            }
+        }
+
+        if (signals || dataQualityWarnings) {
+            def entry = [
+                manifestUrl : manifestUrl?.toString(),
+                packageName : manifest.packageName?.toString(),
+                version     : manifest.version?.toString(),
+                signals     : signals
+            ]
+            if (dataQualityWarnings) entry.dataQualityWarnings = dataQualityWarnings
+            if (skippedAppCount > 0)    entry.skippedAppCount    = skippedAppCount
+            if (skippedDriverCount > 0) entry.skippedDriverCount = skippedDriverCount
+            driftEntries << entry
+            totalSignals += signals.size()
+            if (dataQualityWarnings) driftDataQualityWarnings.addAll(dataQualityWarnings)
+        }
+    }
+
+    int checked = filteredManifests.size()
+    // Count only packages with actionable drift signals (not data-quality-only entries).
+    // A package with only dataQualityWarnings contributes to driftEntries[] for visibility
+    // but must not appear in the summary as "showing drift" when totalDriftSignals is 0.
+    // Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only
+    // packages are present -- those entries are included for visibility but not in the count.
+    int packagesWithActionableDrift = driftEntries.count { it.signals }
+    def summary = packagesWithActionableDrift == 0
+        ? "No drift detected across ${checked} tracked package${checked == 1 ? '' : 's'}."
+        : "${packagesWithActionableDrift} of ${checked} tracked package${checked == 1 ? '' : 's'} ${packagesWithActionableDrift == 1 ? 'shows' : 'show'} drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
+    // When one or both detection systems were disabled this call, the summary could mislead a
+    // consumer that surfaces only the summary string. Append a partial-detection suffix so the
+    // human-readable summary matches the structured orphanDetection / orphanDriverDetection fields.
+    def partialSuffixParts = []
+    if (!orphanDetection.enabled)       partialSuffixParts << "orphanDetection"
+    if (!orphanDriverDetection.enabled) partialSuffixParts << "orphanDriverDetection"
+    if (partialSuffixParts) {
+        def reasonNoun = partialSuffixParts.size() == 1 ? 'reason' : 'reasons'
+        summary += " (partial: ${partialSuffixParts.join('/')} disabled this call -- see ${partialSuffixParts.join('/')} ${reasonNoun})"
+    }
+
+    def result = [
+        success                     : true,
+        hpmAppId                    : hpmAppId,
+        packagesChecked             : checked,
+        packagesWithActionableDrift : packagesWithActionableDrift,
+        drift                       : driftEntries,
+        totalDriftSignals           : totalSignals,
+        summary                     : summary,
+        orphanDetection             : orphanDetection,
+        orphanDriverDetection       : orphanDriverDetection,
+        limitations                 : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes."
+    ]
+    if (driftSkippedMalformed) result.skippedMalformed = driftSkippedMalformed
+    if (driftDataQualityWarnings) result.dataQualityWarnings = driftDataQualityWarnings
+    // When a packageFilter was supplied but matched nothing, surface that explicitly so
+    // the caller can distinguish "clean hub" from "typo in filter".
+    if (packageFilter && checked == 0) {
+        result.filterMatchedZero = true
+        result.availablePackages = manifests.findAll { url, m -> m instanceof Map }
+            .collect { url, m -> m.packageName?.toString() }
+            .findAll { it }
+    }
+    return result
+}
+
 /**
  * List all Rule Machine rules via the official hubitat.helper.RMUtils API.
  * Combines RM 4.x and RM 5.x rules (deduplicated by id).
@@ -20333,7 +21043,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         builtin_app_tools: '''## Built-in App Tools
 
-Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). All manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). Both manage_hpm tools (list_hpm_packages and get_hpm_drift) require Hub Admin Read. All manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" or "Hub Admin Read is disabled" errors, direct them to the MCP Rule Server app settings page.
 
 **manage_installed_apps (4 tools):**
 
@@ -20359,6 +21069,21 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
   - Input: appId
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
+
+**manage_hpm (2 tools) — HPM package state introspection (Hub Admin Read required):**
+
+- **list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
+  - If hpmAppId is omitted, HPM is auto-discovered by scanning installed apps for type="Hubitat Package Manager"
+  - Each package: manifestUrl, packageName, version, beta, author, apps[], drivers[], files[]
+  - Each app/driver component: id (UUID), name, heID (Hubitat code ID or null), required, version
+  - files[] entries have no heID (File Manager assets tracked by name only)
+
+- **get_hpm_drift** — cross-reference HPM tracked state against what is installed on the hub
+  - Surfaces missing-required (required=true but heID null), orphan-app (heID recorded but code no longer in Apps Code registry), and orphan-driver (heID recorded but code no longer in Drivers Code registry) signals
+  - Optional packageFilter (case-insensitive substring) narrows to specific packages
+  - Response: packagesChecked, packagesWithActionableDrift (packages with at least one actionable signal), totalDriftSignals (actionable drift only -- not data-quality warnings), drift[] array (one entry per package with signals or dataQualityWarnings; drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist), summary sentence, orphanDetection ({enabled, reason?}), orphanDriverDetection ({enabled, reason?}), limitations note
+  - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
+  - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via update_app_code are not detectable
 
 **manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 

@@ -4,13 +4,13 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 35 items (23 core + 12 gateways) covering 101 total tools. Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (23 core + 13 gateways) covering 103 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_hpm` (2), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -388,7 +388,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Built-in App Tools
 
-Tools in `manage_installed_apps` and `manage_native_rules_and_apps` gateways have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `get_app_config` and `list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `manage_native_rules_and_apps` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`create_native_app`, `update_native_app`, `delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `create_hub_backup` first.
+Tools in `manage_installed_apps` and `manage_native_rules_and_apps` gateways have mixed gate requirements. `list_installed_apps` and `get_device_in_use_by` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `get_app_config` and `list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). Both `manage_hpm` tools (`list_hpm_packages` and `get_hpm_drift`) require **Hub Admin Read** only -- no Built-in App Tools toggle needed. `manage_native_rules_and_apps` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`create_native_app`, `update_native_app`, `delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `create_hub_backup` first.
 
 ### manage_installed_apps (4 tools)
 
@@ -414,6 +414,38 @@ Tools in `manage_installed_apps` and `manage_native_rules_and_apps` gateways hav
   - Unknown app types: returns the primary page only plus a note about consulting the app's source or Web UI for additional page names
   - Use this before `get_app_config` on multi-page apps to avoid guessing page names
   - Args: `appId` (required)
+
+### manage_hpm (2 tools)
+
+HPM package state introspection. Both tools require **Hub Admin Read** and HPM itself must be installed on the hub. Auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied explicitly.
+
+- **`list_hpm_packages`** — return all packages tracked by Hubitat Package Manager with full component inventory
+  - Each package: `manifestUrl`, `packageName`, `version`, `beta`, `author`, `apps[]`, `drivers[]`, `files[]`
+  - Each app/driver component: `id` (UUID from manifest), `name`, `heID` (Hubitat code ID or null if not installed), `required`, `version`; if `heID` is an empty/whitespace-only string it is cleared to null and `_warning` is added (e.g. `"empty heID string '' normalized to null"` for an empty string, or `"empty heID string '  ' normalized to null"` for a whitespace-only string); if `heID` is a whitespace-padded string (e.g. `' 142 '`) it is normalized to the trimmed value and `_warning` records the normalization (e.g. `"whitespace-padded heID ' 142 ' normalized to '142'"`); heID remains non-null; if `heID` is a non-scalar type it is cleared to null and `_warning` is added
+  - `files[]` entries have no `heID` (File Manager assets tracked by name only)
+  - Top-level `count` (number of packages returned); `hpmAppId` (HPM's installed-app ID, echoed so callers can cache it and skip discovery on subsequent calls)
+  - Top-level `skippedMalformed[]`: manifest URLs whose value was not a Map (package skipped entirely)
+  - Per-package `skippedAppCount`, `skippedDriverCount`, `skippedFileCount` (each omitted when 0): counts of app/driver/file entries that were not Maps
+  - Auto-discovers HPM if `hpmAppId` omitted; when multiple HPM instances are detected, throws with a bracketed ID list capped at 10 entries with `"and N more (total M)"` suffix; when `hpmAppId` is supplied explicitly but points at an app that is not Hubitat Package Manager, throws `IllegalArgumentException` with the actual type disclosed (e.g. `"hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules)"`)
+  - Use to audit what HPM-managed code is on the hub and compare against expected packages
+
+- **`get_hpm_drift`** — cross-reference HPM-tracked state against what is actually installed
+  - Currently the only drift signal types are: `missing-required` (required=true, heID null), `orphan-app` (heID present but app code no longer in Apps Code registry), `orphan-driver` (heID present but driver code no longer in Drivers Code registry). Data-quality issues are emitted in a separate `dataQualityWarnings[]` aggregate and do NOT inflate `totalDriftSignals`.
+  - Optional `packageFilter` (case-insensitive substring) narrows to specific packages
+  - Auto-discovers HPM if `hpmAppId` omitted (including the multi-instance throw with up to 10 ids and `"and N more (total M)"` suffix); when `hpmAppId` is supplied explicitly but points at an app that is not Hubitat Package Manager, throws `IllegalArgumentException` with the actual type disclosed (e.g. `"hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules)"`)
+  - Response: `hpmAppId` (echoed, same semantics as `list_hpm_packages`); `packagesChecked` (not `count`) **because** `packageFilter` may narrow the set examined -- 'checked' reflects the filtered population, distinguishing it from `list_hpm_packages`'s naive `count`; `packagesWithActionableDrift` (count of packages with at least one actionable signal -- excludes data-quality-only packages); `totalDriftSignals` (actionable drift only -- missing-required, orphan-app, orphan-driver -- does NOT count data-quality warnings); `drift[]` (one entry per package with any signal or warning -- each has `manifestUrl`, `packageName`, `version`, `signals[]`, and optionally `dataQualityWarnings[]`, `skippedAppCount`, `skippedDriverCount`); `summary` sentence. Note: `drift[].length` may exceed `packagesWithActionableDrift` when data-quality-only packages exist -- those entries appear for visibility but are not counted in the summary.
+  - Each `signals[]` entry has: `type`, `componentType`, `componentName`, `componentId`, `note`. `orphan-app` and `orphan-driver` entries additionally carry `heID` (the orphaned id); `missing-required` entries omit `heID` (the value is null by definition of the signal).
+  - If any data-quality warnings exist across packages, they are also aggregated at top-level `result.dataQualityWarnings[]`
+  - `orphanDetection` (`{enabled, reason?}`) -- `enabled=false` means the Apps Code registry fetch failed; `reason` discloses whether the body was empty ("Empty response from /hub2/userAppTypes") or had an unexpected shape ("expected JSON array, got Map: ..."); when the payload is long, `reason` truncates the preview at 200 chars and appends `" (truncated)"`
+  - `orphanDriverDetection` (`{enabled, reason?}`) -- same structure as `orphanDetection` but for the Drivers Code registry (`/hub2/userDeviceTypes`)
+  - When one detection system is disabled the `summary` appends `"(partial: <name> disabled this call -- see <name> reason)"`; when both are disabled the suffix uses `"reasons"` (plural): `"(partial: orphanDetection/orphanDriverDetection disabled this call -- see orphanDetection/orphanDriverDetection reasons)"`. Note: when `orphanDetection.enabled` or `orphanDriverDetection.enabled` is `false`, the corresponding orphan-* signals cannot fire. `packagesWithActionableDrift` will reflect only the `missing-required` signals that did evaluate, and may UNDER-COUNT the actual drift state. Inspect `orphanDetection` / `orphanDriverDetection` before treating `packagesWithActionableDrift == 0` as 'clean'.
+  - Data-quality issues land in `dataQualityWarnings[]` on the per-package entry and are aggregated at top-level `result.dataQualityWarnings[]` -- they do NOT inflate `totalDriftSignals`. Currently the only data-quality warning types are: `heid-whitespace-normalized` (whitespace-padded heID normalized to trimmed value; component is **kept**, drift checks continue against the trimmed heID), `heid-non-scalar-dropped` (heID is not a Number or String; component is **dropped**, no drift checks run), `empty-heid` (blank heID normalized to null; entry has `componentName`, `componentId`, `_warning`), `skipped-malformed-component` (non-Map component entry; entry has only `type`, `componentType`, `_warning` -- no `componentName`/`componentId` because the source was not a Map). The kept/dropped distinction lets consumers determine whether drift checks ran for a given component.
+  - Files are not checked for drift **because** HPM tracks file components by name only (no heID), so there is no registry membership to verify; `skippedFileCount` is accordingly not emitted on drift entries
+  - Top-level `skippedMalformed[]`: manifest URLs whose value was not a Map (symmetric with `list_hpm_packages`)
+  - When `packageFilter` matched nothing: `filterMatchedZero=true` plus `availablePackages[]` for filter-spelling sanity check; in this case `packagesChecked == 0` and `summary` reads `"No drift detected across 0 tracked packages."`
+  - Limitation: heID-presence-only. HPM stores no source hashes, so post-install edits via `update_app_code` are not detectable.
+  - Example call: `manage_hpm(tool="get_hpm_drift", args={packageFilter: "BOND"})` — checks only packages whose name contains "BOND"
+  - Design note: `list_hpm_packages` emits `_warning` inline on each component **because** consumers typically enumerate components per-package; `get_hpm_drift` emits `dataQualityWarnings[]` as a separate aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count
 
 ### manage_native_rules_and_apps (12 tools)
 
