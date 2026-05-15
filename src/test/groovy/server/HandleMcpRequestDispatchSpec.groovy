@@ -92,7 +92,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         settingsMap.enableCustomRuleEngine = true
 
         when: 'iterate nextCursor until exhausted -- flat-mode catalog exceeds one page'
-        def allNames = [] as Set
+        def allNamesList = []      // List (not Set) so an off-by-one cursor that duplicates a tool surfaces as a size mismatch.
         def cursor = null
         def pageCount = 0
         for (;;) {
@@ -102,13 +102,23 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             def response = mcpDriver.parseResponseJson()
             assert response.jsonrpc == '2.0'
             assert response.id == 50 + pageCount
-            allNames.addAll(response.result.tools*.name)
+            // nextCursor must be a String on the wire per MCP spec (cursor is opaque-string-typed).
+            // A regression to an Integer or other type would still round-trip via (cursor as String) on the request side,
+            // but is a spec violation -- pin it here.
+            if (response.result.nextCursor != null) {
+                assert response.result.nextCursor instanceof String : "nextCursor must be String, got ${response.result.nextCursor.class.simpleName}"
+            }
+            allNamesList.addAll(response.result.tools*.name)
             cursor = response.result.nextCursor
             if (cursor == null) break
             assert pageCount < 20 : "tools/list pagination iterated more than 20 pages -- runaway"
         }
+        def allNames = allNamesList as Set
 
-        then: 'gateway entries gone, sub-tools surface, search_tools suppressed'
+        then: 'no duplicate tool surfaced across pages (off-by-one cursor arithmetic regression guard)'
+        allNamesList.size() == allNames.size()
+
+        and: 'gateway entries gone, sub-tools surface, search_tools suppressed'
         !allNames.contains('manage_rooms')
         !allNames.contains('manage_files')
         !allNames.contains('search_tools')
