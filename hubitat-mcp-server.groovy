@@ -683,18 +683,20 @@ def handleInitialize(msg) {
     ])
 }
 
-// Cursor-based pagination for tools/list, matching the MCP protocol version this server
-// declares in handleInitialize (see protocolVersion above). Cursor and nextCursor have been
-// part of the tools/list contract since the protocol's first stable revision and remain in
-// every later revision -- this is forward-compatible with any version bump that keeps the
-// same field shape. Pages keep the response under the hub's 128KB JSON-RPC limit even as
-// the catalog grows: a page of TOOLS_LIST_PAGE_SIZE tools (50) at the current average
-// description size (~1.2 KB) stays well within budget. Gateway-mode catalog (~36 entries)
-// fits in one page so there is no client-visible behaviour change. Flat-mode catalog (100+
-// entries) gets paginated; MCP clients iterate nextCursor per the protocol.
-private static final int TOOLS_LIST_PAGE_SIZE = 50
-
 def handleToolsList(msg) {
+    // Cursor-based pagination for tools/list, matching the MCP protocol version this server
+    // declares in handleInitialize (see protocolVersion above). Cursor and nextCursor are
+    // the wire-contract pagination fields specified for tools/list and remain stable across
+    // MCP revisions, so this is forward-compatible with a protocol-version bump that keeps
+    // the same field shape. Page size 50 keeps the response under the hub's 128KB JSON-RPC
+    // limit even as the catalog grows -- a page of 50 tools at the current average
+    // description size (~1.2 KB) stays well within budget. Gateway-mode catalog (~36
+    // entries) fits in one page so there is no client-visible behaviour change. Flat-mode
+    // catalog (100+ entries) gets paginated; MCP clients iterate nextCursor per the protocol.
+    // (Inlined rather than declared `private static final` because Hubitat's app-DSL script
+    // context rejects access modifiers on top-level statements -- "Modifier 'private' not
+    // allowed here" at compile time.)
+    final int pageSize = 50
     def all = getToolDefinitions()
     def cursor = msg.params?.cursor
     int startIdx = 0
@@ -708,7 +710,7 @@ def handleToolsList(msg) {
             return jsonRpcError(msg.id, -32602, "Invalid params: cursor ${cursor} is out of range (catalog has ${all.size()} entries)")
         }
     }
-    def endIdx = Math.min(startIdx + TOOLS_LIST_PAGE_SIZE, all.size())
+    def endIdx = Math.min(startIdx + pageSize, all.size())
     def page = all.subList(startIdx, endIdx)
     def result = [tools: page]
     if (endIdx < all.size()) {
