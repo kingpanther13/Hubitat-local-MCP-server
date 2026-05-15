@@ -11993,7 +11993,7 @@ private Map _hpmFetchManifests(String hpmAppId) {
         }
     }
     if (!(manifests instanceof Map)) {
-        def actualTypeName = (manifests instanceof List) ? "List" : (manifests == null ? "null" : "unexpected")
+        def actualTypeName = (manifests instanceof List) ? "List" : (manifests == null ? "null" : "non-object")
         throw new IllegalArgumentException("Unexpected HPM manifests shape: expected a JSON object keyed by manifest URL, got ${actualTypeName}")
     }
     return manifests

@@ -475,6 +475,46 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.error.contains("Failed to parse HPM manifests value")
     }
 
+    def "list_hpm_packages returns success=false with type disclosure when statusJson outer parse yields non-Map"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        // Return a JSON array -- parseText succeeds but outer is a List, not a Map
+        hubGet.register('/installedapp/statusJson/37') { '[{"x":1}]' }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == false
+        result.error != null
+        result.error.contains("Unexpected HPM statusJson shape")
+        result.error.contains("got List")
+    }
+
+    def "list_hpm_packages returns success=false with type disclosure when manifests value parses to non-Map"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        // manifests value is a JSON array string -- parseText succeeds but yields List, not Map
+        hubGet.register('/installedapp/statusJson/37') {
+            JsonOutput.toJson([
+                id: 37,
+                appState: [[name: "manifests", value: '[{"url":"https://example.com"}]']],
+                appSettings: []
+            ])
+        }
+
+        when:
+        def result = script.toolListHpmPackages([hpmAppId: "37"])
+
+        then:
+        result.success == false
+        result.error != null
+        result.error.contains("Unexpected HPM manifests shape")
+        result.error.contains("got List")
+    }
+
     // -------------------------------------------------------------------------
     // list_hpm_packages: heID type coercion
     // -------------------------------------------------------------------------
