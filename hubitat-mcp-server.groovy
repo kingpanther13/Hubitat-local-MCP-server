@@ -683,8 +683,38 @@ def handleInitialize(msg) {
     ])
 }
 
+// Cursor-based pagination for tools/list, matching the MCP protocol version this server
+// declares in handleInitialize (see protocolVersion above). Cursor and nextCursor have been
+// part of the tools/list contract since the protocol's first stable revision and remain in
+// every later revision -- this is forward-compatible with any version bump that keeps the
+// same field shape. Pages keep the response under the hub's 128KB JSON-RPC limit even as
+// the catalog grows: a page of TOOLS_LIST_PAGE_SIZE tools (50) at the current average
+// description size (~1.2 KB) stays well within budget. Gateway-mode catalog (~36 entries)
+// fits in one page so there is no client-visible behaviour change. Flat-mode catalog (100+
+// entries) gets paginated; MCP clients iterate nextCursor per the protocol.
+private static final int TOOLS_LIST_PAGE_SIZE = 50
+
 def handleToolsList(msg) {
-    return jsonRpcResult(msg.id, [tools: getToolDefinitions()])
+    def all = getToolDefinitions()
+    def cursor = msg.params?.cursor
+    int startIdx = 0
+    if (cursor != null && cursor != "") {
+        try {
+            startIdx = (cursor as String).toInteger()
+        } catch (NumberFormatException ignored) {
+            return jsonRpcError(msg.id, -32602, "Invalid params: cursor must be the opaque string returned by a prior tools/list nextCursor (got: ${cursor})")
+        }
+        if (startIdx < 0 || startIdx >= all.size()) {
+            return jsonRpcError(msg.id, -32602, "Invalid params: cursor ${cursor} is out of range (catalog has ${all.size()} entries)")
+        }
+    }
+    def endIdx = Math.min(startIdx + TOOLS_LIST_PAGE_SIZE, all.size())
+    def page = all.subList(startIdx, endIdx)
+    def result = [tools: page]
+    if (endIdx < all.size()) {
+        result.nextCursor = endIdx.toString()
+    }
+    return jsonRpcResult(msg.id, result)
 }
 
 def handleToolsCall(msg) {

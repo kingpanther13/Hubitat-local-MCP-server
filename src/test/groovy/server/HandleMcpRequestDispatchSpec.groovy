@@ -85,34 +85,102 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         }
     }
 
-    def "tools/list with useGateways=false returns the flat catalog through the JSON-RPC envelope"() {
+    def "tools/list with useGateways=false returns the flat catalog through the JSON-RPC envelope (iterating cursors)"() {
         given: 'feature toggles on so the JSON-RPC envelope returns the full flat catalog'
         settingsMap.useGateways = false
         settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 50, method: 'tools/list', params: [:]])
+
+        when: 'iterate nextCursor until exhausted -- flat-mode catalog exceeds one page'
+        def allNames = [] as Set
+        def cursor = null
+        def pageCount = 0
+        for (;;) {
+            pageCount++
+            mcpDriver.pushBody([jsonrpc: '2.0', id: 50 + pageCount, method: 'tools/list', params: (cursor == null ? [:] : [cursor: cursor])])
+            script.handleMcpRequest()
+            def response = mcpDriver.parseResponseJson()
+            assert response.jsonrpc == '2.0'
+            assert response.id == 50 + pageCount
+            allNames.addAll(response.result.tools*.name)
+            cursor = response.result.nextCursor
+            if (cursor == null) break
+            assert pageCount < 20 : "tools/list pagination iterated more than 20 pages -- runaway"
+        }
+
+        then: 'gateway entries gone, sub-tools surface, search_tools suppressed'
+        !allNames.contains('manage_rooms')
+        !allNames.contains('manage_files')
+        !allNames.contains('search_tools')
+        allNames.contains('list_rooms')
+        allNames.contains('list_files')
+        allNames.contains('list_devices')
+
+        and: 'feature-toggle-gated tools also surface (proves the envelope returns the full flat catalog, not just the cores)'
+        allNames.contains('list_rm_rules')
+        allNames.contains('list_installed_apps')
+        allNames.contains('custom_create_rule')
+
+        and: 'flat-mode catalog was big enough to require pagination'
+        pageCount > 1
+    }
+
+    def "tools/list gateway-mode catalog fits on a single page (no nextCursor)"() {
+        given: 'default useGateways=true; catalog is 36 entries, under page size of 50'
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 60, method: 'tools/list', params: [:]])
 
         when:
         script.handleMcpRequest()
 
         then:
         def response = mcpDriver.parseResponseJson()
-        response.jsonrpc == '2.0'
-        response.id == 50
-        def names = response.result.tools*.name as Set
+        response.result.tools instanceof List
+        response.result.tools.size() > 0
 
-        and: 'gateway entries gone, sub-tools surface, search_tools suppressed'
-        !names.contains('manage_rooms')
-        !names.contains('manage_files')
-        !names.contains('search_tools')
-        names.contains('list_rooms')
-        names.contains('list_files')
-        names.contains('list_devices')
+        and: 'no nextCursor because the gateway-mode catalog fits in one page'
+        !response.result.containsKey('nextCursor')
+    }
 
-        and: 'feature-toggle-gated tools also surface (proves the envelope returns the full flat catalog, not just the cores)'
-        names.contains('list_rm_rules')
-        names.contains('list_installed_apps')
-        names.contains('custom_create_rule')
+    def "tools/list rejects a non-numeric cursor with -32602"() {
+        given:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 70, method: 'tools/list', params: [cursor: 'not-a-number']])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error != null
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('cursor')
+    }
+
+    def "tools/list rejects an out-of-range cursor with -32602"() {
+        given:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 71, method: 'tools/list', params: [cursor: '999999']])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error != null
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('out of range')
+    }
+
+    def "tools/list with empty cursor string starts from the first page"() {
+        given: 'empty-string cursor should behave like a missing cursor (start from beginning)'
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 72, method: 'tools/list', params: [cursor: '']])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.tools instanceof List
+        response.result.tools.size() > 0
     }
 
     def "tools/call list_rooms flows through render with an MCP content envelope"() {
