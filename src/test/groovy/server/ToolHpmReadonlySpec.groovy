@@ -834,6 +834,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         sig.componentName == "Required App"
         sig.note.contains("Component is required but heID is null/absent")
 
+        and: 'signals[] field-shape convention: missing-required entries omit heID (null by definition)'
+        !sig.containsKey('heID')
+
         and: 'summary reflects 1 of 1 tracked packages with 1 total signal'
         result.summary.contains("1 of 1")
         result.summary.contains("1 total signal")
@@ -1854,6 +1857,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         sig.type == "missing-required"
         sig.componentType == "driver"
         sig.componentName == "Missing Driver"
+
+        and: 'signals[] field-shape convention: missing-required entries omit heID (null by definition)'
+        !sig.containsKey('heID')
     }
 
     def "get_hpm_drift places non-scalar heID driver component in dataQualityWarnings, not signals"() {
@@ -2852,5 +2858,133 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         direct.success == true
         gateway.success == true
         gateway == direct
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: auto-discovery throws when multiple HPM instances found
+    // (mirror of the list_hpm_packages spec -- both tools share _hpmDiscoverAppId)
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift auto-discovery throws when multiple HPM instances are found"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []],
+                    [data: [id: "99", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+
+        when:
+        script.toolGetHpmDrift([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("[37, 99]")
+        ex.message.contains("Multiple HPM instances found")
+    }
+
+    // -------------------------------------------------------------------------
+    // get_hpm_drift: required=true + non-scalar heID is dropped silently
+    // (regression pin: documents the under-count scenario from the R7 review --
+    // a required component with non-scalar heID emits heid-non-scalar-dropped
+    // BEFORE the missing-required check, so it never contributes a missing-required
+    // signal and is invisible to packagesWithActionableDrift)
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift drops required component with non-scalar heID via heid-non-scalar-dropped -- NO missing-required signal fires"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Broken Required Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // required=true but heID is a non-scalar (List) -- component is DROPPED before required check
+                apps: [[id: "app-uuid-1", name: "Required But Broken", namespace: "ns", location: "loc", required: true, version: "1.0.0", heID: [1, 2, 3]]],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'no actionable drift signal fires -- under-count invisible without inspecting dataQualityWarnings'
+        result.success == true
+        result.packagesWithActionableDrift == 0
+        result.totalDriftSignals == 0
+        result.drift.size() == 1
+        result.drift[0].signals == []
+
+        and: 'data-quality warning surfaces the dropped component'
+        def dqw = result.drift[0].dataQualityWarnings?.find { it.type == "heid-non-scalar-dropped" }
+        dqw != null
+        dqw.componentType == "app"
+        dqw.componentName == "Required But Broken"
+        dqw._warning.contains("non-scalar heID")
+    }
+
+    // -------------------------------------------------------------------------
+    // skipped-malformed-component entry shape: lacks componentName/componentId
+    // because the source was not a Map (no name/id to extract). Other dataQualityWarnings
+    // types carry both fields -- this asymmetry is documented in the schema, this spec
+    // pins it so a future refactor that adds the fields would fail.
+    // -------------------------------------------------------------------------
+
+    def "get_hpm_drift skipped-malformed-component entry has no componentName or componentId (schema asymmetry)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        def manifests = [
+            "https://example.com/packageManifest.json": [
+                packageName: "Malformed Component Pkg",
+                version    : "1.0.0",
+                beta       : false,
+                author     : "Tester",
+                // Non-Map app entry -- source has no name/id structure to extract
+                apps: ["just-a-string-not-a-map"],
+                drivers: [], files: []
+            ]
+        ]
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", manifests) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes([]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes([]) }
+
+        when:
+        def result = script.toolGetHpmDrift([hpmAppId: "37"])
+
+        then: 'skipped-malformed-component entry has only type/componentType/_warning -- no name/id'
+        result.success == true
+        def dqw = result.drift[0].dataQualityWarnings?.find { it.type == "skipped-malformed-component" }
+        dqw != null
+        dqw.componentType == "app"
+        dqw._warning != null
+        !dqw.containsKey('componentName')
+        !dqw.containsKey('componentId')
     }
 }
