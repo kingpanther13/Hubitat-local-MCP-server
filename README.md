@@ -1093,12 +1093,12 @@ For easier bug reporting:
   > 5. For uninstall: `delete_app`/`delete_driver` for code, investigate `/installedapp/disable` for instances
 
 - [ ] **Check for updates across installed packages** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions — same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's internal state is not accessible from another app. A parallel tracking database would be needed.
+  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions -- same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's installed-package state IS readable via hub-internal endpoints (`/installedapp/statusJson/` + `/hub2/appsList`), as demonstrated by `list_hpm_packages` and `get_hpm_drift`. A `check_package_updates` tool could cross-reference HPM's recorded manifest URLs and versions against live manifest files to detect available updates.
   >
   > **Implementation plan:**
   > 1. Create `check_package_updates` MCP tool
-  > 2. Read MCP-tracked package list from File Manager
-  > 3. Fetch each manifest URL and compare version fields
+  > 2. Read MCP-tracked package list from File Manager (for MCP-installed packages)
+  > 3. For HPM-managed packages: use `_hpmFetchManifests` to get recorded manifest URLs and versions; fetch each live URL and compare version fields
   > 4. Return list of packages with available updates
   > 5. Handle fetch failures gracefully (GitHub rate limiting, network issues)
 
@@ -1475,10 +1475,12 @@ For easier bug reporting:
 
 
 
+
 ---
 
 ## Version History
 
+- **v1.3.0** - chore(sandbox_lint): enforce tool-count consistency + sync doc drift; feat(manage_hpm): HPM read-only gateway — list_hpm_packages + get_hpm_drift. PRs: [#165](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/165), [#167](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/167)
 - **v1.2.1** - feat(manage_app_driver_code): library management (install/update/delete/get_source). PRs: [#164](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/164)
 - **v1.2.0** - feat: add clone/export/import_native_app via Hubitat appCloner. PRs: [#158](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/158)
 - **v1.1.2** - docs(futureplans): align rule-tool names with PR #134 custom_ rename; feat(manage_app_driver_code): driver-code lifecycle improvements -- sourceFile + bulk + token-economy. PRs: [#162](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/162), [#163](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/163)
