@@ -7588,8 +7588,8 @@ def toolGetLoggingStatus(args) {
 def toolGenerateBugReport(args) {
     def issueType = _bugReportNormalizeIssueType(args.issueType)
     def privacyMode = args.privacyMode?.toString()?.toLowerCase() == "public" ? "public" : "private"
-    def includeRawLogs = args.includeRawLogs == null ? (privacyMode == "private") : (args.includeRawLogs as Boolean)
-    def windowMs = ((args.logWindowSeconds ?: 120) as Integer) * 1000L
+    def includeRawLogs = args.includeRawLogs == null ? (privacyMode == "private") : (args.includeRawLogs == true)
+    def windowMs = ((args.logWindowSeconds == null ? 120 : args.logWindowSeconds) as Integer) * 1000L
 
     initDebugLogs()
     def allEntries = (state.debugLogs.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
@@ -7613,7 +7613,6 @@ def toolGenerateBugReport(args) {
         success: true,
         issueType: issueType,
         privacyMode: privacyMode,
-        sanitizationApplied: privacyMode == "public",
         suggestedTitle: suggestedTitle,
         submitUrl: submitUrl,
         report: report,
@@ -7661,6 +7660,9 @@ private Map _bugReportResolveAnchor(args, List entries) {
 
 private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) {
     def lastN = entries.takeRight(20)
+    def safeTs = { entry ->
+        try { return entry?.timestamp as Long } catch (Throwable ignored) { return null }
+    }
     if (anchor.entry == null) {
         return [
             relevant: lastN,
@@ -7670,7 +7672,16 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
             includedUnrelated: true
         ]
     }
-    def anchorTs = anchor.entry.timestamp as Long
+    def anchorTs = safeTs(anchor.entry)
+    if (anchorTs == null) {
+        return [
+            relevant: lastN,
+            other: [],
+            otherCount: 0,
+            scoped: false,
+            includedUnrelated: true
+        ]
+    }
     def windowStart = anchorTs - windowMs
     def windowEnd = anchorTs + windowMs
     def matchesContext = { entry ->
@@ -7682,7 +7693,8 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
     def relevant = []
     def other = []
     entries.each { entry ->
-        def ts = entry.timestamp as Long
+        def ts = safeTs(entry)
+        if (ts == null) return
         if (ts >= windowStart && ts <= windowEnd && matchesContext(entry)) {
             relevant << entry
         } else {
@@ -7708,7 +7720,9 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         hubModel = location.hub?.hardwareID?.toString() ?: location.hub?.type?.toString() ?: "Unknown"
         hubFirmware = location.hub?.firmwareVersionString?.toString() ?: "Unknown"
         timeZone = location.timeZone?.ID?.toString() ?: "Unknown"
-    } catch (Throwable ignored) {}
+    } catch (Throwable e) {
+        mcpLog("warn", "bug-report", "_bugReportEnvironmentSummary: location access threw (${e.message}); env fields may be incomplete")
+    }
     return [
         version: currentVersion(),
         hubName: privacyMode == "public" ? "<hub-name>" : hubName,
@@ -7717,23 +7731,47 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         timeZone: timeZone,
         logLevel: getConfiguredLogLevel(),
         customMcpRuleCount: getChildApps()?.size() ?: 0,
-        nativeRmRuleCount: _bugReportNativeRmCount(),
+        nativeRm: _bugReportNativeRmStatus(),
         deviceCount: selectedDevices?.size() ?: 0,
         llmClient: args.llmClient?.toString() ?: "Not provided"
     ]
 }
 
-private Integer _bugReportNativeRmCount() {
+private Map _bugReportNativeRmStatus() {
     def ids = [] as Set
+    def v4Error = null
+    def v5Error = null
     try {
         def v4 = hubitat.helper.RMUtils.getRuleList() ?: []
         v4.each { r -> if (r?.id != null) ids << r.id.toString() }
-    } catch (Throwable ignored) {}
+    } catch (Throwable e) {
+        v4Error = e.toString()
+    }
     try {
         def v5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
         v5.each { r -> if (r?.id != null) ids << r.id.toString() }
-    } catch (Throwable ignored) {}
-    return ids.size()
+    } catch (Throwable e) {
+        v5Error = e.toString()
+    }
+    def classMissingHint = { String msg ->
+        if (!msg) return false
+        if (msg.contains("NoClassDefFoundError") || msg.contains("ClassNotFoundException") || msg.contains("unable to resolve class")) return true
+        if (msg.contains("Cannot get property") && msg.contains("'helper'")) return true
+        if ((msg.contains("MissingMethodException") || msg.contains("No signature of method")) && msg.contains("getRuleList")) return true
+        return false
+    }
+    def bothMissing = v4Error && v5Error && classMissingHint(v4Error) && classMissingHint(v5Error)
+    if (bothMissing) {
+        return [installed: false, count: 0]
+    }
+    def hardErrors = []
+    if (v4Error && !classMissingHint(v4Error)) hardErrors << "v4=${v4Error}"
+    if (v5Error && !classMissingHint(v5Error)) hardErrors << "v5=${v5Error}"
+    if (hardErrors) {
+        mcpLog("warn", "bug-report", "_bugReportNativeRmStatus: RMUtils errors — ${hardErrors.join('; ')}; count may be inaccurate")
+        return [installed: true, count: ids.size(), error: hardErrors.join("; ")]
+    }
+    return [installed: true, count: ids.size()]
 }
 
 private Map _bugReportRuleInfo(args) {
@@ -7753,7 +7791,8 @@ private Map _bugReportRuleInfo(args) {
             executionCount: ruleData.executionCount ?: 0
         ]
     } catch (Throwable e) {
-        return [id: args.ruleId, error: "Could not retrieve rule info: ${e.message}"]
+        mcpLog("warn", "bug-report", "_bugReportRuleInfo: getRuleData(${args.ruleId}) failed (${e.message}) — id may not refer to a custom MCP rule")
+        return [id: args.ruleId, lookupError: e.message ?: e.toString()]
     }
 }
 
@@ -7796,7 +7835,18 @@ private String _bugReportBuildMarkdown(Map params) {
     def failingToolLine = args.failingTool ? "- **Failing tool:** ${args.failingTool}\n" : ""
     def nativeAppLine = args.nativeAppId ? "- **Native RM app id:** ${args.nativeAppId}\n" : ""
     def reproSection = args.stepsToReproduce ? "\n### Steps to Reproduce\n${args.stepsToReproduce}\n" : ""
-    def ruleSection = ruleInfo ? """
+    def ruleSection
+    if (!ruleInfo) {
+        ruleSection = ""
+    } else if (ruleInfo.lookupError) {
+        ruleSection = """
+## Related Rule (lookup failed)
+- **Rule ID:** ${ruleInfo.id}
+- **Lookup error:** ${ruleInfo.lookupError}
+- **Note:** This id may not refer to a custom MCP rule (e.g. it's a native RM rule or Notifier — those don't expose getRuleData). If you meant a native rule, pass it as `nativeAppId` instead.
+"""
+    } else {
+        ruleSection = """
 ## Related Custom MCP Rule
 - **Rule ID:** ${ruleInfo.id}
 - **Rule Name:** ${ruleInfo.name ?: 'Unknown'}
@@ -7806,7 +7856,8 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Actions:** ${ruleInfo.actionCount}
 - **Last Triggered:** ${ruleInfo.lastTriggered}
 - **Execution Count:** ${ruleInfo.executionCount}
-""" : ""
+"""
+    }
     def logSection
     if (!includeRawLogs) {
         def n = relevantLines.size()
@@ -7837,8 +7888,8 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Hub firmware:** ${env.hubFirmware}
 - **Time zone:** ${env.timeZone}
 - **MCP log level:** ${env.logLevel}
-- **Custom MCP rules:** ${env.customMcpRuleCount}
-- **Native Rule Machine rules:** ${env.nativeRmRuleCount}
+- **Rules in legacy custom rule engine:** ${env.customMcpRuleCount}
+- ${env.nativeRm.installed == false ? "**Native Rule Machine:** not installed (Rule Machine not detected on this hub)" : "**Native Rule Machine rules:** ${env.nativeRm.count}${env.nativeRm.error ? ' (RMUtils partial failure — count may be inaccurate)' : ''}"}
 - **Devices exposed to MCP:** ${env.deviceCount}
 - **LLM / client:** ${env.llmClient}
 ${failingToolLine}${nativeAppLine}

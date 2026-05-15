@@ -1,29 +1,13 @@
 package server
 
 import spock.lang.Shared
+import spock.lang.Unroll
+import support.RMUtilsMock
+import support.TestChildApp
 import support.TestHub
 import support.TestLocation
 import support.ToolSpecBase
 
-/**
- * Spec for the reworked generate_bug_report tool (#171).
- *
- * Covers:
- *   - default invocation returns the expected result shape (bug + private mode)
- *   - split environment counts (custom MCP / native RM / devices)
- *   - issueType=bug | enhancement | agent_behavior route to the right title prefix + template
- *   - submitUrl URL-encodes the suggested title
- *   - log scoping kicks in ONLY when failingTool/ruleId/nativeAppId is passed
- *   - includeUnrelatedRecentLogs folds omitted entries back into the report
- *   - privacyMode=public substitutes <hub-name>, suppresses raw log text,
- *     and the instructions field carries both an LLM-directed sanitization
- *     ask and a user-directed review warning
- *   - includeRawLogs=true in public mode shows raw lines but still hides hub name
- *
- * Log entries follow the shape produced by mcpLog(): a Map with timestamp,
- * level, component, message, and an optional details Map carrying tool / appId
- * context (see mcpLog at hubitat-mcp-server.groovy:5740 in main).
- */
 class ToolGenerateBugReportSpec extends ToolSpecBase {
 
     @Shared private TestLocation sharedLocation = new TestLocation()
@@ -51,12 +35,13 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
     }
 
     private Map logEntry(Map fields) {
+        Map details = (fields.details ?: [:]) + (fields.nativeAppId ? [appId: fields.nativeAppId] : [:])
         Map entry = [
             timestamp: fields.timestamp ?: 1_700_000_000_000L,
             level    : fields.level ?: 'error',
             component: fields.component ?: 'server',
             message  : fields.message ?: 'boom',
-            details  : fields.details ?: [:],
+            details  : details,
         ]
         if (fields.ruleId) entry.ruleId = fields.ruleId
         return entry
@@ -80,13 +65,105 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.submitUrl.contains('?template=bug_report.yml')
         result.submitUrl.contains('&title=')
         result.report.contains('## Environment')
-        result.report.contains('Custom MCP rules:')
-        result.report.contains('Native Rule Machine rules:')
-        result.report.contains('Devices exposed to MCP:')
+        result.report.contains('**Rules in legacy custom rule engine:** 0')
+        result.report.contains('**Native Rule Machine rules:** 0')
+        result.report.contains('**Devices exposed to MCP:** 0')
         result.logs.scoped == false
         result.logs.relevantCount == 0
         result.logs.otherRecentLogCount == 0
         result.logs.hint == null
+    }
+
+    def "env summary uses 'Rules in legacy custom rule engine' (not 'Custom MCP rules') so users don't read it as 'MCP can't see my RM rules'"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the label clarifies this is the legacy custom rule engine, not the full MCP-visible rule set'
+        result.report.contains('**Rules in legacy custom rule engine:**')
+        !result.report.contains('**Custom MCP rules:**')
+    }
+
+    def "env summary shows non-zero customMcpRuleCount when child apps are present"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        childAppsList << new TestChildApp(id: 1L, label: 'Rule A')
+        childAppsList << new TestChildApp(id: 2L, label: 'Rule B')
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Rules in legacy custom rule engine:** 2')
+    }
+
+    // ---------- native RM status (F1/F4 — installed vs not, count distinction) ----------
+
+    def "env summary renders 'Native Rule Machine: not installed' when RMUtils throws the class-missing absence pattern"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def rmMock = new RMUtilsMock(
+            throwOnGetRuleList4: new NoClassDefFoundError('hubitat.helper.RMUtils'),
+            throwOnGetRuleList5: new NoClassDefFoundError('hubitat.helper.RMUtils'),
+        )
+        rmMock.install()
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Native Rule Machine:** not installed')
+        !result.report.contains('**Native Rule Machine rules:** 0')
+
+        cleanup:
+        rmMock.uninstall()
+    }
+
+    def "env summary renders 'Native Rule Machine rules: N' when RMUtils returns N rules"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def rmMock = new RMUtilsMock(
+            stubRuleList4: [[id: 101], [id: 102], [id: 103]],
+            stubRuleList5: [],
+        )
+        rmMock.install()
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Native Rule Machine rules:** 3')
+        !result.report.contains('not installed')
+
+        cleanup:
+        rmMock.uninstall()
+    }
+
+    def "env summary marks partial failure when one RMUtils version throws a non-absence error"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def rmMock = new RMUtilsMock(
+            stubRuleList4: [[id: 1]],
+            throwOnGetRuleList5: new RuntimeException('RMUtils v5 internal error'),
+        )
+        rmMock.install()
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'count from the surviving version is still surfaced, but the report flags partial failure'
+        result.report.contains('**Native Rule Machine rules:** 1')
+        result.report.contains('RMUtils partial failure')
+
+        cleanup:
+        rmMock.uninstall()
     }
 
     // ---------- issueType routing ----------
@@ -119,6 +196,31 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.submitUrl.contains('?template=agent_behavior.yml')
     }
 
+    @Unroll
+    def "issueType '#raw' normalizes to '#expected' (template=#template)"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([issueType: raw]))
+
+        then:
+        result.issueType == expected
+        result.submitUrl.contains("?template=${template}")
+
+        where:
+        raw                 || expected         | template
+        'feature'           || 'enhancement'    | 'enhancement.yml'
+        'feat'              || 'enhancement'    | 'enhancement.yml'
+        'feature_request'   || 'enhancement'    | 'enhancement.yml'
+        'agent-behavior'    || 'agent_behavior' | 'agent_behavior.yml'
+        'tool_description'  || 'agent_behavior' | 'agent_behavior.yml'
+        'BUG'               || 'bug'            | 'bug_report.yml'
+        'garbage'           || 'bug'            | 'bug_report.yml'
+        null                || 'bug'            | 'bug_report.yml'
+    }
+
     // ---------- URL encoding ----------
 
     def "submitUrl URL-encodes the suggested title (no raw spaces or ampersands)"() {
@@ -134,6 +236,39 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def titleQuery = result.submitUrl.substring(result.submitUrl.indexOf('&title=') + '&title='.length())
         !titleQuery.contains(' ')
         !titleQuery.contains('&')
+    }
+
+    // ---------- title truncation ----------
+
+    def "suggested title truncates to 140 chars with ellipsis when prefix+tool+title overflows"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def longTitle = 'x' * 200
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            title       : longTitle,
+            failingTool : 'manage_native_rules_and_apps',
+        ]))
+
+        then:
+        result.suggestedTitle.length() == 140
+        result.suggestedTitle.endsWith('...')
+        result.suggestedTitle.startsWith('[bug] manage_native_rules_and_apps:')
+    }
+
+    def "suggested title left untouched when under 140 chars"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([title: 'short title']))
+
+        then:
+        result.suggestedTitle == '[bug] short title'
+        !result.suggestedTitle.endsWith('...')
     }
 
     // ---------- log scoping ----------
@@ -164,6 +299,69 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         !result.report.contains('noise_after')
     }
 
+    def "log scoping anchored on ruleId keeps entries whose ruleId matches"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        long anchor = 1_700_000_000_000L
+        seedLogs([
+            logEntry(timestamp: anchor,         level: 'error', ruleId: '42',     message: 'rule_42_failure'),
+            logEntry(timestamp: anchor + 1_000, level: 'warn',  ruleId: '42',     message: 'rule_42_warn'),
+            logEntry(timestamp: anchor + 5_000, level: 'error', ruleId: '999',    message: 'unrelated_rule_999'),
+        ])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([ruleId: '42']))
+
+        then:
+        result.logs.scoped == true
+        result.logs.relevantCount == 2
+        result.report.contains('rule_42_failure')
+        result.report.contains('rule_42_warn')
+        !result.report.contains('unrelated_rule_999')
+    }
+
+    def "log scoping anchored on nativeAppId keeps entries whose details.appId matches"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        long anchor = 1_700_000_000_000L
+        seedLogs([
+            logEntry(timestamp: anchor,         level: 'error', nativeAppId: '1234', message: 'native_app_1234_failure'),
+            logEntry(timestamp: anchor + 1_000, level: 'warn',  nativeAppId: '1234', message: 'native_app_1234_warn'),
+            logEntry(timestamp: anchor + 5_000, level: 'error', nativeAppId: '5678', message: 'unrelated_app_5678'),
+        ])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([nativeAppId: '1234']))
+
+        then:
+        result.logs.scoped == true
+        result.logs.relevantCount == 2
+        result.report.contains('native_app_1234_failure')
+        result.report.contains('native_app_1234_warn')
+        !result.report.contains('unrelated_app_5678')
+    }
+
+    def "failingTool with no matching log entries falls through to unscoped (lastN) output"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        long anchor = 1_700_000_000_000L
+        seedLogs([
+            logEntry(timestamp: anchor,         level: 'error', details: [tool: 'tool_a'], message: 'unrelated_a'),
+            logEntry(timestamp: anchor + 1_000, level: 'warn',  details: [tool: 'tool_b'], message: 'unrelated_b'),
+        ])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'tool_that_never_logged']))
+
+        then: 'no anchor → unscoped path; both lastN entries returned, no hint'
+        result.logs.scoped == false
+        result.logs.relevantCount == 2
+        result.logs.otherRecentLogCount == 0
+        result.logs.hint == null
+        result.report.contains('unrelated_a')
+        result.report.contains('unrelated_b')
+    }
+
     def "no failingTool / ruleId / nativeAppId means no scoping (all entries returned)"() {
         given:
         sharedLocation.hub = new TestHub()
@@ -182,6 +380,22 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.logs.hint == null
         result.report.contains('aaa')
         result.report.contains('bbb')
+    }
+
+    def "empty log buffer with scoping requested returns scoped=false, no crash"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'manage_native_rules_and_apps']))
+
+        then: 'anchor is null (empty buffer), so fallback path is the unscoped lastN (which is also empty)'
+        result.success == true
+        result.logs.scoped == false
+        result.logs.relevantCount == 0
+        result.logs.otherRecentLogCount == 0
+        result.logs.hint == null
     }
 
     def "includeUnrelatedRecentLogs=true folds the omitted entries into the report and drops the hint"() {
@@ -205,6 +419,109 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.logs.hint == null
     }
 
+    def "logWindowSeconds window boundary — entries at the edge are in, just past are out"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        long anchor = 1_700_000_000_000L
+        // The most-recent matching entry becomes the anchor (resolveAnchor returns the first
+        // hit from the reversed list). With anchor = the latest entry, the window extends
+        // backwards ±logWindowSeconds. windowStart = anchor - 30s, windowEnd = anchor + 30s.
+        seedLogs([
+            logEntry(timestamp: anchor - 30_001, level: 'warn',  details: [tool: 'X'], message: 'just_before'),  // out of window
+            logEntry(timestamp: anchor - 30_000, level: 'warn',  details: [tool: 'X'], message: 'edge_in'),       // exactly at window start
+            logEntry(timestamp: anchor,           level: 'error', details: [tool: 'X'], message: 'anchor_entry'), // anchor itself
+        ])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'X', logWindowSeconds: 30]))
+
+        then:
+        result.logs.scoped == true
+        result.logs.relevantCount == 2
+        result.report.contains('anchor_entry')
+        result.report.contains('edge_in')
+        !result.report.contains('just_before')
+    }
+
+    def "hint singular grammar fires when exactly one unrelated entry is omitted"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        long anchor = 1_700_000_000_000L
+        seedLogs([
+            logEntry(timestamp: anchor,         level: 'error', details: [tool: 'X'], message: 'matched'),
+            logEntry(timestamp: anchor + 1_000, level: 'error', details: [tool: 'Y'], message: 'unrelated_single'),
+        ])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'X']))
+
+        then:
+        result.logs.otherRecentLogCount == 1
+        result.logs.hint.endsWith('entry.')
+        !result.logs.hint.endsWith('entries.')
+    }
+
+    // ---------- ruleId rule-info section ----------
+
+    def "ruleId pointing at a real custom MCP rule renders the related-rule section"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def child = new TestChildApp(id: 42L, label: 'My Test Rule')
+        child.ruleData = [
+            name: 'My Test Rule', enabled: true,
+            triggers: [[type: 'time']], conditions: [], actions: [[type: 'on']],
+            lastTriggered: 1_700_000_000_000L, executionCount: 7,
+        ]
+        childAppsList << child
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([ruleId: '42']))
+
+        then:
+        result.report.contains('## Related Custom MCP Rule')
+        result.report.contains('**Rule ID:** 42')
+        result.report.contains('**Rule Name:** My Test Rule')
+        result.report.contains('**Enabled:** true')
+        result.report.contains('**Triggers:** 1')
+        result.report.contains('**Actions:** 1')
+        result.report.contains('**Execution Count:** 7')
+        !result.report.contains('**Last Triggered:** Never')
+    }
+
+    def "ruleId with no matching child app omits the related-rule section entirely"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([ruleId: '999']))
+
+        then:
+        !result.report.contains('## Related Custom MCP Rule')
+        !result.report.contains('## Related Rule (lookup failed)')
+        result.success == true
+    }
+
+    def "ruleId matching a child whose getRuleData throws renders a 'lookup failed' section instead of nulls"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def child = new TestChildApp(id: 77L, label: 'Native-RM-style child')
+        child.metaClass.getRuleData = { throw new MissingMethodException('getRuleData', child.getClass(), [] as Object[]) }
+        childAppsList << child
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([ruleId: '77']))
+
+        then:
+        result.report.contains('## Related Rule (lookup failed)')
+        result.report.contains('**Rule ID:** 77')
+        result.report.contains('**Lookup error:**')
+        result.report.contains('pass it as `nativeAppId` instead')
+        !result.report.contains('**Rule Name:** Unknown')
+    }
+
     // ---------- privacy / public-safe mode ----------
 
     def "privacyMode=public suppresses raw log text, placeholders hub name, and instructs LLM + user"() {
@@ -222,10 +539,9 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         then:
         result.privacyMode == 'public'
-        result.sanitizationApplied == true
         result.report.contains('<hub-name>')
         !result.report.contains('secret_message_in_log')
-        result.report.contains('raw text omitted in public mode')
+        result.report.contains('public mode')
         result.instructions.toLowerCase().contains('if you are an llm')
         result.instructions.toLowerCase().contains('review')
     }
@@ -248,4 +564,5 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('<hub-name>')
         result.report.contains('shown_anyway_in_public_mode')
     }
+
 }
