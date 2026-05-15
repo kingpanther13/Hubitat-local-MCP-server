@@ -53,7 +53,7 @@ Create response: `{success, message, tips, device: {id, name, label, deviceNetwo
 
 Delete response: `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
 
-`list_virtual_devices` response: `{devices: [...], count, message}`. Per-device includes `driverNamespace` (falls back to `"hubitat"` on older firmware where the hub does not expose a per-device namespace -- not a reliable built-in/custom discriminator), `driverType`, and `typeName` (deprecated alias; prefer `driverType`). `currentStates` is a map of attribute-name to current-value.
+`list_virtual_devices` response: `{devices: [...], count, message}`. Per-device includes `driverNamespace` (authoritative for devices created by this tool -- the namespace is persisted at create time; for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`), `driverType`, and `typeName` (deprecated alias; prefer `driverType`). `currentStates` is a map of attribute-name to current-value.
 
 ## Automation Rules
 

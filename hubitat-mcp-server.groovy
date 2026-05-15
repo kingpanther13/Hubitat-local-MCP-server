@@ -1872,7 +1872,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
         ],
         [
             name: "list_virtual_devices",
-            description: "List MCP-managed virtual devices (children of this app). Response: {devices: [...], count, message}. Per-device fields: id, name, label, deviceNetworkId, driverNamespace (driver namespace; falls back to 'hubitat' when the hub does not expose a per-device namespace on older firmware -- not a reliable built-in/custom discriminator), driverType (driver type name), typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, currentStates (map of attribute-name to current-value -- note: create uses attributes as a list while list uses currentStates as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map).",
+            description: "List MCP-managed virtual devices (children of this app). Response: {devices: [...], count, message}. Per-device fields: id, name, label, deviceNetworkId, driverNamespace (authoritative for devices created by this tool -- the namespace is persisted at create time; for devices created before this version or by other means it falls back to a best-effort derivation that may report 'hubitat'), driverType (driver type name), typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, currentStates (map of attribute-name to current-value -- note: create uses attributes as a list while list uses currentStates as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map).",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -10924,6 +10924,17 @@ def toolCreateVirtualDevice(args) {
         throw new RuntimeException("Failed to create virtual device -- addChildDevice returned null. A device with DNI '${dni}' may have been partially registered. Check list_virtual_devices and Hubitat UI before retrying with the same DNI.")
     }
 
+    // Persist the authoritative namespace as a device data value so list_virtual_devices can
+    // read it back reliably. getDriverType()?.namespace returns null on real hubs for custom-driver
+    // virtual devices (confirmed on Hubitat 2.5.0.126), making the list path's derivation unreliable.
+    // Persisting here at create time -- when the namespace is unambiguously known -- gives the
+    // list path one authoritative read path for all MCP-created devices.
+    try {
+        newDevice.updateDataValue("mcpDriverNamespace", namespace)
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not persist mcpDriverNamespace data value on device ${newDevice.id}: ${e.class.simpleName}: ${e.message ?: e.toString()} -- list_virtual_devices will fall back to best-effort derivation for this device")
+    }
+
     // Read back device info
     def deviceInfo = [
         id: newDevice.id.toString(),
@@ -10966,17 +10977,22 @@ def toolListVirtualDevices(args) {
     }
 
     def devices = childDevs.collect { device ->
-        // driverNamespace: attempt driver namespace lookup; fall back to "hubitat" when the property
-        // is unavailable (built-in virtual drivers don't expose a separate namespace on all firmware).
+        // driverNamespace: authoritative for MCP-created devices via the mcpDriverNamespace data value
+        // persisted at create time. For devices created before this version or by other means, falls back
+        // to getDriverType()?.namespace (which returns null on real hubs for custom-driver virtual
+        // devices -- confirmed on Hubitat 2.5.0.126), then to "hubitat" as the last resort.
         // driverType: the driver type name. typeName kept as deprecated alias -- prefer driverType in new code.
-        def devNamespace
-        try {
-            devNamespace = device.getDriverType()?.namespace
-        } catch (Exception e) {
-            devNamespace = null
-            mcpLog("debug", "device", "getDriverType() unavailable for ${device.id}: ${e.class.simpleName}: ${e.message}")
+        def devNamespace = device.getDataValue("mcpDriverNamespace")
+        if (!devNamespace) {
+            // Backward-compat fallback for devices not created by this version
+            try {
+                devNamespace = device.getDriverType()?.namespace
+            } catch (Exception e) {
+                devNamespace = null
+                mcpLog("debug", "device", "getDriverType() unavailable for ${device.id}: ${e.class.simpleName}: ${e.message}")
+            }
         }
-        devNamespace = devNamespace ?: "hubitat"  // fall back to "hubitat" on older firmware where getDriverType() is unavailable (throws).
+        devNamespace = devNamespace ?: "hubitat"  // final fallback when both data value and getDriverType() yield null.
         def devTypeName  = device.typeName ?: device.name
         def info = [
             id: device.id.toString(),

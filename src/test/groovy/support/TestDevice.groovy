@@ -31,6 +31,18 @@ class TestDevice {
     // Default null so callers that don't set it fall through to the device.name fallback.
     String typeName = null
 
+    // Device data values -- backing store for getDataValue/updateDataValue.
+    // toolCreateVirtualDevice persists mcpDriverNamespace here; toolListVirtualDevices reads it back.
+    Map dataValues = [:]
+
+    Object getDataValue(String key) {
+        dataValues[key]
+    }
+
+    void updateDataValue(String key, String value) {
+        dataValues[key] = value
+    }
+
     // Events returned by eventsSince(). Default [] keeps existing specs green;
     // rule-engine device_was tests seed this with maps like
     // [[name: 'switch', value: 'on'], ...] to drive the lookback check.

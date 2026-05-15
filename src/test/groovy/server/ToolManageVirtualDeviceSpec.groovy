@@ -202,7 +202,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         given:
         enableHubAdminWrite()
         def capturedArgs = [:]
-        // ChildDeviceWrapper mock satisfies the HubitatAppScript castToType check in addChildDevice
+        def capturedDataValues = [:]
+        // ChildDeviceWrapper mock satisfies the HubitatAppScript castToType check in addChildDevice.
+        // updateDataValue is declared on DeviceWrapper (parent interface) so Spock can stub it.
         def fakeDevice = Mock(ChildDeviceWrapper) {
             getId() >> '77'
             getIdAsLong() >> 77L
@@ -213,6 +215,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             getSupportedCommands() >> []
             getSupportedAttributes() >> []
             currentValue(_) >> null
+            // Capture updateDataValue calls so create-path data-value persistence is verifiable
+            updateDataValue(_, _) >> { String key, String val -> capturedDataValues[key] = val }
         }
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             capturedArgs.namespace = ns
@@ -236,6 +240,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedArgs.hubId     == null  // always null per 5-arg form convention
         capturedArgs.props?.label == 'Kitchen Humidifier Test'  // label propagates to addChildDevice props map
         capturedArgs.props?.name  == 'Levoit Classic 200S Humidifier'  // driver type name propagates to props
+        // Verify namespace was persisted as a data value so list_virtual_devices can read it back
+        capturedDataValues['mcpDriverNamespace'] == 'level99-vesync'
         result.success == true
         result.device.id == '77'
         result.device.driverNamespace == 'level99-vesync'
@@ -314,6 +320,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         given:
         enableHubAdminWrite()
         def capturedArgs = [:]
+        def capturedDataValues = [:]
         def fakeDevice = Mock(ChildDeviceWrapper) {
             getId() >> '42'
             getIdAsLong() >> 42L
@@ -324,6 +331,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             getSupportedCommands() >> []
             getSupportedAttributes() >> []
             currentValue(_) >> null
+            updateDataValue(_, _) >> { String key, String val -> capturedDataValues[key] = val }
         }
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             capturedArgs.namespace = ns
@@ -344,6 +352,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedArgs.name      == 'Virtual Switch'
         capturedArgs.props?.label == 'BAT Test Switch'  // label propagates to addChildDevice props map
         capturedArgs.props?.name  == 'Virtual Switch'   // driver type name propagates to props
+        // Verify namespace was persisted as a data value so list_virtual_devices can read it back
+        capturedDataValues['mcpDriverNamespace'] == 'hubitat'
         result.success == true
         result.device.id == '42'
         result.device.driverNamespace == 'hubitat'
@@ -394,9 +404,10 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     // -------- toolListVirtualDevices --------
 
-    def "list_virtual_devices: success path with custom-driver device returns driverNamespace and driverType"() {
-        // Invariant: when getDriverType() returns a namespace-bearing object, driverNamespace is
-        // populated from it and driverType/typeName both reflect the driver type name.
+    def "list_virtual_devices: fallback -- getDriverType() returns namespace-bearing object when no data value"() {
+        // Backward-compat fallback: when mcpDriverNamespace data value is absent (device created before
+        // this fix or by other means), the list path falls back to getDriverType()?.namespace.
+        // This path is still exercised even though the primary path (data value) is preferred.
         given:
         def fakeDriverType = [namespace: 'level99-vesync']
         def fakeDevice = new support.TestDevice(
@@ -405,6 +416,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             label: 'Office Humidifier',
             deviceNetworkId: 'mcp-virtual-test-99',
             typeName: 'Levoit Classic 200S Humidifier'
+            // dataValues empty -- no mcpDriverNamespace persisted -- exercises fallback path
         )
         fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
         childDevicesList << fakeDevice
@@ -417,7 +429,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         result.devices.size() >= 1
         def d = result.devices.find { it.id == '99' }
         d != null
-        d.driverNamespace == 'level99-vesync'
+        d.driverNamespace == 'level99-vesync'  // fallback to getDriverType().namespace when data value absent
         d.driverType      == 'Levoit Classic 200S Humidifier'
         d.typeName        == 'Levoit Classic 200S Humidifier'  // deprecated alias present in list response
         d.deviceNetworkId == 'mcp-virtual-test-99'
@@ -486,6 +498,101 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         cleanup:
         childDevicesList.removeAll { it.id == 101 }
+    }
+
+    // Primary data-value path: customDriver create persists namespace; list reads it back
+    // getDriverType() returns null to mirror real hub behavior (confirmed on Hubitat 2.5.0.126)
+    def "list_virtual_devices: primary path -- reads mcpDriverNamespace data value when present (getDriverType returns null)"() {
+        // The core bug fix: getDriverType()?.namespace returns null on real hubs for custom-driver
+        // virtual devices. The primary path reads mcpDriverNamespace from device data values instead.
+        // This spec mirrors the real hub: getDriverType() returns null, data value carries the truth.
+        given:
+        def fakeDevice = new support.TestDevice(
+            id: 103,
+            name: 'Levoit Classic 200S Humidifier',
+            label: 'Namespace From Data Value Test',
+            deviceNetworkId: 'mcp-virtual-test-103',
+            typeName: 'Levoit Classic 200S Humidifier'
+        )
+        // Persist the namespace as the create path would
+        fakeDevice.dataValues['mcpDriverNamespace'] = 'NiklasGustafsson'
+        // getDriverType() returns null -- mirrors real hub behavior for custom-driver virtual devices
+        fakeDevice.metaClass.getDriverType = { -> null }
+        childDevicesList << fakeDevice
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success != false
+        def d = result.devices.find { it.id == '103' }
+        d != null
+        d.driverNamespace == 'NiklasGustafsson'  // sourced from data value, NOT from getDriverType()
+        d.driverType == 'Levoit Classic 200S Humidifier'
+        d.typeName   == 'Levoit Classic 200S Humidifier'  // deprecated alias reflects same value
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 103 }
+    }
+
+    // Primary data-value path: built-in create persists "hubitat"; list reads it back
+    def "list_virtual_devices: primary path -- built-in device data value 'hubitat' returned as driverNamespace"() {
+        // Built-in devices created by this version have mcpDriverNamespace = "hubitat" persisted.
+        // List reads this data value directly -- no getDriverType() call needed.
+        given:
+        def fakeDevice = new support.TestDevice(
+            id: 104,
+            name: 'Virtual Switch',
+            label: 'Built-in Data Value Test',
+            deviceNetworkId: 'mcp-virtual-test-104',
+            typeName: 'Virtual Switch'
+        )
+        fakeDevice.dataValues['mcpDriverNamespace'] = 'hubitat'
+        // getDriverType() should NOT be reached when data value is present; we verify by having
+        // it return a wrong namespace -- if the test passes, the data value was preferred.
+        fakeDevice.metaClass.getDriverType = { -> [namespace: 'wrong-namespace-should-not-be-used'] }
+        childDevicesList << fakeDevice
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success != false
+        def d = result.devices.find { it.id == '104' }
+        d != null
+        d.driverNamespace == 'hubitat'  // from data value, not from getDriverType() (which would return wrong-namespace)
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 104 }
+    }
+
+    // Backward-compat: no data value AND getDriverType returns null -> falls back to "hubitat"
+    def "list_virtual_devices: backward-compat -- no data value and getDriverType returns null falls back to hubitat"() {
+        // Devices created before this fix have no mcpDriverNamespace data value.
+        // getDriverType() returning null (real hub behavior) means the final fallback is "hubitat".
+        given:
+        def fakeDevice = new support.TestDevice(
+            id: 105,
+            name: 'Virtual Switch',
+            label: 'Backward Compat Fallback Test',
+            deviceNetworkId: 'mcp-virtual-test-105',
+            typeName: 'Virtual Switch'
+            // dataValues empty, no mcpDriverNamespace
+        )
+        fakeDevice.metaClass.getDriverType = { -> null }  // mirrors real hub: getDriverType returns null
+        childDevicesList << fakeDevice
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success != false
+        def d = result.devices.find { it.id == '105' }
+        d != null
+        d.driverNamespace == 'hubitat'  // final fallback: no data value, getDriverType null, ?: "hubitat" fires
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 105 }
     }
 
     // N.35 Elvis discriminator: typeName != name proves device.typeName ?: device.name returns typeName when non-null
@@ -647,7 +754,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         given:
         enableHubAdminWrite()
         def capturedNs = null
-        def fakeDevice = Mock(me.biocomp.hubitat_ci.api.common_api.ChildDeviceWrapper) {
+        def fakeDevice = Mock(ChildDeviceWrapper) {
             getId() >> '55'
             getIdAsLong() >> 55L
             getName() >> 'test-driver'
@@ -657,6 +764,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             getSupportedCommands() >> []
             getSupportedAttributes() >> []
             currentValue(_) >> null
+            updateDataValue(_, _) >> {}  // stub; not under test in this spec
         }
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             capturedNs = ns
