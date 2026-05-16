@@ -707,7 +707,7 @@ def handleToolsList(msg) {
             return jsonRpcError(msg.id, -32602, "Invalid params: cursor must be the opaque string returned by a prior tools/list nextCursor (got: ${cursor})")
         }
         if (startIdx < 0 || startIdx >= all.size()) {
-            return jsonRpcError(msg.id, -32602, "Invalid params: cursor ${cursor} is out of range (catalog has ${all.size()} entries)")
+            return jsonRpcError(msg.id, -32602, "Invalid params: cursor ${cursor} is out of range")
         }
     }
     def endIdx = Math.min(startIdx + pageSize, all.size())

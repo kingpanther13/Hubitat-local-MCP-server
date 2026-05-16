@@ -536,6 +536,7 @@ The server implements MCP protocol version `2024-11-05`:
 - **Methods**: `initialize`, `tools/list`, `tools/call`, `ping`
 - **Notifications**: Handled silently (HTTP 204)
 - **Error codes**: `-32700` (parse), `-32600` (invalid request), `-32601` (method not found), `-32602` (invalid params from `IllegalArgumentException`), `-32603` (internal error)
+- **`tools/list` pagination** (v1.3.x+): cursor-paginated per MCP spec. Request takes optional `params.cursor` (opaque string); response carries `tools` plus optional `nextCursor` when more pages exist. Page size 50, chosen so gateway-mode (~36 tools) stays single-page (no client-visible behaviour change) while flat-mode (100+ tools) paginates to keep responses under the hub's 128KB JSON-RPC limit. Cursor validation errors (non-numeric, negative, or out-of-range) surface as `-32602`.
 
 ### Common Pitfalls
 

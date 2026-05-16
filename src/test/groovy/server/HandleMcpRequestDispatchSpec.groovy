@@ -108,6 +108,11 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             if (response.result.nextCursor != null) {
                 assert response.result.nextCursor instanceof String : "nextCursor must be String, got ${response.result.nextCursor.class.simpleName}"
             }
+            // Page-size invariant: each page MUST be <= pageSize entries. Pins the size
+            // constant against silent regression -- e.g., bumping to pageSize=200 would
+            // re-introduce the >128KB hub-limit failure but would still pass `pageCount > 1`
+            // and `tools.size() > 0` as long as the catalog fits in one page.
+            assert response.result.tools.size() <= 50 : "page exceeded pageSize=50: got ${response.result.tools.size()}"
             allNamesList.addAll(response.result.tools*.name)
             cursor = response.result.nextCursor
             if (cursor == null) break
@@ -168,6 +173,24 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
     def "tools/list rejects an out-of-range cursor with -32602"() {
         given:
         mcpDriver.pushBody([jsonrpc: '2.0', id: 71, method: 'tools/list', params: [cursor: '999999']])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error != null
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('out of range')
+    }
+
+    def "tools/list rejects a negative cursor with -32602 (out-of-range, not -32603 IOOBE)"() {
+        // "-5".toInteger() returns -5 without throwing NumberFormatException, so it bypasses
+        // the parse-catch and lands in the startIdx < 0 disjunct of the range check. If that
+        // disjunct were ever dropped, subList(-5, end) would throw IndexOutOfBoundsException,
+        // propagating as -32603 ("Internal error") instead of -32602. Pin the -32602 contract.
+        given:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 73, method: 'tools/list', params: [cursor: '-5']])
 
         when:
         script.handleMcpRequest()
