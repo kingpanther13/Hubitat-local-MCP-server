@@ -80,35 +80,54 @@ import spock.lang.Specification
  * change.
  */
 abstract class HarnessSpec extends Specification {
-    // Shared across every feature method in a given spec class — the
-    // sandbox parse+compile (~3s for the 8000-line server file) is the
-    // dominant cost, so amortising it across all tests in a class keeps
-    // the CI job from scaling linearly with test count.
-    @Shared protected AppExecutor appExecutor
-    @Shared protected script
-    @Shared private PermissiveLog sharedLog = new PermissiveLog()
-
-    // Stable references — contents mutated by tests and cleared in setup().
-    // The AppExecutor mock's stubs capture these references in setupSpec,
-    // so per-test content updates are visible via the normal stub paths.
-    @Shared protected final Map stateMap = [:]
-    @Shared protected final Map atomicStateMap = [:]
+    // Per-JVM cache for the compiled script. The expensive part is
+    // sandbox.run() (parse + AST + compile, ~3-10s for the 10K-line
+    // server file). Across ~50 HarnessSpec subclasses this cuts ~250s
+    // off cold-run wall time.
+    //
+    // The AppExecutor Mock is built fresh per spec class (Spock 2.x
+    // ties Mocks to their creating Spec's MockController, so a
+    // JVM-shared Mock can't accept stub additions from subsequent
+    // specs). Each spec's setupSpec builds its own Mock and
+    // reflectively rebinds it onto SHARED_SCRIPT.api. The script's
+    // userSettingsMap / preferencesReader wiring (bound at sandbox.run
+    // time using the JVM-shared SHARED_SETTINGS_MAP) stays valid because
+    // the Map reference is the same across all specs.
+    private static SHARED_SCRIPT
+    private static final java.lang.reflect.Field API_FIELD = {
+        def f = HubitatAppScript.getDeclaredField('api')
+        f.accessible = true
+        f
+    }()
+    private static final PermissiveLog SHARED_LOG = new PermissiveLog()
+    private static final Map SHARED_STATE_MAP = [:]
+    private static final Map SHARED_ATOMIC_STATE_MAP = [:]
     // Must be non-empty at sandbox.run() time — HubitatCI's
     // readUserSettingValues does a Groovy truthy check on the passed map
     // and silently swaps in a fresh empty Map when it's empty, breaking
     // the shared reference that specs rely on to mutate settings from
     // their given: blocks. setup() restores this seed entry after
     // clearing so every test starts from the same baseline.
-    @Shared protected final Map settingsMap = [selectedDevices: []]
-    @Shared protected final List childDevicesList = []
-    @Shared protected final List childAppsList = []
-    @Shared protected final HubInternalGetMock hubGet = new HubInternalGetMock()
+    private static final Map SHARED_SETTINGS_MAP = [selectedDevices: []]
+    private static final List SHARED_CHILD_DEVICES_LIST = []
+    private static final List SHARED_CHILD_APPS_LIST = []
+    private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
+    private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
+
+    @Shared protected AppExecutor appExecutor
+    @Shared protected script
+    @Shared protected final Map stateMap = SHARED_STATE_MAP
+    @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
+    @Shared protected final Map settingsMap = SHARED_SETTINGS_MAP
+    @Shared protected final List childDevicesList = SHARED_CHILD_DEVICES_LIST
+    @Shared protected final List childAppsList = SHARED_CHILD_APPS_LIST
+    @Shared protected final HubInternalGetMock hubGet = SHARED_HUB_GET
     // Drives handleMcpRequest end-to-end: push a JSON body, let the
     // script's `request.JSON` resolve through here, capture the script's
-    // `render(...)` call. Shared across features; reset() in setup() keeps
-    // per-test state clean while the instance reference stays stable for
-    // the metaClass + Mock stubs wired in setupSpec.
-    @Shared protected final McpRequestDriver mcpDriver = new McpRequestDriver()
+    // `render(...)` call. Reset between features via mcpDriver.reset();
+    // the instance reference stays stable across the JVM so wire-ups
+    // installed against it remain valid.
+    @Shared protected final McpRequestDriver mcpDriver = SHARED_MCP_DRIVER
 
     // Per-test fixture — specs assign in given: blocks to drive
     // addChildApp's return value. Not @Shared: wireScriptOverrides() runs
@@ -117,13 +136,32 @@ abstract class HarnessSpec extends Specification {
     protected def mockChildAppForCreate
 
     def setupSpec() {
-        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-server.groovy'))
-        appExecutor = Mock(AppExecutor) {
-            _ * getState() >> stateMap
-            _ * getAtomicState() >> atomicStateMap
-            _ * getChildDevices() >> childDevicesList
+        appExecutor = buildAppExecutorMock()
+        if (SHARED_SCRIPT == null) {
+            // First spec to run: compile the script with this spec's
+            // Mock as the api. Future specs will reflectively rebind
+            // api to their own fresh Mock against the cached script.
+            compileSharedScript()
+        } else {
+            API_FIELD.set(SHARED_SCRIPT, appExecutor)
+        }
+        script = SHARED_SCRIPT
+    }
+
+    private AppExecutor buildAppExecutorMock() {
+        def mock = Mock(AppExecutor) {
+            _ * getState() >> SHARED_STATE_MAP
+            _ * getAtomicState() >> SHARED_ATOMIC_STATE_MAP
+            _ * getChildDevices() >> SHARED_CHILD_DEVICES_LIST
             _ * now() >> 1234567890000L
-            _ * getLog() >> sharedLog
+            _ * getLog() >> SHARED_LOG
+            // getSettings() is on AppExecutor and the script delegates
+            // `settings` reads to api.getSettings(). The original flow's
+            // sandbox.run() wires this via internal AppPreferencesReader
+            // machinery on the bound api; when we rebind api per spec we
+            // need to provide it explicitly. Returning the userSettingsMap
+            // directly is sufficient for spec-side `settings.foo` reads.
+            _ * getSettings() >> SHARED_SETTINGS_MAP
         }
         // render(Map) is declared on AppExecutor — class-2 of the dispatch
         // cheat sheet. Install a permanent dispatcher stub that routes every
@@ -132,28 +170,33 @@ abstract class HarnessSpec extends Specification {
         // `return render(...)` still gets a value back (the driver returns
         // the same Map). Without this, `handleMcpRequest()` short-circuits
         // with MissingMethodException inside the Mock's @Delegate chain.
-        appExecutor.render(_) >> { args -> mcpDriver.captureRender(args[0] as Map) }
+        mock.render(_) >> { args -> SHARED_MCP_DRIVER.captureRender(args[0] as Map) }
         // No-arg render() isn't used by any production path today, but
         // AppExecutor declares both overloads. Fail loudly if a future
         // handler picks up the no-arg form — silent default (null return,
         // no capture) would leave parseResponseJson reading the *previous*
         // test's state, which is exactly the kind of cross-test leak this
         // harness is built to prevent.
-        appExecutor.render() >> {
+        mock.render() >> {
             throw new IllegalStateException(
                 "No-arg render() is not wired into McpRequestDriver. If a new " +
                 "handler path needs it, extend the driver to capture the no-arg " +
                 "call and relax this stub. See src/test/groovy/support/HarnessSpec.groovy.")
         }
+        return mock
+    }
+
+    private void compileSharedScript() {
+        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-server.groovy'))
         def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
             Flags.DontRunScript
         ])
-        script = sandbox.run(
+        SHARED_SCRIPT = sandbox.run(
             api: appExecutor,
-            userSettingValues: settingsMap,
+            userSettingValues: SHARED_SETTINGS_MAP,
             childAppResolver: { String ns, String name ->
                 throw new IllegalStateException(
                     "childAppResolver fired for ${ns}:${name} — HarnessSpec's " +
@@ -184,7 +227,16 @@ abstract class HarnessSpec extends Specification {
         // overrides into the next feature, making tests order-dependent.
         // The standard hooks installed by wireScriptOverrides() below are
         // re-applied immediately so they're always present.
+        //
+        // Both removals matter when SHARED_SCRIPT is reused across spec
+        // classes: removeMetaClass(class) clears the class-level
+        // ExpandoMetaClass, and script.setMetaClass(null) clears the
+        // per-instance one. Tests that do `script.metaClass.mcpLog = ...`
+        // attach to the per-instance EMC; without the second wipe, the
+        // closure (which captured the previous spec's local list) keeps
+        // intercepting calls in subsequent specs.
         GroovySystem.metaClassRegistry.removeMetaClass(script.getClass())
+        script.setMetaClass(null)
         // Re-run metaClass + reflective wires in setup (not setupSpec) so
         // closures capture the *current* Specification instance. This lets
         // subclasses override wireScriptOverrides() with closures that

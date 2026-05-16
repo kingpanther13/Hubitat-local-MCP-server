@@ -2,6 +2,7 @@ package rules
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
 import me.biocomp.hubitat_ci.app.HubitatAppSandbox
+import me.biocomp.hubitat_ci.app.HubitatAppScript
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Shared
 import spock.lang.Specification
@@ -40,7 +41,16 @@ import support.TestLocation
  * value.
  */
 abstract class RuleHarnessSpec extends Specification {
-    // Shared across the spec class — see HarnessSpec for why.
+    // Per-JVM cache for the compiled rule-engine script. The Mock is
+    // rebuilt per spec class and reflectively rebound onto SHARED_SCRIPT.api.
+    // See support.HarnessSpec for the broader rationale.
+    private static SHARED_SCRIPT
+    private static final java.lang.reflect.Field API_FIELD = {
+        def f = HubitatAppScript.getDeclaredField('api')
+        f.accessible = true
+        f
+    }()
+
     @Shared protected AppExecutor appExecutor
     @Shared protected script
     // Matches HarnessSpec's PermissiveLog usage — a concrete shim that
@@ -120,8 +130,17 @@ abstract class RuleHarnessSpec extends Specification {
     Object getParent() { _parent }
 
     def setupSpec() {
-        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-rule.groovy'))
-        appExecutor = Mock(AppExecutor) {
+        appExecutor = buildAppExecutorMock()
+        if (SHARED_SCRIPT == null) {
+            compileSharedScript()
+        } else {
+            API_FIELD.set(SHARED_SCRIPT, appExecutor)
+        }
+        script = SHARED_SCRIPT
+    }
+
+    private AppExecutor buildAppExecutorMock() {
+        def mock = Mock(AppExecutor) {
             _ * getState() >> stateMap
             _ * getAtomicState() >> atomicStateMap
             // app / location are in HubitatCI's AppExecutor interface (so they
@@ -137,6 +156,9 @@ abstract class RuleHarnessSpec extends Specification {
             _ * getLocation() >> testLocation
             _ * now() >> 1234567890000L
             _ * getLog() >> sharedLog
+            // settings is delegated through api.getSettings() — see
+            // support.HarnessSpec for the rationale.
+            _ * getSettings() >> settingsMap
         }
         // Permanent recording stubs for AppExecutor methods the rule engine
         // dispatches via @Delegate. Tests assert on the recorded *Calls lists
@@ -144,25 +166,25 @@ abstract class RuleHarnessSpec extends Specification {
         // from given:/then: doesn't work reliably — stubs must live here to
         // take effect). Mutable @Shared fields (stubTimeOfDayResult etc.) are
         // read at invocation time so tests can drive behaviour per-feature.
-        appExecutor.runIn(*_) >> { args -> runInCalls << (args as List) }
-        appExecutor.runOnce(*_) >> { args -> runOnceCalls << (args as List) }
-        appExecutor.schedule(*_) >> { args -> scheduleCalls << (args as List) }
-        appExecutor.unsubscribe() >> { unsubscribeCount++ }
-        appExecutor.unschedule() >> { unscheduleAllCount++ }
-        appExecutor.unschedule(_ as String) >> { args -> unscheduleCalls << (args[0] as String) }
-        appExecutor.sendLocationEvent(_) >> { args -> sendLocationEventCalls << (args[0] as Map) }
-        appExecutor.httpGet(_, _) >> { args ->
+        mock.runIn(*_) >> { args -> runInCalls << (args as List) }
+        mock.runOnce(*_) >> { args -> runOnceCalls << (args as List) }
+        mock.schedule(*_) >> { args -> scheduleCalls << (args as List) }
+        mock.unsubscribe() >> { unsubscribeCount++ }
+        mock.unschedule() >> { unscheduleAllCount++ }
+        mock.unschedule(_ as String) >> { args -> unscheduleCalls << (args[0] as String) }
+        mock.sendLocationEvent(_) >> { args -> sendLocationEventCalls << (args[0] as Map) }
+        mock.httpGet(_, _) >> { args ->
             httpGetCalls << (args as List)
             if (stubHttpGetException) throw stubHttpGetException
         }
-        appExecutor.httpPost(_, _) >> { args -> httpPostCalls << (args as List) }
+        mock.httpPost(_, _) >> { args -> httpPostCalls << (args as List) }
         // subscribe(source, attribute, handlerName) is class-2 (declared on
         // AppExecutor). Route every call into SubscriptionRecorder so specs
         // can both assert on the wire-up ("device_event rule subscribed
         // device 1 for 'switch' to handleDeviceEvent") and fire synthetic
         // events back at the recorded handler. Without this stub the call
         // silently no-ops through the Mock's @Delegate chain.
-        appExecutor.subscribe(_, _ as String, _ as String) >> { args ->
+        mock.subscribe(_, _ as String, _ as String) >> { args ->
             subscriptions.record(args[0], args[1] as String, args[2] as String)
         }
         // Catch-all for subscribe() overloads other than the 3-arg form the
@@ -172,7 +194,7 @@ abstract class RuleHarnessSpec extends Specification {
         // subscribe options (e.g. filterEvents) would fall into the Mock's
         // @Delegate default (null return, silent no-op) and the recorder
         // would silently miss the call. Fail loudly instead.
-        appExecutor.subscribe(*_) >> { args ->
+        mock.subscribe(*_) >> { args ->
             if (args.size() == 3 && args[1] instanceof String && args[2] instanceof String) {
                 // Already handled by the more-specific stub above — this
                 // catch-all should not fire for the 3-arg String/String form.
@@ -184,10 +206,15 @@ abstract class RuleHarnessSpec extends Specification {
                 "if a new overload is in production use. See " +
                 "src/test/groovy/support/SubscriptionRecorder.groovy.")
         }
-        appExecutor.timeOfDayIsBetween(_, _, _) >> { args -> stubTimeOfDayResult }
-        appExecutor.timeOfDayIsBetween(_, _, _, _) >> { args -> stubTimeOfDayResult }
-        appExecutor.getSunriseAndSunset(_) >> { args -> stubSunriseSunset }
-        appExecutor.getSunriseAndSunset() >> { stubSunriseSunset }
+        mock.timeOfDayIsBetween(_, _, _) >> { args -> stubTimeOfDayResult }
+        mock.timeOfDayIsBetween(_, _, _, _) >> { args -> stubTimeOfDayResult }
+        mock.getSunriseAndSunset(_) >> { args -> stubSunriseSunset }
+        mock.getSunriseAndSunset() >> { stubSunriseSunset }
+        return mock
+    }
+
+    private void compileSharedScript() {
+        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-rule.groovy'))
         def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
@@ -219,7 +246,7 @@ abstract class RuleHarnessSpec extends Specification {
             // is the only flag that unblocks TestDevice POJOs here.
             Flags.DontValidateSubscriptions
         ])
-        script = sandbox.run(
+        SHARED_SCRIPT = sandbox.run(
             api: appExecutor,
             userSettingValues: settingsMap,
             childAppResolver: { String ns, String name ->
@@ -276,7 +303,13 @@ abstract class RuleHarnessSpec extends Specification {
         // before re-installing the standard hooks below — prevents
         // per-feature stubs (e.g. `script.metaClass.getGlobalVar = { ... }`
         // installed directly in given: blocks) from leaking forward.
+        // Both wipes matter when SHARED_SCRIPT is reused across spec
+        // classes: removeMetaClass(class) clears the class-level
+        // ExpandoMetaClass; script.setMetaClass(null) clears the
+        // per-instance one. See support.HarnessSpec.setup() for the
+        // full rationale.
         GroovySystem.metaClassRegistry.removeMetaClass(script.getClass())
+        script.setMetaClass(null)
         // Re-run per-test wires (metaClass overrides etc.) after clearing
         // state. Called from setup() rather than setupSpec() so subclass
         // overrides can capture the current feature instance's fields.
