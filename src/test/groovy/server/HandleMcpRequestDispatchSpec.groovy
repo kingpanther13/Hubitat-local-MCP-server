@@ -16,7 +16,11 @@ import support.ToolSpecBase
  *   - {@code render(Map)} envelope (status, contentType, data)
  *   - JSON-RPC -32600 branches: empty batch, missing jsonrpc field,
  *     missing method
- *   - JSON-RPC -32601 (method-not-found) and -32603 (response-too-large)
+ *   - JSON-RPC -32601 (method-not-found); -32603 (response-too-large) is now
+ *     superseded for tools/call by the universal fail-soft size guard at
+ *     handleToolsCall (#174) -- tools/call returns a structured
+ *     response_too_large envelope on success, not a JSON-RPC error. The outer
+ *     handleMcpRequest guard remains as a backstop for other RPC methods.
  *   - Notification short-circuit (id-less request → 204 no-content)
  *   - Batch per-item error isolation (a failing item must not poison a
  *     later success)
@@ -484,31 +488,6 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'id was echoed back — contract-locking per §5.1'
         response.id == 5
-    }
-
-    def "oversize tool response is replaced with -32603 Response-too-large"() {
-        given: 'a stubbed tool that returns more than the 124KB cap'
-        // Build a big label that after JSON-encoding + envelope wrapping
-        // blows past the 124000-byte threshold at hubitat-mcp-server.groovy:321.
-        String bigLabel = 'x' * 150_000
-        script.metaClass.getRooms = { ->
-            [[id: 1L, name: bigLabel]]
-        }
-        mcpDriver.pushBody([
-            jsonrpc: '2.0', id: 40, method: 'tools/call',
-            params: [name: 'list_rooms', arguments: [:]]
-        ])
-
-        when:
-        script.handleMcpRequest()
-
-        then: 'response is the -32603 error, not the oversize payload'
-        def response = mcpDriver.parseResponseJson()
-        response.jsonrpc == '2.0'
-        response.id == 40
-        response.error.code == -32603
-        response.error.message.contains('Response too large')
-        response.error.message.contains("exceeds hub's 128KB limit")
     }
 
     def "handleMcpGet returns 405 with the use-POST hint"() {
