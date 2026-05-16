@@ -36,11 +36,21 @@ set -euo pipefail
 SOURCE_FILE="${1:-hubitat-mcp-server.groovy}"
 PRE_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source.groovy"
 CLASS_ID_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_class_id"
+PRE_LEN_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_charlen"
 
 # Pulled from the parent app's definition() block — keep these in sync if
 # the parent ever changes its namespace/name (it shouldn't; HPM tracks it).
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
+
+# How long we wait for the hub-side recompile to finish AFTER cloud
+# returns 504. Cloud's gateway window is ~10s; the hub's actual recompile
+# of a 1.2MB Groovy app on a real Hubitat C-7/C-8 is ~10-25s; we poll
+# get_app_source until totalLength changes from PRE_LEN (proving the
+# write landed) or we time out.
+POST_DEPLOY_VERIFY_SLEEP=20
+POST_DEPLOY_VERIFY_TIMEOUT=90
+POST_DEPLOY_VERIFY_INTERVAL=8
 
 if [ ! -f "$SOURCE_FILE" ]; then
   echo "::error::Source file not found: $SOURCE_FILE"
@@ -104,6 +114,7 @@ printf '%s' "$CLASS_ID" > "$CLASS_ID_FILE"
 
 echo "Snapshotting current class $CLASS_ID source to $PRE_SOURCE_FILE..."
 : > "$PRE_SOURCE_FILE"
+: > "$PRE_LEN_FILE"
 OFFSET=0
 CHUNK_LEN=64000
 while :; do
@@ -126,7 +137,9 @@ while :; do
     exit 1
   fi
   if [ "$OFFSET" -eq 0 ]; then
-    echo "DEBUG first-chunk meta: totalLength=$(echo "$TEXT" | jq -r '.totalLength // null') chunkLength=$(echo "$TEXT" | jq -r '.chunkLength // null') hasMore=$(echo "$TEXT" | jq -r '.hasMore // null')"
+    PRE_LEN=$(echo "$TEXT" | jq -r '.totalLength // 0')
+    echo "DEBUG first-chunk meta: totalLength=$PRE_LEN chunkLength=$(echo "$TEXT" | jq -r '.chunkLength // null') hasMore=$(echo "$TEXT" | jq -r '.hasMore // null')"
+    printf '%s' "$PRE_LEN" > "$PRE_LEN_FILE"
   fi
   # jq -j (join output, no trailing newline) -- chunks must concatenate
   # byte-for-byte; jq -r would inject a separator newline at every 64KB
@@ -162,6 +175,34 @@ jq -nc \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}' \
   > "$DEPLOY_RPC_FILE"
 
+# Poll get_app_source until totalLength differs from a known baseline,
+# proving the write landed even when cloud bailed mid-recompile with a
+# 504. Caller passes the baseline charlen we want to see change away
+# from (PRE_LEN for deploy verification, NEW_LEN-ish for restore).
+verify_source_changed_from() {
+  local baseline="$1"
+  local what="$2"   # "deploy" or "restore" -- for logs
+  local elapsed=0
+  local rpc resp text current_len ok
+  while [ $elapsed -lt $POST_DEPLOY_VERIFY_TIMEOUT ]; do
+    rpc=$(jq -nc --arg id "$CLASS_ID" \
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"get_app_source",arguments:{appId:$id,offset:0,length:1}}}')
+    resp=$(mcp_call "$rpc")
+    text=$(echo "$resp" | jq -r '.result.content[0].text // empty')
+    ok=$(echo "$text" | jq -r '.success // false')
+    current_len=$(echo "$text" | jq -r '.totalLength // 0')
+    if [ "$ok" = "true" ] && [ -n "$current_len" ] && [ "$current_len" != "$baseline" ] && [ "$current_len" != "0" ]; then
+      echo "$what verified: hub source totalLength=$current_len differs from baseline=$baseline."
+      return 0
+    fi
+    echo "Polling ($what)... current totalLength=$current_len, baseline=$baseline, elapsed=${elapsed}s/${POST_DEPLOY_VERIFY_TIMEOUT}s"
+    sleep $POST_DEPLOY_VERIFY_INTERVAL
+    elapsed=$((elapsed + POST_DEPLOY_VERIFY_INTERVAL))
+  done
+  echo "::error::$what verification timed out after ${POST_DEPLOY_VERIFY_TIMEOUT}s; hub totalLength still $current_len (baseline was $baseline)"
+  return 1
+}
+
 DEPLOY_RESP_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_resp.txt"
 mcp_call_stdin < "$DEPLOY_RPC_FILE" > "$DEPLOY_RESP_FILE" || true
 rm -f "$DEPLOY_RPC_FILE"
@@ -171,33 +212,42 @@ HTTP_CODE=$(tail -n1 "$DEPLOY_RESP_FILE")
 # Strip the last line (status) to leave just the body.
 DEPLOY_BODY=$(head -c -$((${#HTTP_CODE} + 1)) "$DEPLOY_RESP_FILE")
 echo "Hub responded HTTP $HTTP_CODE; body length=$(printf '%s' "$DEPLOY_BODY" | wc -c)"
-
-if [ "$HTTP_CODE" != "200" ]; then
-  echo "::error::update_app_code got HTTP $HTTP_CODE"
-  echo "Body head: $(printf '%s' "$DEPLOY_BODY" | head -c 1000)"
-  rm -f "$DEPLOY_RESP_FILE"
-  exit 1
-fi
-
-# Try MCP-envelope parse. If parse fails, the hub returned 200 with a
-# non-JSON body (HTML error page, plain-text, etc.) -- log it raw so we
-# can see what came back.
-DEPLOY_TEXT=$(printf '%s' "$DEPLOY_BODY" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
-if [ -z "$DEPLOY_TEXT" ]; then
-  echo "::error::update_app_code returned 200 but body was not parseable MCP JSON"
-  echo "Body head (first 1500 bytes):"
-  printf '%s' "$DEPLOY_BODY" | head -c 1500
-  rm -f "$DEPLOY_RESP_FILE"
-  exit 1
-fi
 rm -f "$DEPLOY_RESP_FILE"
 
-DEPLOY_OK=$(echo "$DEPLOY_TEXT" | jq -r '.success // false')
-if [ "$DEPLOY_OK" != "true" ]; then
-  echo "::error::update_app_code failed: $(echo "$DEPLOY_TEXT" | jq -r '.error // .message // empty')"
-  echo "Tool response: $DEPLOY_TEXT" | head -c 2000
+if [ "$HTTP_CODE" = "200" ]; then
+  # Happy path: parse the MCP envelope and accept the hub's own success report.
+  DEPLOY_TEXT=$(printf '%s' "$DEPLOY_BODY" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+  if [ -z "$DEPLOY_TEXT" ]; then
+    echo "::error::update_app_code returned 200 but body was not parseable MCP JSON"
+    echo "Body head (first 1500 bytes):"
+    printf '%s' "$DEPLOY_BODY" | head -c 1500
+    exit 1
+  fi
+  DEPLOY_OK=$(echo "$DEPLOY_TEXT" | jq -r '.success // false')
+  if [ "$DEPLOY_OK" != "true" ]; then
+    echo "::error::update_app_code failed: $(echo "$DEPLOY_TEXT" | jq -r '.error // .message // empty')"
+    echo "Tool response: $DEPLOY_TEXT" | head -c 2000
+    exit 1
+  fi
+  echo "Deploy succeeded (200/JSON). PR source ($NEW_BYTES bytes) is now live on the hub at class $CLASS_ID."
+elif [ "$HTTP_CODE" = "504" ] || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "503" ]; then
+  # Cloud gateway gave up waiting (the hub-side recompile of a ~1.2MB
+  # Groovy app takes longer than cloud's ~10s response budget). The hub
+  # usually keeps working and completes the save -- verify by polling
+  # get_app_source totalLength until it changes from the pre-deploy
+  # snapshot.
+  echo "::notice::Hub returned HTTP $HTTP_CODE (cloud gateway timeout). Sleeping ${POST_DEPLOY_VERIFY_SLEEP}s for the hub-side recompile, then polling get_app_source to verify..."
+  sleep $POST_DEPLOY_VERIFY_SLEEP
+  if verify_source_changed_from "$PRE_LEN" "deploy"; then
+    echo "Deploy verified despite HTTP $HTTP_CODE. PR source is on the hub."
+  else
+    echo "::error::Deploy not verified -- hub source did not converge away from pre-deploy length."
+    exit 1
+  fi
+else
+  echo "::error::update_app_code got unexpected HTTP $HTTP_CODE"
+  echo "Body head: $(printf '%s' "$DEPLOY_BODY" | head -c 1000)"
   exit 1
 fi
 
-echo "Deploy succeeded. PR source ($NEW_BYTES bytes) is now live on the hub at class $CLASS_ID."
 echo "Pre-image preserved at $PRE_SOURCE_FILE for cleanup-time restore."
