@@ -7383,8 +7383,10 @@ def toolListFiles(args = null) {
         // Shape-drift diagnostic: a non-empty parsed response that yielded zero files
         // is almost always a firmware shape change (new top-level key, files nested
         // deeper, etc.). Surface so a "no files" report isn't silently misread.
+        // instanceof-based labelling because .class is unreliable in the sandbox.
         if (fileList.isEmpty() && parsed) {
-            def shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" : parsed.class.simpleName
+            def shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" :
+                            (parsed instanceof List) ? "empty List" : "non-map non-list"
             mcpLog("warn", "file-manager", "list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
@@ -12666,10 +12668,14 @@ def toolGetDeviceInUseBy(args) {
         // Defensive shape check: if firmware drifts and appsUsing arrives as a Map
         // (or anything other than List), the collect{} below would produce all-null
         // entries silently. Surface that loud rather than letting the paginator
-        // hand the LLM a bag of nulls.
+        // hand the LLM a bag of nulls. instanceof-based shape labelling because the
+        // Hubitat sandbox returns null for .class on parsed-Map values.
         if (parsed?.appsUsing != null && !(parsed.appsUsing instanceof List)) {
-            mcpLog("warn", "installed-apps", "get_device_in_use_by: appsUsing is ${parsed.appsUsing.class.simpleName} not List for device ${deviceId} -- treating as empty")
-            return [success: false, deviceId: deviceId, error: "Firmware returned unexpected appsUsing shape: ${parsed.appsUsing.class.simpleName}", note: "Hub firmware may have changed the /device/fullJson endpoint contract."]
+            String shape = (parsed.appsUsing instanceof Map) ? "Map" :
+                           (parsed.appsUsing instanceof String) ? "String" :
+                           (parsed.appsUsing instanceof Number) ? "Number" : "non-list"
+            mcpLog("warn", "installed-apps", "get_device_in_use_by: appsUsing is ${shape} not List for device ${deviceId} -- treating as empty")
+            return [success: false, deviceId: deviceId, error: "Firmware returned unexpected appsUsing shape: ${shape}", note: "Hub firmware may have changed the /device/fullJson endpoint contract."]
         }
         def appsUsing = parsed?.appsUsing ?: []
         def count
