@@ -1,24 +1,37 @@
 #!/usr/bin/env bash
 # Push the pre-deploy parent-app source snapshot back to the test hub so
 # the hub is returned to whatever was live before this run mutated it.
-# Tolerant of a missing pre-source file (early-exit no-op) so it can live
-# in an `if: always()` workflow step alongside the env restore + lease
-# release.
+# Reads the Apps Code class ID that mcp_deploy_source.sh resolved (the
+# installed-instance ID from MCP_URL is NOT the same as the source-class
+# ID; they live in separate Hubitat namespaces) from the sibling file
+# alongside the snapshot. Tolerant of a missing pre-source file (early-
+# exit no-op) so it can live in an `if: always()` workflow step alongside
+# the env restore + lease release.
 #
 # Usage:  mcp_restore_source.sh
 # Env:    MCP_URL              -- full cloud OAuth URL with access_token
-#         HUBITAT_APP_ID       -- parent-app numeric ID
 #         RUNNER_TEMP          -- GHA-provided temp dir; falls back to /tmp
 
 set -euo pipefail
 
 : "${MCP_URL:?MCP_URL env var required (full cloud OAuth URL with access_token)}"
-: "${HUBITAT_APP_ID:?HUBITAT_APP_ID env var required (parent-app numeric ID)}"
 
 PRE_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source.groovy"
+CLASS_ID_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_class_id"
 
 if [ ! -f "$PRE_SOURCE_FILE" ]; then
   echo "No pre-source snapshot at $PRE_SOURCE_FILE -- deploy step likely failed before capture. Skipping restore."
+  exit 0
+fi
+
+if [ ! -f "$CLASS_ID_FILE" ]; then
+  echo "::warning::No class-ID sidecar at $CLASS_ID_FILE -- can't target the right Apps Code entry. Skipping restore."
+  exit 0
+fi
+
+CLASS_ID=$(cat "$CLASS_ID_FILE")
+if [ -z "$CLASS_ID" ]; then
+  echo "::warning::Class-ID sidecar is empty. Skipping restore."
   exit 0
 fi
 
@@ -28,16 +41,19 @@ if [ "$PRE_BYTES" -lt 1000 ]; then
   exit 0
 fi
 
-echo "Restoring app $HUBITAT_APP_ID source from snapshot ($PRE_BYTES bytes)..."
+echo "Restoring class $CLASS_ID source from snapshot ($PRE_BYTES bytes)..."
 
-RESTORE_RPC=$(jq -nc \
-  --arg id "$HUBITAT_APP_ID" \
+RESTORE_RPC_FILE="${RUNNER_TEMP:-/tmp}/mcp_restore_rpc.json"
+jq -nc \
+  --arg id "$CLASS_ID" \
   --rawfile src "$PRE_SOURCE_FILE" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}')
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}' \
+  > "$RESTORE_RPC_FILE"
 
 RESTORE_RESP=$(curl -sS --max-time 120 -X POST "$MCP_URL" \
   -H "Content-Type: application/json" \
-  -d "$RESTORE_RPC")
+  --data-binary "@$RESTORE_RPC_FILE")
+rm -f "$RESTORE_RPC_FILE"
 
 RESTORE_TEXT=$(echo "$RESTORE_RESP" | jq -r '.result.content[0].text // empty')
 
@@ -58,4 +74,4 @@ if [ "$RESTORE_OK" != "true" ]; then
   exit 0
 fi
 
-echo "Restore succeeded. Hub source returned to pre-run state."
+echo "Restore succeeded. Hub class $CLASS_ID source returned to pre-run state."

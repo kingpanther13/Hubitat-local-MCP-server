@@ -9,7 +9,12 @@
 #
 # Usage:  mcp_deploy_source.sh [path/to/hubitat-mcp-server.groovy]
 # Env:    MCP_URL              -- full cloud OAuth URL with access_token
-#         HUBITAT_APP_ID       -- parent-app ID parsed from MCP_URL
+#         HUBITAT_APP_ID       -- installed-instance ID parsed from MCP_URL.
+#                                 NOT used for source operations -- the
+#                                 source-bearing Apps Code entry lives at a
+#                                 different ID in a separate namespace, so
+#                                 we look it up via list_hub_apps + match by
+#                                 (namespace, name) from definition().
 #         RUNNER_TEMP          -- GHA-provided temp dir; falls back to /tmp
 #
 # Preconditions enforced by update_app_code in the hub:
@@ -19,47 +24,90 @@
 #     gateway timeouts are tolerated since the gate counts the cached
 #     state.lastBackupTimestamp written by any previous successful
 #     run, and CI runs keep that window populated)
+#
+# Large payloads (~1.2MB of Groovy) are streamed via stdin with
+# `--data-binary @-` so we never push the RPC envelope through a
+# command-line argument and hit Linux ARG_MAX.
 
 set -euo pipefail
 
 : "${MCP_URL:?MCP_URL env var required (full cloud OAuth URL with access_token)}"
-: "${HUBITAT_APP_ID:?HUBITAT_APP_ID env var required (parent-app numeric ID)}"
 
 SOURCE_FILE="${1:-hubitat-mcp-server.groovy}"
 PRE_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source.groovy"
+CLASS_ID_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_class_id"
+
+# Pulled from the parent app's definition() block — keep these in sync if
+# the parent ever changes its namespace/name (it shouldn't; HPM tracks it).
+APP_NAMESPACE="mcp"
+APP_NAME="MCP Rule Server"
 
 if [ ! -f "$SOURCE_FILE" ]; then
   echo "::error::Source file not found: $SOURCE_FILE"
   exit 1
 fi
 
+# Two-arg call for small/in-process payloads; large payloads (the source
+# blob in update_app_code) pipe stdin via mcp_call_stdin to dodge ARG_MAX.
 mcp_call() {
-  # --max-time 120 -- update_app_code uploads ~1.2MB of Groovy and
-  # the hub recompiles inline; 30s (the read/write default elsewhere
-  # in CI) is too tight for the round-trip.
   curl -sS --max-time 120 -X POST "$MCP_URL" \
     -H "Content-Type: application/json" \
-    -d "$1"
+    --data-binary "$1"
+}
+
+mcp_call_stdin() {
+  # Caller pipes the RPC body to stdin. --data-binary @- streams the body
+  # without shell-arg or newline mangling.
+  curl -sS --max-time 120 -X POST "$MCP_URL" \
+    -H "Content-Type: application/json" \
+    --data-binary @-
 }
 
 echo "Triggering hub backup (best-effort; tolerated if it 504s -- the <24h gate is timestamp-cached)..."
 BACKUP_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_hub_backup","arguments":{"confirm":true}}}'
-mcp_call "$BACKUP_RPC" >/dev/null 2>&1 || \
+# `>/dev/null` (not `2>&1`) so genuine curl errors -- DNS, connection refused,
+# TLS handshake -- stay visible in the log even though the response body is
+# discarded.
+mcp_call "$BACKUP_RPC" >/dev/null || \
   echo "::warning::create_hub_backup call failed/timed out; relying on cached <24h backup timestamp"
 
-echo "Snapshotting current app $HUBITAT_APP_ID source to $PRE_SOURCE_FILE..."
+echo "Looking up Apps Code class ID for $APP_NAMESPACE:$APP_NAME via list_hub_apps..."
+LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_hub_apps","arguments":{}}}'
+LIST_RESP=$(mcp_call "$LIST_RPC")
+LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
+if [ -z "$LIST_TEXT" ]; then
+  echo "::error::list_hub_apps returned empty MCP content (resp head: $(echo "$LIST_RESP" | head -c 500))"
+  exit 1
+fi
+
+# /hub2/userAppTypes returns an array of {id, name, namespace, ...}. Match
+# both namespace AND name so we don't grab a fork that happens to reuse
+# either field. `select(...)` returns nothing on miss -- guard against that.
+CLASS_ID=$(echo "$LIST_TEXT" | jq -r \
+  --arg ns "$APP_NAMESPACE" \
+  --arg name "$APP_NAME" \
+  '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+
+if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
+  echo "::error::Apps Code class for $APP_NAMESPACE:$APP_NAME not found via list_hub_apps."
+  echo "DEBUG list_hub_apps envelope keys: $(echo "$LIST_TEXT" | jq -r 'keys | join(",")')"
+  echo "DEBUG first 5 entries: $(echo "$LIST_TEXT" | jq -c '.apps[0:5] // []')"
+  exit 1
+fi
+
+echo "Resolved class ID: $CLASS_ID (saving to $CLASS_ID_FILE for restore step)"
+printf '%s' "$CLASS_ID" > "$CLASS_ID_FILE"
+
+echo "Snapshotting current class $CLASS_ID source to $PRE_SOURCE_FILE..."
 : > "$PRE_SOURCE_FILE"
 OFFSET=0
 CHUNK_LEN=64000
 while :; do
   RPC=$(jq -nc \
-    --arg id "$HUBITAT_APP_ID" \
+    --arg id "$CLASS_ID" \
     --argjson off "$OFFSET" \
     --argjson len "$CHUNK_LEN" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"get_app_source",arguments:{appId:$id,offset:$off,length:$len}}}')
-  if [ "$OFFSET" -eq 0 ]; then
-    echo "DEBUG first-chunk request: $RPC"
-  fi
   RESP=$(mcp_call "$RPC")
   TEXT=$(echo "$RESP" | jq -r '.result.content[0].text // empty')
   if [ -z "$TEXT" ]; then
@@ -73,12 +121,8 @@ while :; do
     rm -f "$PRE_SOURCE_FILE"
     exit 1
   fi
-  # Debug: log shape on the first iteration so we can diagnose unexpected
-  # response envelopes (e.g. after #174's response-size guard rollout).
   if [ "$OFFSET" -eq 0 ]; then
-    echo "DEBUG first-chunk envelope keys: $(echo "$TEXT" | jq -r 'keys | join(",")')"
-    echo "DEBUG first-chunk meta: success=$(echo "$TEXT" | jq -r '.success // null') totalLength=$(echo "$TEXT" | jq -r '.totalLength // null') chunkLength=$(echo "$TEXT" | jq -r '.chunkLength // null') hasMore=$(echo "$TEXT" | jq -r '.hasMore // null') sourceLen=$(echo "$TEXT" | jq -r '.source // "" | length')"
-    echo "DEBUG first-chunk full text head: $(echo "$TEXT" | head -c 600)"
+    echo "DEBUG first-chunk meta: totalLength=$(echo "$TEXT" | jq -r '.totalLength // null') chunkLength=$(echo "$TEXT" | jq -r '.chunkLength // null') hasMore=$(echo "$TEXT" | jq -r '.hasMore // null')"
   fi
   # jq -j (join output, no trailing newline) -- chunks must concatenate
   # byte-for-byte; jq -r would inject a separator newline at every 64KB
@@ -97,19 +141,26 @@ echo "Snapshotted $PRE_BYTES bytes."
 
 if [ "$PRE_BYTES" -lt 1000 ]; then
   echo "::error::Pre-deploy snapshot is suspiciously small ($PRE_BYTES bytes); refusing to deploy"
-  rm -f "$PRE_SOURCE_FILE"
+  rm -f "$PRE_SOURCE_FILE" "$CLASS_ID_FILE"
   exit 1
 fi
 
 NEW_BYTES=$(wc -c < "$SOURCE_FILE")
-echo "Pushing $SOURCE_FILE ($NEW_BYTES bytes) to app $HUBITAT_APP_ID..."
+echo "Pushing $SOURCE_FILE ($NEW_BYTES bytes) to class $CLASS_ID..."
 
-DEPLOY_RPC=$(jq -nc \
-  --arg id "$HUBITAT_APP_ID" \
+# Build the RPC envelope as a file (jq --rawfile handles JSON-escaping the
+# 1.2MB source), then pipe to curl via stdin so we never put the body on
+# the command line. Same dodge for the restore script.
+DEPLOY_RPC_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_rpc.json"
+jq -nc \
+  --arg id "$CLASS_ID" \
   --rawfile src "$SOURCE_FILE" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}')
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}' \
+  > "$DEPLOY_RPC_FILE"
 
-DEPLOY_RESP=$(mcp_call "$DEPLOY_RPC")
+DEPLOY_RESP=$(mcp_call_stdin < "$DEPLOY_RPC_FILE")
+rm -f "$DEPLOY_RPC_FILE"
+
 DEPLOY_TEXT=$(echo "$DEPLOY_RESP" | jq -r '.result.content[0].text // empty')
 
 if [ -z "$DEPLOY_TEXT" ]; then
@@ -125,5 +176,5 @@ if [ "$DEPLOY_OK" != "true" ]; then
   exit 1
 fi
 
-echo "Deploy succeeded. PR source ($NEW_BYTES bytes) is now live on the hub."
+echo "Deploy succeeded. PR source ($NEW_BYTES bytes) is now live on the hub at class $CLASS_ID."
 echo "Pre-image preserved at $PRE_SOURCE_FILE for cleanup-time restore."
