@@ -54,9 +54,13 @@ class RmNormalizeAtTimeSpec extends ToolSpecBase {
     }
 
     def cleanupSpec() {
-        // Belt-and-suspenders: reset to UTC after all features in this spec
-        // so a spec-level failure that skips a test's cleanup: block cannot
-        // leak a non-UTC timezone into unrelated specs loaded in the same JVM.
+        // Reset to UTC so a spec-level failure that skips a test's
+        // cleanup: block doesn't leave the shared TestLocation instance
+        // in a stale state for any in-spec retry. Cross-spec leakage
+        // isn't a concern under the per-JVM-cache harness — the next
+        // spec class builds its own Mock and its own getLocation()
+        // stub returning a different sharedLocation — but this reset
+        // keeps the spec-local invariant pristine.
         sharedLocation.timeZone = TimeZone.getTimeZone("UTC")
     }
 
