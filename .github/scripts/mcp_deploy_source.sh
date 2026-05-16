@@ -57,9 +57,13 @@ mcp_call() {
 
 mcp_call_stdin() {
   # Caller pipes the RPC body to stdin. --data-binary @- streams the body
-  # without shell-arg or newline mangling.
+  # without shell-arg or newline mangling. -w '\n%{http_code}' appends the
+  # HTTP status code on a new line so callers can distinguish "hub returned
+  # 200 with non-JSON body" from "hub returned 504/413/etc." -- both fail
+  # the JSON parse but for very different reasons.
   curl -sS --max-time 120 -X POST "$MCP_URL" \
     -H "Content-Type: application/json" \
+    -w '\n%{http_code}' \
     --data-binary @-
 }
 
@@ -158,16 +162,35 @@ jq -nc \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}' \
   > "$DEPLOY_RPC_FILE"
 
-DEPLOY_RESP=$(mcp_call_stdin < "$DEPLOY_RPC_FILE")
+DEPLOY_RESP_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_resp.txt"
+mcp_call_stdin < "$DEPLOY_RPC_FILE" > "$DEPLOY_RESP_FILE" || true
 rm -f "$DEPLOY_RPC_FILE"
 
-DEPLOY_TEXT=$(echo "$DEPLOY_RESP" | jq -r '.result.content[0].text // empty')
+# Body and HTTP status are separated by the trailing `\n<code>` from curl -w.
+HTTP_CODE=$(tail -n1 "$DEPLOY_RESP_FILE")
+# Strip the last line (status) to leave just the body.
+DEPLOY_BODY=$(head -c -$((${#HTTP_CODE} + 1)) "$DEPLOY_RESP_FILE")
+echo "Hub responded HTTP $HTTP_CODE; body length=$(printf '%s' "$DEPLOY_BODY" | wc -c)"
 
-if [ -z "$DEPLOY_TEXT" ]; then
-  echo "::error::update_app_code returned empty MCP content"
-  echo "Full response head: $(echo "$DEPLOY_RESP" | head -c 1000)"
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "::error::update_app_code got HTTP $HTTP_CODE"
+  echo "Body head: $(printf '%s' "$DEPLOY_BODY" | head -c 1000)"
+  rm -f "$DEPLOY_RESP_FILE"
   exit 1
 fi
+
+# Try MCP-envelope parse. If parse fails, the hub returned 200 with a
+# non-JSON body (HTML error page, plain-text, etc.) -- log it raw so we
+# can see what came back.
+DEPLOY_TEXT=$(printf '%s' "$DEPLOY_BODY" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+if [ -z "$DEPLOY_TEXT" ]; then
+  echo "::error::update_app_code returned 200 but body was not parseable MCP JSON"
+  echo "Body head (first 1500 bytes):"
+  printf '%s' "$DEPLOY_BODY" | head -c 1500
+  rm -f "$DEPLOY_RESP_FILE"
+  exit 1
+fi
+rm -f "$DEPLOY_RESP_FILE"
 
 DEPLOY_OK=$(echo "$DEPLOY_TEXT" | jq -r '.success // false')
 if [ "$DEPLOY_OK" != "true" ]; then

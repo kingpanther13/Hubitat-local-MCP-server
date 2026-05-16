@@ -50,20 +50,33 @@ jq -nc \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}' \
   > "$RESTORE_RPC_FILE"
 
-RESTORE_RESP=$(curl -sS --max-time 120 -X POST "$MCP_URL" \
+RESTORE_RESP_FILE="${RUNNER_TEMP:-/tmp}/mcp_restore_resp.txt"
+curl -sS --max-time 120 -X POST "$MCP_URL" \
   -H "Content-Type: application/json" \
-  --data-binary "@$RESTORE_RPC_FILE")
+  -w '\n%{http_code}' \
+  --data-binary "@$RESTORE_RPC_FILE" > "$RESTORE_RESP_FILE" || true
 rm -f "$RESTORE_RPC_FILE"
 
-RESTORE_TEXT=$(echo "$RESTORE_RESP" | jq -r '.result.content[0].text // empty')
+HTTP_CODE=$(tail -n1 "$RESTORE_RESP_FILE")
+RESTORE_BODY=$(head -c -$((${#HTTP_CODE} + 1)) "$RESTORE_RESP_FILE")
+echo "Hub responded HTTP $HTTP_CODE; body length=$(printf '%s' "$RESTORE_BODY" | wc -c)"
+
+# Restore is in `if: always()` -- a failure here must not abort the
+# remaining cleanup (lease release, env restore), so all error paths
+# fall through with a warning and exit 0.
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "::warning::Restore got HTTP $HTTP_CODE -- hub source NOT returned to pre-run state"
+  echo "Body head: $(printf '%s' "$RESTORE_BODY" | head -c 800)"
+  rm -f "$RESTORE_RESP_FILE"
+  exit 0
+fi
+
+RESTORE_TEXT=$(printf '%s' "$RESTORE_BODY" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+rm -f "$RESTORE_RESP_FILE"
 
 if [ -z "$RESTORE_TEXT" ]; then
-  # `if: always()` step -- log loudly but don't fail the workflow on
-  # restore failure, since lease release and env restore still need to run.
-  # Maintainer will see the warning in the run summary and can manually
-  # redeploy from .github/scripts/mcp_deploy_source.sh against main.
-  echo "::warning::Restore failed: update_app_code returned empty MCP content"
-  echo "Full response head: $(echo "$RESTORE_RESP" | head -c 1000)"
+  echo "::warning::Restore got 200 but body was not parseable MCP JSON -- hub source NOT returned to pre-run state"
+  echo "Body head: $(printf '%s' "$RESTORE_BODY" | head -c 800)"
   exit 0
 fi
 
