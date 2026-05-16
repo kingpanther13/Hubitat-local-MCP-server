@@ -3330,6 +3330,40 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         uploads == ['mcp-backup-app-50.groovy']
     }
 
+    @spock.lang.Unroll
+    def "update_app_code via dispatch surfaces expectedVersion conflict inside result.content text (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 50, "source": "current source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def postCount = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postCount++
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'stale', expectedVersion: 42, confirm: true])
+
+        then: 'no hub-update POST happens; conflict is a non-error successful tool response, not a JSON-RPC error'
+        postCount == 0
+        response.error == null
+        !response.result.isError
+
+        and: 'inner payload carries the conflict triple'
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.conflict == true
+        inner.expectedVersion == 42
+        inner.currentVersion == 50
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "update_app_code coerces a string expectedVersion to integer and detects mismatch (inequality-proves-coercion)"() {
         given:
         enableHubAdminWrite()
@@ -3723,6 +3757,25 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'audit log records the blocked attempt'
         warnLogs.any { it.contains('BLOCKED') && it.contains('id=1') }
+    }
+
+    @spock.lang.Unroll
+    def "update_app_code via dispatch returns -32602 envelope on self-update with Developer Mode off (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        settingsMap.enableDeveloperMode = false
+
+        when:
+        def response = mcpDriver.callTool('update_app_code', [appId: '1', source: 'self-overwrite', confirm: true])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('self-update')
+        response.error.message.contains('Developer Mode')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "update_app_code allows self-update on the MCP server's own appId when Developer Mode is ON and audit-logs it"() {

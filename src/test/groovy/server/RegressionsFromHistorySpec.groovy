@@ -169,6 +169,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         response.jsonrpc == '2.0'
         response.id == mcpDriver.lastSentId
         response.error == null
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
 
         and: 'the v0.7.6 one-decimal-in-hours shape survives the dispatch path'
@@ -230,6 +231,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         then:
         positiveResp.jsonrpc == '2.0'
         positiveResp.error == null
+        !positiveResp.result.isError
         def positive = mcpDriver.parseInner(positiveResp)
         positive.logs.size() == 1
         positive.logs[0].message.contains('Thermostat')
@@ -239,6 +241,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         then:
         negativeResp.error == null
+        !negativeResp.result.isError
         def negative = mcpDriver.parseInner(negativeResp)
         negative.logs.size() == 0
 
@@ -287,6 +290,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         then:
         response.jsonrpc == '2.0'
         response.error == null
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.logs.size() == 2
         inner.logs[0].message == 'Second'
@@ -426,6 +430,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports success with the fresh previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 12
@@ -483,6 +488,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         response.jsonrpc == '2.0'
         response.id == mcpDriver.lastSentId
         response.error == null
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.installedVersion instanceof String
@@ -561,6 +567,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports success with the fallback previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 5
@@ -650,6 +657,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports the fresh previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 9
@@ -728,6 +736,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports success with the fallback previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 7
