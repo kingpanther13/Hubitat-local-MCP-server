@@ -377,8 +377,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // Defends against a future tool whose last expression evaluates to null -- without
         // the explicit null guard, the wire payload becomes text: "null" which looks like
         // a normal tool result to an LLM.
+        // Signature mirrors def toolListRooms(args = null) so the metaClass override
+        // intercepts the dispatch call regardless of whether args is passed.
         given:
-        script.metaClass.toolListRooms = { -> null }
+        script.metaClass.toolListRooms = { Object[] ignored -> null }
         mcpDriver.pushBody([jsonrpc: '2.0', id: 102, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]])
 
         when:
