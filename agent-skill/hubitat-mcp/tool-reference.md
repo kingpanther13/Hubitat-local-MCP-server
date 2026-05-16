@@ -4,6 +4,14 @@ Quick reference for all 103 MCP tools. The server exposes **36 items on `tools/l
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
+## Universal response-size guard + opt-in cursor pagination
+
+Every `tools/call` response is bounded by a 120 KB wire-encoded size guard. Oversized responses come back as a structured `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}` envelope rather than vanishing into a hub `-32603`. The `suggestion` field gives the LLM a specific narrowing hint per tool.
+
+Opt-in cursor pagination is wired into the read-only list-returning tools below. All follow the same shape: omit `cursor` for the full list (backward-compatible), pass `cursor: ""` for the first page, iterate `nextCursor` until absent. Non-numeric / out-of-range cursors reject as `-32602`.
+
+**Tools with cursor:** `list_devices`, `list_installed_apps`, `list_hub_apps`, `list_hub_drivers`, `list_hpm_packages`, `list_rm_rules`, `custom_list_rules`, `list_variables`, `list_captured_states`, `list_item_backups`, `list_files`, `list_virtual_devices`, `list_rooms`, `device_health_check`, `get_device_in_use_by`, `get_hub_logs`, `get_memory_history`, `get_debug_logs`. See [TOOL_GUIDE.md](../../TOOL_GUIDE.md) for per-tool page sizes.
+
 ## Core Tools (23) — Always visible on tools/list
 
 ### Device Tools (6)

@@ -1370,7 +1370,8 @@ Server-side filtering (all applied before pagination): filter for enabled/disabl
                     labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Only devices whose label (or name) contains this string are returned. Applied after filter, before pagination. Empty or omitted = no label filtering."],
                     capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Only devices with this capability are returned. Applied after labelFilter, before pagination. Capability names are camelCase, no spaces -- e.g., 'ColorControl', not 'Color Control'. Example: 'Switch', 'TemperatureMeasurement'. Empty or omitted = no capability filtering. When count=0, response includes capabilityFilterMatchedKnownCapability (bool) to distinguish 'no devices have this capability' from a typo."],
                     format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg and detailed=true -- format='ids' always wins). detailed=true overrides format='summary' and produces detailed-mode output."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap."]
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap."],
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside the existing nextOffset. Existing offset+limit shape still works; use whichever fits the caller."]
                 ]
             ]
         ],
@@ -1458,7 +1459,9 @@ At least one of expectedValue or expectedValues must be provided. If both are pr
             description: "List all MCP automation rules. Returns summary; use custom_get_rule for details. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full rules list. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
             ]
         ],
         [
@@ -1572,7 +1575,12 @@ Verify rule after creation.""",
         [
             name: "list_variables",
             description: "List all hub variables (every type, including ones without connectors) and rule-engine variables. Each hub-variable entry includes type (Number/Decimal/String/Boolean/DateTime), value, and connector linkage (deviceId/attribute) when present.",
-            inputSchema: [type: "object", properties: [:]]
+            inputSchema: [
+                type: "object",
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list (ruleVariables stays in full alongside the page). Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                ]
+            ]
         ],
         [
             name: "get_variable",
@@ -1693,7 +1701,12 @@ Verify rule after creation.""",
         [
             name: "list_captured_states",
             description: "List captured device states. Storage limit configurable (default 20); oldest auto-deleted when full.",
-            inputSchema: [type: "object", properties: [:]]
+            inputSchema: [
+                type: "object",
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
+            ]
         ],
         [
             name: "delete_captured_state",
@@ -1722,7 +1735,8 @@ Verify rule after creation.""",
                     limit: [type: "integer", description: "Max entries to return (default: 50, max: 200)"],
                     level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "Filter by log level (default: all)"],
                     component: [type: "string", description: "Filter by component (e.g., 'server', 'rule')"],
-                    ruleId: [type: "string", description: "Filter by specific rule ID"]
+                    ruleId: [type: "string", description: "Filter by specific rule ID"],
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ]
         ],
@@ -1834,7 +1848,9 @@ Verify rule after creation.""",
             description: "List all installed apps on the hub (not just MCP rules). Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
             ]
         ],
         [
@@ -1842,7 +1858,9 @@ Verify rule after creation.""",
             description: "List all installed drivers on the hub. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
             ]
         ],
         [
@@ -1897,7 +1915,8 @@ Verify rule after creation.""",
                     patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns applied to the log message field only -- use source for app/device-name substring matching. Use with patternMode to control AND/OR logic. Each pattern compiled once. Throws on invalid regex syntax. Compatible with pattern (both apply). Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR -- entry kept if any pattern matches; 'all' = AND -- entry kept only if every pattern matches. Case-insensitive ('ANY' and 'any' both work).", enum: ["any", "all"]],
                     since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d (throws if exceeded -- use ISO-8601 for longer ranges). Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise."],
-                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."]
+                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."],
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Filters + limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ]
         ],
@@ -1946,7 +1965,8 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    limit: [type: "integer", description: "Max entries to return (most recent). Default: 100, 0 for all. Hub may have thousands of entries.", default: 100]
+                    limit: [type: "integer", description: "Max entries to return (most recent). Default: 100, 0 for all. Hub may have thousands of entries.", default: 100],
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Pages within the limit-filtered entries (limit=0 + cursor pages the full ring buffer). Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ]
         ],
@@ -2071,7 +2091,9 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
             description: "List MCP-managed virtual devices (children of this app). Response: {devices: [...], count, message}. Per-device fields: id, name, label, deviceNetworkId, driverNamespace (authoritative for devices created by this tool -- the namespace is persisted at create time; for devices created before this version or by other means it falls back to a best-effort derivation that may report 'hubitat'), driverType (driver type name), typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, currentStates (map of attribute-name to current-value -- note: create uses attributes as a list while list uses currentStates as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map).",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
             ]
         ],
         [
@@ -2100,7 +2122,12 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
         [
             name: "list_rooms",
             description: "List all rooms with IDs, names, and device counts.",
-            inputSchema: [type: "object", properties: [:]]
+            inputSchema: [
+                type: "object",
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                ]
+            ]
         ],
         [
             name: "get_room",
@@ -2430,7 +2457,9 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
             description: "List auto-created source backups from app/driver modifications. Stored in File Manager, max 20 kept.",
             inputSchema: [
                 type: "object",
-                properties: [:],
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ],
                 required: []
             ]
         ],
@@ -2463,7 +2492,9 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
             description: "List files in hub's File Manager. Returns names, sizes, download URLs.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                ]
             ]
         ],
         [
@@ -2533,7 +2564,8 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"]
+                    deviceId: [type: "string", description: "Device ID from list_devices"],
+                    cursor: [type: "string", description: "Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ],
                 required: ["deviceId"]
             ]
@@ -2597,7 +2629,8 @@ Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted by scanning installed apps for type='Hubitat Package Manager'. Pass explicitly to skip the discovery call."]
+                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted by scanning installed apps for type='Hubitat Package Manager'. Pass explicitly to skip the discovery call."],
+                    cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large)."]
                 ]
             ]
         ],
@@ -2640,7 +2673,9 @@ Requires Hub Admin Read. HPM itself must be installed.""",
             description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires Built-in App Tools enabled. See get_tool_guide section=builtin_app_tools for details and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
             ]
         ],
         [
@@ -3222,7 +3257,7 @@ def executeTool(toolName, args) {
     }
     switch (toolName) {
         // Device Tools
-        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields)
+        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor)
         case "get_device": return toolGetDevice(args.deviceId)
         case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
         case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
@@ -3230,7 +3265,7 @@ def executeTool(toolName, args) {
         case "poll_until_attribute": return toolPollUntilAttribute(args)
 
         // Rule Management - now using child apps
-        case "custom_list_rules": return toolListRules()
+        case "custom_list_rules": return toolListRules(args)
         case "custom_get_rule": return toolGetRule(args.ruleId)
         case "custom_create_rule": return toolCreateRule(args)
         case "custom_update_rule": return toolUpdateRule(args.ruleId, args, customEngineMode)
@@ -3242,7 +3277,7 @@ def executeTool(toolName, args) {
         case "get_hub_info": return toolGetHubInfo(args)
         case "get_modes": return toolGetModes()
         case "set_mode": return toolSetMode(args.mode)
-        case "list_variables": return toolListVariables()
+        case "list_variables": return toolListVariables(args)
         case "get_variable": return toolGetVariable(args.name)
         case "set_variable": return toolSetVariable(args.name, args.value)
         case "create_variable": return toolCreateVariable(args)
@@ -3255,7 +3290,7 @@ def executeTool(toolName, args) {
         case "set_hsm": return toolSetHsm(args.mode)
 
         // Captured State Management
-        case "list_captured_states": return toolListCapturedStates()
+        case "list_captured_states": return toolListCapturedStates(args)
         case "delete_captured_state": return toolDeleteCapturedState(args.stateId)
         case "clear_captured_states": return toolClearCapturedStates()
 
@@ -3308,7 +3343,7 @@ def executeTool(toolName, args) {
         case "update_device": return toolUpdateDevice(args)
 
         // Room Management
-        case "list_rooms": return toolListRooms()
+        case "list_rooms": return toolListRooms(args)
         case "get_room": return toolGetRoom(args.room)
         case "create_room": return toolCreateRoom(args)
         case "delete_room": return toolDeleteRoom(args)
@@ -3335,12 +3370,12 @@ def executeTool(toolName, args) {
         case "delete_library": return toolDeleteLibrary(args)
 
         // Item Backup Tools
-        case "list_item_backups": return toolListItemBackups()
+        case "list_item_backups": return toolListItemBackups(args)
         case "get_item_backup": return toolGetItemBackup(args)
         case "restore_item_backup": return toolRestoreItemBackup(args)
 
         // File Manager Tools
-        case "list_files": return toolListFiles()
+        case "list_files": return toolListFiles(args)
         case "read_file": return toolReadFile(args)
         case "write_file": return toolWriteFile(args)
         case "delete_file": return toolDeleteFile(args)
@@ -3417,7 +3452,26 @@ def executeTool(toolName, args) {
 
 // ==================== DEVICE TOOLS ====================
 
-def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null) {
+    // Opt-in cursor pagination decodes onto the same offset/limit mechanics; when
+    // cursor is supplied it overrides offset (page size 50 by default).
+    if (cursor != null) {
+        // Page size is fixed in cursor mode so nextCursor arithmetic is deterministic.
+        // Callers who want a different page size can use the existing offset+limit pair.
+        final int cursorPageSize = 50
+        if (!limit || limit <= 0) limit = cursorPageSize
+        // _parseListCursor needs the post-filter total, which we don't have yet. Defer
+        // strict bounds check to inside the function: parse the cursor as an integer
+        // here so non-numeric values still fail at the API boundary with a clear -32602.
+        int parsedOffset
+        try {
+            parsedOffset = (cursor as String).toInteger()
+        } catch (NumberFormatException ignored) {
+            throw new IllegalArgumentException("cursor must be the opaque string returned by a prior list_devices nextCursor (got: ${cursor})")
+        }
+        if (parsedOffset < 0) throw new IllegalArgumentException("cursor ${cursor} is out of range (must be >= 0)")
+        offset = parsedOffset
+    }
     // Combine selected devices and MCP-managed child devices (virtual devices)
     def allDevices = (selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
@@ -3568,6 +3622,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             result.limit = limit
             result.hasMore = endIndex < totalCount
             if (endIndex < totalCount) result.nextOffset = endIndex
+            // Cursor mode also emits nextCursor (opaque string) alongside nextOffset so a
+            // client iterating cursor sees the same shape used by other paginated tools.
+            if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
         }
         return result
     }
@@ -3669,6 +3726,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         if (endIndex < totalCount) {
             result.nextOffset = endIndex
         }
+        if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
 
     return result
@@ -4124,7 +4182,7 @@ def toolPollUntilAttribute(args) {
 
 // ==================== RULE TOOLS (Child App Based) ====================
 
-def toolListRules() {
+def toolListRules(args = null) {
     def childApps = getChildApps()
     def rules = childApps?.collect { childApp ->
         def ruleData = childApp.getRuleData()
@@ -4143,7 +4201,14 @@ def toolListRules() {
         ]
     }?.findAll { it != null } ?: []
 
-    return [rules: rules, count: rules.size()]
+    def cursor = args?.cursor
+    def paged = _paginateList(rules, cursor, 50, "custom_list_rules")
+    def result = [rules: paged.page, count: paged.page.size()]
+    if (cursor != null) {
+        result.total = rules.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
 }
 
 def toolGetRule(ruleId) {
@@ -4976,7 +5041,7 @@ def toolSetMode(modeName) {
     ]
 }
 
-def toolListVariables() {
+def toolListVariables(args = null) {
     // Modern Hub Variable API (issue #92): getAllGlobalVars() sees every hub
     // variable, not just the connector-exposed subset that the legacy
     // getAllGlobalConnectorVariables() returned. Each entry is shaped like
@@ -5005,11 +5070,21 @@ def toolListVariables() {
         [name: name, value: value, source: "rule_engine"]
     } ?: []
 
-    return [
-        hubVariables: hubVariables,
+    // Cursor paginates the hubVariables list -- the typical "what's defined on the hub"
+    // caller cares about hub vars first; ruleVariables stays in full alongside the page
+    // so paginating callers don't lose visibility into the engine-managed set.
+    def cursor = args?.cursor
+    def paged = _paginateList(hubVariables, cursor, 100, "list_variables")
+    def result = [
+        hubVariables: paged.page,
         ruleVariables: ruleVariables,
         total: hubVariables.size() + ruleVariables.size()
     ]
+    if (cursor != null) {
+        result.totalHubVariables = hubVariables.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
 }
 
 def toolGetVariable(name) {
@@ -5859,16 +5934,22 @@ def toolSetHsm(mode) {
 
 // ==================== CAPTURED STATE TOOLS ====================
 
-def toolListCapturedStates() {
+def toolListCapturedStates(args = null) {
     def states = listCapturedStates()
     def count = states.size()
+    def cursor = args?.cursor
+    def paged = _paginateList(states, cursor, 50, "list_captured_states")
     def result = [
-        capturedStates: states,
-        count: count,
+        capturedStates: paged.page,
+        count: paged.page.size(),
         maxLimit: getMaxCapturedStates()
     ]
+    if (cursor != null) {
+        result.total = count
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
 
-    // Add warnings when approaching or at limit
+    // Add warnings when approaching or at limit (always reported regardless of pagination)
     if (count >= getMaxCapturedStates()) {
         result.warning = "At maximum capacity (${getMaxCapturedStates()}). New captures will delete the oldest entry."
     } else if (count >= getMaxCapturedStates() - 4) {
@@ -6925,7 +7006,7 @@ def backupItemSource(String type, String id) {
  * Metadata is in atomicState.itemBackupManifest; actual source files are in File Manager.
  * Does not require Hub Admin Read/Write — always available.
  */
-def toolListItemBackups() {
+def toolListItemBackups(args = null) {
     def manifest = atomicState.itemBackupManifest ?: [:]
 
     if (manifest.isEmpty()) {
@@ -6965,14 +7046,18 @@ def toolListItemBackups() {
         return base
     }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) } // Newest first
 
-    return [
-        backups: backupList,
+    def cursor = args?.cursor
+    def paged = _paginateList(backupList, cursor, 50, "list_item_backups")
+    def result = [
+        backups: paged.page,
         total: backupList.size(),
         maxBackups: 20,
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
         howToRestore: "Use 'restore_item_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'update_library_code' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
+    if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    return result
 }
 
 /**
@@ -7226,8 +7311,9 @@ def toolRestoreItemBackup(args) {
  * Lists all files in the hub's local File Manager.
  * Uses the hub internal API to query the file list.
  */
-def toolListFiles() {
+def toolListFiles(args = null) {
     mcpLog("debug", "file-manager", "Listing files in File Manager")
+    def cursor = args?.cursor
 
     // Try known File Manager API endpoints (varies by firmware version)
     def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
@@ -7290,11 +7376,14 @@ def toolListFiles() {
         fileList = fileList.sort { a, b -> (a.name <=> b.name) }
 
         mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager (via ${endpointUsed})")
-        return [
-            files: fileList,
+        def pagedFM = _paginateList(fileList, cursor, 100, "list_files")
+        def res = [
+            files: pagedFM.page,
             total: fileList.size(),
             storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
         ]
+        if (cursor != null && pagedFM.nextCursor != null) res.nextCursor = pagedFM.nextCursor
+        return res
     } catch (Exception jsonErr) {
         // Response wasn't JSON — might be HTML File Manager page
         mcpLog("debug", "file-manager", "Response from ${endpointUsed} was not JSON: ${jsonErr.message}")
@@ -7316,12 +7405,15 @@ def toolListFiles() {
         if (fileList) {
             fileList = fileList.sort { a, b -> (a.name <=> b.name) }
             mcpLog("info", "file-manager", "Listed ${fileList.size()} files from File Manager HTML page")
-            return [
-                files: fileList,
+            def pagedHtml = _paginateList(fileList, cursor, 100, "list_files")
+            def res = [
+                files: pagedHtml.page,
                 total: fileList.size(),
                 note: "File list extracted from File Manager HTML page. Sizes not available. Use Hubitat > Settings > File Manager for full details.",
                 storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
             ]
+            if (cursor != null && pagedHtml.nextCursor != null) res.nextCursor = pagedHtml.nextCursor
+            return res
         }
 
         return [
@@ -7671,27 +7763,35 @@ def toolGetDebugLogs(args) {
     def count = Math.min(limit, logs.size())
     logs = logs.drop(Math.max(0, logs.size() - count))
 
-    return [
-        entries: logs.collect { entry ->
-            def result = [
-                timestamp: entry.timestamp,
-                time: formatTimestamp(entry.timestamp),
-                level: entry.level,
-                component: entry.component,
-                message: entry.message
-            ]
-            if (entry.ruleId) result.ruleId = entry.ruleId
-            if (entry.ruleName) result.ruleName = entry.ruleName
-            if (entry.duration) result.durationMs = entry.duration
-            if (entry.stackTrace) result.stackTrace = entry.stackTrace
-            if (entry.details) result.details = entry.details
-            return result
-        },
-        count: logs.size(),
+    def materialized = logs.collect { entry ->
+        def e = [
+            timestamp: entry.timestamp,
+            time: formatTimestamp(entry.timestamp),
+            level: entry.level,
+            component: entry.component,
+            message: entry.message
+        ]
+        if (entry.ruleId) e.ruleId = entry.ruleId
+        if (entry.ruleName) e.ruleName = entry.ruleName
+        if (entry.duration) e.durationMs = entry.duration
+        if (entry.stackTrace) e.stackTrace = entry.stackTrace
+        if (entry.details) e.details = entry.details
+        return e
+    }
+    def cursor = args?.cursor
+    def paged = _paginateList(materialized, cursor, 100, "get_debug_logs")
+    def result = [
+        entries: paged.page,
+        count: paged.page.size(),
         totalStored: state.debugLogs.entries?.size() ?: 0,
         maxEntries: state.debugLogs.config?.maxEntries ?: 100,
         currentLogLevel: getConfiguredLogLevel()
     ]
+    if (cursor != null) {
+        result.total = materialized.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
 }
 
 def toolClearDebugLogs(args) {
@@ -8195,6 +8295,7 @@ def toolGetHubDetails(args) {
 def toolListHubApps(args) {
     requireHubAdminRead()
 
+    def cursor = args?.cursor
     def result = [:]
     try {
         def responseText = hubInternalGet("/hub2/userAppTypes")
@@ -8226,6 +8327,14 @@ def toolListHubApps(args) {
         result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
     }
 
+    if (cursor != null && result.apps instanceof List) {
+        def paged = _paginateList(result.apps, cursor, 50, "list_hub_apps")
+        result.total = result.apps.size()
+        result.apps = paged.page
+        result.count = paged.page.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+
     mcpLog("info", "hub-admin", "Listed hub apps (source: ${result.source})")
     return result
 }
@@ -8233,6 +8342,7 @@ def toolListHubApps(args) {
 def toolListHubDrivers(args) {
     requireHubAdminRead()
 
+    def cursor = args?.cursor
     def result = [:]
     try {
         def responseText = hubInternalGet("/hub2/userDeviceTypes")
@@ -8257,6 +8367,14 @@ def toolListHubDrivers(args) {
         result.count = 0
         result.source = "unavailable"
         result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
+    }
+
+    if (cursor != null && result.drivers instanceof List) {
+        def paged = _paginateList(result.drivers, cursor, 50, "list_hub_drivers")
+        result.total = result.drivers.size()
+        result.drivers = paged.page
+        result.count = paged.page.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
 
     mcpLog("info", "hub-admin", "Listed hub drivers (source: ${result.source})")
@@ -8825,11 +8943,20 @@ def toolGetHubLogs(args) {
     }
 
     // Truncation safety for 128KB cloud limit
-    def result = [logs: logs, count: logs.size(), totalParsed: totalParsed]
-    // Estimate JSON size without serializing: ~120 bytes per log entry overhead
-    def estimatedJsonSize = logs.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
+    def cursor = args?.cursor
+    def fullLogs = logs.toList()
+    def paged = _paginateList(fullLogs, cursor, 100, "get_hub_logs")
+    def result = [logs: paged.page, count: paged.page.size(), totalParsed: totalParsed]
+    if (cursor != null) {
+        result.total = fullLogs.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    // Per-entry truncation is independent of cursor pagination: cursor bounds the entry
+    // count, the per-message take(200) bounds the message body so a single oversized
+    // entry can't push the page past the cap on its own.
+    def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
     if (estimatedJsonSize > 120000) {
-        logs.each { it.message = it.message?.take(200) }
+        paged.page.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
     }
@@ -9280,8 +9407,21 @@ def toolGetMemoryHistory(args) {
         summary.showing = "${entries.size()} of ${allEntries.size()} (most recent)"
     }
 
-    mcpLog("info", "diagnostics", "Memory history retrieved: ${entries.size()} entries (${allEntries.size()} total)")
-    return [entries: entries, summary: summary]
+    // Cursor pagination is an alternative to `limit` for callers who want the FULL
+    // ring buffer for trend analysis but need it in bounded pages. `limit` still trims
+    // the candidate pool first so the two controls compose: paginate within the most
+    // recent N entries by passing both, or paginate the whole buffer by passing
+    // `limit=0`.
+    def cursor = args?.cursor
+    def paged = _paginateList(entries, cursor, 100, "get_memory_history")
+    def result = [entries: paged.page, summary: summary]
+    if (cursor != null) {
+        result.total = entries.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+
+    mcpLog("info", "diagnostics", "Memory history retrieved: ${paged.page.size()} entries (${allEntries.size()} total)")
+    return result
 }
 
 def toolForceGarbageCollection(args) {
@@ -11645,11 +11785,18 @@ def toolListVirtualDevices(args) {
         return info
     }
 
-    return [
-        devices: devices,
-        count: devices.size(),
+    def cursor = args?.cursor
+    def paged = _paginateList(devices, cursor, 50, "list_virtual_devices")
+    def result = [
+        devices: paged.page,
+        count: paged.page.size(),
         message: "Found ${devices.size()} MCP-managed virtual device(s). These are automatically accessible to all MCP device tools."
     ]
+    if (cursor != null) {
+        result.total = devices.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
 }
 
 def toolDeleteVirtualDevice(args) {
@@ -12051,7 +12198,7 @@ def toolUpdateDevice(args) {
 
 // ==================== ROOM MANAGEMENT ====================
 
-def toolListRooms() {
+def toolListRooms(args = null) {
     def rooms = getRooms()
     if (!rooms) {
         return [rooms: [], count: 0, message: "No rooms configured on this hub."]
@@ -12064,7 +12211,14 @@ def toolListRooms() {
             deviceIds: room.deviceIds?.collect { it.toString() } ?: []
         ]
     }.sort { it.name }
-    return [rooms: roomList, count: roomList.size()]
+    def cursor = args?.cursor
+    def paged = _paginateList(roomList, cursor, 100, "list_rooms")
+    def result = [rooms: paged.page, count: paged.page.size()]
+    if (cursor != null) {
+        result.total = roomList.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
 }
 
 def toolGetRoom(String roomIdentifier) {
@@ -12509,24 +12663,32 @@ def toolGetDeviceInUseBy(args) {
             count = appsUsing.size()
         }
 
-        return [
+        def appsUsingList = appsUsing.collect { a ->
+            [
+                id: a?.id,
+                name: a?.name,         // app type name (e.g. "Room Lights", "Rule-5.1")
+                label: a?.label,       // user-visible label, may include HTML decoration
+                trueLabel: a?.trueLabel,  // label stripped of HTML (null if same as label)
+                disabled: a?.disabled == true
+            ]
+        }
+        def cursor = args?.cursor
+        def paged = _paginateList(appsUsingList, cursor, 100, "get_device_in_use_by")
+        def result = [
             deviceId: deviceId,
             // extraBreadcrumb is the canonical UI breadcrumb label; fall back to .name or
             // .label if a future firmware drops that field so callers still get a usable
             // device-name string instead of silent null.
             deviceName: parsed?.extraBreadcrumb ?: parsed?.name ?: parsed?.label,
-            appsUsing: appsUsing.collect { a ->
-                [
-                    id: a?.id,
-                    name: a?.name,         // app type name (e.g. "Room Lights", "Rule-5.1")
-                    label: a?.label,       // user-visible label, may include HTML decoration
-                    trueLabel: a?.trueLabel,  // label stripped of HTML (null if same as label)
-                    disabled: a?.disabled == true
-                ]
-            },
+            appsUsing: paged.page,
             count: count,
             parentApp: parsed?.parentApp
         ]
+        if (cursor != null) {
+            result.total = appsUsingList.size()
+            if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+        }
+        return result
     } catch (Exception e) {
         mcpLog("error", "installed-apps", "get_device_in_use_by failed for device ${deviceId}: ${e.message}")
         return [success: false, error: "Failed: ${e.message}", note: "Verify the device ID is valid and Built-in App Tools is enabled."]
@@ -12825,12 +12987,18 @@ def toolListHpmPackages(args) {
         pkg
     }.findAll { it != null }
 
+    def cursor = args?.cursor
+    def paged = _paginateList(packages, cursor, 25, "list_hpm_packages")
     def result = [
         success   : true,
         hpmAppId  : hpmAppId,
-        count     : packages.size(),
-        packages  : packages
+        count     : paged.page.size(),
+        packages  : paged.page
     ]
+    if (cursor != null) {
+        result.total = packages.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
     if (skippedMalformed) result.skippedMalformed = skippedMalformed
     return result
 }
@@ -13249,12 +13417,20 @@ def toolListRmRules(args) {
         mcpLog("warn", "rm-interop", "list_rm_rules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
     }
 
-    def rules = combined.values().sort { it.label ?: "" }
+    // combined.values() returns a Collection view in some Groovy versions; materialize
+    // as a concrete List via toList() so subList in _paginateList is safe.
+    def rules = combined.values().sort { it.label ?: "" }.toList()
 
+    def cursor = args?.cursor
+    def paged = _paginateList(rules, cursor, 50, "list_rm_rules")
     def result = [
-        rules: rules,
-        count: rules.size()
+        rules: paged.page,
+        count: paged.page.size()
     ]
+    if (cursor != null) {
+        result.total = rules.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
     if (ghostIds) {
         result.ghostsFiltered = ghostIds.sort()
         result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
