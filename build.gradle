@@ -113,7 +113,7 @@ test {
     // enable via `./gradlew test -PharnessStrictMetaClass=true` when chasing
     // a metaClass-leak regression — turns the post-wipe check in
     // HarnessSpec.setup() / RuleHarnessSpec.setup() into a loud failure that
-    // pinpoints the surviving expando entry. See `assertMetaClassClean()`.
+    // pinpoints the surviving expando entry. See `checkMetaClassClean()`.
     if (project.hasProperty('harnessStrictMetaClass')) {
         systemProperty 'harnessStrictMetaClass', project.harnessStrictMetaClass
     }

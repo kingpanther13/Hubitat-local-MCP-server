@@ -151,6 +151,12 @@ abstract class RuleHarnessSpec extends Specification {
                 rebindApi(appExecutor)
             }
         }
+        // Defensive: setup() already nulls parent for every feature, but
+        // resetting here too keeps the JVM-shared script from carrying
+        // the previous spec class's last-test parent across the rebind
+        // boundary. Cheap insurance against future setupSpec() additions
+        // that consult parent before setup() fires.
+        SHARED_SCRIPT?.setParent(null)
         script = SHARED_SCRIPT
     }
 
@@ -161,7 +167,7 @@ abstract class RuleHarnessSpec extends Specification {
             throw new IllegalStateException(
                 "Failed to rebind AppExecutor on cached SHARED_SCRIPT for " +
                 "${this.class.simpleName}. An eighty20results upgrade may have " +
-                "changed HubitatAppScript.api field shape; see RuleHarnessSpec " +
+                "changed HubitatAppScript.api field shape; see support.HarnessSpec " +
                 "for the rebind contract.", t)
         }
     }

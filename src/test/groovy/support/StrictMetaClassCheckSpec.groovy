@@ -21,6 +21,7 @@ class StrictMetaClassCheckSpec extends Specification {
 
     def "strict mode OFF (default) — no throw even with a planted leak"() {
         given:
+        def priorStrict = System.getProperty('harnessStrictMetaClass')
         def fake = new FakeScript()
         fake.metaClass.leaky = { -> 'leak' }
         System.clearProperty('harnessStrictMetaClass')
@@ -30,6 +31,13 @@ class StrictMetaClassCheckSpec extends Specification {
 
         then:
         noExceptionThrown()
+
+        cleanup:
+        // Restore the prior value — without this, if the suite was launched
+        // under -PharnessStrictMetaClass=true AND this spec runs before any
+        // other HarnessSpec subclass, the wipe here silently disables strict
+        // mode for the rest of the run, defeating the feature.
+        if (priorStrict != null) System.setProperty('harnessStrictMetaClass', priorStrict)
     }
 
     def "strict mode ON + no leaks — passes silently"() {
@@ -88,4 +96,34 @@ class StrictMetaClassCheckSpec extends Specification {
         cleanup:
         System.clearProperty('harnessStrictMetaClass')
     }
+
+    def "strict mode ON + HandleMetaClass-wrapped leak (the production-realistic shape) — unwrap loop catches it"() {
+        given: 'install via `metaClass.X = closure` DSL, which Groovy wraps in HandleMetaClass — matches what tests like AppLifecycleMigrationSpec do in given:'
+        def fake = new FakeScript()
+        fake.metaClass.handleWrappedLeak = { -> 'production-shape' }
+        System.setProperty('harnessStrictMetaClass', 'true')
+
+        expect: 'sanity check: the metaClass really IS wrapped, so this test exercises the unwrap path'
+        fake.getMetaClass() instanceof groovy.lang.DelegatingMetaClass
+
+        when:
+        HarnessSpec.checkMetaClassClean(fake, 'StrictMetaClassCheckSpec')
+
+        then: 'the unwrap loop reaches the underlying EMC and the leak is reported'
+        def e = thrown(IllegalStateException)
+        e.message.contains('handleWrappedLeak')
+
+        cleanup:
+        System.clearProperty('harnessStrictMetaClass')
+    }
+
+    // Note: the "non-EMC, non-default custom MetaClass" path in
+    // checkMetaClassClean (the `Unexpected metaClass type` throw) is not
+    // unit-tested here — fabricating a non-MetaClassImpl, non-EMC,
+    // non-DelegatingMetaClass shape requires reimplementing the entire
+    // groovy.lang.MetaClass interface, which is heavy for a single
+    // defensive throw. The behaviour is straightforward enough to be
+    // verified by code review: if a future Groovy / eighty20results
+    // upgrade introduces a custom MetaClass shape, strict mode fails
+    // loud with the offending class name rather than silently passing.
 }

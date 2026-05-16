@@ -307,7 +307,24 @@ abstract class HarnessSpec extends Specification {
         while (mc instanceof groovy.lang.DelegatingMetaClass) {
             mc = mc.getAdaptee()
         }
-        if (!(mc instanceof ExpandoMetaClass)) return
+        // ExpandoMetaClass extends MetaClassImpl, so check EMC first.
+        if (mc instanceof ExpandoMetaClass) {
+            // fall through to expando-entry inspection
+        } else if (mc instanceof groovy.lang.MetaClassImpl) {
+            // Pristine default — no per-instance EMC was ever attached
+            // because nothing did `script.metaClass.X = closure`. Safe.
+            return
+        } else {
+            // Something else entirely — a future Groovy upgrade or an
+            // eighty20results-installed custom MetaClass. We can't
+            // introspect it for leaks, so fail loudly rather than
+            // silently passing (the silent-no-op trap this helper
+            // exists to avoid).
+            throw new IllegalStateException(
+                "Unexpected metaClass type ${mc.getClass().name} after dual wipe in ${specName}.setup(). " +
+                "checkMetaClassClean only knows how to introspect ExpandoMetaClass and the default " +
+                "MetaClassImpl. Extend the helper for the new shape, or strict-mode silently no-ops.")
+        }
         def methods = mc.expandoMethods
         def props = mc.expandoProperties
         if (!methods.isEmpty() || !props.isEmpty()) {

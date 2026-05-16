@@ -13,6 +13,17 @@ package rules
  * orphaned first-spec reference is unreachable. If a future eighty20results
  * change ever bypasses {@code api.getSettings()}, this guard fails when run
  * as a non-first RuleHarnessSpec subclass.
+ *
+ * <p><b>Precondition:</b> the value of this guard is contingent on
+ * RuleHarnessSpec subclasses running in a stable order with this spec
+ * not being the first. Today gradle/Spock order is alphabetical and
+ * deterministic so this works fine ({@code rules.RegressionsFromHistorySpec},
+ * {@code rules.RuleEngineExecutionSpec}, etc. load before
+ * {@code rules.SettingsRoutingGuardSpec}). If a future Gradle or Spock
+ * upgrade reshuffles test ordering, or if matrix execution sharding ever
+ * lands, hoist {@code RuleHarnessSpec.settingsMap} to a JVM-static
+ * {@code SHARED_SETTINGS_MAP} (matching the HarnessSpec pattern) to make
+ * this guard order-independent.
  */
 class SettingsRoutingGuardSpec extends RuleHarnessSpec {
 
