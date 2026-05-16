@@ -462,12 +462,7 @@ class SubscribeTriggerIntegrationSpec extends RuleHarnessSpec {
 
         when: 'condition flips to false before the window elapses — handler cancels the in-flight timer'
         sensor.attributeValues.motion = 'inactive'
-        def triggerBefore = atomicStateMap.triggers[0]
-        println "DEBUG: trigger.deviceId class=${triggerBefore.deviceId.class.name}, value=${triggerBefore.deviceId}"
-        println "DEBUG: sensor.id class=${sensor.id.class.name}, value=${sensor.id}, toString=${sensor.id.toString()}"
-        println "DEBUG: before fire, durationTimers=${atomicStateMap.durationTimers}, triggers=${atomicStateMap.triggers}"
         subscriptions.fireEvent(script, sensor, 'motion', 'inactive')
-        println "DEBUG: after fire, durationTimers=${atomicStateMap.durationTimers}"
 
         then: 'durationTimers cleared (cancel does NOT call unschedule on purpose, see line 2816-2818)'
         atomicStateMap.durationTimers == [:]

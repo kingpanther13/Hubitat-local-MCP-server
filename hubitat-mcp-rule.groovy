@@ -2765,7 +2765,9 @@ def handleDeviceEvent(evt) {
         // Check if this trigger has a duration requirement
         if (matchingTrigger.duration && matchingTrigger.duration > 0) {
             def triggerDeviceKey = matchingTrigger.deviceId ?: (matchingTrigger.deviceIds?.sort()?.join("_") ?: "unknown")
-            def triggerKey = "duration_${triggerDeviceKey}_${matchingTrigger.attribute}"
+            // Coerce to String — atomicState persistence stringifies map keys,
+            // so a GString here would never .equals() the stored key on lookup.
+            String triggerKey = "duration_${triggerDeviceKey}_${matchingTrigger.attribute}".toString()
 
             // Initialize state maps if needed
             if (!atomicState.durationTimers) atomicState.durationTimers = [:]
@@ -2808,7 +2810,8 @@ def handleDeviceEvent(evt) {
 
         triggersForDevice?.each { t ->
             def tDeviceKey = t.deviceId ?: (t.deviceIds?.sort()?.join("_") ?: "unknown")
-            def triggerKey = "duration_${tDeviceKey}_${t.attribute}"
+            // Match the arming-side String key shape — see comment at the arming site.
+            String triggerKey = "duration_${tDeviceKey}_${t.attribute}".toString()
             if (timers.get(triggerKey)) {
                 log.debug "Duration trigger: condition no longer met, canceling timer for ${evt.device.label} ${evt.name}"
                 timers.remove(triggerKey)
