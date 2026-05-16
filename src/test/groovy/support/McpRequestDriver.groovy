@@ -1,6 +1,7 @@
 package support
 
 import groovy.json.JsonSlurper
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Drives {@code handleMcpRequest()} through its in-process request pipeline:
@@ -58,6 +59,14 @@ import groovy.json.JsonSlurper
 class McpRequestDriver {
 
     private static final JsonSlurper SLURPER = new JsonSlurper()
+
+    /** Script the driver invokes through. Bound once by HarnessSpec.compileSharedScript(). */
+    Object boundScript
+
+    private final AtomicInteger idCounter = new AtomicInteger(0)
+
+    /** Last JSON-RPC id callTool generated; tests assert response.id against it. */
+    int lastSentId
 
     /**
      * Backing store for the parsed body the script sees when it reads
@@ -178,31 +187,20 @@ class McpRequestDriver {
         }
     }
 
-    /**
-     * Drive a tool through the production dispatch envelope. Builds a
-     * JSON-RPC tools/call request, fires {@code handleMcpRequest()} via
-     * the supplied script reference, and returns the parsed response.
-     *
-     * Tool specs use this to exercise the full production code path —
-     * JSON-RPC parsing, tools/call dispatch, gateway sub-tool routing
-     * (when useGateways=true), error envelope mapping, and response
-     * wrapping — instead of calling {@code script.toolFoo(args)} directly.
-     */
-    Map callTool(Object script, String toolName, Map args) {
-        def id = idCounter.incrementAndGet()
+    /** Drive a tool through the production handleMcpRequest envelope and return the parsed response. */
+    Map callTool(String toolName, Map args) {
+        lastSentId = idCounter.incrementAndGet()
+        // Default to empty so callers can omit when the tool takes no args.
         def envelope = [
             jsonrpc: '2.0',
-            id: id,
+            id: lastSentId,
             method: 'tools/call',
             params: [name: toolName, arguments: args ?: [:]]
         ]
         pushBody(envelope)
-        script.handleMcpRequest()
+        boundScript.handleMcpRequest()
         return parseResponseJson() as Map
     }
-
-    private final java.util.concurrent.atomic.AtomicInteger idCounter =
-        new java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
      * Stand-in for the hub's {@code request} that the script's

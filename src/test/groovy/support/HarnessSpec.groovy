@@ -240,6 +240,7 @@ abstract class HarnessSpec extends Specification {
             } as Closure,
             validator: validator
         )
+        SHARED_MCP_DRIVER.boundScript = SHARED_SCRIPT
     }
 
     def setup() {

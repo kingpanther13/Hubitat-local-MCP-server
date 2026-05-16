@@ -1,29 +1,24 @@
 package support
 
+import spock.lang.Shared
 import spock.lang.Specification
 
-/**
- * Self-tests for {@link McpRequestDriver}. Keeps harness-level behaviour
- * (pushBody/pushBodyThrowing/captureRender/parseResponseJson lifecycle)
- * pinned independently from the specs that use it — a harness bug that
- * silently ate a render or let throwing state leak across tests would
- * otherwise degrade every dependent spec together and be diagnostically
- * confusing.
- *
- * The pure driver-logic tests (pushBody, captureRender, parseResponseJson, etc.)
- * use a locally created {@code driver} instance and do not load the sandbox.
- * The {@code callTool} integration test uses the harness fixtures ({@code script},
- * {@code mcpDriver}, {@code settingsMap}, {@code hubGet}) inherited from
- * {@link ToolSpecBase} to exercise the full production code path end-to-end.
- */
+/** Self-tests for {@link McpRequestDriver} so harness regressions surface here, not in every dependent spec. */
 class McpRequestDriverSpec extends ToolSpecBase {
 
-    // Local driver instance for the pure driver-logic tests below.
-    // These tests do not touch the harness mcpDriver or script.
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
     McpRequestDriver driver
+
+    def setupSpec() {
+        // get_hub_info reads location.hub; wire a stub so the callTool test
+        // exercises a real success path rather than the tool's outer error wrap.
+        appExecutor.getLocation() >> sharedLocation
+    }
 
     def setup() {
         driver = new McpRequestDriver()
+        sharedLocation.hub = new TestHub()
     }
 
     def "pushBody stores a map under request.JSON for the proxy to return"() {
@@ -143,16 +138,17 @@ class McpRequestDriverSpec extends ToolSpecBase {
     def "callTool builds a JSON-RPC tools/call envelope and returns the parsed response"() {
         given:
         settingsMap.enableHubAdminRead = true
-        hubGet.register('/hub/info') { params -> '{"name":"TestHub"}' }
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> 'TestHub-987654' }
 
         when:
-        def response = mcpDriver.callTool(script, 'get_hub_info', [:])
+        def response = mcpDriver.callTool('get_hub_info', [:])
 
         then:
         response.jsonrpc == '2.0'
-        response.id != null
+        response.id == mcpDriver.lastSentId
         response.result != null
         response.result.content instanceof List
         response.result.content[0].type == 'text'
+        response.result.content[0].text.contains('TestHub-987654')
     }
 }
