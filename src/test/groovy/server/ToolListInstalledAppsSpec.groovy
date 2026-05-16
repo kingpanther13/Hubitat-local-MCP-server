@@ -786,6 +786,42 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('out of range')
     }
 
+    def "cursor='0' on an empty filtered list returns an empty page with no nextCursor (no IOOBE)"() {
+        // Regression guard: a too-loose empty-list check would let cursor>0 through, then
+        // subList(N, 0) would throw IndexOutOfBoundsException with a gibberish message.
+        given:
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }
+
+        when:
+        def result = script.toolListInstalledApps([cursor: '0'])
+
+        then:
+        result.apps == []
+        result.total == 0
+        !result.containsKey('nextCursor')
+    }
+
+    def "cursor='1' on an empty filtered list throws IllegalArgumentException with the friendly out-of-range message"() {
+        // The would-be bug: without the offset>0 clause, the empty-list short-circuit lets
+        // cursor=1 through, then subList(1, 0) throws java.lang.IllegalArgumentException
+        // "fromIndex(1) > toIndex(0)" -- which surfaces to the LLM as "Invalid params:
+        // fromIndex(1) > toIndex(0)" with no clue the real cause was a stale cursor.
+        given:
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }
+
+        when:
+        script.toolListInstalledApps([cursor: '1'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('out of range')
+        ex.message.contains('size=0')
+        // Should NOT be the gibberish JVM message
+        !ex.message.contains('fromIndex')
+    }
+
     def "cursor pagination respects filter (paginates the filtered set, not the raw catalog)"() {
         given:
         settingsMap.enableBuiltinApp = true

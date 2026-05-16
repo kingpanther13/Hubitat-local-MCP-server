@@ -506,11 +506,15 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         page1.staleDevices.size() == 100
         page1.nextCursor == '100'
 
+        and: 'top-level total mirrors list_installed_apps so paginating clients read the same shape across tools'
+        page1.total == 150
+
         when: 'second page (cursor=100)'
         def page2 = script.toolDeviceHealthCheck([staleHours: 24, cursor: '100'])
 
         then: 'remaining 50 stale devices, no nextCursor'
         page2.staleDevices.size() == 50
+        page2.total == 150
         !page2.containsKey('nextCursor')
     }
 
@@ -527,6 +531,45 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then: 'no cursor=null leaks pagination fields'
         result.staleDevices.size() == 1
         result.containsKey('nextCursor') == false
+    }
+
+    def "device_health_check cursor='0' on an empty stale list returns an empty page (no IOOBE)"() {
+        // Selected device exists (so we don't take the "No devices selected" early-return)
+        // but it's healthy -- stale list is therefore empty when cursor is supplied.
+        given:
+        def nowMs = 1234567890000L
+        def fresh = new TestDevice(id: 1, name: 'F', label: 'Fresh')
+        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        settingsMap.selectedDevices = [fresh]
+
+        when:
+        def result = script.toolDeviceHealthCheck([staleHours: 24, cursor: '0'])
+
+        then:
+        result.staleDevices == []
+        result.total == 0
+        !result.containsKey('nextCursor')
+    }
+
+    def "device_health_check cursor='5' on an empty stale list throws IllegalArgumentException with the friendly out-of-range message"() {
+        // Regression guard for the empty-list edge case -- without the offset>0 clause in
+        // _parseListCursor, subList(5, 0) would throw a JVM gibberish IAE that the dispatch
+        // layer surfaces as "Invalid params: fromIndex(5) > toIndex(0)" with no actionable
+        // hint that the real cause is a stale cursor against a now-empty list.
+        given:
+        def nowMs = 1234567890000L
+        def fresh = new TestDevice(id: 1, name: 'F', label: 'Fresh')
+        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        settingsMap.selectedDevices = [fresh]
+
+        when:
+        script.toolDeviceHealthCheck([staleHours: 24, cursor: '5'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('out of range')
+        ex.message.contains('size=0')
+        !ex.message.contains('fromIndex')
     }
 
     def "device_health_check cursor rejects non-numeric values"() {

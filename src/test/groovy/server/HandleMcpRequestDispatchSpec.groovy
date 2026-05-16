@@ -1,5 +1,6 @@
 package server
 
+import support.TestDevice
 import support.ToolSpecBase
 
 /**
@@ -222,15 +223,17 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.tools.size() > 0
     }
 
-    def "tools/call returns response_too_large envelope when serialized result exceeds the 110KB cap (#174)"() {
-        given: 'a tool whose serialized result will exceed the 110KB universal-guard threshold'
-        // Each room serializes to roughly 80-100 bytes once name + deviceCount + deviceIds
-        // overhead is counted; 2000 such rooms with a padded name push the toolListRooms
-        // result well past 110KB so the guard kicks in.
+    def "tools/call returns response_too_large envelope when wire-encoded response exceeds the universal-guard threshold"() {
+        given: 'a tool whose wire-encoded response will exceed the 120KB universal-guard threshold'
+        // 2000 padded rooms ~> >120KB once wire-serialized.
         def padding = 'x' * 80
         def bigRooms = (0..<2000).collect { i ->
             [id: i as Long, name: "Room-${i}-${padding}"]
         }
+        // Defensive: if anyone retunes the threshold or trims the room shape, fail loud
+        // here instead of letting the test silently slide into the pass-through branch.
+        def roomList = bigRooms.collect { [id: it.id?.toString(), name: it.name, deviceCount: 0, deviceIds: []] }
+        assert groovy.json.JsonOutput.toJson([rooms: roomList, count: roomList.size()]).getBytes("UTF-8").length > 120000
         script.metaClass.getRooms = { -> bigRooms }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 100, method: 'tools/call',
@@ -240,22 +243,19 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         when:
         script.handleMcpRequest()
 
-        then: 'JSON-RPC success envelope — fail-soft is NOT a JSON-RPC error'
+        then: 'JSON-RPC success envelope -- fail-soft is not a JSON-RPC error'
         def response = mcpDriver.parseResponseJson()
         response.jsonrpc == '2.0'
         response.id == 100
         response.error == null
 
-        and: 'inner content carries the structured response_too_large envelope (not isError)'
-        // isError is reserved for tool execution failure per the MCP spec; response-too-large
-        // is a soft outcome (the tool ran, the result just doesnt fit), and clients should
-        // be able to react to it programmatically rather than treating it as a hard failure.
+        and: 'inner content carries the structured envelope (no isError -- fail-soft is not a tool error)'
         response.result.isError != true
         def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
         inner.response_too_large == true
         inner.truncated == true
         inner.tool == 'list_rooms'
-        inner.sizeLimitBytes == 110000
+        inner.sizeLimitBytes == 120000
         inner.estimatedBytes instanceof Number
         inner.estimatedBytes > inner.sizeLimitBytes
         inner.suggestion instanceof String
@@ -263,6 +263,95 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'no rooms leak through the envelope (the whole point of fail-soft)'
         inner.rooms == null
+    }
+
+    def "size-guard mcpLog entry carries the warn level + structured details map a debug-log consumer can read"() {
+        given: 'oversize result so the guard fires + debug-log scaffolding wired (mcpLog otherwise no-ops at default log level)'
+        stateMap.debugLogs = [
+            entries: [],
+            config: [logLevel: 'debug', maxEntries: 1000]
+        ]
+        settingsMap.mcpLogLevel = 'debug'
+        def padding = 'x' * 80
+        script.metaClass.getRooms = { -> (0..<2000).collect { i -> [id: i as Long, name: "Room-${i}-${padding}"] } }
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 110, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
+        warn != null
+        warn.level == 'warn'
+        warn.details.tool == 'list_rooms'
+        warn.details.gateway == null  // direct call, not gateway-routed
+        warn.details.bytes > 120000
+        warn.details.limit == 120000
+    }
+
+    def "size guard surfaces the inner sub-tool name + gateway hint when called through a manage_* gateway (#174)"() {
+        given: 'a stubbed sub-tool (get_app_config) that returns a huge config'
+        settingsMap.enableBuiltinApp = true
+        settingsMap.enableHubAdminRead = true
+        // Build a get_app_config response large enough to trip the wire-byte guard once
+        // wrapped + escaped + envelope-encoded.
+        def bigSettings = (0..<3000).collectEntries { i -> ["k${i}".toString(), ("v" * 50)] }
+        script.metaClass.toolGetAppConfig = { Map args -> [success: true, app: [id: 99, label: 'X'], settings: bigSettings] }
+        stateMap.debugLogs = [
+            entries: [],
+            config: [logLevel: 'debug', maxEntries: 1000]
+        ]
+        settingsMap.mcpLogLevel = 'debug'
+        // Gateway-routed call: name=manage_installed_apps, args carries tool+args.
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 200, method: 'tools/call',
+            params: [name: 'manage_installed_apps', arguments: [tool: 'get_app_config', args: [appId: '99', includeSettings: true]]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'envelope reports the SUB-tool, not the gateway, so the LLMs retry hint matches the call it issued'
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.response_too_large == true
+        inner.tool == 'get_app_config'
+        inner.suggestion.contains('includeSettings')
+
+        and: 'debug-log details surface the gateway/sub-tool split for an operator running get_debug_logs'
+        def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
+        warn.details.tool == 'get_app_config'
+        warn.details.gateway == 'manage_installed_apps'
+    }
+
+    def "non-gateway caller passing a stray `tool` arg does NOT route the suggestion to the wrong tool"() {
+        // Defends against the would-be bug where a direct (non-gateway) caller with a
+        // stray args.tool='export_native_app' on list_devices would get an export_native_app
+        // suggestion ("use saveAs=..."), nonsensical for list_devices.
+        given:
+        // Force list_devices to blow the cap by stubbing a giant selected-device list.
+        def padding = 'x' * 80
+        def bigDevices = (0..<2000).collect { i ->
+            def d = new TestDevice(id: i, name: "D${i}", label: "Device-${i}-${padding}")
+            d.metaClass.getLastActivity = { -> null }
+            d
+        }
+        settingsMap.selectedDevices = bigDevices
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 201, method: 'tools/call',
+            params: [name: 'list_devices', arguments: [tool: 'export_native_app']]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def inner = new groovy.json.JsonSlurper().parseText(mcpDriver.parseResponseJson().result.content[0].text)
+        inner.response_too_large == true
+        inner.tool == 'list_devices'                       // NOT export_native_app
+        inner.suggestion.contains('filter')                // list_devices guidance
+        !inner.suggestion.contains('saveAs')               // not export_native_app guidance
     }
 
     def "tools/call passes small results through unchanged (size guard does not perturb normal traffic)"() {
@@ -282,6 +371,70 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
         inner.response_too_large == null
         inner.rooms*.name == ['Den']
+    }
+
+    def "tools/call surfaces a structured isError envelope when the tool implementation returns null"() {
+        // Defends against a future tool whose last expression evaluates to null -- without
+        // the explicit null guard, the wire payload becomes text: "null" which looks like
+        // a normal tool result to an LLM.
+        given:
+        script.metaClass.toolListRooms = { -> null }
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 102, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.isError == true
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.isError == true
+        inner.error.contains('list_rooms')
+        inner.tool == 'list_rooms'
+    }
+
+    def "tools/call surfaces a structured isError envelope when the tool returns a non-JSON-serializable result"() {
+        // A Closure is one of JsonOutput's documented unserializable types; stubbing the
+        // tool to return one verifies the size-guard's serialization-failure branch fires
+        // a structured isError instead of an opaque "Tool error: ..." string.
+        given:
+        script.metaClass.toolListRooms = { -> [bad: { -> "closure" }] }
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 103, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.isError == true
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.isError == true
+        inner.error.contains('cannot encode')
+        inner.cause != null
+    }
+
+    @spock.lang.Unroll
+    def "_responseTooLargeSuggestion returns tool-specific guidance for #toolName"() {
+        expect:
+        def suggestion = script._responseTooLargeSuggestion(toolName)
+        suggestion instanceof String
+        !suggestion.isEmpty()
+        suggestion.toLowerCase().contains(expectedFragment.toLowerCase())
+
+        where:
+        toolName              | expectedFragment
+        'list_devices'        | 'filter'
+        'list_installed_apps' | 'cursor'
+        'get_app_config'      | 'includeSettings'
+        'device_health_check' | 'includeHealthy'
+        'get_memory_history'  | 'limit'
+        'get_hub_logs'        | 'pattern'
+        'export_native_app'   | 'saveAs'
+        'get_hub_info'        | 'subsection'
+        'get_app_source'      | 'File Manager'
+        'unknown_tool_xyz'    | 'narrow your query'
     }
 
     def "tools/call list_rooms flows through render with an MCP content envelope"() {

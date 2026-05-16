@@ -45,8 +45,8 @@ The outer JSON-RPC envelope still reports success (this is not a tool error — 
 
 Opt-in cursor pagination is currently wired into:
 
-- **`list_installed_apps`** — pass `cursor` to page the apps list at 50 per page; default behaviour (no cursor) returns the full filtered list and relies on the size guard as a backstop.
-- **`device_health_check`** — pass `cursor` to page the `staleDevices` array at 100 per page. `unknownDevices` (and `healthyDevices` when `includeHealthy=true`) stay in full alongside the page so the summary call still works in one request.
+- **`list_installed_apps`** — pass `cursor: ""` for the first page (page size 50). Iterate `nextCursor` until absent. Omitting `cursor` entirely returns the full filtered list and relies on the size guard as a backstop — these tools intentionally diverge from the `tools/list` "omit cursor = first page" convention so pre-`cursor` callers see no behaviour change.
+- **`device_health_check`** — pass `cursor: ""` for the first page (page size 100 over `staleDevices`). `unknownDevices` (and `healthyDevices` when `includeHealthy=true`) stay in full alongside the page so the summary call still works in one request. Omitting `cursor` returns all stale devices in a single response (same backward-compat rule as `list_installed_apps`).
 
 Tools without an explicit `cursor` parameter (e.g. `get_app_config`, `export_native_app`, `get_hub_logs`, `get_memory_history`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, smaller `limit`, narrower filters) plus the universal size guard as the backstop.
 

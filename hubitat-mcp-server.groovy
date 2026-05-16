@@ -729,33 +729,60 @@ def handleToolsCall(msg) {
 
     try {
         def result = executeTool(toolName, args)
-        // Universal fail-soft size guard for issue #174. Hub enforces a 128KB cap on
-        // JSON-RPC responses; once the result is serialized + text-escaped + wrapped in
-        // the MCP content envelope + the JSON-RPC envelope, the hub will return -32603
-        // (Internal error) without the catalog/result if we cross that. We threshold the
-        // inner-result JSON below the cap so the post-escape wire size still fits, and
-        // replace oversized results with a structured envelope the LLM can react to
-        // (filter narrower, pass cursor, set includeSettings=false, etc.) rather than
-        // having the call disappear into a hub error. Inlined `final int` because the
-        // Hubitat app-DSL rejects `private static final` at top level -- see
-        // handleToolsList for the same constraint.
-        final int responseSizeLimit = 110000
-        def jsonText = groovy.json.JsonOutput.toJson(result)
-        int bytes = jsonText.getBytes("UTF-8").length
-        if (bytes > responseSizeLimit) {
-            // For gateway-routed calls (manage_*), the inner sub-tool name appears in
-            // args.tool — use it for the suggestion lookup so the LLM gets the specific
-            // recovery hint (filter narrower, drop includeSettings, use saveAs, etc.)
-            // rather than a generic gateway-level message. The reported `tool` field
-            // surfaces the sub-tool when present so the LLM can immediately re-issue
-            // a narrower call without rediscovering which gateway it routed through.
-            String hintTool = (args?.tool instanceof String && args.tool) ? args.tool : toolName
-            mcpLog("warn", "server", "Tool ${hintTool} response too large (${bytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
-                details: [tool: hintTool, gateway: (hintTool != toolName) ? toolName : null, bytes: bytes, limit: responseSizeLimit]
+        // Null result is always an internal tool bug -- surface it as a structured
+        // isError envelope instead of letting JsonOutput render the literal string
+        // "null" into the wire payload (which looks like a normal tool result).
+        if (result == null) {
+            mcpLog("error", "server", "Tool ${toolName} returned null -- internal tool bug", null, [details: [tool: toolName]])
+            return jsonRpcResult(msg.id, [
+                content: [[type: "text", text: groovy.json.JsonOutput.toJson([
+                    isError: true, error: "Tool ${toolName} returned no result", tool: toolName
+                ])]],
+                isError: true
             ])
-            jsonText = groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(hintTool, bytes, responseSizeLimit))
         }
-        return jsonRpcResult(msg.id, [content: [[type: "text", text: jsonText]]])
+        def jsonText
+        try {
+            jsonText = groovy.json.JsonOutput.toJson(result)
+        } catch (Exception serErr) {
+            // Tool returned a value JsonOutput cannot encode (Closure, java.util.regex.Pattern,
+            // circular Map, etc.). Surface it as a tool bug rather than letting it look like
+            // a generic execution failure under the bottom catch.
+            mcpLog("error", "server", "Tool ${toolName} returned a non-serializable result: ${serErr.message}", null, [
+                details: [tool: toolName, resultType: result?.class?.name, error: serErr.message]
+            ])
+            return jsonRpcResult(msg.id, [
+                content: [[type: "text", text: groovy.json.JsonOutput.toJson([
+                    isError: true,
+                    error: "Tool ${toolName} returned a result the JSON serializer cannot encode",
+                    cause: serErr.message,
+                    resultType: result?.class?.name,
+                    note: "Internal tool bug -- report with the tool name and arguments used."
+                ])]],
+                isError: true
+            ])
+        }
+        // Measure the wire-encoded response (text-escape + content/JSON-RPC envelope)
+        // rather than the raw inner result, so the guard threshold maps directly onto
+        // what handleMcpRequest's outer 128KB check measures. Sizing the inner result
+        // alone left a gap zone where escape-heavy payloads (every `"` becomes `\"`)
+        // could slip the inner guard yet still trip the outer -32603 fallback that
+        // #174 was filed to eliminate.
+        def candidateResponse = jsonRpcResult(msg.id, [content: [[type: "text", text: jsonText]]])
+        int wireBytes = groovy.json.JsonOutput.toJson(candidateResponse).getBytes("UTF-8").length
+        final int responseSizeLimit = 120000  // 8KB headroom under the 128KB hub cap
+        if (wireBytes > responseSizeLimit) {
+            // Gateway calls (manage_*) carry the real sub-tool name in args.tool; the
+            // gateway-config whitelist check rules out a non-gateway caller who happens
+            // to pass a stray `tool` arg, which would otherwise mis-route the suggestion.
+            boolean isGateway = getGatewayConfig().containsKey(toolName)
+            String hintTool = (isGateway && args?.tool instanceof String && args.tool) ? args.tool : toolName
+            mcpLog("warn", "server", "Tool ${hintTool} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
+                details: [tool: hintTool, gateway: (hintTool != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
+            ])
+            return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(hintTool, wireBytes, responseSizeLimit))]]])
+        }
+        return candidateResponse
     } catch (IllegalArgumentException e) {
         mcpLog("warn", "server", "Validation error in ${toolName}: ${e.message}", null, [
             details: [tool: toolName, error: e.message]
@@ -775,11 +802,8 @@ def handleToolsCall(msg) {
     }
 }
 
-// Fail-soft envelope for tools whose serialized response exceeded the hub's 128KB JSON-RPC
-// cap (see handleToolsCall guard). Carries the structured fields recommended in issue #174's
-// follow-up comment -- response_too_large + truncated + estimatedBytes + sizeLimitBytes --
-// plus a tool-specific `suggestion` so the LLM has an actionable retry shape rather than a
-// generic "too big" message. Surface is stable; new tools fall through to the default branch.
+// Returned in place of the real result when handleToolsCall trips the size guard. Shape
+// is the wire contract for the response_too_large case; keep the field names stable.
 def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) {
     return [
         response_too_large: true,
@@ -791,6 +815,8 @@ def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) 
     ]
 }
 
+// Tool-specific retry hints for the response_too_large envelope. New tools fall through
+// to the default branch -- only add a case when the generic hint is misleading.
 def _responseTooLargeSuggestion(String toolName) {
     switch (toolName) {
         case "list_devices":
@@ -817,30 +843,48 @@ def _responseTooLargeSuggestion(String toolName) {
         case "get_library_source":
             return "Source file exceeds the inline cap. Use list_files / read_file via the File Manager bridge, or fetch the source from version control instead."
         default:
+            // Default-branch hits are interesting telemetry -- they're the tools we should
+            // be adding specific suggestions for. info level so it only surfaces when log
+            // level is elevated for debugging.
+            mcpLog("info", "server", "response_too_large for tool ${toolName} hit the generic suggestion branch -- consider adding a specific case", null, [details: [tool: toolName]])
             return "Narrow your query (filters, smaller limit, or projection of fields) or pass cursor if this tool supports pagination."
     }
 }
 
-// Shared cursor parser for opt-in tool-level pagination. Matches the opaque-string contract
-// PR #180 established for tools/list: cursor is the numeric offset returned in a prior call's
-// nextCursor, null/"" means "start at 0", any other value is rejected with -32602. Each
-// caller still picks its own page size (the catalog uses 50; list-returning tools can pick
-// whatever keeps a typical page well under the 128KB cap).
+// Shared cursor decoder for opt-in tool-level pagination. Cursor is the opaque numeric
+// offset returned in a prior call's nextCursor; null/"" means "start at 0". Anything else
+// throws IllegalArgumentException so the dispatch layer surfaces -32602. Raw cursor is
+// sanitized before being echoed back so a defective client can't pollute the hub log.
 def _parseListCursor(cursor, int totalSize, String toolName) {
     if (cursor == null || cursor == "") return 0
+    def safeCursor = (cursor?.toString() ?: "").replaceAll(/[\r\n]/, " ").take(80)
     int offset
     try {
         offset = (cursor as String).toInteger()
     } catch (NumberFormatException ignored) {
-        throw new IllegalArgumentException("cursor must be the opaque string returned by a prior ${toolName} nextCursor (got: ${cursor})")
+        throw new IllegalArgumentException("cursor must be the opaque string returned by a prior ${toolName} nextCursor (got: ${safeCursor})")
     }
     if (offset < 0) {
-        throw new IllegalArgumentException("cursor ${cursor} is out of range (must be >= 0)")
+        throw new IllegalArgumentException("cursor ${safeCursor} is out of range (must be >= 0)")
     }
-    if (offset >= totalSize && totalSize > 0) {
-        throw new IllegalArgumentException("cursor ${cursor} is out of range (size=${totalSize})")
+    // offset==0 on an empty list is the well-defined "first page of nothing" case and is
+    // allowed; any positive cursor on an empty or fully-paged list is out-of-range. Without
+    // the `offset > 0` clause, cursor='999' against an empty list would slip through here
+    // and surface as a cryptic IllegalArgumentException from subList(999, 0) downstream.
+    if (offset > 0 && offset >= totalSize) {
+        throw new IllegalArgumentException("cursor ${safeCursor} is out of range (size=${totalSize})")
     }
     return offset
+}
+
+// Compose cursor decoding + subList + nextCursor into one place so each paginated tool
+// is a single call. cursor=null returns the whole list with no nextCursor (the opt-in
+// contract: callers who didn't ask for pagination get the legacy shape).
+def _paginateList(List fullList, cursor, int pageSize, String toolName) {
+    if (cursor == null) return [page: fullList, nextCursor: null]
+    int start = _parseListCursor(cursor, fullList.size(), toolName)
+    int end = Math.min(start + pageSize, fullList.size())
+    return [page: fullList.subList(start, end), nextCursor: end < fullList.size() ? end.toString() : null]
 }
 
 // ==================== CATEGORY GATEWAY PROXY ====================
@@ -9347,8 +9391,13 @@ def toolDeviceHealthCheck(args) {
             def lastActivity = null
             try {
                 lastActivity = device.lastActivity
+            } catch (MissingPropertyException ignored) {
+                // Expected: some device types don't expose lastActivity. Fall through to "never".
             } catch (Exception e) {
-                // Some device types may not support lastActivity
+                // Unexpected -- a sandbox tightening or device-proxy change rather than the
+                // documented MissingPropertyException case. Log so a "why are all my devices
+                // unknown" report has a breadcrumb to chase; still fall through to "never".
+                mcpLog("debug", "monitoring", "device_health_check could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
             }
 
             if (lastActivity) {
@@ -9372,30 +9421,22 @@ def toolDeviceHealthCheck(args) {
                 unknown << entry
             }
         } catch (Exception e) {
-            // Skip device entirely if we can't even get basic info
-            unknown << [id: device.id?.toString() ?: "unknown", name: "Error: ${e.message}", lastActivity: "error"]
+            // Skip device entirely if we can't even get basic info. Log so the failure
+            // shows up in get_debug_logs / generate_bug_report; surface errorClass on the
+            // entry so an LLM triaging the result can distinguish transient (NPE) from
+            // systemic (MissingMethodException) without re-running.
+            mcpLog("warn", "monitoring", "device_health_check failed to inspect device ${device?.id}: ${e.class.simpleName}: ${e.message}")
+            unknown << [id: device.id?.toString() ?: "unknown", name: "Error: ${e.message}", lastActivity: "error", errorClass: e.class.simpleName]
         }
     }
 
     // Sort stale by most-stale first
     stale.sort { a, b -> (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) }
 
-    // Opt-in cursor pagination (#174). Default behaviour (no cursor) returns the full
-    // staleDevices + unknownDevices + healthyDevices payload as before. When cursor is
-    // supplied we page the stale list at 100 per page -- the typical "what's broken on
-    // the hub" caller wants the staleDevices list, and the universal response-size guard
-    // backstops the rest. unknownDevices and (optional) healthyDevices remain present
-    // alongside the page so the summary call still works in a single request; consumers
-    // iterating nextCursor get bounded stale pages without re-doing the discovery work.
-    def stalePage = stale
-    String nextCursor = null
-    if (cursor != null) {
-        int start = _parseListCursor(cursor, stale.size(), "device_health_check")
-        final int pageSize = 100
-        int end = Math.min(start + pageSize, stale.size())
-        stalePage = stale.subList(start, end)
-        if (end < stale.size()) nextCursor = end.toString()
-    }
+    // Only the stale list gets paged -- the "what's broken" caller wants it bounded,
+    // while unknownDevices/healthyDevices stay alongside the page so the summary call
+    // still works in a single request.
+    def paged = _paginateList(stale, cursor, 100, "device_health_check")
 
     def result = [
         summary: [
@@ -9406,11 +9447,17 @@ def toolDeviceHealthCheck(args) {
             staleThresholdHours: staleHours,
             checkedAt: formatTimestamp(now())
         ],
-        staleDevices: stalePage,
+        staleDevices: paged.page,
         unknownDevices: unknown
     ]
-    if (cursor != null && nextCursor != null) {
-        result.nextCursor = nextCursor
+    if (cursor != null) {
+        // Top-level total mirrors list_installed_apps when cursor is active so a
+        // paginating client reads the same field name across tools.
+        result.total = stale.size()
+        // Distinguish "this page's stale entries" from summary.staleCount (full total),
+        // so a client iterating cursor doesn't conflate the two on size-equal hubs.
+        result.summary.staleDevicesInPage = paged.page.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
 
     if (includeHealthy) {
@@ -12388,37 +12435,28 @@ def toolListInstalledApps(args) {
             }
         }
 
-        // Opt-in cursor pagination (#174). Default behaviour (no cursor) returns the
-        // full filtered list as before -- backward-compatible. When the LLM passes
-        // cursor, we hand back a fixed-size page plus nextCursor for iteration, matching
-        // the opaque-string contract PR #180 established for tools/list. Page size 50
-        // keeps a typical page well under the 128KB cap; the universal response-size
-        // guard at handleToolsCall remains a backstop for callers who do not paginate.
-        def fullList = filtered
-        def page = fullList
-        String nextCursor = null
-        if (cursor != null) {
-            int start = _parseListCursor(cursor, fullList.size(), "list_installed_apps")
-            final int pageSize = 50
-            int end = Math.min(start + pageSize, fullList.size())
-            page = fullList.subList(start, end)
-            if (end < fullList.size()) nextCursor = end.toString()
-        }
-
+        // Cursor pagination is opt-in: callers who don't pass cursor get the full
+        // filtered list (backstopped by the response-size guard). Page size 50 keeps a
+        // page comfortably under the wire cap.
+        def paged = _paginateList(filtered, cursor, 50, "list_installed_apps")
         def result = [
-            apps: page,
-            count: page.size(),
+            apps: paged.page,
+            count: paged.page.size(),
             filter: filter,
             totalOnHub: flat.size()
         ]
         if (cursor != null) {
-            result.total = fullList.size()
-            if (nextCursor != null) result.nextCursor = nextCursor
+            result.total = filtered.size()
+            if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
         }
         return result
     } catch (IllegalArgumentException e) {
-        // Cursor validation throws IllegalArgumentException so the dispatch layer can
-        // surface it as -32602. Don't reframe as a transport failure.
+        throw e  // let cursor / arg-validation surface as -32602; don't reframe as transport failure
+    } catch (IllegalStateException e) {
+        // Programmer error -- e.g. validFilters / switch drift on the filter whitelist.
+        // Don't reframe as a transport failure; surface so the drift gets fixed instead
+        // of swallowed under a misleading "hub blip" note.
+        mcpLog("error", "installed-apps", "list_installed_apps internal invariant violated: ${e.message}")
         throw e
     } catch (Exception e) {
         // The Built-in-App-Tools gate has already passed by the time we reach here, so
