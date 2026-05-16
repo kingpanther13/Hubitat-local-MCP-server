@@ -708,6 +708,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         // This spec exercises (1) directly via handleToolsCall. (2) is locked in by
         // sandbox lint + the source-line itself.
         given: 'Hub Admin Write enabled but Developer Mode toggle is off'
+        settingsMap.useGateways = true  // calling manage_mcp_self requires gateway mode on
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
 

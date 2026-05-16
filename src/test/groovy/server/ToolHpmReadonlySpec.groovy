@@ -2820,6 +2820,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
     def "gateway dispatch: manage_hpm(tool='list_hpm_packages') produces same shape as direct toolListHpmPackages call"() {
         given:
+        settingsMap.useGateways = true  // gateway-name dispatch requires gateway mode on
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
         hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
@@ -2836,6 +2837,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
     def "gateway dispatch: manage_hpm(tool='get_hpm_drift') produces same shape as direct toolGetHpmDrift call"() {
         given:
+        settingsMap.useGateways = true  // gateway-name dispatch requires gateway mode on
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
         hubGet.register('/hub2/appsList') {
