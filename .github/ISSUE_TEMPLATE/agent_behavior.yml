@@ -1,0 +1,24 @@
+name: Agent behavior / tool description issue
+description: The LLM picked the wrong tool, was confused by a tool description, or followed a bad workflow. The server isn't broken — the agent surface is.
+title: "[agent-behavior] "
+labels: ["agent-behavior"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the *agent* did the wrong thing — wrong tool choice, schema confusion, bad workflow — rather than when the server crashed or returned bad data. For server defects, please use the Bug report form.
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What the agent did wrong (in your own words)
+      description: What did you ask for, what did the agent do, and why was it the wrong call?
+    validations:
+      required: true
+  - type: textarea
+    id: agent_report
+    attributes:
+      label: Agent report output
+      description: Paste the full output of the `generate_bug_report` tool with `issueType=agent_behavior` here.
+      render: markdown
+    validations:
+      required: false
