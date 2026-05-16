@@ -8,11 +8,7 @@ import support.ToolSpecBase
  * toolCreateRule and toolUpdateRule. Both route through the parent app's
  * addChildApp / childApps fixture and exercise TestChildApp Spy
  * interactions; consolidated from ToolCreateRuleSpec + ToolUpdateRuleSpec
- * (#183) so the spec class pays one sandbox compile for both surfaces.
- *
- * Source locations:
- *   toolCreateRule — hubitat-mcp-server.groovy line 2163
- *   toolUpdateRule — hubitat-mcp-server.groovy line 2263
+ * so the spec class pays one sandbox compile for both surfaces.
  *
  * Note on the create golden path: it uses trigger type "time" and action
  * type "delay" because both validate without a device lookup — seeding

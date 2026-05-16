@@ -80,20 +80,22 @@ import spock.lang.Specification
  * change.
  */
 abstract class HarnessSpec extends Specification {
-    // Per-JVM cache for the compiled script. The expensive part is
-    // sandbox.run() (parse + AST + compile, ~3-10s for the 10K-line
-    // server file). Across ~50 HarnessSpec subclasses this cuts ~250s
-    // off cold-run wall time.
+    // Per-JVM cache for the compiled script. sandbox.run() (parse + AST
+    // + compile) is multi-second on the large server file and used to
+    // fire once per spec class — amortising it across every subclass
+    // is the dominant test-suite speedup in this PR.
     //
     // The AppExecutor Mock is built fresh per spec class (Spock 2.x
-    // ties Mocks to their creating Spec's MockController, so a
-    // JVM-shared Mock can't accept stub additions from subsequent
-    // specs). Each spec's setupSpec builds its own Mock and
-    // reflectively rebinds it onto SHARED_SCRIPT.api. The script's
-    // userSettingsMap / preferencesReader wiring (bound at sandbox.run
-    // time using the JVM-shared SHARED_SETTINGS_MAP) stays valid because
-    // the Map reference is the same across all specs.
-    private static SHARED_SCRIPT
+    // ties Mocks to their creating Spec's MockController via thread-
+    // local registration in setupSpec, so a Mock created by spec A
+    // has no controller wired up when spec B's setupSpec runs and
+    // re-stubbing on it would no-op). Each spec's setupSpec builds
+    // its own Mock and reflectively rebinds it onto SHARED_SCRIPT.api.
+    // The script's userSettingsMap / preferencesReader wiring (bound
+    // at sandbox.run time using the JVM-shared SHARED_SETTINGS_MAP)
+    // stays valid because the Map reference is the same across specs.
+    private static HubitatAppScript SHARED_SCRIPT
+    private static final Object COMPILE_LOCK = new Object()
     private static final java.lang.reflect.Field API_FIELD = {
         def f = HubitatAppScript.getDeclaredField('api')
         f.accessible = true
@@ -137,30 +139,37 @@ abstract class HarnessSpec extends Specification {
 
     def setupSpec() {
         appExecutor = buildAppExecutorMock()
-        if (SHARED_SCRIPT == null) {
-            // First spec to run: compile the script with this spec's
-            // Mock as the api. Future specs will reflectively rebind
-            // api to their own fresh Mock against the cached script.
-            compileSharedScript()
-        } else {
-            API_FIELD.set(SHARED_SCRIPT, appExecutor)
+        // build.gradle pins maxParallelForks=1 and Spock's default test
+        // ordering is sequential, so contention here is theoretical
+        // today. The synchronized block keeps the cache correct if a
+        // future config change ever enables parallel forks/threads
+        // within one JVM.
+        synchronized (COMPILE_LOCK) {
+            if (SHARED_SCRIPT == null) {
+                compileSharedScript()
+            } else {
+                API_FIELD.set(SHARED_SCRIPT, appExecutor)
+            }
         }
         script = SHARED_SCRIPT
     }
 
     private AppExecutor buildAppExecutorMock() {
+        // Don't add `getApp() >> X` here — several specs (e.g. ToolManageLogsSpec,
+        // ToolUpdateMcpSettingsSpec, AppLifecycleMigrationSpec) layer their own
+        // additive `appExecutor.getApp() >> sharedAppStub` in setupSpec. A base
+        // stub here would stack against theirs and the resolved return value
+        // becomes Spock-version dependent.
         def mock = Mock(AppExecutor) {
             _ * getState() >> SHARED_STATE_MAP
             _ * getAtomicState() >> SHARED_ATOMIC_STATE_MAP
             _ * getChildDevices() >> SHARED_CHILD_DEVICES_LIST
             _ * now() >> 1234567890000L
             _ * getLog() >> SHARED_LOG
-            // getSettings() is on AppExecutor and the script delegates
-            // `settings` reads to api.getSettings(). The original flow's
-            // sandbox.run() wires this via internal AppPreferencesReader
-            // machinery on the bound api; when we rebind api per spec we
-            // need to provide it explicitly. Returning the userSettingsMap
-            // directly is sufficient for spec-side `settings.foo` reads.
+            // Script delegates `settings` reads to api.getSettings(). When we
+            // rebind api per spec, we have to stub this explicitly — the
+            // sandbox.run() path that normally wires it only runs on the
+            // first spec.
             _ * getSettings() >> SHARED_SETTINGS_MAP
         }
         // render(Map) is declared on AppExecutor — class-2 of the dispatch

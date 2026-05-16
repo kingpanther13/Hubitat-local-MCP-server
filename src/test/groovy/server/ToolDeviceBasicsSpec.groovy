@@ -8,15 +8,10 @@ import support.ToolSpecBase
  * device-targeting tool), toolGetDevice (summary response shape), and
  * toolSendCommand (command dispatch).
  *
- * Consolidated from FindDeviceSpec + ToolGetDeviceSpec + ToolSendCommandSpec
- * (#183) — same harness fixture, same support imports, three thematically
- * adjacent slices of the device-tool surface. Sandbox compile is amortised
- * across all 11 features instead of three separate spec-class compiles.
- *
- * Underlying source locations:
- *   findDevice         — hubitat-mcp-server.groovy
- *   toolGetDevice      — hubitat-mcp-server.groovy line 1937
- *   toolSendCommand    — hubitat-mcp-server.groovy line 1986
+ * Consolidated from FindDeviceSpec + ToolGetDeviceSpec + ToolSendCommandSpec —
+ * same harness fixture, same support imports, three thematically adjacent
+ * slices of the device-tool surface. Sandbox compile is amortised across
+ * all 11 features instead of three separate spec-class compiles.
  *
  * findDevice search order: settings.selectedDevices first, then
  * getChildDevices(). Returns null on miss. Both String and Integer ids

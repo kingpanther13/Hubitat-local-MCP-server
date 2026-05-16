@@ -7,15 +7,12 @@ import support.TestDevice
  * action via parent.findDevice) and executeActions (multi-action queue
  * read from atomicState.actions, with stop-action short-circuit).
  *
- * Consolidated from RuleEngineSmokeSpec + ExecuteActionsSpec (#183);
- * same RuleHarnessSpec base + TestDevice fixture, so one sandbox compile
+ * Consolidated from RuleEngineSmokeSpec + ExecuteActionsSpec; same
+ * RuleHarnessSpec base + TestDevice fixture, so one sandbox compile
  * covers all four features instead of two.
  *
- * Source: hubitat-mcp-rule.groovy
- *   executeAction line 3311 (dispatches a single action via parent.findDevice)
- *   executeActions       (iterates atomicState.actions; returns early when
- *                         executeAction returns false (`stop`) or the
- *                         string "delayed")
+ * executeActions iterates atomicState.actions and returns early when
+ * executeAction returns false (`stop`) or the string "delayed".
  *
  * Broader rule-engine coverage (time triggers, boolean composition,
  * nested rules, variable scoping, error paths) is tracked in issue #75.

@@ -44,7 +44,20 @@ abstract class RuleHarnessSpec extends Specification {
     // Per-JVM cache for the compiled rule-engine script. The Mock is
     // rebuilt per spec class and reflectively rebound onto SHARED_SCRIPT.api.
     // See support.HarnessSpec for the broader rationale.
-    private static SHARED_SCRIPT
+    //
+    // Note: the @Shared `settingsMap` / `stateMap` / `atomicStateMap`
+    // fields below are PER-SPEC-INSTANCE, while the equivalents in
+    // HarnessSpec are JVM-static. sandbox.run() captures the FIRST
+    // subclass instance's settingsMap into eighty20results'
+    // AppPreferencesReader for the JVM's lifetime; subsequent specs'
+    // settings reads flow through api.getSettings() (stubbed per-spec
+    // to the current instance's settingsMap), so the orphaned reference
+    // is unreachable today. If a future eighty20results change ever
+    // routes `script.settings` through preferencesReader directly,
+    // those fields should be hoisted to JVM-static like HarnessSpec's
+    // SHARED_* constants to keep cross-spec isolation honest.
+    private static HubitatAppScript SHARED_SCRIPT
+    private static final Object COMPILE_LOCK = new Object()
     private static final java.lang.reflect.Field API_FIELD = {
         def f = HubitatAppScript.getDeclaredField('api')
         f.accessible = true
@@ -131,10 +144,12 @@ abstract class RuleHarnessSpec extends Specification {
 
     def setupSpec() {
         appExecutor = buildAppExecutorMock()
-        if (SHARED_SCRIPT == null) {
-            compileSharedScript()
-        } else {
-            API_FIELD.set(SHARED_SCRIPT, appExecutor)
+        synchronized (COMPILE_LOCK) {
+            if (SHARED_SCRIPT == null) {
+                compileSharedScript()
+            } else {
+                API_FIELD.set(SHARED_SCRIPT, appExecutor)
+            }
         }
         script = SHARED_SCRIPT
     }
@@ -156,7 +171,7 @@ abstract class RuleHarnessSpec extends Specification {
             _ * getLocation() >> testLocation
             _ * now() >> 1234567890000L
             _ * getLog() >> sharedLog
-            // settings is delegated through api.getSettings() — see
+            // Script delegates `settings` reads to api.getSettings(); see
             // support.HarnessSpec for the rationale.
             _ * getSettings() >> settingsMap
         }
