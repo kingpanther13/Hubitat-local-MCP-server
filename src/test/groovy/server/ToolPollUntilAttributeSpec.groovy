@@ -1245,4 +1245,240 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         mcpLogCalls.any { it.level == 'warn' && it.component == 'device-tools' &&
                           it.msg ==~ /poll_until_attribute interrupted after \d+ poll\(s\).*/ }
     }
+
+    // ---------------------------------------------------------------------------
+    // Dispatch-envelope counterparts (issue #187)
+    //
+    // poll_until_attribute is wired through the executeTool switch (no gateway
+    // group), so useGateways doesn't change routing — the parameter is varied
+    // here to assert the JSON-RPC envelope behaves identically in both modes.
+    // The set is intentionally selective: poll_until_attribute has 30+ direct
+    // features, and the dispatch path differs only by envelope shape per
+    // outcome class. We cover one feature per distinct envelope:
+    //   - success-immediate (success envelope with result body)
+    //   - timeout (success envelope, success=false/timedOut=true)
+    //   - IAE validation -> -32602 (device not found)
+    //   - IAE validation -> -32602 (missing both expectedValue/expectedValues)
+    //   - IAE validation -> -32602 (unknown arg / typo hint)
+    //   - InterruptedException -> success envelope with interrupted=true
+    //   - non-IAE RuntimeException -> isError success envelope (MCP spec)
+    // ---------------------------------------------------------------------------
+
+    @spock.lang.Unroll
+    def "poll_until_attribute via dispatch returns success immediately when value already matches (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1010,
+            name: 'DispatchSwitch',
+            label: 'Dispatch Switch',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'on']
+        )
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('poll_until_attribute', [
+            deviceId      : '1010',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
+        inner.success == true
+        inner.finalValue == 'on'
+        inner.timedOut == false
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "poll_until_attribute via dispatch returns success=false/timedOut=true when no match (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1020,
+            label: 'Dispatch Stubborn',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('poll_until_attribute', [
+            deviceId      : '1020',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 100,
+            pollIntervalMs: 50
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
+        inner.success == false
+        inner.timedOut == true
+        inner.finalValue == 'off'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "poll_until_attribute via dispatch returns -32602 when device is not found (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        childDevicesList.clear()
+        settingsMap.selectedDevices = []
+
+        when:
+        def response = mcpDriver.callTool('poll_until_attribute', [
+            deviceId      : '9999',
+            attribute     : 'switch',
+            expectedValue : 'on'
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('9999')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "poll_until_attribute via dispatch returns -32602 when neither expectedValue nor expectedValues provided (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1030,
+            label: 'Dispatch Missing EV',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('poll_until_attribute', [
+            deviceId : '1030',
+            attribute: 'switch',
+            timeoutMs: 1000
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('expectedvalue')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "poll_until_attribute via dispatch returns -32602 when unknown arg is passed (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1040,
+            label: 'Dispatch Unknown Arg',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('poll_until_attribute', [
+            deviceId       : '1040',
+            attribute      : 'switch',
+            expectedValue  : 'on',
+            timeoutSeconds : 10
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('timeoutSeconds')
+        response.error.message.contains('timeoutMs')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "poll_until_attribute via dispatch returns success envelope with interrupted=true when pauseExecution throws InterruptedException (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1050,
+            label: 'Dispatch Interrupted',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        script.metaClass.pauseExecution = { long ms ->
+            throw new InterruptedException("hub reloading")
+        }
+
+        when:
+        def response = mcpDriver.callTool('poll_until_attribute', [
+            deviceId      : '1050',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then: 'InterruptedException is caught inside the tool and surfaced as a normal tool result'
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
+        inner.success == false
+        inner.interrupted == true
+        inner.finalValue == 'off'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "poll_until_attribute via dispatch returns isError envelope when pauseExecution throws RuntimeException (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1060,
+            label: 'Dispatch Runtime Boom',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        script.metaClass.pauseExecution = { long ms ->
+            throw new RuntimeException("simulated bug in sleep path")
+        }
+
+        when:
+        def response = mcpDriver.callTool('poll_until_attribute', [
+            deviceId      : '1060',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 5000,
+            pollIntervalMs: 200
+        ])
+
+        then: 'non-IAE escapes the tool catch and lands in handleToolsCall generic-Exception path -> isError envelope per MCP spec'
+        response.error == null
+        response.result.isError == true
+        response.result.content[0].type == 'text'
+        response.result.content[0].text.startsWith('Tool error:')
+        response.result.content[0].text.contains('simulated bug')
+
+        where:
+        useGateways << [true, false]
+    }
 }
