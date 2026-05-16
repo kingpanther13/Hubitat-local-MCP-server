@@ -85,6 +85,35 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'error' | 'Error msg'
     }
 
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch filters by level=warn (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/logs/past/json') { params ->
+            JsonOutput.toJson([
+                'App 1\tdebug\tDebug msg\t2026-04-19 10:00:00.000\ttype',
+                'App 1\tinfo\tInfo msg\t2026-04-19 10:00:01.000\ttype',
+                'App 1\twarn\tWarn msg\t2026-04-19 10:00:02.000\ttype',
+                'App 1\terror\tError msg\t2026-04-19 10:00:03.000\ttype'
+            ])
+        }
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [level: 'warn'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.logs.size() == 1
+        inner.logs[0].level == 'warn'
+        inner.logs[0].message == 'Warn msg'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "get_hub_logs filters by source substring (case-insensitive)"() {
         given:
         settingsMap.enableHubAdminRead = true
@@ -155,6 +184,24 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Device not found')
+    }
+
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch maps unknown-deviceId IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [deviceId: '999'])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Device not found')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "get_hub_logs scopes to an app and passes type=app&id=X in query"() {
@@ -329,6 +376,36 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.events[1].name == 'level'
     }
 
+    @spock.lang.Unroll
+    def "get_device_history via dispatch returns events for a selected device (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fixedDate = new Date(1234567880000L)
+        def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        device.metaClass.eventsSince = { Date since, Map opts ->
+            [
+                [name: 'switch', value: 'on', unit: null, descriptionText: 'turned on', date: fixedDate, isStateChange: true],
+                [name: 'level', value: '75', unit: '%', descriptionText: 'dimmed', date: fixedDate, isStateChange: true]
+            ]
+        }
+        settingsMap.selectedDevices = [device]
+
+        when:
+        def response = mcpDriver.callTool('get_device_history', [deviceId: '42', hoursBack: 12, limit: 50])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.deviceId == '42'
+        inner.device == 'Kitchen Light'
+        inner.count == 2
+        inner.events[0].name == 'switch'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "get_device_history applies attribute filter"() {
         given:
         def fixedDate = new Date(1234567880000L)
@@ -397,6 +474,37 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.deviceStats[1].name == 'FastDevice'
         result.deviceSummary.deviceCount == 2
         result.uptime == '5d 2h'
+    }
+
+    @spock.lang.Unroll
+    def "get_performance_stats via dispatch returns sorted device stats (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/logs/json') { params ->
+            JsonOutput.toJson([
+                uptime: '5d 2h',
+                deviceStats: [
+                    [id: 1, name: 'SlowDevice', pct: 15.0, count: 100, total: 500, stateSize: 1000, formattedPct: '15.00'],
+                    [id: 2, name: 'FastDevice', pct: 2.0, count: 5, total: 10, stateSize: 100, formattedPct: '2.00']
+                ],
+                appStats: []
+            ])
+        }
+
+        when:
+        def response = mcpDriver.callTool('get_performance_stats', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.deviceStats.size() == 2
+        inner.deviceStats[0].name == 'SlowDevice'
+        inner.deviceStats[1].name == 'FastDevice'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "get_performance_stats sortBy=count reorders results"() {
@@ -530,6 +638,41 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.uptime == '1d'
     }
 
+    @spock.lang.Unroll
+    def "get_hub_jobs via dispatch returns scheduled + running + hubActions (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/logs/json') { params ->
+            JsonOutput.toJson([
+                uptime: '1d',
+                jobs: [
+                    [id: 1, name: 'NightlyBackup', recurring: true, methodName: 'runBackup', nextRun: '2026-04-21 02:00:00']
+                ],
+                runningJobs: [
+                    [id: 3, name: 'HubCheck', methodName: 'checkHealth']
+                ],
+                hubCommands: ['cmd1', 'cmd2']
+            ])
+        }
+
+        when:
+        def response = mcpDriver.callTool('get_hub_jobs', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.scheduledJobs.count == 1
+        inner.scheduledJobs.jobs[0].name == 'NightlyBackup'
+        inner.runningJobs.count == 1
+        inner.hubActions.count == 2
+        inner.uptime == '1d'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "get_hub_jobs returns an error map when fetchLogsJson fails"() {
         when: 'Hub Admin Read disabled — fetchLogsJson throws inside the tool'
         def result = script.toolGetHubJobs([:])
@@ -560,6 +703,33 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries[-1].ruleId == '5'
         result.entries[-1].stackTrace == 'trace'
         result.currentLogLevel != null
+    }
+
+    @spock.lang.Unroll
+    def "get_debug_logs via dispatch returns recent entries with metadata (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        stateMap.debugLogs = [
+            entries: [
+                [timestamp: 1234567880000L, level: 'info',  component: 'server', message: 'old'],
+                [timestamp: 1234567890000L, level: 'error', component: 'rules',  message: 'boom', ruleId: '5', stackTrace: 'trace']
+            ],
+            config: [logLevel: 'debug', maxEntries: 100]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('get_debug_logs', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.count == 2
+        inner.totalStored == 2
+        inner.entries[-1].message == 'boom'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "get_debug_logs filters by level"() {
@@ -663,6 +833,32 @@ class ToolManageLogsSpec extends ToolSpecBase {
         stateMap.debugLogs.entries[0].message.contains('(2 entries removed)')
     }
 
+    @spock.lang.Unroll
+    def "clear_debug_logs via dispatch empties entries and reports count (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        stateMap.debugLogs = [
+            entries: [
+                [timestamp: 1L, level: 'info', component: 'c', message: 'a'],
+                [timestamp: 2L, level: 'info', component: 'c', message: 'b']
+            ],
+            config: [logLevel: 'debug', maxEntries: 100]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('clear_debug_logs', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.clearedCount == 2
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "clear_debug_logs succeeds when there are no entries"() {
         given: 'explicit logLevel=error so the post-clear info log is below threshold — pinned against initDebugLogs default drift'
         stateMap.debugLogs = [entries: [], config: [logLevel: 'error', maxEntries: 100]]
@@ -687,6 +883,23 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ex.message.contains('Invalid log level')
     }
 
+    @spock.lang.Unroll
+    def "set_log_level via dispatch maps invalid-level IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('set_log_level', [level: 'trace'])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Invalid log level')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "set_log_level updates state + setting and returns previous level"() {
         given: 'prior log level is info and app.updateSetting routes through the shared TestChildApp stub'
         stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
@@ -700,6 +913,28 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.newLevel == 'warn'
         stateMap.debugLogs.config.logLevel == 'warn'
         sharedAppStub.settingsStore['mcpLogLevel'] == [type: 'enum', value: 'warn']
+    }
+
+    @spock.lang.Unroll
+    def "set_log_level via dispatch updates state + setting (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+
+        when:
+        def response = mcpDriver.callTool('set_log_level', [level: 'warn'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.previousLevel == 'info'
+        inner.newLevel == 'warn'
+        stateMap.debugLogs.config.logLevel == 'warn'
+
+        where:
+        useGateways << [true, false]
     }
 
     // -------- toolGetLoggingStatus --------
@@ -730,6 +965,37 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.availableLevels == ['debug', 'info', 'warn', 'error']
         result.oldestEntry != null
         result.newestEntry != null
+    }
+
+    @spock.lang.Unroll
+    def "get_logging_status via dispatch reports counts by level + current config (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        stateMap.debugLogs = [
+            entries: [
+                [timestamp: 100L, level: 'debug', component: 'c', message: 'd'],
+                [timestamp: 200L, level: 'info',  component: 'c', message: 'i'],
+                [timestamp: 300L, level: 'warn',  component: 'c', message: 'w1'],
+                [timestamp: 400L, level: 'warn',  component: 'c', message: 'w2'],
+                [timestamp: 500L, level: 'error', component: 'c', message: 'e']
+            ],
+            config: [logLevel: 'debug', maxEntries: 100]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('get_logging_status', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.totalEntries == 5
+        inner.entriesByLevel.debug == 1
+        inner.entriesByLevel.warn == 2
+        inner.currentLogLevel == 'debug'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "get_logging_status handles empty buffer"() {
