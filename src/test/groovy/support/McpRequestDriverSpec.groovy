@@ -10,11 +10,16 @@ import spock.lang.Specification
  * otherwise degrade every dependent spec together and be diagnostically
  * confusing.
  *
- * Does not load the sandbox / production script — this is pure driver
- * logic under test.
+ * The pure driver-logic tests (pushBody, captureRender, parseResponseJson, etc.)
+ * use a locally created {@code driver} instance and do not load the sandbox.
+ * The {@code callTool} integration test uses the harness fixtures ({@code script},
+ * {@code mcpDriver}, {@code settingsMap}, {@code hubGet}) inherited from
+ * {@link ToolSpecBase} to exercise the full production code path end-to-end.
  */
-class McpRequestDriverSpec extends Specification {
+class McpRequestDriverSpec extends ToolSpecBase {
 
+    // Local driver instance for the pure driver-logic tests below.
+    // These tests do not touch the harness mcpDriver or script.
     McpRequestDriver driver
 
     def setup() {
@@ -133,5 +138,21 @@ class McpRequestDriverSpec extends Specification {
         def e = thrown(IllegalStateException)
         e.message.contains('did not parse as JSON')
         e.message.contains('<<not-json>>') || e.message.contains('Captured render args')
+    }
+
+    def "callTool builds a JSON-RPC tools/call envelope and returns the parsed response"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub/info') { params -> '{"name":"TestHub"}' }
+
+        when:
+        def response = mcpDriver.callTool(script, 'get_hub_info', [:])
+
+        then:
+        response.jsonrpc == '2.0'
+        response.id != null
+        response.result != null
+        response.result.content instanceof List
+        response.result.content[0].type == 'text'
     }
 }
