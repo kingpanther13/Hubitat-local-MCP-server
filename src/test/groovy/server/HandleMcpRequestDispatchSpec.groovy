@@ -293,6 +293,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         given: 'a stubbed sub-tool (get_app_config) that returns a huge config'
         settingsMap.enableBuiltinApp = true
         settingsMap.enableHubAdminRead = true
+        // useGateways=true so manage_installed_apps actually dispatches (PR #187/#191's
+        // flat-mode matrix would otherwise short-circuit gateway calls with isError).
+        settingsMap.useGateways = true
         // Build a get_app_config response large enough to trip the wire-byte guard once
         // wrapped + escaped + envelope-encoded.
         def bigSettings = (0..<3000).collectEntries { i -> ["k${i}".toString(), ("v" * 50)] }
