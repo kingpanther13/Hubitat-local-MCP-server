@@ -3278,4 +3278,3 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 }
-}
