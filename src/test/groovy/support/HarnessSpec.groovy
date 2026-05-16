@@ -252,6 +252,13 @@ abstract class HarnessSpec extends Specification {
         atomicStateMap.clear()
         settingsMap.clear()
         settingsMap.selectedDevices = []
+        // CI matrix dispatch-mode dimension: when set, forces useGateways
+        // default per-test. Tests that explicitly pin useGateways in given:
+        // still win (the given: assignment overrides).
+        def defaultGateways = System.getProperty('harness.useGateways')
+        if (defaultGateways != null) {
+            settingsMap.useGateways = (defaultGateways == 'true')
+        }
         childDevicesList.clear()
         childAppsList.clear()
         hubGet.reset()
