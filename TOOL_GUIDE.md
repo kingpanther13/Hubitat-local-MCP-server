@@ -28,14 +28,14 @@ Default is **ON** (gateways enabled). Existing installations keep the gateway be
 
 ### `tools/call` Response-Size Guard (v1.3.x+, fail-soft)
 
-Every `tools/call` response is measured before send. If the serialized JSON exceeds the universal 110 KB cap (chosen to leave room for text-escape + JSON-RPC envelope overhead inside the hub's 128 KB JSON-RPC limit), the inner content is replaced with a structured fail-soft envelope:
+Every `tools/call` response is measured before send. If the wire-encoded response exceeds the universal 120 KB cap (8 KB headroom under the hub's 128 KB JSON-RPC limit), the inner content is replaced with a structured fail-soft envelope:
 
 ```json
 {
   "response_too_large": true,
   "truncated": true,
   "estimatedBytes": 145320,
-  "sizeLimitBytes": 110000,
+  "sizeLimitBytes": 120000,
   "tool": "list_installed_apps",
   "suggestion": "Set includeHidden=false (the default), narrow via filter ..., or pass cursor to page through the apps list."
 }
@@ -69,8 +69,6 @@ These tools intentionally diverge from the `tools/list` "omit cursor = first pag
 | `get_debug_logs` | 100 | Filters apply first; cursor pages within. |
 
 Tools without cursor support (`get_app_config`, `export_native_app`, `get_app_source`, `get_driver_source`, `get_library_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `list_files`/`read_file` round-trip) plus the universal size guard as the backstop.
-
-Tools without an explicit `cursor` parameter (e.g. `get_app_config`, `export_native_app`, `get_hub_logs`, `get_memory_history`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, smaller `limit`, narrower filters) plus the universal size guard as the backstop.
 
 ## Device Authorization (CRITICAL)
 

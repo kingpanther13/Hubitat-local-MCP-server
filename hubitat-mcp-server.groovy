@@ -2550,7 +2550,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the a
                 properties: [
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "Filter apps by category. Default: all"],
                     includeHidden: [type: "boolean", description: "Include hidden apps (typically Hubitat internal). Default: false", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full filtered list in a single response (subject to the universal 110KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string is treated as no cursor."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full filtered list in a single response (subject to the universal 120KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page."]
                 ]
             ]
         ],
@@ -3453,24 +3453,22 @@ def executeTool(toolName, args) {
 // ==================== DEVICE TOOLS ====================
 
 def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null) {
-    // Opt-in cursor pagination decodes onto the same offset/limit mechanics; when
-    // cursor is supplied it overrides offset (page size 50 by default).
+    // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
+    // real range check against the filtered total happens further down (line ~3585)
+    // because we don't have the filtered count yet; pass Integer.MAX_VALUE so the
+    // helper only does the parse + negative check. cursor='' / null returns offset 0
+    // exactly like every other paginated tool.
     if (cursor != null) {
-        // Page size is fixed in cursor mode so nextCursor arithmetic is deterministic.
-        // Callers who want a different page size can use the existing offset+limit pair.
-        final int cursorPageSize = 50
-        if (!limit || limit <= 0) limit = cursorPageSize
-        // _parseListCursor needs the post-filter total, which we don't have yet. Defer
-        // strict bounds check to inside the function: parse the cursor as an integer
-        // here so non-numeric values still fail at the API boundary with a clear -32602.
-        int parsedOffset
-        try {
-            parsedOffset = (cursor as String).toInteger()
-        } catch (NumberFormatException ignored) {
-            throw new IllegalArgumentException("cursor must be the opaque string returned by a prior list_devices nextCursor (got: ${cursor})")
+        // Reject ambiguous combinations -- a caller passing both cursor and a non-default
+        // offset is asking for two different starting points; pick one.
+        if (offset != null && (offset as Integer) > 0) {
+            throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
         }
-        if (parsedOffset < 0) throw new IllegalArgumentException("cursor ${cursor} is out of range (must be >= 0)")
-        offset = parsedOffset
+        offset = _parseListCursor(cursor, Integer.MAX_VALUE, "list_devices")
+        // Default page size in cursor mode so nextCursor arithmetic is deterministic.
+        // Callers who want a different page size set limit explicitly (cursor still wins
+        // on offset; limit just sizes the page).
+        if (!limit || limit <= 0) limit = 50
     }
     // Combine selected devices and MCP-managed child devices (virtual devices)
     def allDevices = (selectedDevices ?: []).toList()
@@ -5048,6 +5046,7 @@ def toolListVariables(args = null) {
     // [name, type, value, deviceId, attribute] — deviceId/attribute populated
     // when the variable has a Connector device, null otherwise.
     def hubVariables = []
+    String hubVarsError = null
     try {
         def allVars = getAllGlobalVars()
         if (allVars) {
@@ -5063,27 +5062,31 @@ def toolListVariables(args = null) {
             }
         }
     } catch (Exception e) {
-        logDebug("Hub variable API not available: ${e.message}")
+        // Surface to mcpLog (not just logDebug) so a "no hub variables" response can be
+        // distinguished from "hub variable API broke" via get_debug_logs.
+        hubVarsError = e.message ?: e.toString()
+        mcpLog("warn", "variables", "list_variables: getAllGlobalVars() failed: ${hubVarsError} -- returning empty hubVariables", null, [details: [error: hubVarsError]])
     }
 
     def ruleVariables = state.ruleVariables?.collect { name, value ->
         [name: name, value: value, source: "rule_engine"]
     } ?: []
 
-    // Cursor paginates the hubVariables list -- the typical "what's defined on the hub"
-    // caller cares about hub vars first; ruleVariables stays in full alongside the page
-    // so paginating callers don't lose visibility into the engine-managed set.
     def cursor = args?.cursor
     def paged = _paginateList(hubVariables, cursor, 100, "list_variables")
+    // Both per-list totals are always emitted so a caller can distinguish "1000 hub
+    // vars + 0 rule vars" from "0 hub vars + 1000 rule vars" without needing cursor
+    // context. `total` is the legacy summed field; the per-list fields are the
+    // primary contract going forward.
     def result = [
         hubVariables: paged.page,
         ruleVariables: ruleVariables,
+        totalHubVariables: hubVariables.size(),
+        totalRuleVariables: ruleVariables.size(),
         total: hubVariables.size() + ruleVariables.size()
     ]
-    if (cursor != null) {
-        result.totalHubVariables = hubVariables.size()
-        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
-    }
+    if (hubVarsError) result.hubVariablesError = hubVarsError
+    if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
 }
 
@@ -7012,6 +7015,7 @@ def toolListItemBackups(args = null) {
     if (manifest.isEmpty()) {
         return [
             backups: [],
+            count: 0,
             total: 0,
             message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, or delete_library.",
             maxBackups: 20,
@@ -7050,6 +7054,7 @@ def toolListItemBackups(args = null) {
     def paged = _paginateList(backupList, cursor, 50, "list_item_backups")
     def result = [
         backups: paged.page,
+        count: paged.page.size(),
         total: backupList.size(),
         maxBackups: 20,
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
@@ -7374,6 +7379,14 @@ def toolListFiles(args = null) {
         }
 
         fileList = fileList.sort { a, b -> (a.name <=> b.name) }
+
+        // Shape-drift diagnostic: a non-empty parsed response that yielded zero files
+        // is almost always a firmware shape change (new top-level key, files nested
+        // deeper, etc.). Surface so a "no files" report isn't silently misread.
+        if (fileList.isEmpty() && parsed) {
+            def shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" : parsed.class.simpleName
+            mcpLog("warn", "file-manager", "list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
+        }
 
         mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager (via ${endpointUsed})")
         def pagedFM = _paginateList(fileList, cursor, 100, "list_files")
@@ -8306,7 +8319,10 @@ def toolListHubApps(args) {
                 result.count = parsed instanceof List ? parsed.size() : 0
                 result.source = "hub_api"
             } catch (Exception parseErr) {
-                // Response was not JSON - return what we can
+                // Response was not JSON - return what we can. apps=[] keeps the cursor
+                // block + downstream shape consistent so a paginating caller doesn't
+                // silently lose the pagination contract on a firmware shape drift.
+                result.apps = []
                 result.rawResponse = responseText?.take(2000)
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
@@ -8353,6 +8369,9 @@ def toolListHubDrivers(args) {
                 result.count = parsed instanceof List ? parsed.size() : 0
                 result.source = "hub_api"
             } catch (Exception parseErr) {
+                // Response was not JSON - return what we can. drivers=[] keeps the
+                // cursor block + downstream shape consistent.
+                result.drivers = []
                 result.rawResponse = responseText?.take(2000)
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
@@ -8946,7 +8965,11 @@ def toolGetHubLogs(args) {
     def cursor = args?.cursor
     def fullLogs = logs.toList()
     def paged = _paginateList(fullLogs, cursor, 100, "get_hub_logs")
-    def result = [logs: paged.page, count: paged.page.size(), totalParsed: totalParsed]
+    // appliedLimit surfaces the limit-truncated entry count so a cursor caller can
+    // tell whether they're iterating within the full ring buffer or within a
+    // user-specified ceiling. Default limit is 100; max 500. Pair with limit=500
+    // for the largest practical full-buffer page.
+    def result = [logs: paged.page, count: paged.page.size(), totalParsed: totalParsed, appliedLimit: limit]
     if (cursor != null) {
         result.total = fullLogs.size()
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
@@ -9407,11 +9430,7 @@ def toolGetMemoryHistory(args) {
         summary.showing = "${entries.size()} of ${allEntries.size()} (most recent)"
     }
 
-    // Cursor pagination is an alternative to `limit` for callers who want the FULL
-    // ring buffer for trend analysis but need it in bounded pages. `limit` still trims
-    // the candidate pool first so the two controls compose: paginate within the most
-    // recent N entries by passing both, or paginate the whole buffer by passing
-    // `limit=0`.
+    // Cursor pages within the limit-trimmed candidate pool; limit=0 + cursor pages the full ring buffer.
     def cursor = args?.cursor
     def paged = _paginateList(entries, cursor, 100, "get_memory_history")
     def result = [entries: paged.page, summary: summary]
@@ -9573,9 +9592,7 @@ def toolDeviceHealthCheck(args) {
     // Sort stale by most-stale first
     stale.sort { a, b -> (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) }
 
-    // Only the stale list gets paged -- the "what's broken" caller wants it bounded,
-    // while unknownDevices/healthyDevices stay alongside the page so the summary call
-    // still works in a single request.
+    // Only stale is paged; unknown/healthy stay in full so the summary call still resolves in one request.
     def paged = _paginateList(stale, cursor, 100, "device_health_check")
 
     def result = [
@@ -9591,11 +9608,9 @@ def toolDeviceHealthCheck(args) {
         unknownDevices: unknown
     ]
     if (cursor != null) {
-        // Top-level total mirrors list_installed_apps when cursor is active so a
-        // paginating client reads the same field name across tools.
         result.total = stale.size()
-        // Distinguish "this page's stale entries" from summary.staleCount (full total),
-        // so a client iterating cursor doesn't conflate the two on size-equal hubs.
+        // staleDevicesInPage distinguishes the page slice from summary.staleCount (the
+        // full count) on size-equal hubs.
         result.summary.staleDevicesInPage = paged.page.size()
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
@@ -12589,9 +12604,6 @@ def toolListInstalledApps(args) {
             }
         }
 
-        // Cursor pagination is opt-in: callers who don't pass cursor get the full
-        // filtered list (backstopped by the response-size guard). Page size 50 keeps a
-        // page comfortably under the wire cap.
         def paged = _paginateList(filtered, cursor, 50, "list_installed_apps")
         def result = [
             apps: paged.page,
@@ -12651,6 +12663,14 @@ def toolGetDeviceInUseBy(args) {
             return [success: false, error: "Failed to parse device JSON: ${parseErr.message}", note: "Device ID '${deviceId}' may not exist, or firmware changed the endpoint format."]
         }
 
+        // Defensive shape check: if firmware drifts and appsUsing arrives as a Map
+        // (or anything other than List), the collect{} below would produce all-null
+        // entries silently. Surface that loud rather than letting the paginator
+        // hand the LLM a bag of nulls.
+        if (parsed?.appsUsing != null && !(parsed.appsUsing instanceof List)) {
+            mcpLog("warn", "installed-apps", "get_device_in_use_by: appsUsing is ${parsed.appsUsing.class.simpleName} not List for device ${deviceId} -- treating as empty")
+            return [success: false, deviceId: deviceId, error: "Firmware returned unexpected appsUsing shape: ${parsed.appsUsing.class.simpleName}", note: "Hub firmware may have changed the /device/fullJson endpoint contract."]
+        }
         def appsUsing = parsed?.appsUsing ?: []
         def count
         try {
@@ -12684,6 +12704,12 @@ def toolGetDeviceInUseBy(args) {
             count: count,
             parentApp: parsed?.parentApp
         ]
+        // Surface the count/array disparity when firmware reports an appsUsingCount that
+        // doesn't match the appsUsing array length (truncation / paging signal). Caller
+        // can then decide whether to chase the missing entries via another path.
+        if (count != appsUsingList.size()) {
+            result.countMismatch = "appsUsingCount=${count} but appsUsing array carries ${appsUsingList.size()} entries -- firmware may be truncating"
+        }
         if (cursor != null) {
             result.total = appsUsingList.size()
             if (paged.nextCursor != null) result.nextCursor = paged.nextCursor

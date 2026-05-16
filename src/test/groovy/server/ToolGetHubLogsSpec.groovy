@@ -1124,6 +1124,50 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('patternmode')
     }
 
+    def "cursor pages within the limit-trimmed candidate pool (#174)"() {
+        // get_hub_logs composes three size controls: limit (trims candidate pool),
+        // cursor (pages within that), and per-entry message truncation. This spec
+        // pins the limit-trims-first-then-cursor-pages ordering so a regression
+        // that flipped the order surfaces.
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs((0..<300).collect { i -> "App ${i}\tinfo\tmsg ${i}\t2026-04-21 10:00:${String.format('%02d', i % 60)}.000\ttype" })
+
+        when: 'limit=150 + cursor="" -- candidates are first 150 entries, page size 100'
+        def page1 = script.toolGetHubLogs([limit: 150, cursor: ''])
+
+        then:
+        page1.logs.size() == 100
+        page1.total == 150               // post-limit candidate pool, NOT raw 300
+        page1.nextCursor == '100'
+        page1.appliedLimit == 150        // visibility into the limit ceiling
+
+        when: 'last page within the limit pool'
+        def page2 = script.toolGetHubLogs([limit: 150, cursor: '100'])
+
+        then:
+        page2.logs.size() == 50
+        !page2.containsKey('nextCursor')
+    }
+
+    def "no-cursor call still emits appliedLimit but no nextCursor/total leakage"() {
+        // Backward-compat shape guard for callers who don't paginate.
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App\tinfo\tmsg\t2026-04-21 10:00:00.000\ttype'
+        ])
+
+        when:
+        def result = script.toolGetHubLogs([:])
+
+        then:
+        result.logs.size() == 1
+        result.appliedLimit == 100       // default
+        !result.containsKey('nextCursor')
+        !result.containsKey('total')
+    }
+
     def "empty patterns list is accepted and applies no pattern filter"() {
         given:
         settingsMap.enableHubAdminRead = true

@@ -32,6 +32,84 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
     // ---- labelFilter tests ----------------------------------------------
 
+    // ---- cursor pagination tests (#174) --------------------------------
+
+    def "cursor='' returns the first 50 devices + nextCursor (regression guard for the documented opt-in)"() {
+        // Pre-fix, the inline cursor parser called ''.toInteger() and threw -32602
+        // for the documented "pass '' for the first page" pattern.
+        given:
+        settingsMap.selectedDevices = (0..<120).collect { i -> makeDevice(id: i + 1, name: "D${i}", label: "Device-${String.format('%03d', i)}") }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, '')
+
+        then:
+        result.devices.size() == 50
+        result.nextCursor == '50'
+        result.total == 120
+    }
+
+    def "cursor iterates pages with no duplicates and last page omits nextCursor"() {
+        given:
+        settingsMap.selectedDevices = (0..<120).collect { i -> makeDevice(id: i + 1, name: "D${i}", label: "Device-${String.format('%03d', i)}") }
+
+        when:
+        def collected = []
+        String cursor = ''
+        int pages = 0
+        while (true) {
+            def page = script.toolListDevices(false, 0, 0, null, null, null, null, null, cursor)
+            collected.addAll(page.devices)
+            pages++
+            if (!page.nextCursor) break
+            cursor = page.nextCursor
+            assert pages < 10 : "pagination runaway"
+        }
+
+        then:
+        pages == 3
+        collected.size() == 120
+        (collected*.id as Set).size() == 120
+    }
+
+    def "cursor + non-zero offset is rejected (mutually exclusive)"() {
+        // Defends against silent cursor-override-offset surprise.
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, name: 'D1')]
+
+        when:
+        script.toolListDevices(false, 50, 0, null, null, null, null, null, '0')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('mutually exclusive')
+    }
+
+    def "non-numeric cursor throws with the list_devices-specific error message"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, name: 'D1')]
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, null, null, 'banana')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('cursor')
+        ex.message.contains('list_devices')
+    }
+
+    def "cursor + format='ids' emits nextCursor in the ids branch too"() {
+        given:
+        settingsMap.selectedDevices = (0..<120).collect { i -> makeDevice(id: i + 1, name: "D${i}", label: "Device-${String.format('%03d', i)}") }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'ids', null, '')
+
+        then:
+        result.deviceIds.size() == 50
+        result.nextCursor == '50'
+    }
+
     def "labelFilter: returns only devices whose label contains the substring"() {
         given:
         def kitchen = makeDevice(id: 1, label: 'Kitchen Light')

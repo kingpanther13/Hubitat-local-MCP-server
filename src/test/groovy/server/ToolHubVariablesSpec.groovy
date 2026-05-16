@@ -95,6 +95,52 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.hubVariables == []
         result.ruleVariables == []
         result.total == 0
+        // unconditional per-list totals so a caller can distinguish "no hub vars"
+        // from "no rule vars" without cursor context
+        result.totalHubVariables == 0
+        result.totalRuleVariables == 0
+    }
+
+    def "list_variables cursor pages hubVariables while ruleVariables stays in full (#174)"() {
+        given: '150 hub vars + 5 rule vars'
+        def allVars = (0..<150).collectEntries { i -> ["var_${String.format('%03d', i)}".toString(), [name: "var_${i}".toString(), type: 'Number', value: i, deviceId: null, attribute: null]] }
+        script.metaClass.getAllGlobalVars = { -> allVars }
+        stateMap.ruleVariables = [a: 1, b: 2, c: 3, d: 4, e: 5]
+
+        when: 'first page (cursor="")'
+        def page1 = script.toolListVariables([cursor: ''])
+
+        then:
+        page1.hubVariables.size() == 100
+        page1.ruleVariables.size() == 5   // ruleVariables stays in full
+        page1.totalHubVariables == 150
+        page1.totalRuleVariables == 5
+        page1.total == 155                 // legacy combined total
+        page1.nextCursor == '100'
+
+        when: 'last page'
+        def page2 = script.toolListVariables([cursor: '100'])
+
+        then:
+        page2.hubVariables.size() == 50
+        page2.ruleVariables.size() == 5
+        !page2.containsKey('nextCursor')
+    }
+
+    def "list_variables surfaces a hubVariablesError field when getAllGlobalVars throws (not silent)"() {
+        // Pre-fix this exception was only logged via logDebug; a caller couldn't
+        // distinguish "no hub variables" from "hub API broke".
+        given:
+        script.metaClass.getAllGlobalVars = { -> throw new RuntimeException('sandbox tightened: getAllGlobalVars not available') }
+
+        when:
+        def result = script.toolListVariables()
+
+        then:
+        result.hubVariables == []
+        result.hubVariablesError != null
+        result.hubVariablesError.contains('sandbox tightened')
+        result.totalHubVariables == 0
     }
 
     // -------- toolGetVariable --------

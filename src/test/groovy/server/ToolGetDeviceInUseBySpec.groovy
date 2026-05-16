@@ -286,6 +286,71 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "cursor pagination over appsUsing returns bounded page + total (#174)"() {
+        given: 'a heavily-shared device with 150 apps referencing it'
+        settingsMap.enableBuiltinApp = true
+        def mockDevice = [id: '10', label: 'Switch', name: 'Switch']
+        childDevicesList << mockDevice
+        def apps = (0..<150).collect { i -> [id: i + 100, name: 'Rule Machine', label: "Rule ${i}", trueLabel: "Rule ${i}", disabled: false] }
+        def responseJson = JsonOutput.toJson([extraBreadcrumb: 'Switch', appsUsing: apps, appsUsingCount: 150])
+        hubGet.register('/device/fullJson/10') { params -> responseJson }
+
+        when: 'first page (cursor="")'
+        def page1 = script.toolGetDeviceInUseBy([deviceId: '10', cursor: ''])
+
+        then:
+        page1.appsUsing.size() == 100
+        page1.total == 150
+        page1.nextCursor == '100'
+        // count reports the firmware-reported full count, NOT the page size --
+        // a paginating client needs the full count to know when to stop
+        page1.count == 150
+
+        when: 'last page (cursor=100)'
+        def page2 = script.toolGetDeviceInUseBy([deviceId: '10', cursor: '100'])
+
+        then:
+        page2.appsUsing.size() == 50
+        !page2.containsKey('nextCursor')
+    }
+
+    def "count vs appsUsing.size() mismatch surfaces countMismatch field (firmware truncation signal)"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        def mockDevice = [id: '11', label: 'Switch', name: 'Switch']
+        childDevicesList << mockDevice
+        // firmware reports 42 but only 3 entries in the array (truncation case)
+        def responseJson = JsonOutput.toJson([extraBreadcrumb: 'Switch', appsUsing: [[id: 1], [id: 2], [id: 3]], appsUsingCount: 42])
+        hubGet.register('/device/fullJson/11') { params -> responseJson }
+
+        when:
+        def result = script.toolGetDeviceInUseBy([deviceId: '11'])
+
+        then:
+        result.count == 42
+        result.appsUsing.size() == 3
+        result.countMismatch != null
+        result.countMismatch.contains('42')
+        result.countMismatch.contains('3')
+    }
+
+    def "appsUsing arriving as a Map is rejected with a clear error instead of producing all-null entries"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        def mockDevice = [id: '12', label: 'Switch', name: 'Switch']
+        childDevicesList << mockDevice
+        // firmware shape drift -- appsUsing as a Map would silently produce all-null entries
+        def responseJson = JsonOutput.toJson([extraBreadcrumb: 'Switch', appsUsing: [foo: 'bar'], appsUsingCount: 1])
+        hubGet.register('/device/fullJson/12') { params -> responseJson }
+
+        when:
+        def result = script.toolGetDeviceInUseBy([deviceId: '12'])
+
+        then:
+        result.success == false
+        result.error.toLowerCase().contains('unexpected appsusing shape')
+    }
+
     def "gateway dispatch via handleGateway routes correctly"() {
         given:
         settingsMap.enableBuiltinApp = true
