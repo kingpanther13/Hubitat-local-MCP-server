@@ -729,7 +729,33 @@ def handleToolsCall(msg) {
 
     try {
         def result = executeTool(toolName, args)
-        return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(result)]]])
+        // Universal fail-soft size guard for issue #174. Hub enforces a 128KB cap on
+        // JSON-RPC responses; once the result is serialized + text-escaped + wrapped in
+        // the MCP content envelope + the JSON-RPC envelope, the hub will return -32603
+        // (Internal error) without the catalog/result if we cross that. We threshold the
+        // inner-result JSON below the cap so the post-escape wire size still fits, and
+        // replace oversized results with a structured envelope the LLM can react to
+        // (filter narrower, pass cursor, set includeSettings=false, etc.) rather than
+        // having the call disappear into a hub error. Inlined `final int` because the
+        // Hubitat app-DSL rejects `private static final` at top level -- see
+        // handleToolsList for the same constraint.
+        final int responseSizeLimit = 110000
+        def jsonText = groovy.json.JsonOutput.toJson(result)
+        int bytes = jsonText.getBytes("UTF-8").length
+        if (bytes > responseSizeLimit) {
+            // For gateway-routed calls (manage_*), the inner sub-tool name appears in
+            // args.tool — use it for the suggestion lookup so the LLM gets the specific
+            // recovery hint (filter narrower, drop includeSettings, use saveAs, etc.)
+            // rather than a generic gateway-level message. The reported `tool` field
+            // surfaces the sub-tool when present so the LLM can immediately re-issue
+            // a narrower call without rediscovering which gateway it routed through.
+            String hintTool = (args?.tool instanceof String && args.tool) ? args.tool : toolName
+            mcpLog("warn", "server", "Tool ${hintTool} response too large (${bytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
+                details: [tool: hintTool, gateway: (hintTool != toolName) ? toolName : null, bytes: bytes, limit: responseSizeLimit]
+            ])
+            jsonText = groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(hintTool, bytes, responseSizeLimit))
+        }
+        return jsonRpcResult(msg.id, [content: [[type: "text", text: jsonText]]])
     } catch (IllegalArgumentException e) {
         mcpLog("warn", "server", "Validation error in ${toolName}: ${e.message}", null, [
             details: [tool: toolName, error: e.message]
@@ -747,6 +773,74 @@ def handleToolsCall(msg) {
         // MCP spec: tool execution errors are returned as successful results with isError flag
         return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
     }
+}
+
+// Fail-soft envelope for tools whose serialized response exceeded the hub's 128KB JSON-RPC
+// cap (see handleToolsCall guard). Carries the structured fields recommended in issue #174's
+// follow-up comment -- response_too_large + truncated + estimatedBytes + sizeLimitBytes --
+// plus a tool-specific `suggestion` so the LLM has an actionable retry shape rather than a
+// generic "too big" message. Surface is stable; new tools fall through to the default branch.
+def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) {
+    return [
+        response_too_large: true,
+        truncated: true,
+        estimatedBytes: actualBytes,
+        sizeLimitBytes: limitBytes,
+        tool: toolName,
+        suggestion: _responseTooLargeSuggestion(toolName)
+    ]
+}
+
+def _responseTooLargeSuggestion(String toolName) {
+    switch (toolName) {
+        case "list_devices":
+            return "Narrow with filter/labelFilter/capabilityFilter, project fields=['id','label',...], pass a smaller limit, or page with offset+limit. format='ids' is the cheapest shape."
+        case "list_installed_apps":
+            return "Set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
+        case "get_app_config":
+            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call list_app_pages then get_app_config with a specific pageName."
+        case "device_health_check":
+            return "Set includeHealthy=false (the default), narrow staleHours, or pass cursor to page through staleDevices."
+        case "get_memory_history":
+            return "Pass a smaller limit (e.g. 100). limit=0 returns the entire hub ring buffer which can be thousands of entries."
+        case "get_hub_logs":
+            return "Narrow with deviceId/appId/level/source/pattern, set a smaller limit, or filter by time window (since/until). The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
+        case "export_native_app":
+            return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
+        case "get_hub_info":
+        case "get_hub_jobs":
+        case "get_performance_stats":
+        case "get_set_hub_metrics":
+            return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
+        case "get_app_source":
+        case "get_driver_source":
+        case "get_library_source":
+            return "Source file exceeds the inline cap. Use list_files / read_file via the File Manager bridge, or fetch the source from version control instead."
+        default:
+            return "Narrow your query (filters, smaller limit, or projection of fields) or pass cursor if this tool supports pagination."
+    }
+}
+
+// Shared cursor parser for opt-in tool-level pagination. Matches the opaque-string contract
+// PR #180 established for tools/list: cursor is the numeric offset returned in a prior call's
+// nextCursor, null/"" means "start at 0", any other value is rejected with -32602. Each
+// caller still picks its own page size (the catalog uses 50; list-returning tools can pick
+// whatever keeps a typical page well under the 128KB cap).
+def _parseListCursor(cursor, int totalSize, String toolName) {
+    if (cursor == null || cursor == "") return 0
+    int offset
+    try {
+        offset = (cursor as String).toInteger()
+    } catch (NumberFormatException ignored) {
+        throw new IllegalArgumentException("cursor must be the opaque string returned by a prior ${toolName} nextCursor (got: ${cursor})")
+    }
+    if (offset < 0) {
+        throw new IllegalArgumentException("cursor ${cursor} is out of range (must be >= 0)")
+    }
+    if (offset >= totalSize && totalSize > 0) {
+        throw new IllegalArgumentException("cursor ${cursor} is out of range (size=${totalSize})")
+    }
+    return offset
 }
 
 // ==================== CATEGORY GATEWAY PROXY ====================
@@ -1789,7 +1883,7 @@ Verify rule after creation.""",
         ],
         [
             name: "device_health_check",
-            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call.",
+            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1797,7 +1891,8 @@ Verify rule after creation.""",
                     includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
                     pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call). Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only."],
                     pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
-                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false]
+                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
+                    cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
                 ]
             ]
         ],
@@ -2372,12 +2467,15 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
 
 Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount.
 
-Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).""",
+Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).
+
+Pass cursor (opaque string from a prior call's nextCursor) to page through the apps list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "Filter apps by category. Default: all"],
-                    includeHidden: [type: "boolean", description: "Include hidden apps (typically Hubitat internal). Default: false", default: false]
+                    includeHidden: [type: "boolean", description: "Include hidden apps (typically Hubitat internal). Default: false", default: false],
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full filtered list in a single response (subject to the universal 110KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string is treated as no cursor."]
                 ]
             ]
         ],
@@ -9188,6 +9286,7 @@ def toolForceGarbageCollection(args) {
 def toolDeviceHealthCheck(args) {
     def staleHours = args.staleHours ?: 24
     def includeHealthy = args.includeHealthy ?: false
+    def cursor = args.cursor
     def pingHosts = (args.pingHosts ?: []) as List
     // ?: treats explicit 0 as absent, so distinguish null from 0 here. Accept Number to keep
     // the friendly "between 1 and 5" message for non-numeric input instead of a cast exception.
@@ -9281,6 +9380,23 @@ def toolDeviceHealthCheck(args) {
     // Sort stale by most-stale first
     stale.sort { a, b -> (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) }
 
+    // Opt-in cursor pagination (#174). Default behaviour (no cursor) returns the full
+    // staleDevices + unknownDevices + healthyDevices payload as before. When cursor is
+    // supplied we page the stale list at 100 per page -- the typical "what's broken on
+    // the hub" caller wants the staleDevices list, and the universal response-size guard
+    // backstops the rest. unknownDevices and (optional) healthyDevices remain present
+    // alongside the page so the summary call still works in a single request; consumers
+    // iterating nextCursor get bounded stale pages without re-doing the discovery work.
+    def stalePage = stale
+    String nextCursor = null
+    if (cursor != null) {
+        int start = _parseListCursor(cursor, stale.size(), "device_health_check")
+        final int pageSize = 100
+        int end = Math.min(start + pageSize, stale.size())
+        stalePage = stale.subList(start, end)
+        if (end < stale.size()) nextCursor = end.toString()
+    }
+
     def result = [
         summary: [
             totalDevices: settings.selectedDevices.size(),
@@ -9290,9 +9406,12 @@ def toolDeviceHealthCheck(args) {
             staleThresholdHours: staleHours,
             checkedAt: formatTimestamp(now())
         ],
-        staleDevices: stale,
+        staleDevices: stalePage,
         unknownDevices: unknown
     ]
+    if (cursor != null && nextCursor != null) {
+        result.nextCursor = nextCursor
+    }
 
     if (includeHealthy) {
         result.healthyDevices = healthy
@@ -12203,6 +12322,7 @@ def toolListInstalledApps(args) {
     requireBuiltinApp()
     def filter = args?.filter ?: "all"
     def includeHidden = args?.includeHidden == true
+    def cursor = args?.cursor
 
     def validFilters = ["all", "builtin", "user", "disabled", "parents", "children"]
     if (!validFilters.contains(filter)) {
@@ -12268,12 +12388,38 @@ def toolListInstalledApps(args) {
             }
         }
 
-        return [
-            apps: filtered,
-            count: filtered.size(),
+        // Opt-in cursor pagination (#174). Default behaviour (no cursor) returns the
+        // full filtered list as before -- backward-compatible. When the LLM passes
+        // cursor, we hand back a fixed-size page plus nextCursor for iteration, matching
+        // the opaque-string contract PR #180 established for tools/list. Page size 50
+        // keeps a typical page well under the 128KB cap; the universal response-size
+        // guard at handleToolsCall remains a backstop for callers who do not paginate.
+        def fullList = filtered
+        def page = fullList
+        String nextCursor = null
+        if (cursor != null) {
+            int start = _parseListCursor(cursor, fullList.size(), "list_installed_apps")
+            final int pageSize = 50
+            int end = Math.min(start + pageSize, fullList.size())
+            page = fullList.subList(start, end)
+            if (end < fullList.size()) nextCursor = end.toString()
+        }
+
+        def result = [
+            apps: page,
+            count: page.size(),
             filter: filter,
             totalOnHub: flat.size()
         ]
+        if (cursor != null) {
+            result.total = fullList.size()
+            if (nextCursor != null) result.nextCursor = nextCursor
+        }
+        return result
+    } catch (IllegalArgumentException e) {
+        // Cursor validation throws IllegalArgumentException so the dispatch layer can
+        // surface it as -32602. Don't reframe as a transport failure.
+        throw e
     } catch (Exception e) {
         // The Built-in-App-Tools gate has already passed by the time we reach here, so
         // do not blame it in the note. Failures at this point come from the hub transport

@@ -218,6 +218,68 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.tools.size() > 0
     }
 
+    def "tools/call returns response_too_large envelope when serialized result exceeds the 110KB cap (#174)"() {
+        given: 'a tool whose serialized result will exceed the 110KB universal-guard threshold'
+        // Each room serializes to roughly 80-100 bytes once name + deviceCount + deviceIds
+        // overhead is counted; 2000 such rooms with a padded name push the toolListRooms
+        // result well past 110KB so the guard kicks in.
+        def padding = 'x' * 80
+        def bigRooms = (0..<2000).collect { i ->
+            [id: i as Long, name: "Room-${i}-${padding}"]
+        }
+        script.metaClass.getRooms = { -> bigRooms }
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 100, method: 'tools/call',
+            params: [name: 'list_rooms', arguments: [:]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'JSON-RPC success envelope — fail-soft is NOT a JSON-RPC error'
+        def response = mcpDriver.parseResponseJson()
+        response.jsonrpc == '2.0'
+        response.id == 100
+        response.error == null
+
+        and: 'inner content carries the structured response_too_large envelope (not isError)'
+        // isError is reserved for tool execution failure per the MCP spec; response-too-large
+        // is a soft outcome (the tool ran, the result just doesnt fit), and clients should
+        // be able to react to it programmatically rather than treating it as a hard failure.
+        response.result.isError != true
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.response_too_large == true
+        inner.truncated == true
+        inner.tool == 'list_rooms'
+        inner.sizeLimitBytes == 110000
+        inner.estimatedBytes instanceof Number
+        inner.estimatedBytes > inner.sizeLimitBytes
+        inner.suggestion instanceof String
+        !inner.suggestion.isEmpty()
+
+        and: 'no rooms leak through the envelope (the whole point of fail-soft)'
+        inner.rooms == null
+    }
+
+    def "tools/call passes small results through unchanged (size guard does not perturb normal traffic)"() {
+        given: 'a tiny rooms list well under the cap'
+        script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 101, method: 'tools/call',
+            params: [name: 'list_rooms', arguments: [:]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'the inner content is the real tool result, not the fail-soft envelope'
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.response_too_large == null
+        inner.rooms*.name == ['Den']
+    }
+
     def "tools/call list_rooms flows through render with an MCP content envelope"() {
         given: 'a stubbed getRooms returning a deterministic list'
         script.metaClass.getRooms = { ->

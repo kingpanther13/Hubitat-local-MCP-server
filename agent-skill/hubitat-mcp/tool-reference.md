@@ -169,7 +169,7 @@ Performance monitoring, health checks, diagnostics, radio info, memory / GC, and
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history. | Hub Admin Read |
-| `device_health_check` | Find stale/offline devices. | Hub Admin Read |
+| `device_health_check` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Hub Admin Read |
 | `custom_get_rule_diagnostics` | Comprehensive diagnostics for a specific custom rule. | None |
 | `get_zwave_details` | Z-Wave radio info. | Hub Admin Read |
 | `get_zigbee_details` | Zigbee radio info. | Hub Admin Read |
@@ -197,7 +197,7 @@ Read-only visibility into all installed apps (built-in + user): enumerate with p
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. | Built-in App Read |
+| `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. Optional `cursor` opt-in pagination (page size 50). | Built-in App Read |
 | `get_device_in_use_by` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Built-in App Read |
 | `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: list_installed_apps or list_rm_rules -> get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before get_app_config on multi-page apps. | Hub Admin Read |

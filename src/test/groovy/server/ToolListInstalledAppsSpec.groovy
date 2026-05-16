@@ -661,6 +661,163 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "cursor=null returns the full filtered list (backward compatible)"() {
+        // No cursor means full list, no nextCursor field, no total field --
+        // pre-#174 callers see no change. The universal size guard is the only
+        // safety net active in this mode.
+        given:
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: (0..<10).collect {
+                [data: [id: it, name: "App-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
+            }])
+        }
+
+        when:
+        def result = script.toolListInstalledApps([:])
+
+        then:
+        result.apps.size() == 10
+        result.count == 10
+        result.containsKey('nextCursor') == false
+        result.containsKey('total') == false
+    }
+
+    def "cursor='' starts at page 1 of 50 and emits nextCursor when more pages remain (#174)"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        // 120 apps -> 3 pages of 50 (50 + 50 + 20)
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: (0..<120).collect {
+                [data: [id: it, name: "App-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
+            }])
+        }
+
+        when:
+        def result = script.toolListInstalledApps([cursor: ''])
+
+        then:
+        result.apps.size() == 50
+        result.count == 50
+        result.total == 120
+        result.nextCursor == '50'
+        result.apps[0].id == 0
+        result.apps[49].id == 49
+    }
+
+    def "iterating cursor across pages returns each app exactly once and the last page omits nextCursor"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: (0..<120).collect {
+                [data: [id: it, name: "App-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
+            }])
+        }
+
+        when: 'iterate every page'
+        def collected = []
+        String cursor = ''
+        int pages = 0
+        while (true) {
+            def page = script.toolListInstalledApps([cursor: cursor])
+            collected.addAll(page.apps)
+            pages++
+            if (!page.nextCursor) break
+            cursor = page.nextCursor
+            assert pages < 10 : "pagination runaway"
+        }
+
+        then: 'exactly 3 pages, no duplicates, every app surfaced exactly once'
+        pages == 3
+        collected.size() == 120
+        (collected*.id as Set).size() == 120
+
+        and: 'last page omits nextCursor'
+        def lastPage = script.toolListInstalledApps([cursor: '100'])
+        lastPage.apps.size() == 20
+        !lastPage.containsKey('nextCursor')
+    }
+
+    def "cursor='not-a-number' throws IllegalArgumentException so dispatch surfaces -32602"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: [[data: [id: 1, name: 'App', type: 'X', user: false, disabled: false, hidden: false], children: []]]])
+        }
+
+        when:
+        script.toolListInstalledApps([cursor: 'banana'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('cursor')
+        ex.message.contains('list_installed_apps')
+    }
+
+    def "negative cursor is rejected as out of range (matches PR #180 contract)"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: [[data: [id: 1, name: 'App', type: 'X', user: false, disabled: false, hidden: false], children: []]]])
+        }
+
+        when:
+        script.toolListInstalledApps([cursor: '-1'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('out of range')
+    }
+
+    def "cursor past the end of a non-empty list is rejected as out of range"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: (0..<5).collect {
+                [data: [id: it, name: "App-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
+            }])
+        }
+
+        when:
+        script.toolListInstalledApps([cursor: '999'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('out of range')
+    }
+
+    def "cursor pagination respects filter (paginates the filtered set, not the raw catalog)"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+        // 60 builtin + 60 user apps -> filter=user should paginate 60 apps (not 120)
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps:
+                (0..<60).collect {
+                    [data: [id: it, name: "Builtin-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
+                } +
+                (100..<160).collect {
+                    [data: [id: it, name: "User-${it}", type: 'X', user: true, disabled: false, hidden: false], children: []]
+                }
+            ])
+        }
+
+        when:
+        def page1 = script.toolListInstalledApps([filter: 'user', cursor: ''])
+
+        then: 'page is 50 user apps, total is 60 (filtered set), nextCursor=50'
+        page1.apps.size() == 50
+        page1.total == 60
+        page1.nextCursor == '50'
+        page1.apps.every { it.id >= 100 }
+
+        when:
+        def page2 = script.toolListInstalledApps([filter: 'user', cursor: '50'])
+
+        then: 'remaining 10 user apps, no nextCursor'
+        page2.apps.size() == 10
+        !page2.containsKey('nextCursor')
+    }
+
     def "gateway dispatch via handleGateway also returns apps list"() {
         given:
         settingsMap.enableBuiltinApp = true

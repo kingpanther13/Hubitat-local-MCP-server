@@ -488,6 +488,63 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.healthyDevices[0].name == 'Fresh Sensor'
     }
 
+    def "device_health_check cursor paginates staleDevices and emits nextCursor (#174)"() {
+        given: '150 stale devices -> 2 pages of 100 + 50'
+        def nowMs = 1234567890000L
+        def staleDevs = (0..<150).collect { i ->
+            def d = new TestDevice(id: 1000 + i, name: "S${i}", label: "Stale Sensor ${i}")
+            d.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+            d
+        }
+        settingsMap.selectedDevices = staleDevs
+
+        when: 'first page (cursor="")'
+        def page1 = script.toolDeviceHealthCheck([staleHours: 24, cursor: ''])
+
+        then: 'page is bounded but the summary still reflects the full stale count'
+        page1.summary.staleCount == 150
+        page1.staleDevices.size() == 100
+        page1.nextCursor == '100'
+
+        when: 'second page (cursor=100)'
+        def page2 = script.toolDeviceHealthCheck([staleHours: 24, cursor: '100'])
+
+        then: 'remaining 50 stale devices, no nextCursor'
+        page2.staleDevices.size() == 50
+        !page2.containsKey('nextCursor')
+    }
+
+    def "device_health_check without cursor returns the full staleDevices list (backward compatible)"() {
+        given:
+        def nowMs = 1234567890000L
+        def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
+        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        settingsMap.selectedDevices = [stale]
+
+        when:
+        def result = script.toolDeviceHealthCheck([staleHours: 24])
+
+        then: 'no cursor=null leaks pagination fields'
+        result.staleDevices.size() == 1
+        result.containsKey('nextCursor') == false
+    }
+
+    def "device_health_check cursor rejects non-numeric values"() {
+        given:
+        def nowMs = 1234567890000L
+        def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
+        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        settingsMap.selectedDevices = [stale]
+
+        when:
+        script.toolDeviceHealthCheck([cursor: 'banana'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('cursor')
+        ex.message.contains('device_health_check')
+    }
+
     def "device_health_check pingHosts: happy + failure paths populate pingResults"() {
         given:
         def network = new NetworkUtilsMock()

@@ -26,6 +26,30 @@ Default is **ON** (gateways enabled). Existing installations keep the gateway be
 
 `tools/list` is cursor-paginated per the MCP protocol. Request a page with `params: { cursor: "<opaque-string>" }` (omit `cursor` for the first page); the response carries `tools: [...]` plus an optional `nextCursor` string when more pages exist. Page size is 50 — the gateway-mode catalog (~36 entries) fits in a single page so most MCP clients see no behaviour change, while the flat-mode catalog (100+ entries with the toggle off) returns multiple pages and the client iterates `nextCursor` until absent. Pagination keeps the response under the hub's 128KB JSON-RPC limit as the catalog grows. Cursor validation errors (`-32602`): non-numeric cursor and out-of-range cursor (including negative values) both surface as JSON-RPC `-32602 "Invalid params"` with a diagnostic message.
 
+### `tools/call` Response-Size Guard (v1.3.x+, fail-soft)
+
+Every `tools/call` response is measured before send. If the serialized JSON exceeds the universal 110 KB cap (chosen to leave room for text-escape + JSON-RPC envelope overhead inside the hub's 128 KB JSON-RPC limit), the inner content is replaced with a structured fail-soft envelope:
+
+```json
+{
+  "response_too_large": true,
+  "truncated": true,
+  "estimatedBytes": 145320,
+  "sizeLimitBytes": 110000,
+  "tool": "list_installed_apps",
+  "suggestion": "Set includeHidden=false (the default), narrow via filter ..., or pass cursor to page through the apps list."
+}
+```
+
+The outer JSON-RPC envelope still reports success (this is not a tool error — the tool ran, the result just didn't fit). Treat `response_too_large=true` as a hint to either (a) narrow your query — the per-tool `suggestion` field names the specific knob — or (b) opt into pagination on tools that support it. The `tool` field reflects the actual sub-tool on gateway-routed calls so you can re-issue a narrower call directly.
+
+Opt-in cursor pagination is currently wired into:
+
+- **`list_installed_apps`** — pass `cursor` to page the apps list at 50 per page; default behaviour (no cursor) returns the full filtered list and relies on the size guard as a backstop.
+- **`device_health_check`** — pass `cursor` to page the `staleDevices` array at 100 per page. `unknownDevices` (and `healthyDevices` when `includeHealthy=true`) stay in full alongside the page so the summary call still works in one request.
+
+Tools without an explicit `cursor` parameter (e.g. `get_app_config`, `export_native_app`, `get_hub_logs`, `get_memory_history`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, smaller `limit`, narrower filters) plus the universal size guard as the backstop.
+
 ## Device Authorization (CRITICAL)
 
 **Exact match rule:**
