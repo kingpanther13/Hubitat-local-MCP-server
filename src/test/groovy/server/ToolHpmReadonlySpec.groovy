@@ -2987,4 +2987,295 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         !dqw.containsKey('componentName')
         !dqw.containsKey('componentId')
     }
+
+    // -------------------------------------------------------------------------
+    // Dispatch-envelope counterparts (#187, #121)
+    //
+    // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
+    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // verified end-to-end alongside the direct-call golden paths above. The
+    // direct-call tests (above) and the existing manage_hpm gateway-shape tests
+    // (line ~2821) already pin tool-result deep structure; these tests add the
+    // missing JSON-RPC envelope + render(Map) pipeline coverage by routing the
+    // same scenarios through mcpDriver.callTool().
+    // -------------------------------------------------------------------------
+
+    @spock.lang.Unroll
+    def "list_hpm_packages via dispatch maps Hub Admin Read disabled to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = false
+
+        when:
+        def response = mcpDriver.callTool('list_hpm_packages', [:])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Hub Admin Read')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "list_hpm_packages via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: 'not-a-number'])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('hpmAppId must be numeric')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "list_hpm_packages via dispatch maps HPM not installed to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListNoHpm() }
+
+        when:
+        def response = mcpDriver.callTool('list_hpm_packages', [:])
+
+        then:
+        response.error?.code == -32602
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "list_hpm_packages via dispatch returns golden path package (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+
+        when:
+        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '37'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.count == 1
+        inner.packages[0].packageName == 'BOND Home Integration'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "list_hpm_packages via dispatch handles String-shaped manifests value (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJsonStringValue("37", onePackageManifests()) }
+
+        when:
+        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '37'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.count == 1
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "list_hpm_packages via dispatch returns count=0 when manifests entry is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJsonEmpty("37") }
+
+        when:
+        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '37'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.count == 0
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_hpm_drift via dispatch maps Hub Admin Read disabled to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = false
+
+        when:
+        def response = mcpDriver.callTool('get_hpm_drift', [:])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Hub Admin Read')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_hpm_drift via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: 'not-a-number'])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('hpmAppId must be numeric')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_hpm_drift via dispatch returns no-drift happy path (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
+
+        when:
+        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: '37'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.packagesChecked == 1
+        inner.packagesWithActionableDrift == 0
+        inner.totalDriftSignals == 0
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_hpm_drift via dispatch surfaces orphan-app signal (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        // heID 142 is NOT in the registry — orphan-app signal expected.
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["999"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
+
+        when:
+        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: '37'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.totalDriftSignals >= 1
+        inner.drift.any { it.signals?.any { s -> s.type == 'orphan-app' } }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_hpm_drift via dispatch handles packageFilter no-match (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "37", name: "Hubitat Package Manager", type: "Hubitat Package Manager", user: true], children: []]
+                ]
+            ])
+        }
+        hubGet.register('/hub2/userAppTypes') { makeUserAppTypes(["142"]) }
+        hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
+
+        when:
+        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: '37', packageFilter: 'NoSuchPackage'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.packagesChecked == 0
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "list_hpm_packages via dispatch maps wrong-type explicit hpmAppId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        // App 999 exists but is not HPM
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([
+                systemAppTypes: [],
+                userAppTypes  : [],
+                apps: [
+                    [data: [id: "999", name: "Simple Automation", type: "Simple Automation Rules", user: true], children: []]
+                ]
+            ])
+        }
+
+        when:
+        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '999'])
+
+        then:
+        response.error?.code == -32602
+
+        where:
+        useGateways << [true, false]
+    }
+}
 }
