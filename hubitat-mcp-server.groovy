@@ -684,7 +684,39 @@ def handleInitialize(msg) {
 }
 
 def handleToolsList(msg) {
-    return jsonRpcResult(msg.id, [tools: getToolDefinitions()])
+    // Cursor-based pagination for tools/list, matching the MCP protocol version this server
+    // declares in handleInitialize (see protocolVersion above). Cursor and nextCursor are
+    // the wire-contract pagination fields specified for tools/list and remain stable across
+    // MCP revisions, so this is forward-compatible with a protocol-version bump that keeps
+    // the same field shape. Page size 50 keeps the response under the hub's 128KB JSON-RPC
+    // limit even as the catalog grows -- a page of 50 tools at the current average
+    // description size (~1.2 KB) stays well within budget. Gateway-mode catalog (~36
+    // entries) fits in one page so there is no client-visible behaviour change. Flat-mode
+    // catalog (100+ entries) gets paginated; MCP clients iterate nextCursor per the protocol.
+    // (Inlined rather than declared `private static final` because Hubitat's app-DSL script
+    // context rejects access modifiers on top-level statements -- "Modifier 'private' not
+    // allowed here" at compile time.)
+    final int pageSize = 50
+    def all = getToolDefinitions()
+    def cursor = msg.params?.cursor
+    int startIdx = 0
+    if (cursor != null && cursor != "") {
+        try {
+            startIdx = (cursor as String).toInteger()
+        } catch (NumberFormatException ignored) {
+            return jsonRpcError(msg.id, -32602, "Invalid params: cursor must be the opaque string returned by a prior tools/list nextCursor (got: ${cursor})")
+        }
+        if (startIdx < 0 || startIdx >= all.size()) {
+            return jsonRpcError(msg.id, -32602, "Invalid params: cursor ${cursor} is out of range")
+        }
+    }
+    def endIdx = Math.min(startIdx + pageSize, all.size())
+    def page = all.subList(startIdx, endIdx)
+    def result = [tools: page]
+    if (endIdx < all.size()) {
+        result.nextCursor = endIdx.toString()
+    }
+    return jsonRpcResult(msg.id, result)
 }
 
 def handleToolsCall(msg) {
@@ -2401,7 +2433,7 @@ File components include only: id and name. Files carry no heID, required flag, o
 
 Response also includes: count (number of packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery on subsequent calls); skippedMalformed (array of manifest URLs whose top-level value was not a Map -- package skipped entirely); per-package skippedAppCount, skippedDriverCount, skippedFileCount (each omitted when 0) -- count of app/driver/file entries that were not Maps and thus skipped.
 
-If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call. When multiple HPM instances are found, throws IllegalArgumentException listing up to 10 instance IDs in bracket notation (e.g. [37, 99]) with a "and N more (total M)" suffix when more than 10 exist. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery").
+If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call. When multiple HPM instances are found, throws IllegalArgumentException listing up to 10 instance IDs in bracket notation (e.g. [37, 99]) with a "and N more (total M)" suffix when more than 10 exist. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery"). All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
 
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
@@ -2421,9 +2453,19 @@ Requires Hub Admin Read. HPM itself must be installed.""",
 
 Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced.
 
-If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages, including the multi-instance throw with up to 10 ids and an "and N more (total M)" suffix). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery").
+If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages, including the multi-instance throw with up to 10 ids and an "and N more (total M)" suffix). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed. All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
 
-Response fields: hpmAppId (HPM's installed-app ID, echoed so callers can cache it); packagesChecked (note: packagesChecked rather than count because packageFilter may narrow the set examined -- 'checked' reflects the filtered population, distinguishing it from list_hpm_packages's naive count); packagesWithActionableDrift (count of packages that have at least one actionable drift signal -- excludes data-quality-only packages); totalDriftSignals (counts only actionable drift signals -- missing-required, orphan-app, orphan-driver -- not data-quality warnings); drift[] (one entry per package with any signal or warning -- each has manifestUrl, packageName, version, signals[], and optionally dataQualityWarnings[], skippedAppCount, skippedDriverCount); summary sentence. Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only packages are present -- those entries appear for visibility but are not counted in the summary. If any data-quality warnings exist across packages, they are also aggregated at result.dataQualityWarnings[]. orphanDetection ({enabled: bool, reason?} -- enabled=false means the Apps Code registry fetch failed; reason discloses whether the body was empty or had an unexpected shape; when the shape was wrong the reason includes "expected JSON array, got Map" and a preview truncated at 200 chars with "(truncated)" appended). orphanDriverDetection ({enabled: bool, reason?} -- same structure as orphanDetection but for the Drivers Code registry). When one detection system is disabled the summary appends "(partial: <name> disabled this call -- see <name> reason)"; when both are disabled, "(partial: orphanDetection/orphanDriverDetection disabled this call -- see orphanDetection/orphanDriverDetection reasons)". Note: when orphanDetection.enabled or orphanDriverDetection.enabled is false (registry fetch failed), the corresponding orphan-* signals cannot fire. packagesWithActionableDrift will reflect only the missing-required signals that did evaluate, and may UNDER-COUNT the actual drift state. Inspect orphanDetection / orphanDriverDetection before treating packagesWithActionableDrift == 0 as 'clean'. limitations note. Currently the only drift signal types are: missing-required, orphan-app, orphan-driver. Data-quality issues (see below) are emitted in a separate dataQualityWarnings[] aggregate and do NOT inflate totalDriftSignals. Currently the only data-quality warning types are: heid-whitespace-normalized (whitespace-padded heID normalized to trimmed value; component is KEPT, drift checks continue), heid-non-scalar-dropped (heID is not a Number or String; component is DROPPED, no drift checks run), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; entry has only type, componentType, _warning -- no componentName/componentId because the source was not a Map). Each signals[] entry has: type, componentType, componentName, componentId, note. orphan-app and orphan-driver entries additionally carry heID (the orphaned id); missing-required entries omit heID (the value is null by definition of the signal). Top-level skippedMalformed[] lists manifest URLs whose value was not a Map. If packageFilter matched nothing: filterMatchedZero=true plus availablePackages[]; in this case packagesChecked == 0 and summary reads "No drift detected across 0 tracked packages."
+Response fields: hpmAppId (echoed for caching); packagesChecked (filtered population if packageFilter narrowed); packagesWithActionableDrift (packages with at least one actionable signal -- excludes data-quality-only); totalDriftSignals (count of actionable signals only); drift[] (per-package: manifestUrl, packageName, version, signals[], optional dataQualityWarnings[]/skippedAppCount/skippedDriverCount); summary; orphanDetection ({enabled, reason?}); orphanDriverDetection (same shape for /hub2/userDeviceTypes); optional top-level dataQualityWarnings[]; optional skippedMalformed[]. On zero-match filter: filterMatchedZero=true + availablePackages[]; packagesChecked == 0 and summary reads "No drift detected across 0 tracked packages."
+
+drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist (they appear for visibility, not counted in summary).
+
+signals[] entry shape: type, componentType, componentName, componentId, note. orphan-app/orphan-driver entries additionally carry heID (the orphaned id); missing-required omits heID (null by definition). If a manifest carried a non-null but invalid heID that was normalized to null, the original raw value is recoverable from the sibling dataQualityWarnings[] entry (join on componentType+componentName+componentId).
+
+Drift signal types: missing-required, orphan-app, orphan-driver (currently the only three). Data-quality warning types in dataQualityWarnings[] (do NOT inflate totalDriftSignals): heid-whitespace-normalized (padded heID normalized to trimmed value; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; lacks componentName/componentId because the source was not a Map).
+
+Partial-detection summary suffix: when one detection is disabled, summary appends "(partial: <name> disabled this call -- see <name> reason)"; when both, "reasons" (plural) with both names.
+
+Under-count caveats. (1) When orphanDetection.enabled or orphanDriverDetection.enabled is false, the corresponding orphan-* signals cannot fire and packagesWithActionableDrift reflects only packages with a missing-required signal -- inspect both detection fields before treating zero as 'clean'. (2) A required=true component with non-scalar heID emits heid-non-scalar-dropped and is dropped before the required check, so it does NOT contribute a missing-required signal -- inspect dataQualityWarnings[] for these entries on required components before treating zero as fully clean.
 
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
@@ -12212,6 +12254,7 @@ private Map _hpmFetchManifests(String hpmAppId) {
         throw new IllegalArgumentException("Failed to parse HPM statusJson [${e.class.simpleName}]: ${e.message ?: e.toString()}")
     }
     if (!(outer instanceof Map)) {
+        // actualTypeName diagnostic labels: "List", "null", or "non-object" (any non-Map, non-List, non-null scalar).
         def actualTypeName = (outer instanceof List) ? "List" : (outer == null ? "null" : "non-object")
         throw new IllegalArgumentException("Unexpected HPM statusJson shape: expected a JSON object, got ${actualTypeName}")
     }
@@ -12580,6 +12623,8 @@ def toolGetHpmDrift(args) {
                 return
             }
             def heIdNull = heId == null
+            // signals[] field-shape convention: orphan-* entries carry `heID` (the orphaned id);
+            // missing-required entries omit `heID` because the value is null by definition of the signal.
             if (a.required == true && heIdNull) {
                 signals << [
                     type         : "missing-required",
@@ -12606,6 +12651,7 @@ def toolGetHpmDrift(args) {
 
         // missing-required: required=true AND heID is null/absent (drivers)
         // orphan-driver: heID present but not in Drivers Code registry (/hub2/userDeviceTypes endpoint)
+        // signals[] field-shape convention identical to apps loop above: orphan-* carries heID, missing-required omits it.
         (manifest.drivers ?: []).each { d ->
             if (!(d instanceof Map)) {
                 skippedDriverCount++

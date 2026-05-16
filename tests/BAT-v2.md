@@ -2937,6 +2937,20 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Tool returns an empty packages list without an error (validation skipped). Error message is present but missing the actual type name.
 
+### T606 — tools/list pagination: cursor / nextCursor / out-of-range and negative cursor rejection
+
+```json
+{
+  "setup_prompt": "Disable the 'Consolidate tools behind category gateways' setting in the MCP app preferences so tools/list returns the flat catalog (100+ entries). Note the original value so it can be restored.",
+  "test_prompt": "Invoke the MCP method tools/list twice: first with no cursor, then with the nextCursor string returned by the first call. Confirm the first call's response contains both 'tools' and 'nextCursor'; the second call returns more tools and either continues or terminates pagination (nextCursor absent). Then call tools/list with cursor='-5' and confirm the response is a JSON-RPC error with code -32602 and a message containing 'out of range'. Then call tools/list with cursor='not-a-number' and confirm a JSON-RPC error with code -32602 and a message containing 'cursor'.",
+  "teardown_prompt": "Re-enable the 'Consolidate tools behind category gateways' setting if it was originally on."
+}
+```
+
+**Expected**: First call returns a `tools` array of length <= 50 plus a `nextCursor` string. Iterating until `nextCursor` is absent yields the full flat catalog (no duplicates, no missing tools). Negative cursor `-5` and non-numeric cursor `'not-a-number'` both return JSON-RPC `-32602 "Invalid params"` (not `-32603`, not a tool-result `success=false` map). The cursor is an opaque string per MCP spec; clients should not parse it.
+
+**Failure modes**: Pagination not engaged (single response with all tools and no `nextCursor` — page size regressed past the catalog count; size-guard cliff returns). `nextCursor` returned as an Integer instead of String (spec violation). Negative cursor surfaces as `-32603` (IndexOutOfBoundsException leaked) instead of `-32602`. Duplicate tool names across pages (off-by-one cursor arithmetic).
+
 ---
 
 ## Changes from BAT v1
