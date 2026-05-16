@@ -1480,6 +1480,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.3.6** - PR #187; PR #174
 - **v1.3.5** - feat: optimistic-lock + self-update guard for update_app_code / update_driver_code. PRs: [#189](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/189)
 - **v1.3.4** - feat: fold location event history into get_device_history. PRs: [#188](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/188)
 - **v1.3.3** - feat(manage_virtual_device): allow custom-driver instantiation via {namespace, name}. PRs: [#168](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/168)
