@@ -4,28 +4,7 @@ import spock.lang.Shared
 import support.TestChildApp
 import support.ToolSpecBase
 
-/**
- * Spec for the manage_app_driver_code gateway tools in hubitat-mcp-server.groovy:
- *
- * - toolInstallApp          -> install_app         (source|sourceFile; post-install verification)
- * - toolInstallDriver       -> install_driver      (source|sourceFile; bulk installs[]; post-install verification)
- * - toolUpdateAppCode       -> update_app_code     (three source modes: source, sourceFile, resave)
- * - toolUpdateDriverCode    -> update_driver_code  (three source modes + bulk updates array)
- * - toolDeleteApp           -> delete_app
- * - toolDeleteDriver        -> delete_driver
- * - toolRestoreItemBackup   -> restore_item_backup
- *
- * Every tool here runs through requireHubAdminWrite -- golden-path tests seed:
- *   settingsMap.enableHubAdminWrite = true
- *   stateMap.lastBackupTimestamp    = 1234567890000L   (matches fixed now())
- *   args.confirm                    = true
- *
- * Mocking strategy (see docs/testing.md):
- *   - hubInternalGet       -- routed by HarnessSpec via hubGet.register(path) closures.
- *   - hubInternalPostForm  -- script-defined helper, stubbed per-test on script.metaClass
- *                            (returns [status, location, data]).
- *   - uploadHubFile / downloadHubFile -- purely dynamic, stubbed per-test on script.metaClass.
- */
+// Specs for the manage_app_driver_code gateway tools. Mocking conventions in docs/testing.md.
 class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // Stubbed self-app so the self-update guard has an app.id to compare against.
@@ -1523,7 +1502,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.error.toLowerCase().contains('optimistic-lock conflict')
         result.appId == '50'
 
-        and: 'backup IS taken even on conflict -- intentional pin: the 1h backup cache makes the parallel-agent retry free, and the first caller losing the race still has a recovery point if the human then overwrites'
+        and: 'backup IS taken even on conflict (intentional, 1h cache makes retry free)'
         uploads == ['mcp-backup-app-50.groovy']
     }
 
@@ -1540,10 +1519,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             [status: 200, location: null, data: '{"status": "success"}']
         }
 
-        when: 'caller sends "8" (string) and hub is at 7 -- if coercion no-oped, "8" != 7 would also be unequal but currentVersion would also be String. Asserting the conflict envelope carries int values proves both sides coerced.'
+        when: 'caller sends "8" (string) and hub is at 7'
         def result = script.toolUpdateAppCode([appId: '50', source: 's', expectedVersion: '8', confirm: true])
 
-        then:
+        then: 'envelope carries Integer values (proves both sides coerced, not String compared)'
         postCount == 0
         result.conflict == true
         result.expectedVersion == 8
@@ -1566,8 +1545,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('expectedVersion must be an integer')
-        ex.message.contains('not-a-number')
-        ex.message.contains('String')   // type info preserved
+        ex.message.contains('not-a-number')   // input value preserved
+        ex.message.contains('For input string')   // original NumberFormatException cause preserved
     }
 
     def "update_app_code rejects explicit-null expectedVersion (silent-overwrite footgun)"() {
@@ -1644,12 +1623,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateAppCode([appId: '50', resave: true, expectedVersion: 7, confirm: true])
 
-        then: 'resave path: one fetch for resave (which captures freshVersion) + one for backupItemSource = 2; NOT 3'
+        then: 'resave-fetch + backup-fetch only; no extra version GET'
         getCount == 2
         result.success == true
         captured.body.version == 7
 
-        when: 'mismatch path on resave: same single resave-fetch drives the lock'
+        when:
         getCount = 0
         captured.clear()
         def conflict = script.toolUpdateAppCode([appId: '50', resave: true, expectedVersion: 99, confirm: true])
@@ -1694,13 +1673,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             [status: 200, location: null, data: '{"status": "error", "errorMessage": "compile failed"}']
         }
 
-        when: 'lock passes (expectedVersion matches), but the hub then returns a compile error on POST'
+        when:
         def result = script.toolUpdateAppCode([appId: '50', source: 'broken', expectedVersion: 1, confirm: true])
 
-        then:
+        then: 'conflict keys must not leak into POST-failure shape'
         result.success == false
         result.error.contains('compile failed')
-        !result.containsKey('conflict')           // conflict shape MUST NOT leak into POST-failure path
+        !result.containsKey('conflict')
         !result.containsKey('expectedVersion')
         !result.containsKey('currentVersion')
     }
@@ -1778,7 +1757,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         enableHubAdminWrite()
 
-        when: 'top-level expectedVersion alongside updates[] is the silent-overwrite footgun the mutex must catch'
+        when:
         script.toolUpdateDriverCode([
             updates: [[driverId: '1', source: 'a']],
             expectedVersion: 5,
@@ -1789,6 +1768,39 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('expectedVersion')
         ex.message.contains('updates[]')
+    }
+
+    def "update_driver_code bulk per-item explicit-null expectedVersion is rejected (same footgun as single-mode)"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        hubGet.register('/driver/ajax/code') { params ->
+            def id = params.id?.toString()
+            if (id == '301') return '{"status": "ok", "version": 1, "source": "a"}'
+            if (id == '302') return '{"status": "ok", "version": 2, "source": "b"}'
+            null
+        }
+        def postedIds = []
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postedIds << body.id
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def result = script.toolUpdateDriverCode([
+            updates: [
+                [driverId: '301', source: 'a', expectedVersion: null],
+                [driverId: '302', source: 'b']
+            ],
+            confirm: true
+        ])
+
+        then: 'null entry fails per-item without bypassing the lock; sibling still applies'
+        result.success == false
+        result.updates[0].success == false
+        result.updates[0].error.contains('expectedVersion was supplied as null')
+        postedIds == ['302']
+        result.updates[1].success == true
     }
 
     def "update_driver_code bulk mode mixes a per-item conflict with a per-item thrown error in the same batch"() {
@@ -1825,6 +1837,44 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.updates[1].error.contains("'driverId'")
         !result.updates[1].containsKey('conflict')   // non-conflict failure stays clean
         result.updates[2].success == true
+    }
+
+    def "update_app_code accepts Long expectedVersion (common JSON parser output)"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "src"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def captured = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            captured.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when: 'caller passes a Long (e.g. parser produced Long for an integer JSON literal)'
+        def result = script.toolUpdateAppCode([appId: '50', source: 's', expectedVersion: 5L, confirm: true])
+
+        then:
+        result.success == true
+        captured.body.version == 5
+    }
+
+    def "update_app_code rejects non-coercible Map expectedVersion (exercises ClassCastException leg of the union catch)"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "src"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
+        when:
+        script.toolUpdateAppCode([appId: '50', source: 's', expectedVersion: [bad: 1], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('expectedVersion must be an integer')
+        ex.message.contains('Cannot coerce a map')   // ClassCastException cause preserved
     }
 
     // -------- update_app_code: self-update guard --------
@@ -1977,6 +2027,29 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == true
+    }
+
+    def "update_app_code self-update guard fails closed when app context is unavailable (refuses + ERROR-logs)"() {
+        given:
+        enableHubAdminWrite()
+        def originalId = sharedAppStub.id
+        sharedAppStub.id = null   // simulate the rare lifecycle window where app.id is unbound
+        def errorLogs = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            if (level == 'error' && component == 'hub-admin') errorLogs << msg
+        }
+
+        when:
+        script.toolUpdateAppCode([appId: '50', source: 's', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('app context is unavailable')
+        ex.message.contains('Retry the call')
+        errorLogs.any { it.contains('refusing') && it.contains('appId=50') }
+
+        cleanup:
+        sharedAppStub.id = originalId
     }
 
     def "update_driver_code bulk mode: a per-item driverId equal to app.id still succeeds (type=='app' guard does not fire on driver bulk)"() {

@@ -1,6 +1,8 @@
 package server
 
 import groovy.json.JsonOutput
+import spock.lang.Shared
+import support.TestChildApp
 import support.TestDevice
 import support.ToolSpecBase
 
@@ -23,6 +25,14 @@ import support.ToolSpecBase
  * Version History. Issue #76 tracks the backfill.
  */
 class RegressionsFromHistorySpec extends ToolSpecBase {
+
+    // update_app_code self-update guard reads app.id and fails closed when unavailable.
+    // appId='50' (the value used by the v0.4.6 regression specs below) does not match.
+    @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
+
+    def setupSpec() {
+        appExecutor.getApp() >> sharedAppStub
+    }
 
     // --- formatAge singular grammar (v0.7.7) --------------------------------
     //
