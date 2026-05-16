@@ -1480,6 +1480,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.3.4** - feat: fold location event history into get_device_history. PRs: [#188](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/188)
 - **v1.3.3** - feat(manage_virtual_device): allow custom-driver instantiation via {namespace, name}. PRs: [#168](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/168)
 - **v1.3.2** - test: cut gradle test suite time ~87% via per-JVM compile cache + strict-mode CI matrix; feat: add identify-hub LED option to get_hub_info and device_health_check; feat(tools/list, manage_hpm): cursor pagination + R7 doc/spec follow-up. PRs: [#184](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/184), [#186](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/186), [#180](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/180)
 - **v1.3.1** - feat: rework generate_bug_report for issue templates, scoped logs, public-safe mode. PRs: [#182](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/182)
