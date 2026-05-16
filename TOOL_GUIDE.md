@@ -101,10 +101,17 @@ All Hub Admin Write tools require these steps:
 - Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_driver_source`. If the hub returns no item ID at all (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
+**update_app_code** (via `manage_app_driver_code`)
+- Supply `appId` + one of `source` / `sourceFile` / `resave`.
+- Self-update guard: refuses to overwrite the MCP server's own app source unless **Enable Developer Mode Tools** is on in the MCP Rule Server app settings. A bad self-update bricks the MCP loop (recovery requires the Hubitat UI or SSH). Every self-update attempt — blocked OR allowed — is audit-logged at WARN under the `hub-admin` component. Driver updates and updates to other apps are unaffected.
+- Optional `expectedVersion` (integer): optimistic-lock guard. When supplied, the update aborts with `success: false` + `conflict: true` (plus echoed `expectedVersion` + `currentVersion`) if the hub's version differs — no POST happens. Use when an agent's read-modify-write spans turns or runs alongside other agents/tools that could mutate the same app. Backup still happens on conflict (intentional: the 1h backup cache makes the parallel-agent retry free, and the first caller losing the race still has a recovery point).
+  - Explicit `expectedVersion: null` is rejected (silent-overwrite footgun). Omit the field entirely to skip the lock.
+- Requires Hub Admin Write + confirm + backup <24h.
+
 **update_driver_code** (via `manage_app_driver_code`)
-- Single-driver mode (unchanged): supply `driverId` + one of `source` / `sourceFile` / `resave`.
-- Bulk mode: supply an `updates` array of objects, each with `driverId` and one of `sourceFile` / `source` / `resave`. Cannot combine with single-driver fields.
-  - Continue-on-error: errors on individual items do not abort remaining updates. Returns a per-item status array.
+- Single-driver mode (unchanged): supply `driverId` + one of `source` / `sourceFile` / `resave`. Optional `expectedVersion` (integer): same optimistic-lock semantics as `update_app_code` — conflict envelope carries `driverId` instead of `appId`.
+- Bulk mode: supply an `updates` array of objects, each with `driverId` and one of `sourceFile` / `source` / `resave`, plus optional per-item `expectedVersion`. Cannot combine with single-driver fields (including a top-level `expectedVersion` — put it on each entry instead).
+  - Continue-on-error: errors on individual items do not abort remaining updates. Returns a per-item status array. Per-item conflicts (failed lock) carry `conflict: true` + `expectedVersion` + `currentVersion`; per-item thrown errors carry `error` + `errorClass`. Other items in the batch still apply.
   - Top-level `success: true` only if ALL items succeeded.
   - Practical limit: ~20 drivers per call (each update is a sequential on-hub compilation, ~1-5 seconds each).
   - Token-economy pattern: upload all updated driver files via local CLI (curl -F / PowerShell Invoke-RestMethod), then call bulk `update_driver_code` once with all `{driverId, sourceFile}` pairs.

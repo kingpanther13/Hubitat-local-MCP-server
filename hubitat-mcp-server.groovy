@@ -2117,7 +2117,7 @@ PREFERRED workflow for any iterative app dev (avoids reading source into agent t
 Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
 Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.
 
-Self-update guard: refuses to overwrite the MCP server's own app source unless 'Developer Mode Tools' is enabled in MCP rule app settings (a bad self-update bricks the MCP loop).""",
+Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on (a bad self-update bricks the MCP loop). Optional expectedVersion arg enables optimistic locking -- supply it to abort cleanly on a concurrent edit instead of overwriting.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2125,7 +2125,7 @@ Self-update guard: refuses to overwrite the MCP server's own app source unless '
                     source: [type: "string", description: "Inline Groovy source. ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial apps, prefer sourceFile (recipe in tool description)."],
                     sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
                     resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub -- no source touches the agent transcript."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. If supplied, the update aborts with success:false + conflict:true when the hub's current version differs from this value. Use when read-modify-write spans multiple turns or runs alongside other agents/tools that could mutate the same app."],
+                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. If supplied, the update aborts with success:false + conflict:true when the hub's current version differs."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
@@ -2153,7 +2153,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     source: [type: "string", description: "Inline Groovy source (single-driver mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
                     sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
                     resave: [type: "boolean", description: "Re-save the current source code without changes (single-driver mode). Runs entirely on-hub -- no source touches the agent transcript."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard (single-driver mode). If supplied, the update aborts with success:false + conflict:true when the hub's current version differs from this value. Use when read-modify-write spans multiple turns or runs alongside other agents/tools that could mutate the same driver."],
+                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard (single-driver mode). Update aborts with success:false + conflict:true on version mismatch. Bulk mode: put expectedVersion inside each updates[] entry instead."],
                     updates: [
                         type: "array",
                         description: "BULK MODE -- USE THIS WHEN UPDATING >1 DRIVER (single round-trip vs N separate calls; same arg structure, just an array). Each entry: {driverId, sourceFile|source|resave, optional expectedVersion}. Cannot mix with single-driver fields (driverId/source/sourceFile/resave/expectedVersion). Continue-on-error: failures on individual items don't abort the rest (including per-item version conflicts -- other items still apply). Practical limit ~20 drivers/call. Authorization is controlled by top-level 'confirm' only; item-level 'confirm' is ignored. PREFER each item's sourceFile (after CLI upload per recipe in tool description) over inline source.",
@@ -2164,7 +2164,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                                 sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED -- upload first via CLI per tool description recipe to bypass agent transcript)"],
                                 source: [type: "string", description: "Inline source (stubs only -- fills agent transcript)"],
                                 resave: [type: "boolean", description: "Re-save without changes (no source touched)"],
-                                expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only. Aborts this entry (success:false, conflict:true) on version mismatch without affecting other entries in the bulk batch."]
+                                expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only. On mismatch the entry fails with conflict:true; sibling entries still apply."]
                             ],
                             required: ["driverId"]
                         ]
@@ -10193,6 +10193,35 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
+    // Validate source mode early (presence only) so subsequent guards / I/O fire against a well-formed call.
+    if (!args.resave && !args.sourceFile && !args.source) {
+        throw new IllegalArgumentException("One of 'source', 'sourceFile', or 'resave' is required")
+    }
+
+    // Explicit-null expectedVersion is the silent-overwrite footgun this PR exists to prevent
+    // (a templated null arg would otherwise be treated as "no lock requested" and let the write through).
+    if (args.containsKey('expectedVersion') && args.expectedVersion == null) {
+        throw new IllegalArgumentException("expectedVersion was supplied as null. Omit the field entirely to skip the optimistic-lock check, or pass an integer.")
+    }
+
+    // Self-update guard: blocks overwriting our own app source; a bad self-update bricks the MCP loop
+    // (recovery requires the Hubitat UI or SSH). Dev mode opts into the risk for in-place iteration.
+    // Runs after pure-arg validation but before any I/O, so blocked self-updates don't pull source or
+    // hit the hub. If `app` is unavailable (test harness / unusual lifecycle window) the guard skips
+    // with a WARN so a post-mortem has evidence rather than silent bypass.
+    if (type == "app") {
+        def selfAppId = app?.id?.toString()
+        if (selfAppId == null) {
+            mcpLog("warn", "hub-admin", "update_app_code: self-update guard SKIPPED for appId=${itemId} -- app context unavailable (app=${app})")
+        } else if (itemId.toString() == selfAppId) {
+            if (!settings.enableDeveloperMode) {
+                mcpLog("warn", "hub-admin", "update_app_code: self-update of MCP server app (id=${itemId}) BLOCKED -- Developer Mode is off")
+                throw new IllegalArgumentException("update_app_code refuses to overwrite the MCP server's own app source (appId=${itemId}) while Developer Mode is off. A bad self-update can brick the MCP loop -- enable 'Developer Mode Tools' in the MCP Rule Server app settings to permit self-updates.")
+            }
+            mcpLog("warn", "hub-admin", "update_app_code: self-update of MCP server app (id=${itemId}) ALLOWED -- Developer Mode is on")
+        }
+    }
+
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
     def updatePath = (type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
 
@@ -10221,30 +10250,16 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
         sourceCode = new String(bytes, "UTF-8")
         mcpLog("info", "hub-admin", "Read ${sourceCode.length()} chars from ${args.sourceFile}")
-    } else if (args.source) {
-        // Direct source mode
+    } else {
+        // Direct source mode -- presence already validated above.
         sourceMode = "source"
         sourceCode = args.source
-    } else {
-        throw new IllegalArgumentException("One of 'source', 'sourceFile', or 'resave' is required")
     }
 
-    // Self-update guard: refuse to overwrite the MCP server app's own source unless Developer Mode is on.
-    // A bad self-update bricks the MCP loop -- recovery requires the Hubitat UI or SSH. Dev-mode users
-    // explicitly opt into this risk (it's needed for the agent-driven dev iteration loop on this app itself).
-    // Placed AFTER pure arg validation (appId/source/sourceFile/resave) so shape errors fire first
-    // regardless of which appId triggered them. `app?.id` is null-safe purely for the test harness --
-    // in a live Hubitat app `app` is always non-null.
-    def selfAppId = app?.id?.toString()
-    if (type == "app" && selfAppId != null && itemId.toString() == selfAppId) {
-        if (!settings.enableDeveloperMode) {
-            mcpLog("warn", "hub-admin", "update_app_code: self-update of MCP server app (id=${itemId}) BLOCKED -- Developer Mode is off")
-            throw new IllegalArgumentException("update_app_code refuses to overwrite the MCP server's own app source (appId=${itemId}) while Developer Mode is off. A bad self-update can brick the MCP loop -- enable 'Developer Mode Tools' in MCP rule app settings to permit self-updates.")
-        }
-        mcpLog("warn", "hub-admin", "update_app_code: self-update of MCP server app (id=${itemId}) ALLOWED -- Developer Mode is on")
-    }
-
-    // Back up current source for safety (may use 1-hour cache — that's fine for backup purposes)
+    // Back up current source for safety (may use 1-hour cache — that's fine for backup purposes).
+    // Backup runs even when the optimistic lock will reject: the 1h cache makes the parallel-agent case
+    // free (second caller hits cache), and the first caller's backup is the recovery path if the human
+    // then loses their concurrent edit.
     def itemBackup = backupItemSource(type, itemId.toString())
 
     // For optimistic locking, use fresh version if available (resave mode already fetched it).
@@ -10268,18 +10283,24 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         throw new IllegalArgumentException("Could not determine current version for ${type} ID ${itemId}. The ${type} may not exist.")
     }
 
-    // Optimistic-lock conflict check: caller-asserted expectedVersion catches the race where the agent
-    // read source at vN, the LLM mutated it for ~30s, and something else (another agent in a bulk run,
-    // a parallel tool call, a human in the editor) bumped the version in the meantime. Without this the
-    // tool would silently overwrite the other change.
-    if (args.expectedVersion != null) {
+    // Optimistic-lock conflict check: caller-asserted expectedVersion catches the read-modify-write race
+    // where the agent reads source at vN, mutates it, and something else (another agent, a parallel tool
+    // call, a human in the editor) bumps the version before write. Without this the tool would silently
+    // overwrite the other change.
+    if (args.containsKey('expectedVersion')) {
         def expectedVersionInt
         try {
             expectedVersionInt = args.expectedVersion as Integer
-        } catch (Exception coerceErr) {
-            throw new IllegalArgumentException("expectedVersion must be an integer (got '${args.expectedVersion}')")
+        } catch (NumberFormatException | ClassCastException coerceErr) {
+            throw new IllegalArgumentException("expectedVersion must be an integer (got '${args.expectedVersion}', type=${args.expectedVersion?.class?.simpleName}): ${coerceErr.message}")
         }
-        def currentVersionInt = currentVersion as Integer
+        def currentVersionInt
+        try {
+            currentVersionInt = currentVersion as Integer
+        } catch (NumberFormatException | ClassCastException currErr) {
+            mcpLog("error", "hub-admin", "Hub returned non-integer version for ${type} ${itemId}: ${currentVersion}; aborting optimistic-lock evaluation to avoid an unguarded write")
+            throw new IllegalArgumentException("Cannot evaluate expectedVersion: hub returned a non-integer current version (${currentVersion}). Update aborted to avoid an unguarded write.")
+        }
         if (expectedVersionInt != currentVersionInt) {
             mcpLog("warn", "hub-admin", "${type} update ID ${itemId} aborted: expectedVersion=${expectedVersionInt} but currentVersion=${currentVersionInt} (concurrent edit detected)")
             return [
@@ -10365,8 +10386,8 @@ def toolUpdateDriverCode(args) {
 
     // Bulk mode validation: updates array and single-driver fields are mutually exclusive
     if (args.updates != null) {
-        if (args.driverId != null || args.source != null || args.sourceFile != null || args.resave != null) {
-            throw new IllegalArgumentException("Cannot supply both 'updates' (bulk mode) and single-driver fields (driverId/source/sourceFile/resave). Use one mode or the other.")
+        if (args.driverId != null || args.source != null || args.sourceFile != null || args.resave != null || args.expectedVersion != null) {
+            throw new IllegalArgumentException("Cannot supply both 'updates' (bulk mode) and single-driver fields (driverId/source/sourceFile/resave/expectedVersion). Use one mode or the other -- expectedVersion belongs on each entry inside updates[] for bulk.")
         }
         if (!(args.updates instanceof List)) {
             throw new IllegalArgumentException("'updates' must be an array of objects, each with 'driverId' and 'sourceFile' (or 'source' or 'resave').")
