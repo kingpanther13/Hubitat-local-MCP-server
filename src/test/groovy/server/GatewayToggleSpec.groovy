@@ -8,7 +8,7 @@ import support.ToolSpecBase
 class GatewayToggleSpec extends ToolSpecBase {
 
     def "default (no setting saved): tools/list contains gateway entries and hides proxied sub-tools"() {
-        given: 'no useGateways setting — clear any harness CI-mode pre-seed to honor the test name'
+        given: 'no useGateways setting — clear any harness flat-mode pre-seed to honor the test name'
         settingsMap.remove('useGateways')
 
         when:
@@ -33,7 +33,7 @@ class GatewayToggleSpec extends ToolSpecBase {
 
     def "default (null) and explicit useGateways=true produce identical tool lists"() {
         given:
-        settingsMap.remove('useGateways')  // override harness CI-mode pre-seed
+        settingsMap.remove('useGateways')  // override harness flat-mode pre-seed
         def defaultNames = script.getToolDefinitions()*.name as Set
 
         when:
@@ -182,7 +182,7 @@ class GatewayToggleSpec extends ToolSpecBase {
 
     def "useGateways=true (default): calling a gateway name still dispatches normally"() {
         given:
-        settingsMap.useGateways = true  // override harness CI-mode pre-seed
+        settingsMap.useGateways = true  // override harness flat-mode pre-seed
         script.metaClass.getRooms = { ->
             [[id: 1L, name: 'Living Room']]
         }

@@ -488,6 +488,48 @@ class SubscribeTriggerIntegrationSpec extends RuleHarnessSpec {
         !atomicStateMap.durationTimers.containsKey(triggerKey)
     }
 
+    def "duration trigger multi-device cancel-on-flip: triggerKey from deviceIds.sort().join('_') matches on lookup"() {
+        // Guards the deviceIds-based triggerKey construction at
+        // hubitat-mcp-rule.groovy:2767 (arming) and :2811 (cancel). The
+        // single-device case is covered above; this exercises the
+        // (t.deviceIds?.sort()?.join("_")) branch, which produces a different
+        // key shape ("duration_1_2_motion") and is independently susceptible
+        // to the GString-vs-String key-match bug.
+        given:
+        def sensorA = new TestDevice(id: 1, label: 'Motion A',
+            attributeValues: [motion: 'active'])
+        def sensorB = new TestDevice(id: 2, label: 'Motion B',
+            attributeValues: [motion: 'active'])
+        def targetDevice = Spy(TestDevice) { getId() >> 99 }
+        parent = new TestParent(devices: [1L: sensorA, 2L: sensorB, 99L: targetDevice])
+        settingsMap.ruleEnabled = true
+        settingsMap.ruleName = 'Multi-device duration'
+        atomicStateMap.triggers = [[
+            type: 'device_event', deviceIds: ['1', '2'],
+            attribute: 'motion', value: 'active', duration: 30
+        ]]
+        atomicStateMap.actions = [[
+            type: 'device_command', deviceId: 99, command: 'on'
+        ]]
+        script.subscribeToTriggers()
+
+        when: 'one of the devices matches — handler arms the runIn timer'
+        subscriptions.fireEvent(script, sensorA, 'motion', 'active')
+
+        then: 'timer keyed by sorted-joined deviceIds'
+        atomicStateMap.durationTimers?.size() == 1
+        atomicStateMap.durationTimers.keySet().iterator().next() == 'duration_1_2_motion'
+        0 * targetDevice.on()
+
+        when: 'condition flips false on sensorA — cancel path reconstructs the same key shape'
+        sensorA.attributeValues.motion = 'inactive'
+        subscriptions.fireEvent(script, sensorA, 'motion', 'inactive')
+
+        then: 'cancel-on-flip clears the timer (GString-vs-String regression guard for deviceIds path)'
+        atomicStateMap.durationTimers == [:]
+        0 * targetDevice.on()
+    }
+
     def "device_event with unknown deviceId skips the subscribe and logs a warn, does not throw"() {
         given: 'trigger references deviceId 99 but the parent has no such device'
         parent = new TestParent(devices: [:])

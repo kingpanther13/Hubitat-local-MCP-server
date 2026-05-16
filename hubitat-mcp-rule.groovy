@@ -2765,8 +2765,10 @@ def handleDeviceEvent(evt) {
         // Check if this trigger has a duration requirement
         if (matchingTrigger.duration && matchingTrigger.duration > 0) {
             def triggerDeviceKey = matchingTrigger.deviceId ?: (matchingTrigger.deviceIds?.sort()?.join("_") ?: "unknown")
-            // Coerce to String — atomicState persistence stringifies map keys,
-            // so a GString here would never .equals() the stored key on lookup.
+            // Coerce to String — a GString and a String are not `==` in Groovy
+            // even when their text matches, and the arming/cancel branches
+            // construct independent GString instances. Without .toString(),
+            // timers.get(triggerKey) silently returns null on the cancel path.
             String triggerKey = "duration_${triggerDeviceKey}_${matchingTrigger.attribute}".toString()
 
             // Initialize state maps if needed
@@ -3408,7 +3410,8 @@ def executeAction(action, actionIndex = null, evt = null) {
         case "delay":
             if (actionIndex != null) {
                 def delaySeconds = Math.max(1, Math.min(86400, (action.seconds as Integer) ?: 1)) // 1s to 24h max
-                def delayId = action.delayId ?: "delay_${now()}"
+                // Same GString-as-map-key footgun as durationTimers (see ~2770) — coerce to String.
+                String delayId = (action.delayId ?: "delay_${now()}").toString()
                 def handlerName = "resumeDelayedActions"
                 log.debug "Scheduling delayed continuation in ${delaySeconds} seconds (delayId: ${delayId})"
                 // Serialize key event fields so %device%/%value% substitutions work after delay
