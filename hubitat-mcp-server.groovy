@@ -1379,7 +1379,7 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    identifyHub: [type: "boolean", description: "Blink the hub's identify LED (blue → red → green) to physically locate which hub answered. Default: false.", default: false]
+                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false]
                 ]
             ]
         ],
@@ -1766,7 +1766,7 @@ Verify rule after creation.""",
                     includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
                     pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call). Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only."],
                     pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
-                    identifyHub: [type: "boolean", description: "Blink the hub's identify LED (blue → red → green) to physically locate which hub answered. Default: false.", default: false]
+                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false]
                 ]
             ]
         ],
