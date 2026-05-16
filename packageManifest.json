@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-05-15",
+    "dateReleased": "2026-05-16",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v1.3.0 - 2026-05-15\n- chore(sandbox_lint): enforce tool-count consistency + sync doc drift (#165)\n  - Sandbox lint now enforces tool-count consistency between Groovy source-of-truth and docs. Drift fails CI the same way version-string drift does today.\n  - All quoted tool counts across user-facing docs are now synced to canonical (101 total / 35 on `tools/list`, 23 core + 12 gateway tools).\n- feat(manage_hpm): HPM read-only gateway — list_hpm_packages + get_hpm_drift (#167)\n  - New `manage_hpm` MCP gateway for AI-driven introspection of Hubitat Package Manager state.\n  - `list_hpm_packages` — enumerate all HPM-tracked packages with their components.\n  - `get_hpm_drift` — detect packages whose required components are missing or whose `heID`s no longer exist in Apps Code, plus per-package data-quality warnings.",
+    "releaseNotes": "v1.3.1 - 2026-05-16\n- feat: rework generate_bug_report for issue templates, scoped logs, public-safe mode (#182)\n  - `generate_bug_report` now files bug, enhancement, or agent-behavior issues — pass `issueType` to choose.\n  - The returned `submitUrl` is a prefilled GitHub issue link with the title already filled in. Paste the report content into the form's \"Agent report output\" field.\n  - Recent error logs are scoped to the failure when you pass `failingTool` / `ruleId` / `nativeAppId`; `includeUnrelatedRecentLogs=true` keeps the broader log dump.\n  - New `privacyMode: \"public\"` produces a public-safe report (hub name placeholder, raw logs suppressed). Always review before posting — tool-side sanitization is a best-effort assist, not a guarantee.\n  - Three new GitHub issue forms make it easier to file structured bug / enhancement / agent-behavior reports.\n\nv1.3.0 - 2026-05-15\n- chore(sandbox_lint): enforce tool-count consistency + sync doc drift (#165)\n  - Sandbox lint now enforces tool-count consistency between Groovy source-of-truth and docs. Drift fails CI the same way version-string drift does today.\n  - All quoted tool counts across user-facing docs are now synced to canonical (101 total / 35 on `tools/list`, 23 core + 12 gateway tools).\n- feat(manage_hpm): HPM read-only gateway — list_hpm_packages + get_hpm_drift (#167)\n  - New `manage_hpm` MCP gateway for AI-driven introspection of Hubitat Package Manager state.\n  - `list_hpm_packages` — enumerate all HPM-tracked packages with their components.\n  - `get_hpm_drift` — detect packages whose required components are missing or whose `heID`s no longer exist in Apps Code, plus per-package data-quality warnings.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
