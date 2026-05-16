@@ -487,6 +487,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/advanced/freeOSMemory` | Free memory in KB (text) |
 | `/hub/advanced/internalTempCelsius` | CPU temperature (text) |
 | `/hub/advanced/databaseSize` | Database size in KB (text) |
+| `/hub/advanced/blinkLED` | Fires the hub's identify-LED sequence (blue → red → green) once. Returns the literal text `true`. Single GET, no body, self-resetting. Surfaced via the opt-in `identifyHub` flag on `get_hub_info` and `device_health_check`. |
 | `/hub2/userAppTypes` | Apps Code definitions (JSON array: id, name, namespace). Each entry is a code definition, NOT a running instance -- child-app templates appear here even with zero active instances. Distinct from the `userAppTypes[]` key embedded in `/hub2/appsList` (which is the instance tree). Used by `list_hub_apps` and `get_hpm_drift` (orphan-app detection). |
 | `/hub2/userDeviceTypes` | Drivers Code definitions (JSON array: id, name, namespace, capabilities, lastModified, usedBy[]). Despite the name, this is the Drivers Code registry (code definitions, not device instances). Used by `list_hub_drivers` and `get_hpm_drift` (orphan-driver detection). Note: hub uses `userDeviceTypes` for the driver registry while apps use `userAppTypes` -- the naming asymmetry is a hub convention, not an error. |
 | `/hub2/zwaveInfo` | Z-Wave radio details (JSON) |

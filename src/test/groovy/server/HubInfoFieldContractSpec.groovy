@@ -75,6 +75,77 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == false
     }
 
+    // -------- toolGetHubInfo identify-LED --------
+
+    def "getHubInfo identifyHub=true fires /hub/advanced/blinkLED and reports identifyHubTriggered=true"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
+
+        when:
+        def result = script.toolGetHubInfo([identifyHub: true])
+
+        then:
+        result.identifyHubTriggered == true
+        !result.containsKey('identifyHubError')
+        hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "getHubInfo without identifyHub arg does not hit the blinkLED endpoint or emit the field"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        // No hubGet.register — the no-call assertion is the strict-stronger guarantee;
+        // field-absent alone would miss a fire-and-forget regression that calls the
+        // endpoint without ever writing the result field.
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        !result.containsKey('identifyHubTriggered')
+        !result.containsKey('identifyHubError')
+        !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "getHubInfo identifyHub=false does not hit the blinkLED endpoint"() {
+        given:
+        sharedLocation.hub = new TestHub()
+
+        when:
+        def result = script.toolGetHubInfo([identifyHub: false])
+
+        then:
+        !result.containsKey('identifyHubTriggered')
+        !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "getHubInfo identifyHub=true with endpoint failure surfaces identifyHubTriggered=false and identifyHubError"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/advanced/blinkLED') { params -> throw new RuntimeException('LED endpoint missing on this firmware') }
+
+        when:
+        def result = script.toolGetHubInfo([identifyHub: true])
+
+        then:
+        result.identifyHubTriggered == false
+        result.identifyHubError == 'LED endpoint missing on this firmware'
+    }
+
+    def "getHubInfo identifyHub=true with null-message exception falls back to e.toString()"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/advanced/blinkLED') { params -> throw new IOException() }
+
+        when:
+        def result = script.toolGetHubInfo([identifyHub: true])
+
+        then:
+        result.identifyHubTriggered == false
+        result.identifyHubError != null
+        result.identifyHubError.toLowerCase().contains('ioexception')
+    }
+
     // -------- toolGetHubDetails --------
 
     def "getHubDetails includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
