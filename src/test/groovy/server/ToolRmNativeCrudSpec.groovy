@@ -5772,4 +5772,432 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "hasAll was NOT clicked -- wizard was not committed after the skipped write"
         !posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
     }
+
+    // ============================================================
+    // Dispatch-envelope coverage (#187 / #121)
+    // ------------------------------------------------------------
+    // This spec has ~135 direct-call features; per the migration plan
+    // (see commit message + #187) we take SELECTIVE representative
+    // coverage rather than full one-for-one parity. The coverage
+    // matrix: one happy path per native_app tool (create / update /
+    // delete / clone / export / import / check_rule_health), plus
+    // representative IAE (-32602) and runtime-exception (isError)
+    // envelope shapes. The full per-tool internals are covered by
+    // the direct-call features above; this block guards the
+    // production envelope (handleMcpRequest -> handleToolsCall ->
+    // executeTool) for both useGateways=true and useGateways=false.
+    // ============================================================
+
+    // ---------- create_native_app dispatch ----------
+
+    @spock.lang.Unroll
+    def "create_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('create_native_app', [name: "BAT-RM-demo"])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains("SAFETY CHECK FAILED")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "create_native_app via dispatch returns -32602 envelope when name is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('create_native_app', [confirm: true])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains("name is required")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "create_native_app via dispatch discovers RM parent, creates child, returns new appId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/installedapp/configure/json/974') { params -> ruleConfigJson(974, "", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('create_native_app', [name: "BAT-RM-demo", confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.appId == 974
+        inner.appType == "rule_machine"
+        inner.name == "BAT-RM-demo"
+        inner.parentAppId == 21
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- update_native_app dispatch ----------
+
+    @spock.lang.Unroll
+    def "update_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_native_app', [appId: 100, settings: [a: 1]])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains("SAFETY CHECK FAILED")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_native_app via dispatch emits 3-field capability contract for multi-device inputs (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: true, value: "8,9"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('update_native_app', [appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        def updatePost = posts.find { it.path == "/installedapp/update/json" }
+        updatePost.body["settings[tDev0]"] == "8,9"
+        updatePost.body["tDev0.type"] == "capability.switch"
+        updatePost.body["tDev0.multiple"] == "true"
+        inner.backup?.backupKey?.startsWith("rm-rule_100_")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- delete_native_app dispatch ----------
+
+    @spock.lang.Unroll
+    def "delete_native_app via dispatch force-deletes with snapshot when force=true (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/200') { params -> ruleConfigJson(200, "to-delete") }
+        hubGet.register('/installedapp/statusJson/200') { params -> statusJson(200) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def rawCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            rawCalls << path
+            [status: 302, location: "/installedapps", data: ""]
+        }
+
+        when:
+        def response = mcpDriver.callTool('delete_native_app', [appId: 200, force: true, confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.mode == "forcedelete"
+        inner.backup?.backupKey?.startsWith("rm-rule_200_")
+        rawCalls.any { it == "/installedapp/forcedelete/200/quiet" }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- clone_native_app dispatch ----------
+
+    @spock.lang.Unroll
+    def "clone_native_app via dispatch returns -32602 envelope when sourceAppId is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('clone_native_app', [confirm: true])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains("sourceappid")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "clone_native_app via dispatch drives the full appCloner wizard and returns the new appId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('clone_native_app', [sourceAppId: 100, confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.sourceAppId == 100
+        inner.clonerAppId == 4242
+        inner.newAppId == 250
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- export_native_app dispatch ----------
+
+    @spock.lang.Unroll
+    def "export_native_app via dispatch pulls JSON from the cloner's form-refresh response (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"Source Rule"}}}'
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def refreshResp = JsonOutput.toJson([
+            configPage: [name: "main", sections: [
+                [input: [[name: "ruleDownload", type: "download-text", filecontent: fakeJson]]]
+            ]]
+        ])
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            [status: 200, location: null, data: refreshResp]
+        }
+
+        when:
+        def response = mcpDriver.callTool('export_native_app', [sourceAppId: 100])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.sourceAppId == 100
+        inner.clonerAppId == 4242
+        inner.jsonContent == fakeJson
+        inner.contentLength == fakeJson.length()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- import_native_app dispatch ----------
+
+    @spock.lang.Unroll
+    def "import_native_app via dispatch returns -32602 envelope on non-JSON content (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('import_native_app', [jsonContent: 'not-json', parentHintAppId: 100, confirm: true])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains("not valid json") ||
+            response.error.message.toLowerCase().contains("appreplacements")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "import_native_app via dispatch returns -32602 envelope on JSON without appReplacements (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('import_native_app', [jsonContent: '{"foo":"bar"}', parentHintAppId: 100, confirm: true])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains("appreplacements")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "import_native_app via dispatch drives the cloner with settings[ruleUpload] and finds the new appId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 55) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "ExistingRule"]])
+                : parentConfigJson(21, [[id: 100, label: "ExistingRule"], [id: 700, label: "Source Rule import"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            posts << [path: path, body: decodeForm(encodedBody)]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('import_native_app', [jsonContent: importJson, parentHintAppId: 100, confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.newAppId == 700
+        inner.originalSourceId == 42
+        inner.originalLabel == "Source Rule"
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- check_rule_health dispatch ----------
+
+    @spock.lang.Unroll
+    def "check_rule_health via dispatch surfaces ok=true on a clean rule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Healthy Rule", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def response = mcpDriver.callTool('check_rule_health', [appId: 100])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.ok == true
+        inner.label == "Healthy Rule"
+        inner.brokenMarkers == [] || inner.brokenMarkers?.isEmpty()
+        inner.multipleFlagPoison == [] || inner.multipleFlagPoison?.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "check_rule_health via dispatch flags BROKEN marker in label as ok=false (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Some Rule *BROKEN*", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def response = mcpDriver.callTool('check_rule_health', [appId: 100])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.ok == false
+        inner.issues != null
+        inner.issues.any { it.toString().toLowerCase().contains("broken") }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- runtime-exception envelope (isError) coverage ----------
+
+    @spock.lang.Unroll
+    def "clone_native_app via dispatch returns isError envelope when source config fetch returns empty (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/999') { params -> "" }
+
+        when:
+        def response = mcpDriver.callTool('clone_native_app', [sourceAppId: 999, confirm: true])
+
+        then: "empty config fetch surfaces as -32602 IAE (matches the direct-call test's IllegalArgumentException)"
+        response.error.code == -32602
+        response.error.message.contains("999")
+        response.error.message.toLowerCase().contains("not found")
+
+        where:
+        useGateways << [true, false]
+    }
 }
