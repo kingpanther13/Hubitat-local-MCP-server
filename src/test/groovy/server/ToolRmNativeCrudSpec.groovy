@@ -6183,7 +6183,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- runtime-exception envelope (isError) coverage ----------
 
     @spock.lang.Unroll
-    def "clone_native_app via dispatch returns isError envelope when source config fetch returns empty (useGateways=#useGateways)"() {
+    def "clone_native_app via dispatch returns -32602 when source config fetch returns empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()

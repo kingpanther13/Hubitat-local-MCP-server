@@ -86,7 +86,7 @@ abstract class HarnessSpec extends Specification {
     // Per-JVM cache for the compiled script. sandbox.run() (parse + AST
     // + compile) is multi-second on the large server file and used to
     // fire once per spec class — amortising it across every subclass
-    // is the dominant test-suite speedup in this PR.
+    // is the dominant test-suite speedup.
     //
     // The AppExecutor Mock is built fresh per spec class (Spock 2.x
     // ties Mocks to their creating Spec's MockController via thread-
