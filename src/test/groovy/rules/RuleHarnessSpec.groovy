@@ -337,11 +337,13 @@ abstract class RuleHarnessSpec extends Specification {
         // full rationale.
         GroovySystem.metaClassRegistry.removeMetaClass(script.getClass())
         script.setMetaClass(null)
+        support.HarnessSpec.checkMetaClassClean(script, 'RuleHarnessSpec')
         // Re-run per-test wires (metaClass overrides etc.) after clearing
         // state. Called from setup() rather than setupSpec() so subclass
         // overrides can capture the current feature instance's fields.
         wireOverrides()
     }
+
 
     protected void wireOverrides() {
         // All runtime shims (state, atomicState, log, now) route through

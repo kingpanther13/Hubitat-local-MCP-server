@@ -272,12 +272,53 @@ abstract class HarnessSpec extends Specification {
         // intercepting calls in subsequent specs.
         GroovySystem.metaClassRegistry.removeMetaClass(script.getClass())
         script.setMetaClass(null)
+        checkMetaClassClean(script, 'HarnessSpec')
         // Re-run metaClass + reflective wires in setup (not setupSpec) so
         // closures capture the *current* Specification instance. This lets
         // subclasses override wireScriptOverrides() with closures that
         // reference non-@Shared spec fields (e.g. per-feature stubs) and
         // still see their own test's values.
         wireScriptOverrides()
+    }
+
+    /**
+     * Strict-mode invariant check: after both metaClass wipes, before any
+     * harness re-installs, the script's metaClass should have no per-
+     * instance ExpandoMetaClass entries left over from prior tests. Off by
+     * default (saves a small per-test cost); enable with
+     * `-PharnessStrictMetaClass=true` when chasing a metaClass-leak
+     * regression. Loud failure pinpoints which dynamic surface escaped the
+     * wipe so future maintainers can extend setup() rather than archaeology
+     * a flaky cross-spec test.
+     *
+     * Static so {@link StrictMetaClassCheckSpec} can exercise the failure
+     * path directly without standing up a full Spec lifecycle.
+     */
+    static void checkMetaClassClean(Object scriptInstance, String specName) {
+        if (System.getProperty('harnessStrictMetaClass') != 'true') return
+        // `getMetaClass()` returns a HandleMetaClass wrapper (a
+        // DelegatingMetaClass) for objects whose metaClass has been
+        // touched via the DSL; unwrap to the underlying ExpandoMetaClass
+        // before inspecting expando entries. Without this unwrap the
+        // instanceof check returns false on real script instances and
+        // the strict assertion silently no-ops — exactly the failure
+        // mode this helper exists to surface.
+        def mc = scriptInstance.getMetaClass()
+        while (mc instanceof groovy.lang.DelegatingMetaClass) {
+            mc = mc.getAdaptee()
+        }
+        if (!(mc instanceof ExpandoMetaClass)) return
+        def methods = mc.expandoMethods
+        def props = mc.expandoProperties
+        if (!methods.isEmpty() || !props.isEmpty()) {
+            throw new IllegalStateException(
+                "Per-instance metaClass not clean after dual wipe in ${specName}.setup(). " +
+                "Surviving expando methods=${methods*.name}, expando properties=${props*.name}. " +
+                "Some override escaped both removeMetaClass(class) and setMetaClass(null) — " +
+                "likely set on a supertype (HubitatAppScript.metaClass.X instead of " +
+                "script.metaClass.X) or via a static holder. Extend setup() to cover the " +
+                "new surface.")
+        }
     }
 
     protected void wireScriptOverrides() {
