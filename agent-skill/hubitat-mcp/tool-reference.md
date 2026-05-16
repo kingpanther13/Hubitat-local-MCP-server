@@ -36,8 +36,8 @@ For the most authoritative reference, call `get_tool_guide` via MCP.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `manage_virtual_device` | Create or delete MCP-managed virtual devices (action="create"/"delete", 15 types available). | Hub Admin Write |
-| `list_virtual_devices` | List all MCP-managed virtual devices. | None |
+| `manage_virtual_device` | Create or delete MCP-managed virtual devices (action="create"/"delete"). For create, provide exactly ONE of: `deviceType` (15 built-in types -- not-found is isError platform error) or `customDriver={namespace, name}` (installed driver -- not-found is -32602 input error with list_hub_drivers hint). The two are mutually exclusive (including blank/whitespace `deviceType` with `customDriver`). Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias), capabilities, commands, attributes}}`. Delete response: `{success, deviceId, deviceNetworkId, deviceLabel, message}`. | Hub Admin Write |
+| `list_virtual_devices` | List all MCP-managed virtual devices. Response: `{devices: [...], count, message}`. Per-device: `driverNamespace` (authoritative for devices created by this tool -- namespace persisted at create time; falls back to best-effort derivation that may report `"hubitat"` for devices created by other means), `driverType`, `typeName` (deprecated alias for `driverType` -- prefer `driverType`), `currentStates` (map of attribute-name to current-value). | None |
 
 ### System Tools (8)
 

@@ -17,6 +17,7 @@ class TestDevice {
     String name
     String label
     String roomName
+    String deviceNetworkId
     List capabilities = []
     List supportedAttributes = []
     List supportedCommands = []
@@ -25,6 +26,22 @@ class TestDevice {
     // null so the ?.each in the tool is a no-op; tests that care can set
     // a list of maps like [[name: 'switch', value: 'on']].
     List currentStates = null
+
+    // Hub property read by toolListVirtualDevices (device.typeName ?: device.name).
+    // Default null so callers that don't set it fall through to the device.name fallback.
+    String typeName = null
+
+    // Device data values -- backing store for getDataValue/updateDataValue.
+    // toolCreateVirtualDevice persists mcpDriverNamespace here; toolListVirtualDevices reads it back.
+    Map dataValues = [:]
+
+    Object getDataValue(String key) {
+        dataValues[key]
+    }
+
+    void updateDataValue(String key, String value) {
+        dataValues[key] = value
+    }
 
     // Events returned by eventsSince(). Default [] keeps existing specs green;
     // rule-engine device_was tests seed this with maps like

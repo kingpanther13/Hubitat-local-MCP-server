@@ -343,6 +343,38 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `manage_virtual_device` with `action="delete"`. Deletes virtual device.
 
+### T19d — manage_virtual_device customDriver (not found error)
+
+```json
+{
+  "test_prompt": "Create a test device using namespace 'fake-namespace' and driver name 'fake-driver', label it 'BAT Custom Driver Test'."
+}
+```
+
+**Expected**: Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace: "fake-namespace", name: "fake-driver"}`. Regardless of the hub's internal exception class, the tool surfaces `IllegalArgumentException` (JSON-RPC -32602) containing "list_hub_drivers". Agent reports the failure to the user and does NOT silently substitute a different device.
+
+### T19e — manage_virtual_device customDriver mutually exclusive
+
+```json
+{
+  "test_prompt": "Create a virtual switch called 'BAT Exclusive Test' using deviceType='Virtual Switch' AND also set customDriver={namespace:'x',name:'y'}."
+}
+```
+
+**Expected**: Tool surfaces `IllegalArgumentException` (JSON-RPC -32602) with "mutually exclusive" in the message. Agent reports the error.
+
+### T19f — manage_virtual_device customDriver success path (conditional)
+
+```json
+{
+  "setup_prompt": "Use manage_apps_drivers(tool='list_hub_drivers') to find any installed custom driver. If none are installed, skip this test and say 'no custom drivers available'.",
+  "test_prompt": "Create a virtual device using the first available custom driver (use its namespace and name), label it 'BAT Custom Driver Success Test' (include confirm=true). Then delete it.",
+  "teardown_prompt": "Delete the virtual device 'BAT Custom Driver Success Test' if it still exists."
+}
+```
+
+**Expected** (conditional -- skip if no custom drivers installed): Calls `manage_virtual_device` with `action="create"` and `customDriver={namespace, name}` from a real installed driver. Response includes `driverNamespace` matching the supplied namespace, `driverType` matching the supplied name, and `typeName` as a deprecated alias equal to `driverType`. Agent then calls `manage_virtual_device(action="delete")` to clean up.
+
 ---
 
 ## Section 2: Gateway Discovery Tests
@@ -2256,7 +2288,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Section | Tests | Purpose |
 |---------|-------|---------|
-| 1. Core Tools | T01-T19c | 23 core tools work directly |
+| 1. Core Tools | T01-T19f | 23 core tools work directly |
 | 2. Gateway Discovery | T20-T31, T35-T59 | LLM finds all proxied tools without hints |
 | 3. Gateway Behavior | T60-T65 | Catalog mode, skip-catalog, errors |
 | 4. Natural Language | T70-T79 | Casual prompts route correctly |
@@ -2288,7 +2320,7 @@ All 103 tools are covered by at least one test, excluding the destructive operat
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 202 test scenarios** (107 explicit + 65 natural language + 21 built-in-app integration + 9 library management) plus 13 excluded destructive operations documented for manual testing
+**Total: 205 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management) plus 13 excluded destructive operations documented for manual testing
 
 ---
 

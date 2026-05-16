@@ -119,7 +119,9 @@ All Hub Admin Write tools require these steps:
 
 ## Virtual Device Types
 
-When using `manage_virtual_device` (action: "create"), these types are available:
+`manage_virtual_device` (action: "create") supports two mutually exclusive driver selection methods:
+
+**Option A: deviceType** -- built-in Hubitat virtual drivers (pass one of the values below):
 
 | Type | Description | Common Use Case |
 |------|-------------|-----------------|
@@ -138,6 +140,23 @@ When using `manage_virtual_device` (action: "create"), these types are available
 | Virtual Water Sensor | wet/dry | Water leak simulation |
 | Virtual Omni Sensor | multi-purpose | Combined sensor types |
 | Virtual Fan Controller | fan speed control | Fan simulation |
+
+**Option B: customDriver** -- user-installed drivers (pass `{namespace, name}`); mutually exclusive with `deviceType`:
+```json
+{
+  "action": "create",
+  "deviceLabel": "Kitchen Humidifier Test",
+  "customDriver": { "namespace": "level99-vesync", "name": "Levoit Classic 200S Humidifier" },
+  "confirm": true
+}
+```
+Use `manage_apps_drivers(tool="list_hub_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found (or any other hub error), the tool surfaces an `IllegalArgumentException` (-32602) pointing to `list_hub_drivers`. If a built-in `deviceType` is not found on the hub, the tool surfaces an isError platform error (firmware gap, not a caller error).
+
+**Create response shape** (both modes): `{ success, message, tips, device: { id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes } }`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
+
+**Delete response shape** (`action=delete`): `{ success, deviceId, deviceNetworkId, deviceLabel, message }`.
+
+**List response shape** (`list_virtual_devices`): `{ devices: [...], count, message }`. Per-device: `{ id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates }`. `currentStates` is a map of attribute-name to current-value. Note: create returns device state as `attributes` (list) while list returns it as `currentStates` (map) -- different shapes for the same concept because create returns the freshly-read attribute list and list returns a compact state map. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP device tools without manual selection
