@@ -57,6 +57,9 @@ while :; do
     --argjson off "$OFFSET" \
     --argjson len "$CHUNK_LEN" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"get_app_source",arguments:{appId:$id,offset:$off,length:$len}}}')
+  if [ "$OFFSET" -eq 0 ]; then
+    echo "DEBUG first-chunk request: $RPC"
+  fi
   RESP=$(mcp_call "$RPC")
   TEXT=$(echo "$RESP" | jq -r '.result.content[0].text // empty')
   if [ -z "$TEXT" ]; then
@@ -69,6 +72,13 @@ while :; do
     echo "::error::get_app_source failed: $(echo "$TEXT" | jq -r '.error // empty')"
     rm -f "$PRE_SOURCE_FILE"
     exit 1
+  fi
+  # Debug: log shape on the first iteration so we can diagnose unexpected
+  # response envelopes (e.g. after #174's response-size guard rollout).
+  if [ "$OFFSET" -eq 0 ]; then
+    echo "DEBUG first-chunk envelope keys: $(echo "$TEXT" | jq -r 'keys | join(",")')"
+    echo "DEBUG first-chunk meta: success=$(echo "$TEXT" | jq -r '.success // null') totalLength=$(echo "$TEXT" | jq -r '.totalLength // null') chunkLength=$(echo "$TEXT" | jq -r '.chunkLength // null') hasMore=$(echo "$TEXT" | jq -r '.hasMore // null') sourceLen=$(echo "$TEXT" | jq -r '.source // "" | length')"
+    echo "DEBUG first-chunk full text head: $(echo "$TEXT" | head -c 600)"
   fi
   # jq -j (join output, no trailing newline) -- chunks must concatenate
   # byte-for-byte; jq -r would inject a separator newline at every 64KB
