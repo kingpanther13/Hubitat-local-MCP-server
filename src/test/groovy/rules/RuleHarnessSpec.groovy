@@ -148,10 +148,22 @@ abstract class RuleHarnessSpec extends Specification {
             if (SHARED_SCRIPT == null) {
                 compileSharedScript()
             } else {
-                API_FIELD.set(SHARED_SCRIPT, appExecutor)
+                rebindApi(appExecutor)
             }
         }
         script = SHARED_SCRIPT
+    }
+
+    private void rebindApi(AppExecutor mock) {
+        try {
+            API_FIELD.set(SHARED_SCRIPT, mock)
+        } catch (Throwable t) {
+            throw new IllegalStateException(
+                "Failed to rebind AppExecutor on cached SHARED_SCRIPT for " +
+                "${this.class.simpleName}. An eighty20results upgrade may have " +
+                "changed HubitatAppScript.api field shape; see RuleHarnessSpec " +
+                "for the rebind contract.", t)
+        }
     }
 
     private AppExecutor buildAppExecutorMock() {

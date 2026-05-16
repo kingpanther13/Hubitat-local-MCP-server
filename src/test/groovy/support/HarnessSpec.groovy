@@ -8,25 +8,28 @@ import spock.lang.Shared
 import spock.lang.Specification
 
 /**
- * Base class for server and rule-engine specs. Loads the real Groovy app
- * file into a HubitatCI sandbox once per spec class (in {@code setupSpec})
- * and reuses the compiled script across feature methods, with {@code setup}
- * clearing the shared fixture collections so tests stay isolated.
+ * Base class for server-side specs. Loads the real Groovy app file into a
+ * HubitatCI sandbox ONCE per JVM (first subclass's {@code setupSpec} fires
+ * the compile, the result is cached as {@code SHARED_SCRIPT} for every
+ * subsequent subclass to reuse). Every spec's {@code setupSpec} then builds
+ * a fresh {@code AppExecutor} Mock and reflectively rebinds it onto
+ * {@code SHARED_SCRIPT.api} via {@code API_FIELD}; per-test {@code setup}
+ * clears the JVM-shared fixture collections and wipes both metaClass
+ * levels so subclass-installed overrides don't leak across specs.
  *
- * Before this refactor, {@code setup()} re-read, re-parsed, re-AST-validated
- * and re-compiled the 8000+ line {@code hubitat-mcp-server.groovy} file on
- * every single feature method — ~3 seconds of pure compile overhead per
- * test, which added up to most of the CI test-job runtime. Caching the
- * sandbox+script at spec-class scope removes that overhead.
+ * Sandbox parse + AST + compile is multi-second on the large server file
+ * and used to fire once per spec class — amortising it across every
+ * subclass in the JVM is the dominant suite-time win.
  *
  * Isolation contract: subclasses interact with the same set of protected
  * fields as before ({@code script}, {@code appExecutor}, {@code stateMap},
  * {@code atomicStateMap}, {@code settingsMap}, {@code childDevicesList},
  * {@code childAppsList}, {@code mockChildAppForCreate}, {@code hubGet}).
- * The collection fields keep stable references across tests — only the
- * contents reset between features — so any closure, delegate or metaClass
- * hook set up in {@code setupSpec} continues to see the current test's
- * state through the live map/list.
+ * Collection fields are JVM-static singletons (the {@code SHARED_*}
+ * constants), aliased into each spec instance via {@code @Shared}; their
+ * contents reset between features so any closure, delegate or metaClass
+ * hook set up at compile time continues to see the current test's state
+ * through the live map/list.
  *
  * Uses {@code sandbox.run()} with an explicit {@link PassThroughAppValidator}
  * (not {@code sandbox.compile()}) for two reasons:
@@ -148,18 +151,41 @@ abstract class HarnessSpec extends Specification {
             if (SHARED_SCRIPT == null) {
                 compileSharedScript()
             } else {
-                API_FIELD.set(SHARED_SCRIPT, appExecutor)
+                rebindApi(appExecutor)
             }
         }
         script = SHARED_SCRIPT
     }
 
+    private void rebindApi(AppExecutor mock) {
+        try {
+            API_FIELD.set(SHARED_SCRIPT, mock)
+        } catch (Throwable t) {
+            // Loud, contextual failure. If eighty20results renames or
+            // re-types HubitatAppScript.api on an upgrade, the static
+            // initializer for API_FIELD will throw at class-load time
+            // (which surfaces clearly). But if the field exists with a
+            // different shape (final modifier, incompatible type, etc.),
+            // .set() fails here — and that happens AFTER the first spec
+            // has run successfully, so a maintainer needs a hint to look
+            // at HarnessSpec rather than their own spec.
+            throw new IllegalStateException(
+                "Failed to rebind AppExecutor on cached SHARED_SCRIPT for " +
+                "${this.class.simpleName}. An eighty20results upgrade may have " +
+                "changed HubitatAppScript.api field shape; see HarnessSpec " +
+                "for the rebind contract.", t)
+        }
+    }
+
     private AppExecutor buildAppExecutorMock() {
         // Don't add `getApp() >> X` here — several specs (e.g. ToolManageLogsSpec,
         // ToolUpdateMcpSettingsSpec, AppLifecycleMigrationSpec) layer their own
-        // additive `appExecutor.getApp() >> sharedAppStub` in setupSpec. A base
-        // stub here would stack against theirs and the resolved return value
-        // becomes Spock-version dependent.
+        // additive `appExecutor.getApp() >> sharedAppStub` in setupSpec. The
+        // Mock is per-spec, so stacking would happen WITHIN one spec (base
+        // stub here + additive stub in subclass), and Spock's resolution order
+        // between the two is version-dependent. To find current consumers if
+        // the list above goes stale, grep `appExecutor.getApp() >>` under
+        // src/test/groovy/.
         def mock = Mock(AppExecutor) {
             _ * getState() >> SHARED_STATE_MAP
             _ * getAtomicState() >> SHARED_ATOMIC_STATE_MAP
