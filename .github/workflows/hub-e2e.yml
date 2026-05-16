@@ -21,6 +21,8 @@ on:
       - '.github/scripts/lease_release.sh'
       - '.github/scripts/mcp_setup_env.sh'
       - '.github/scripts/mcp_restore_env.sh'
+      - '.github/scripts/mcp_deploy_source.sh'
+      - '.github/scripts/mcp_restore_source.sh'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -129,6 +131,18 @@ jobs:
         # itself is off (UI-only to enable).
         run: bash .github/scripts/mcp_setup_env.sh
 
+      - name: Deploy PR source to test hub
+        if: steps.gate.outputs.available == 'true'
+        # Snapshots the hub's current parent-app source to
+        # $RUNNER_TEMP/mcp_pre_source.groovy, then pushes the PR's
+        # hubitat-mcp-server.groovy via update_app_code. Without this step
+        # the E2E suite tests whatever was last manually deployed on the
+        # hub — which is the bug that motivated this PR (test_tools_list
+        # asserts 36 tools but the hub returns 35 because @level99 hasn't
+        # re-uploaded since #167 merged). Self-update is permitted because
+        # mcp_setup_env.sh has already verified Developer Mode is on.
+        run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
+
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
         run: python tests/e2e_test.py
@@ -139,6 +153,15 @@ jobs:
         # but a crashed run can strand virtual devices / rules / variables
         # under the BAT_E2E_ prefix. This sweeps anything left over.
         run: python tests/e2e_test.py --cleanup-only
+
+      - name: Restore previous app source (push pre-deploy snapshot back)
+        if: always() && steps.gate.outputs.available == 'true'
+        # Pushes $RUNNER_TEMP/mcp_pre_source.groovy back to the hub so the
+        # next run (and any user inspecting the hub afterwards) sees the
+        # source that was live before this run mutated it. Tolerant of a
+        # missing snapshot file: if the deploy step never ran or never
+        # captured, this is a no-op.
+        run: bash .github/scripts/mcp_restore_source.sh
 
       - name: Restore test environment (settings back to pre-run state)
         if: always() && steps.gate.outputs.available == 'true'
