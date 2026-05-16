@@ -84,6 +84,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         script.findDevice(null) == null
     }
 
+    // no dispatch counterparts for findDevice: helper, not a tool
+
     // ---- toolGetDevice response shape ---------------------------------------
 
     def "toolGetDevice returns device summary shape for an existing device"() {
@@ -113,6 +115,41 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.attributes[0].value == 'off'
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: get_device returns device summary shape for an existing device (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 10,
+            name: 'TestSwitch',
+            label: 'Test Switch',
+            roomName: 'Living Room',
+            capabilities: [[name: 'Switch']],
+            supportedAttributes: [[name: 'switch', dataType: 'ENUM']],
+            supportedCommands: [[name: 'on', arguments: null], [name: 'off', arguments: null]],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('get_device', [deviceId: '10'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.id == '10'
+        inner.label == 'Test Switch'
+        inner.room == 'Living Room'
+        inner.capabilities == ['Switch']
+        inner.attributes.size() == 1
+        inner.attributes[0].name == 'switch'
+        inner.attributes[0].value == 'off'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "toolGetDevice throws when device is not found"() {
         given:
         childDevicesList.clear()
@@ -124,6 +161,24 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message == 'Device not found: 999'
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: get_device returns -32602 when device is not found (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        childDevicesList.clear()
+        settingsMap.selectedDevices = []
+
+        when:
+        def response = mcpDriver.callTool('get_device', [deviceId: '999'])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Device not found: 999')
+
+        where:
+        useGateways << [true, false]
     }
 
     // ---- toolSendCommand dispatch -------------------------------------------
@@ -150,6 +205,36 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.device == 'Test Switch'
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: send_command dispatches command to device and returns success (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        }
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('send_command', [deviceId: '10', command: 'on', parameters: []])
+
+        then: 'the device method was invoked exactly once'
+        1 * device.on()
+
+        and: 'the dispatch envelope carries the success result'
+        response.error == null
+        !response.result.isError
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        inner.success == true
+        inner.command == 'on'
+        inner.device == 'Test Switch'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "toolSendCommand throws when device is not found"() {
         given:
         childDevicesList.clear()
@@ -160,5 +245,22 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message == 'Device not found: 999'
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: send_command returns -32602 when device is not found (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        childDevicesList.clear()
+
+        when:
+        def response = mcpDriver.callTool('send_command', [deviceId: '999', command: 'on', parameters: []])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Device not found: 999')
+
+        where:
+        useGateways << [true, false]
     }
 }
