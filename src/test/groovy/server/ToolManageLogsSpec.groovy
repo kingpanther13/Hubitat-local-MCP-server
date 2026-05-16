@@ -4,6 +4,7 @@ import groovy.json.JsonOutput
 import spock.lang.Shared
 import support.TestChildApp
 import support.TestDevice
+import support.TestLocation
 import support.ToolSpecBase
 
 /**
@@ -36,6 +37,7 @@ import support.ToolSpecBase
 class ToolManageLogsSpec extends ToolSpecBase {
 
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
+    @Shared private TestLocation sharedLocation = new TestLocation()
 
     def setupSpec() {
         // HarnessSpec.setupSpec runs first (Spock auto-invokes superclass
@@ -44,6 +46,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         // call a non-null target. Same additive-stub pattern that
         // ToolRoomsSpec uses for appExecutor.httpPost(_, _).
         appExecutor.getApp() >> sharedAppStub
+        // toolGetDeviceHistory's location-scope branch reads location.eventsSince(...);
+        // wire it through appExecutor so the server's `location` reference resolves.
+        appExecutor.getLocation() >> sharedLocation
     }
 
     def cleanup() {
@@ -203,13 +208,82 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetDeviceHistory --------
 
-    def "get_device_history throws when deviceId is missing"() {
+    def "get_device_history returns location events when deviceId is omitted"() {
+        given: 'location.eventsSince stubbed to return mode + HSM + hub-variable events'
+        def fixedDate = new Date(1234567880000L)
+        def capturedSince = null
+        def capturedOpts = null
+        sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
+            capturedSince = since
+            capturedOpts = opts
+            [
+                [name: 'mode',        value: 'Night',  unit: null, descriptionText: 'Mode changed to Night', date: fixedDate, isStateChange: true],
+                [name: 'hsmStatus',   value: 'armedAway', unit: null, descriptionText: 'HSM armed away',     date: fixedDate, isStateChange: true],
+                [name: 'guestCount',  value: '3',     unit: null, descriptionText: 'hub variable updated',   date: fixedDate, isStateChange: true]
+            ]
+        }
+
         when:
-        script.toolGetDeviceHistory([:])
+        def result = script.toolGetDeviceHistory([hoursBack: 6, limit: 25])
+
+        then: 'location.eventsSince receives the hoursBack-derived sinceDate and opts.max'
+        capturedSince != null
+        capturedSince.time == 1234567890000L - (6 * 3600000L)
+        capturedOpts == [max: 25]
+
+        and:
+        result.source == 'location'
+        !result.containsKey('device')
+        !result.containsKey('deviceId')
+        result.hoursBack == 6
+        result.count == 3
+        result.events*.name == ['mode', 'hsmStatus', 'guestCount']
+        result.events[0].value == 'Night'
+
+        cleanup:
+        sharedLocation.metaClass = null
+    }
+
+    def "get_device_history applies attribute filter to location events"() {
+        given:
+        def fixedDate = new Date(1234567880000L)
+        sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
+            [
+                [name: 'mode',      value: 'Night',  date: fixedDate, isStateChange: true],
+                [name: 'hsmStatus', value: 'armedAway', date: fixedDate, isStateChange: true],
+                [name: 'mode',      value: 'Day',   date: fixedDate, isStateChange: true]
+            ]
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([attribute: 'mode'])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('deviceId is required')
+        result.source == 'location'
+        result.attributeFilter == 'mode'
+        result.count == 2
+        result.events.every { it.name == 'mode' }
+
+        cleanup:
+        sharedLocation.metaClass = null
+    }
+
+    def "get_device_history returns an error map when location.eventsSince throws"() {
+        given:
+        sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
+            throw new RuntimeException('location event store unavailable')
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([:])
+
+        then:
+        result.source == 'location'
+        result.error.contains('failed')
+        result.error.contains('location event store unavailable')
+
+        cleanup:
+        sharedLocation.metaClass = null
     }
 
     def "get_device_history throws when device is not found"() {

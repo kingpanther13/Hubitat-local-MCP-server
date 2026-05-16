@@ -380,6 +380,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 **get_device_history:**
 - Up to 7 days of history
 - Use attribute filter to reduce data volume
+- **Location-scope mode**: omit `deviceId` to return location events instead of device events. Returns mode changes (`name: 'mode'`), HSM status/alerts (`'hsmStatus'`, `'hsmAlert'`), hub variable changes (name = the variable's name), and any `sendLocationEvent(...)` emissions from rules/apps. `attribute` filter applies to event name in the same way. Response includes `source: 'location'` and omits `device`/`deviceId`.
 
 **get_app_config:**
 - Reads any legacy SmartApp's configuration page: RM rules, Room Lighting instances, Basic Rules, HPM, Mode Manager, Button Controllers, third-party community apps
