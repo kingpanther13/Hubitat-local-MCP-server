@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.Shared
+import support.TestChildApp
 import support.ToolSpecBase
 
 /**
@@ -25,6 +27,16 @@ import support.ToolSpecBase
  *   - uploadHubFile / downloadHubFile -- purely dynamic, stubbed per-test on script.metaClass.
  */
 class ToolAppDriverCodeSpec extends ToolSpecBase {
+
+    // Stubbed self-app: toolUpdateItemCodeInner's self-update guard reads app.id to compare
+    // against the requested appId. Without a getApp() stub, app.id NPEs on every update_app_code
+    // path. Tests that want to hit the guard use appId='1' (matches sharedAppStub.id); tests
+    // that want to bypass it use any other appId (50, 60, 70, etc).
+    @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
+
+    def setupSpec() {
+        appExecutor.getApp() >> sharedAppStub
+    }
 
     private void enableHubAdminWrite() {
         settingsMap.enableHubAdminWrite = true
@@ -1457,5 +1469,219 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.error.contains('use install_library or update_library_code')
         result.backupFile == 'mcp-backup-library-42.groovy'
         result.type == 'library'
+    }
+
+    // -------- update_app_code: expectedVersion optimistic-lock (issue #139) --------
+
+    def "update_app_code with matching expectedVersion proceeds and POSTs to /app/ajax/update"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 42, "source": "old source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def captured = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            captured.path = path
+            captured.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '50', source: 'new source', expectedVersion: 42, confirm: true])
+
+        then:
+        captured.path == '/app/ajax/update'
+        captured.body.version == 42
+        result.success == true
+        result.previousVersion == 42
+    }
+
+    def "update_app_code with mismatching expectedVersion aborts BEFORE POST and returns conflict"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 50, "source": "current source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def postCount = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postCount++
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '50', source: 'stale', expectedVersion: 42, confirm: true])
+
+        then: 'no hub-update POST happens'
+        postCount == 0
+
+        and: 'conflict result includes both versions and the conflict flag'
+        result.success == false
+        result.conflict == true
+        result.expectedVersion == 42
+        result.currentVersion == 50
+        result.error.toLowerCase().contains('optimistic-lock conflict')
+        result.appId == '50'
+    }
+
+    def "update_app_code coerces a string expectedVersion to integer for the comparison"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 7, "source": "current"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def captured = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            captured.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when: 'caller sends expectedVersion as a JSON string "7" (curl-style client)'
+        def result = script.toolUpdateAppCode([appId: '50', source: 's', expectedVersion: '7', confirm: true])
+
+        then:
+        result.success == true
+        captured.body.version == 7
+    }
+
+    def "update_app_code rejects unparseable expectedVersion with a clear message"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "src"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
+        when:
+        script.toolUpdateAppCode([appId: '50', source: 's', expectedVersion: 'not-a-number', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('expectedVersion must be an integer')
+    }
+
+    // -------- update_driver_code bulk: per-item expectedVersion --------
+
+    def "update_driver_code bulk mode propagates per-item expectedVersion conflicts without aborting siblings"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
+        and: 'three drivers: first at v10, second at v20 (conflict), third at v30'
+        hubGet.register('/driver/ajax/code') { params ->
+            def id = params.id?.toString()
+            if (id == '101') return '{"status": "ok", "version": 10, "source": "a"}'
+            if (id == '102') return '{"status": "ok", "version": 20, "source": "b"}'
+            if (id == '103') return '{"status": "ok", "version": 30, "source": "c"}'
+            null
+        }
+
+        and: 'every update POST that does happen returns success'
+        def postedIds = []
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postedIds << body.id
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when: 'caller asserts wrong version on the middle entry only'
+        def result = script.toolUpdateDriverCode([
+            updates: [
+                [driverId: '101', source: 'new-a', expectedVersion: 10],
+                [driverId: '102', source: 'new-b', expectedVersion: 99],   // hub is at v20 -> conflict
+                [driverId: '103', source: 'new-c', expectedVersion: 30]
+            ],
+            confirm: true
+        ])
+
+        then: 'only the two non-conflicting drivers were POSTed'
+        postedIds.sort() == ['101', '103']
+
+        and: 'overall bulk reports partial; per-item carries conflict shape for the failed entry only'
+        result.success == false
+        result.updates[0].success == true
+        result.updates[1].success == false
+        result.updates[1].conflict == true
+        result.updates[1].expectedVersion == 99
+        result.updates[1].currentVersion == 20
+        result.updates[2].success == true
+    }
+
+    // -------- update_app_code: self-update guard (issue #139) --------
+
+    def "update_app_code refuses self-update on the MCP server's own appId when Developer Mode is OFF"() {
+        given:
+        enableHubAdminWrite()
+        settingsMap.enableDeveloperMode = false
+
+        when: "appId matches sharedAppStub.id (1L)"
+        script.toolUpdateAppCode([appId: '1', source: 'self-overwrite', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('self-update')
+        ex.message.contains('Developer Mode')
+        ex.message.contains('appId=1')
+    }
+
+    def "update_app_code allows self-update on the MCP server's own appId when Developer Mode is ON"() {
+        given:
+        enableHubAdminWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def captured = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            captured.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', source: 'self-update v2', confirm: true])
+
+        then:
+        result.success == true
+        captured.body.source == 'self-update v2'
+    }
+
+    def "update_app_code self-update guard does NOT fire on non-self appIds even when Developer Mode is OFF"() {
+        given:
+        enableHubAdminWrite()
+        settingsMap.enableDeveloperMode = false
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "other app"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when: "appId is some other app, not the MCP server"
+        def result = script.toolUpdateAppCode([appId: '999', source: 'foreign update', confirm: true])
+
+        then:
+        result.success == true
+    }
+
+    def "update_driver_code self-update guard does NOT fire (the guard is app-only; driverId 1 is unrelated)"() {
+        given:
+        enableHubAdminWrite()
+        settingsMap.enableDeveloperMode = false
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "driver src"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when: "driverId happens to equal sharedAppStub.id, but the guard is keyed on type=='app'"
+        def result = script.toolUpdateDriverCode([driverId: '1', source: 'driver v2', confirm: true])
+
+        then:
+        result.success == true
     }
 }
