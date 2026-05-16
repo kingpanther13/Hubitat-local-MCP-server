@@ -1,6 +1,7 @@
 package support
 
 import groovy.json.JsonSlurper
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Drives {@code handleMcpRequest()} through its in-process request pipeline:
@@ -24,10 +25,9 @@ import groovy.json.JsonSlurper
  *      assembles status / contentType / data and hands them to render; tests
  *      that bypass render never verify the envelope the hub actually sends.
  *
- * Both are in the {@code handleMcpRequest()} path (see
- * hubitat-mcp-server.groovy around line 284). This driver plugs into the
- * harness so specs can push a body, invoke {@code handleMcpRequest}, and
- * read the captured render args.
+ * Both are in the {@code handleMcpRequest()} path in hubitat-mcp-server.groovy.
+ * This driver plugs into the harness so specs can push a body, invoke
+ * {@code handleMcpRequest}, and read the captured render args.
  *
  * Wiring (done by {@link HarnessSpec}):
  *   - {@code render(Map)} is declared on {@code AppExecutor} — stubbed in
@@ -59,6 +59,14 @@ class McpRequestDriver {
 
     private static final JsonSlurper SLURPER = new JsonSlurper()
 
+    /** Script the driver invokes through. Bound once by HarnessSpec.compileSharedScript(). */
+    Object boundScript
+
+    private final AtomicInteger idCounter = new AtomicInteger(0)
+
+    /** Last JSON-RPC id callTool generated; tests assert response.id against it. */
+    int lastSentId
+
     /**
      * Backing store for the parsed body the script sees when it reads
      * {@code request.JSON}. {@link #pushBody} mutates this in place so the
@@ -71,8 +79,9 @@ class McpRequestDriver {
     /**
      * If non-null, {@link #scriptRequest#getJSON()} throws this instead of
      * returning {@link #request}.JSON. Set by {@link #pushBodyThrowing} to
-     * exercise the {@code handleMcpRequest} try/catch -32700 branch at
-     * hubitat-mcp-server.groovy:286-292; cleared by {@link #reset}.
+     * exercise the {@code handleMcpRequest} try/catch that turns hub-side
+     * JSON parse failures into JSON-RPC -32700 responses; cleared by
+     * {@link #reset}.
      */
     Throwable throwingRequest = null
 
@@ -111,11 +120,10 @@ class McpRequestDriver {
 
     /**
      * Stage a {@code request.JSON} access that throws the given Throwable.
-     * Covers the {@code handleMcpRequest()} try/catch branch at
-     * hubitat-mcp-server.groovy:286-292, which turns hub-side JSON parse
-     * failures into JSON-RPC -32700 responses. {@link #pushBody}(null) only
-     * hits the subsequent {@code requestBody == null} branch — it does not
-     * exercise the catch.
+     * Covers the {@code handleMcpRequest()} try/catch branch that turns
+     * hub-side JSON parse failures into JSON-RPC -32700 responses.
+     * {@link #pushBody}(null) only hits the subsequent
+     * {@code requestBody == null} branch — it does not exercise the catch.
      */
     void pushBodyThrowing(Throwable t) {
         throwingRequest = t
@@ -176,6 +184,32 @@ class McpRequestDriver {
                 "render() data did not parse as JSON. Captured render args: " +
                 "${lastRenderArgs}. Underlying parse error: ${e.message}", e)
         }
+    }
+
+    /** Drive a tool through the production handleMcpRequest envelope and return the parsed response. */
+    Map callTool(String toolName, Map args) {
+        lastSentId = idCounter.incrementAndGet()
+        // Default to empty so callers can omit when the tool takes no args.
+        def envelope = [
+            jsonrpc: '2.0',
+            id: lastSentId,
+            method: 'tools/call',
+            params: [name: toolName, arguments: args ?: [:]]
+        ]
+        pushBody(envelope)
+        boundScript.handleMcpRequest()
+        return parseResponseJson() as Map
+    }
+
+    /**
+     * Parse the inner tool-result payload from a successful tools/call response.
+     * MCP wraps tool output as {@code response.result.content[0].text}, JSON-encoded;
+     * dispatch-envelope specs commonly assert on the decoded shape. Centralized here
+     * to share the {@link #SLURPER} instance and remove the boilerplate inline
+     * {@code new JsonSlurper().parseText(...)} pattern from every spec.
+     */
+    Object parseInner(Map response) {
+        SLURPER.parseText(response.result.content[0].text as String)
     }
 
     /**

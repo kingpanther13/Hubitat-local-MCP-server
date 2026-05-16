@@ -91,6 +91,27 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Write')
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create fails when Hub Admin Write is disabled (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Switch',
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Hub Admin Write')
+
+        where:
+        useGateways << [true, false]
+    }
+
     // -------- Dispatch validation: mutually exclusive / both missing / missing deviceLabel --------
 
     def "create rejects when both deviceType and customDriver are provided"() {
@@ -111,6 +132,29 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains('mutually exclusive')
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create rejects when both deviceType and customDriver are provided (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Switch',
+            customDriver: [namespace: 'x', name: 'y'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('mutually exclusive')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create rejects when neither deviceType nor customDriver is provided"() {
         given:
         enableHubAdminWrite()
@@ -125,6 +169,27 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Either deviceType or customDriver is required')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: create rejects when neither deviceType nor customDriver is provided (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Either deviceType or customDriver is required')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "dispatch rejects create with missing deviceLabel"() {
@@ -142,6 +207,27 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('deviceLabel is required')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: rejects create with missing deviceLabel (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Switch',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('deviceLabel is required')
+
+        where:
+        useGateways << [true, false]
     }
 
     // -------- customDriver shape validation --------
@@ -162,6 +248,28 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains("customDriver must be an object")
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver not a Map returns -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: 'not-a-map',
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains("customDriver must be an object")
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create with customDriver missing namespace throws"() {
         given:
         enableHubAdminWrite()
@@ -177,6 +285,29 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("'namespace'")
         ex.message.contains("'name'")
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver missing namespace returns -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [name: 'My Driver'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains("'namespace'")
+        response.error.message.contains("'name'")
+
+        where:
+        useGateways << [true, false]
     }
 
     def "create with customDriver missing name throws"() {
@@ -196,7 +327,86 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains("'name'")
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver missing name returns -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'my-ns'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains("'namespace'")
+        response.error.message.contains("'name'")
+
+        where:
+        useGateways << [true, false]
+    }
+
     // -------- customDriver success path --------
+
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver delegates to addChildDevice with correct namespace and name (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def capturedArgs = [:]
+        def capturedDataValues = [:]
+        def fakeDevice = Mock(ChildDeviceWrapper) {
+            getId() >> '77'
+            getIdAsLong() >> 77L
+            getName() >> 'Levoit Classic 200S Humidifier'
+            getLabel() >> 'Kitchen Humidifier Test'
+            getDeviceNetworkId() >> 'mcp-virtual-TEST'
+            getCapabilities() >> []
+            getSupportedCommands() >> []
+            getSupportedAttributes() >> []
+            currentValue(_) >> null
+            updateDataValue(_, _) >> { String key, String val -> capturedDataValues[key] = val }
+        }
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            capturedArgs.namespace = ns
+            capturedArgs.name      = name
+            capturedArgs.dni       = dni
+            capturedArgs.hubId     = hubId
+            capturedArgs.props     = props
+            fakeDevice
+        }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'level99-vesync', name: 'Levoit Classic 200S Humidifier'],
+            deviceLabel: 'Kitchen Humidifier Test',
+            confirm: true
+        ])
+
+        then:
+        capturedArgs.namespace == 'level99-vesync'
+        capturedArgs.name      == 'Levoit Classic 200S Humidifier'
+        capturedArgs.hubId     == null
+        capturedArgs.props?.label == 'Kitchen Humidifier Test'
+        capturedArgs.props?.name  == 'Levoit Classic 200S Humidifier'
+        capturedDataValues['mcpDriverNamespace'] == 'level99-vesync'
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.device.id == '77'
+        inner.device.driverNamespace == 'level99-vesync'
+        inner.device.driverType      == 'Levoit Classic 200S Humidifier'
+        inner.device.typeName == inner.device.driverType
+
+        where:
+        useGateways << [true, false]
+    }
 
     def "create with customDriver delegates to addChildDevice with correct namespace and name"() {
         given:
@@ -251,6 +461,51 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     // -------- customDriver updateDataValue failure (defensive contract) --------
+
+    @spock.lang.Unroll
+    def "via dispatch: create succeeds even when updateDataValue throws -- warn fires and driverNamespace is still correct (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
+        def fakeDevice = Mock(ChildDeviceWrapper) {
+            getId() >> '88'
+            getIdAsLong() >> 88L
+            getName() >> 'Levoit Classic 200S Humidifier'
+            getLabel() >> 'Persistence Failure Test'
+            getDeviceNetworkId() >> 'mcp-virtual-TEST-88'
+            getCapabilities() >> []
+            getSupportedCommands() >> []
+            getSupportedAttributes() >> []
+            currentValue(_) >> null
+            updateDataValue(_, _) >> { String key, String val ->
+                throw new RuntimeException("simulated data-value persistence failure")
+            }
+        }
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> fakeDevice }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'NiklasGustafsson', name: 'Levoit Classic 200S Humidifier'],
+            deviceLabel: 'Persistence Failure Test',
+            confirm: true
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.device.driverNamespace == 'NiklasGustafsson'
+        mcpLogCalls.any { it.level == 'warn' && it.msg.contains('mcpDriverNamespace') }
+
+        where:
+        useGateways << [true, false]
+    }
 
     def "create succeeds even when updateDataValue throws -- warn fires and driverNamespace is still correct"() {
         // Defensive contract: create must NOT fail just because the data-value persistence step fails.
@@ -318,6 +573,32 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains('list_hub_drivers')
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver UnknownDeviceTypeException returns -32602 with list_hub_drivers hint (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            throw new Exception("UnknownDeviceTypeException: Driver not found")
+        }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'fake-namespace', name: 'fake-driver'],
+            deviceLabel: 'Test Device',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('fake-namespace:fake-driver')
+        response.error.message.contains('list_hub_drivers')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create with customDriver: not-found error (message 'not found') also translates"() {
         given:
         enableHubAdminWrite()
@@ -336,6 +617,32 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('list_hub_drivers')
         ex.message.contains('my-ns:My Driver')  // namespace:name echo present (parity with sibling specs)
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver not-found error also translates (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            throw new Exception("driver not found")
+        }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'my-ns', name: 'My Driver'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('list_hub_drivers')
+        response.error.message.contains('my-ns:My Driver')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "create with customDriver: any hub exception always surfaces list_hub_drivers hint (fail-closed)"() {
@@ -360,7 +667,86 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains('my-ns:My Driver')
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver any hub exception surfaces list_hub_drivers hint fail-closed (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            throw new Exception("some unexpected hub error that does not mention not-found")
+        }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'my-ns', name: 'My Driver'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('list_hub_drivers')
+        response.error.message.contains('my-ns:My Driver')
+
+        where:
+        useGateways << [true, false]
+    }
+
     // -------- Built-in deviceType path (regression pin) --------
+
+    @spock.lang.Unroll
+    def "via dispatch: create with built-in deviceType still works after dual-path refactor (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def capturedArgs = [:]
+        def capturedDataValues = [:]
+        def fakeDevice = Mock(ChildDeviceWrapper) {
+            getId() >> '42'
+            getIdAsLong() >> 42L
+            getName() >> 'Virtual Switch'
+            getLabel() >> 'BAT Test Switch'
+            getDeviceNetworkId() >> 'mcp-virtual-TEST'
+            getCapabilities() >> []
+            getSupportedCommands() >> []
+            getSupportedAttributes() >> []
+            currentValue(_) >> null
+            updateDataValue(_, _) >> { String key, String val -> capturedDataValues[key] = val }
+        }
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            capturedArgs.namespace = ns
+            capturedArgs.name      = name
+            capturedArgs.props     = props
+            fakeDevice
+        }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Switch',
+            deviceLabel: 'BAT Test Switch',
+            confirm: true
+        ])
+
+        then:
+        capturedArgs.namespace == 'hubitat'
+        capturedArgs.name      == 'Virtual Switch'
+        capturedArgs.props?.label == 'BAT Test Switch'
+        capturedArgs.props?.name  == 'Virtual Switch'
+        capturedDataValues['mcpDriverNamespace'] == 'hubitat'
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.device.id == '42'
+        inner.device.driverNamespace == 'hubitat'
+        inner.device.driverType      == 'Virtual Switch'
+        inner.device.typeName == inner.device.driverType
+
+        where:
+        useGateways << [true, false]
+    }
 
     def "create with built-in deviceType still works after dual-path refactor"() {
         given:
@@ -425,6 +811,29 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains('Unsupported device type')
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create with unsupported built-in deviceType returns -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Toaster',
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Virtual Toaster')
+        response.error.message.contains('Unsupported device type')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create with built-in deviceType: UnknownDeviceTypeException stays RuntimeException with firmware hint"() {
         // Invariant: built-in driver-not-found is a platform condition that throws RuntimeException,
         // NOT IllegalArgumentException. The distinction preserves the semantic that caller-fixable
@@ -446,6 +855,32 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def ex = thrown(RuntimeException)
         !(ex instanceof IllegalArgumentException)  // pins the class distinction from customDriver path
         ex.message.contains('may not include this built-in driver')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: create with built-in deviceType UnknownDeviceTypeException becomes isError with firmware hint (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            throw new Exception("UnknownDeviceTypeException")
+        }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Switch',
+            deviceLabel: 'BAT Built-in Not-Found Test',
+            confirm: true
+        ])
+
+        then: 'platform error: RuntimeException wraps to isError=true (not -32602)'
+        response.error == null
+        response.result.isError == true
+        response.result.content[0].text.contains('may not include this built-in driver')
+
+        where:
+        useGateways << [true, false]
     }
 
     // -------- toolListVirtualDevices --------
@@ -484,6 +919,44 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList.removeAll { it.id == 99 }
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: list_virtual_devices fallback getDriverType returns namespace-bearing object when no data value (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fakeDriverType = [namespace: 'level99-vesync']
+        def fakeDevice = new support.TestDevice(
+            id: 99,
+            name: 'Levoit Classic 200S Humidifier',
+            label: 'Office Humidifier',
+            deviceNetworkId: 'mcp-virtual-test-99',
+            typeName: 'Levoit Classic 200S Humidifier'
+        )
+        fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
+        childDevicesList << fakeDevice
+
+        when:
+        def response = mcpDriver.callTool('list_virtual_devices', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success != false
+        inner.devices.size() >= 1
+        def d = inner.devices.find { it.id == '99' }
+        d != null
+        d.driverNamespace == 'level99-vesync'
+        d.driverType      == 'Levoit Classic 200S Humidifier'
+        d.typeName        == 'Levoit Classic 200S Humidifier'
+        d.deviceNetworkId == 'mcp-virtual-test-99'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 99 }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "list_virtual_devices: getDriverType() exception falls back to hubitat namespace without crashing"() {
         // Invariant: on firmware where getDriverType() is unavailable or throws, the fallback
         // namespace is 'hubitat' and the tool continues to return a valid response.
@@ -515,6 +988,40 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList.removeAll { it.id == 100 }
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: list_virtual_devices getDriverType exception falls back to hubitat namespace (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fakeDevice = new support.TestDevice(
+            id: 100,
+            name: 'Virtual Switch',
+            label: 'Fallback Test Switch',
+            deviceNetworkId: 'mcp-virtual-test-100'
+        )
+        fakeDevice.metaClass.getDriverType = { -> throw new MissingMethodException('getDriverType', Object, [] as Object[]) }
+        childDevicesList << fakeDevice
+
+        when:
+        def response = mcpDriver.callTool('list_virtual_devices', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success != false
+        def d = inner.devices.find { it.id == '100' }
+        d != null
+        d.driverNamespace == 'hubitat'
+        d.driverType == 'Virtual Switch'
+        d.typeName == 'Virtual Switch'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 100 }
+
+        where:
+        useGateways << [true, false]
+    }
+
     // N1: getDriverType() returns object with null namespace (common for built-ins on modern firmware)
     def "list_virtual_devices: getDriverType() returns object with null namespace falls back to hubitat"() {
         // Covers the non-exception Elvis path: device.getDriverType()?.namespace returns null
@@ -544,6 +1051,77 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         cleanup:
         childDevicesList.removeAll { it.id == 101 }
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: list_virtual_devices getDriverType returns object with null namespace falls back to hubitat (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fakeDriverType = [namespace: null]
+        def fakeDevice = new support.TestDevice(
+            id: 101,
+            name: 'Virtual Switch',
+            label: 'Built-in Modern Firmware Switch',
+            deviceNetworkId: 'mcp-virtual-test-101',
+            typeName: 'Virtual Switch'
+        )
+        fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
+        childDevicesList << fakeDevice
+
+        when:
+        def response = mcpDriver.callTool('list_virtual_devices', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success != false
+        def d = inner.devices.find { it.id == '101' }
+        d != null
+        d.driverNamespace == 'hubitat'
+        d.driverType == 'Virtual Switch'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 101 }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: list_virtual_devices primary path reads mcpDriverNamespace data value when present (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fakeDevice = new support.TestDevice(
+            id: 103,
+            name: 'Levoit Classic 200S Humidifier',
+            label: 'Namespace From Data Value Test',
+            deviceNetworkId: 'mcp-virtual-test-103',
+            typeName: 'Levoit Classic 200S Humidifier'
+        )
+        fakeDevice.dataValues['mcpDriverNamespace'] = 'NiklasGustafsson'
+        fakeDevice.metaClass.getDriverType = { -> null }
+        childDevicesList << fakeDevice
+
+        when:
+        def response = mcpDriver.callTool('list_virtual_devices', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success != false
+        def d = inner.devices.find { it.id == '103' }
+        d != null
+        d.driverNamespace == 'NiklasGustafsson'
+        d.driverType == 'Levoit Classic 200S Humidifier'
+        d.typeName   == 'Levoit Classic 200S Humidifier'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 103 }
+
+        where:
+        useGateways << [true, false]
     }
 
     // Primary data-value path: customDriver create persists namespace; list reads it back
@@ -581,6 +1159,40 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList.removeAll { it.id == 103 }
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: list_virtual_devices primary path built-in device data value hubitat returned as driverNamespace (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fakeDevice = new support.TestDevice(
+            id: 104,
+            name: 'Virtual Switch',
+            label: 'Built-in Data Value Test',
+            deviceNetworkId: 'mcp-virtual-test-104',
+            typeName: 'Virtual Switch'
+        )
+        fakeDevice.dataValues['mcpDriverNamespace'] = 'hubitat'
+        fakeDevice.metaClass.getDriverType = { -> [namespace: 'wrong-namespace-should-not-be-used'] }
+        childDevicesList << fakeDevice
+
+        when:
+        def response = mcpDriver.callTool('list_virtual_devices', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success != false
+        def d = inner.devices.find { it.id == '104' }
+        d != null
+        d.driverNamespace == 'hubitat'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 104 }
+
+        where:
+        useGateways << [true, false]
+    }
+
     // Primary data-value path: built-in create persists "hubitat"; list reads it back
     def "list_virtual_devices: primary path -- built-in device data value 'hubitat' returned as driverNamespace"() {
         // Built-in devices created by this version have mcpDriverNamespace = "hubitat" persisted.
@@ -612,6 +1224,39 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList.removeAll { it.id == 104 }
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: list_virtual_devices backward-compat no data value and getDriverType null falls back to hubitat (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fakeDevice = new support.TestDevice(
+            id: 105,
+            name: 'Virtual Switch',
+            label: 'Backward Compat Fallback Test',
+            deviceNetworkId: 'mcp-virtual-test-105',
+            typeName: 'Virtual Switch'
+        )
+        fakeDevice.metaClass.getDriverType = { -> null }
+        childDevicesList << fakeDevice
+
+        when:
+        def response = mcpDriver.callTool('list_virtual_devices', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success != false
+        def d = inner.devices.find { it.id == '105' }
+        d != null
+        d.driverNamespace == 'hubitat'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 105 }
+
+        where:
+        useGateways << [true, false]
+    }
+
     // Backward-compat: no data value AND getDriverType returns null -> falls back to "hubitat"
     def "list_virtual_devices: backward-compat -- no data value and getDriverType returns null falls back to hubitat"() {
         // Devices created before this fix have no mcpDriverNamespace data value.
@@ -639,6 +1284,41 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         cleanup:
         childDevicesList.removeAll { it.id == 105 }
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: list_virtual_devices device with typeName distinct from name returns typeName as driverType (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def fakeDriverType = [namespace: 'my-ns']
+        def fakeDevice = new support.TestDevice(
+            id: 102,
+            name: 'Generic Component',
+            label: 'Elvis Discriminator Test',
+            deviceNetworkId: 'mcp-virtual-test-102',
+            typeName: 'My Custom Driver'
+        )
+        fakeDevice.metaClass.getDriverType = { -> fakeDriverType }
+        childDevicesList << fakeDevice
+
+        when:
+        def response = mcpDriver.callTool('list_virtual_devices', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success != false
+        def d = inner.devices.find { it.id == '102' }
+        d != null
+        d.driverType == 'My Custom Driver'
+        d.typeName   == 'My Custom Driver'
+
+        cleanup:
+        childDevicesList.removeAll { it.id == 102 }
+
+        where:
+        useGateways << [true, false]
     }
 
     // N.35 Elvis discriminator: typeName != name proves device.typeName ?: device.name returns typeName when non-null
@@ -696,6 +1376,34 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.cause.is(originalEx)    // exact same instance
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create with customDriver IllegalArgumentException root cause echoed in -32602 message (useGateways=#useGateways)"() {
+        // Dispatch envelope flattens exception to message string -- can't inspect .cause through render.
+        // Parallel assertion: root-cause text is woven into the -32602 message via the
+        // "(Hub reported: ...)" suffix at toolCreateVirtualDevice line 11302.
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def originalEx = new Exception("root cause message")
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'x-ns', name: 'X Driver'],
+            deviceLabel: 'Cause Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('root cause message')
+        response.error.message.contains('list_hub_drivers')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create with built-in: RuntimeException preserves cause chain"() {
         // Mirrors the customDriver cause-chain probe for the built-in path RuntimeException.
         given:
@@ -714,6 +1422,33 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def ex = thrown(RuntimeException)
         ex.cause != null
         ex.cause.is(originalEx)
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: create with built-in RuntimeException root cause echoed in isError message (useGateways=#useGateways)"() {
+        // Dispatch envelope wraps RuntimeException as isError=true; .cause is not observable through render.
+        // Parallel assertion: root-cause text is woven into the isError message via "(Hub reported: ...)".
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def originalEx = new Exception("UnknownDeviceTypeException: not found")
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Switch',
+            deviceLabel: 'Cause Test Built-in',
+            confirm: true
+        ])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        response.result.content[0].text.contains('UnknownDeviceTypeException: not found')
+
+        where:
+        useGateways << [true, false]
     }
 
     // -------- M6: blank deviceType + customDriver mutex, whitespace namespace/name, non-String --------
@@ -740,6 +1475,29 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains('mutually exclusive')
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create blank-after-trim deviceType with customDriver present triggers mutex error (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: '   ',
+            customDriver: [namespace: 'x', name: 'y'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('mutually exclusive')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create: blank-after-trim deviceType without customDriver triggers missing-arg error"() {
         // A blank-after-trim deviceType with no customDriver should surface the "either required" error,
         // not a cryptic null/empty failure from deeper in the chain.
@@ -759,6 +1517,28 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains('Either deviceType or customDriver is required')
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create blank-after-trim deviceType without customDriver triggers missing-arg error (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: '   ',
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Either deviceType or customDriver is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create: whitespace-only customDriver namespace throws descriptive error"() {
         given:
         enableHubAdminWrite()
@@ -776,6 +1556,29 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ex.message.contains("'namespace'")
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create whitespace-only customDriver namespace returns -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: '   ', name: 'My Driver'],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('non-empty strings')
+        response.error.message.contains("'namespace'")
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "create: whitespace-only customDriver name throws descriptive error"() {
         given:
         enableHubAdminWrite()
@@ -791,6 +1594,29 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('non-empty strings')
         ex.message.contains("'name'")
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: create whitespace-only customDriver name returns -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 'my-ns', name: '   '],
+            deviceLabel: 'Test',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('non-empty strings')
+        response.error.message.contains("'name'")
+
+        where:
+        useGateways << [true, false]
     }
 
     def "create: non-String (numeric) customDriver namespace coerces then rejects if blank"() {
@@ -830,6 +1656,48 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         result.success == true
     }
 
+    @spock.lang.Unroll
+    def "via dispatch: create non-String numeric customDriver namespace coerces then succeeds (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def capturedNs = null
+        def fakeDevice = Mock(ChildDeviceWrapper) {
+            getId() >> '55'
+            getIdAsLong() >> 55L
+            getName() >> 'test-driver'
+            getLabel() >> 'Coerce Test'
+            getDeviceNetworkId() >> 'mcp-virtual-coerce'
+            getCapabilities() >> []
+            getSupportedCommands() >> []
+            getSupportedAttributes() >> []
+            currentValue(_) >> null
+            updateDataValue(_, _) >> {}
+        }
+        childDeviceFactoryStub = { ns, name, dni, hubId, props ->
+            capturedNs = ns
+            fakeDevice
+        }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            customDriver: [namespace: 123, name: 'test-driver'],
+            deviceLabel: 'Coerce Test',
+            confirm: true
+        ])
+
+        then:
+        capturedNs == '123'
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+
+        where:
+        useGateways << [true, false]
+    }
+
     // -------- M8: addChildDevice returns null --------
 
     def "create: addChildDevice returning null throws RuntimeException with partial-registration guidance"() {
@@ -848,5 +1716,30 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def ex = thrown(RuntimeException)
         ex.message.contains('addChildDevice returned null')
         ex.message.contains('partially registered')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: create addChildDevice returning null becomes isError with partial-registration guidance (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        childDeviceFactoryStub = { ns, name, dni, hubId, props -> null }
+
+        when:
+        def response = mcpDriver.callTool('manage_virtual_device', [
+            action: 'create',
+            deviceType: 'Virtual Switch',
+            deviceLabel: 'Null Return Test',
+            confirm: true
+        ])
+
+        then: 'platform error: RuntimeException wraps to isError=true (not -32602)'
+        response.error == null
+        response.result.isError == true
+        response.result.content[0].text.contains('addChildDevice returned null')
+        response.result.content[0].text.contains('partially registered')
+
+        where:
+        useGateways << [true, false]
     }
 }

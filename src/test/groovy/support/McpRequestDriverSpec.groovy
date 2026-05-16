@@ -1,24 +1,24 @@
 package support
 
+import spock.lang.Shared
 import spock.lang.Specification
 
-/**
- * Self-tests for {@link McpRequestDriver}. Keeps harness-level behaviour
- * (pushBody/pushBodyThrowing/captureRender/parseResponseJson lifecycle)
- * pinned independently from the specs that use it — a harness bug that
- * silently ate a render or let throwing state leak across tests would
- * otherwise degrade every dependent spec together and be diagnostically
- * confusing.
- *
- * Does not load the sandbox / production script — this is pure driver
- * logic under test.
- */
-class McpRequestDriverSpec extends Specification {
+/** Self-tests for {@link McpRequestDriver} so harness regressions surface here, not in every dependent spec. */
+class McpRequestDriverSpec extends ToolSpecBase {
+
+    @Shared private TestLocation sharedLocation = new TestLocation()
 
     McpRequestDriver driver
 
+    def setupSpec() {
+        // get_hub_info reads location.hub; wire a stub so the callTool test
+        // exercises a real success path rather than the tool's outer error wrap.
+        appExecutor.getLocation() >> sharedLocation
+    }
+
     def setup() {
         driver = new McpRequestDriver()
+        sharedLocation.hub = new TestHub()
     }
 
     def "pushBody stores a map under request.JSON for the proxy to return"() {
@@ -133,5 +133,22 @@ class McpRequestDriverSpec extends Specification {
         def e = thrown(IllegalStateException)
         e.message.contains('did not parse as JSON')
         e.message.contains('<<not-json>>') || e.message.contains('Captured render args')
+    }
+
+    def "callTool builds a JSON-RPC tools/call envelope and returns the parsed response"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> 'TestHub-987654' }
+
+        when:
+        def response = mcpDriver.callTool('get_hub_info', [:])
+
+        then:
+        response.jsonrpc == '2.0'
+        response.id == mcpDriver.lastSentId
+        response.result != null
+        response.result.content instanceof List
+        response.result.content[0].type == 'text'
+        response.result.content[0].text.contains('TestHub-987654')
     }
 }

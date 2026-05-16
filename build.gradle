@@ -117,6 +117,9 @@ test {
     if (project.hasProperty('harnessStrictMetaClass')) {
         systemProperty 'harnessStrictMetaClass', project.harnessStrictMetaClass
     }
+    if (project.hasProperty('harness.useGateways')) {
+        systemProperty 'harness.useGateways', project.getProperty('harness.useGateways')
+    }
     testLogging {
         // Include 'started' so CI streams per-test output live — without
         // it, a slow spec leaves the runner silent for minutes and the

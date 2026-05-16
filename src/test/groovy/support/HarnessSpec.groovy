@@ -86,7 +86,7 @@ abstract class HarnessSpec extends Specification {
     // Per-JVM cache for the compiled script. sandbox.run() (parse + AST
     // + compile) is multi-second on the large server file and used to
     // fire once per spec class — amortising it across every subclass
-    // is the dominant test-suite speedup in this PR.
+    // is the dominant test-suite speedup.
     //
     // The AppExecutor Mock is built fresh per spec class (Spock 2.x
     // ties Mocks to their creating Spec's MockController via thread-
@@ -240,6 +240,7 @@ abstract class HarnessSpec extends Specification {
             } as Closure,
             validator: validator
         )
+        SHARED_MCP_DRIVER.boundScript = SHARED_SCRIPT
     }
 
     def setup() {
@@ -251,6 +252,13 @@ abstract class HarnessSpec extends Specification {
         atomicStateMap.clear()
         settingsMap.clear()
         settingsMap.selectedDevices = []
+        // CI matrix dispatch-mode dimension: when set, forces useGateways
+        // default per-test. Tests that explicitly pin useGateways in given:
+        // still win (the given: assignment overrides).
+        def defaultGateways = System.getProperty('harness.useGateways')
+        if (defaultGateways != null) {
+            settingsMap.useGateways = (defaultGateways == 'true')
+        }
         childDevicesList.clear()
         childAppsList.clear()
         hubGet.reset()

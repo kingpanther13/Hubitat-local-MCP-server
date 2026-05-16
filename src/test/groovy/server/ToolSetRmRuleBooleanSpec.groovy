@@ -39,6 +39,23 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         ex.message.contains('Built-in App')
     }
 
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = false
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 1, value: true])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Built-in App')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "throws when ruleId is missing"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -49,6 +66,23 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('ruleid is required')
+    }
+
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [value: true])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('ruleid is required')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "throws when value is missing"() {
@@ -63,6 +97,23 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('value')
     }
 
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch returns -32602 envelope when value is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 1])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('value')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "Boolean true dispatches setRuleBooleanTrue"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -73,6 +124,26 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
+    }
+
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch Boolean true dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 800, value: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
+
+        where:
+        useGateways << [true, false]
     }
 
     def "Boolean false dispatches setRuleBooleanFalse"() {
@@ -87,6 +158,26 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
     }
 
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch Boolean false dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 801, value: false])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "String 'true' is accepted and dispatches setRuleBooleanTrue"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -99,6 +190,26 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
     }
 
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch String 'true' is accepted and dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 802, value: 'true'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "String 'false' is accepted and dispatches setRuleBooleanFalse"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -109,6 +220,26 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
+    }
+
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch String 'false' is accepted and dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 803, value: 'false'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
+
+        where:
+        useGateways << [true, false]
     }
 
     def "reject matrix: capitalized and uppercase boolean strings are rejected"(Object value) {
@@ -126,6 +257,31 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         value << ['True', 'False', 'TRUE', 'FALSE']
     }
 
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch rejects capitalized boolean string '#value' with -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 999, value: value])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('value must be boolean')
+
+        where:
+        useGateways | value
+        true        | 'True'
+        true        | 'False'
+        true        | 'TRUE'
+        true        | 'FALSE'
+        false       | 'True'
+        false       | 'False'
+        false       | 'TRUE'
+        false       | 'FALSE'
+    }
+
     def "reject matrix: truthy-looking non-boolean strings are rejected"(Object value) {
         given:
         settingsMap.enableBuiltinApp = true
@@ -141,6 +297,31 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         value << ['yes', 'no', 'on', 'off']
     }
 
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch rejects truthy-looking string '#value' with -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 999, value: value])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('value must be boolean')
+
+        where:
+        useGateways | value
+        true        | 'yes'
+        true        | 'no'
+        true        | 'on'
+        true        | 'off'
+        false       | 'yes'
+        false       | 'no'
+        false       | 'on'
+        false       | 'off'
+    }
+
     def "reject matrix: integer values are rejected"(Object value) {
         given:
         settingsMap.enableBuiltinApp = true
@@ -154,6 +335,27 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
         where:
         value << [1, 0]
+    }
+
+    @spock.lang.Unroll
+    def "set_rm_rule_boolean via dispatch rejects integer value #value with -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 999, value: value])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('value must be boolean')
+
+        where:
+        useGateways | value
+        true        | 1
+        true        | 0
+        false       | 1
+        false       | 0
     }
 
     def "gateway dispatch via handleGateway routes to set_rm_rule_boolean"() {

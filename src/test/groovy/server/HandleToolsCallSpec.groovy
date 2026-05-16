@@ -1,7 +1,6 @@
 package server
 
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -10,17 +9,23 @@ import support.ToolSpecBase
  * Covers the JSON-RPC 2.0 envelope, IAE → -32602 error mapping for
  * validation errors, and the generic-Exception path that returns an
  * isError success envelope per the MCP spec.
+ *
+ * Features drive through the full {@code handleMcpRequest} envelope path
+ * (request.JSON parse + tools/call dispatch + render envelope) via
+ * {@code mcpDriver.callTool}. The malformed-name feature keeps the
+ * manual pushBody construction since callTool assumes a well-formed name.
  */
 class HandleToolsCallSpec extends ToolSpecBase {
 
     def "missing tool name returns -32602"() {
-        given:
-        def msg = [jsonrpc: '2.0', id: 42, method: 'tools/call', params: [:]]
+        given: 'deliberately malformed envelope (no name in params) — bypass callTool helper'
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 42, method: 'tools/call', params: [:]])
 
         when:
-        def response = script.handleToolsCall(msg)
+        script.handleMcpRequest()
 
         then:
+        def response = mcpDriver.parseResponseJson()
         response.jsonrpc == '2.0'
         response.id == 42
         response.error.code == -32602
@@ -30,14 +35,13 @@ class HandleToolsCallSpec extends ToolSpecBase {
     def "IllegalArgumentException from a tool is mapped to -32602 with wrapping"() {
         given: 'Hub Admin Read is disabled — requireHubAdminRead() will throw IAE'
         settingsMap.enableHubAdminRead = false
-        def msg = [jsonrpc: '2.0', id: 7, method: 'tools/call', params: [name: 'get_hub_logs', arguments: [:]]]
 
         when:
-        def response = script.handleToolsCall(msg)
+        def response = mcpDriver.callTool('get_hub_logs', [:])
 
         then:
         response.jsonrpc == '2.0'
-        response.id == 7
+        response.id == mcpDriver.lastSentId
         response.error.code == -32602
         response.error.message.startsWith('Invalid params:')
         response.error.message.contains('Hub Admin Read')
@@ -46,14 +50,13 @@ class HandleToolsCallSpec extends ToolSpecBase {
     def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
         given: 'getRooms() throws a non-IAE so list_rooms hits the generic catch'
         script.metaClass.getRooms = { throw new RuntimeException('boom') }
-        def msg = [jsonrpc: '2.0', id: 5, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]]
 
         when:
-        def response = script.handleToolsCall(msg)
+        def response = mcpDriver.callTool('list_rooms', [:])
 
         then: 'MCP spec: tool execution errors return a success envelope with isError flag'
         response.jsonrpc == '2.0'
-        response.id == 5
+        response.id == mcpDriver.lastSentId
         response.error == null
         response.result.isError == true
         response.result.content instanceof List
@@ -68,19 +71,18 @@ class HandleToolsCallSpec extends ToolSpecBase {
         hubGet.register('/logs/past/json') { params ->
             JsonOutput.toJson([])
         }
-        def msg = [jsonrpc: '2.0', id: 99, method: 'tools/call', params: [name: 'get_hub_logs', arguments: [:]]]
 
         when:
-        def response = script.handleToolsCall(msg)
+        def response = mcpDriver.callTool('get_hub_logs', [:])
 
         then: 'JSON-RPC 2.0 success envelope shape'
         response.jsonrpc == '2.0'
-        response.id == 99
+        response.id == mcpDriver.lastSentId
         response.result.content instanceof List
         response.result.content[0].type == 'text'
 
         and: 'the text payload parses back to the tool result shape'
-        def inner = new JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.logs == []
         inner.count == 0
     }

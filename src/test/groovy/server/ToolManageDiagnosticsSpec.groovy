@@ -106,6 +106,50 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         uploaded['mcp-performance-history.csv']?.contains('123456')
     }
 
+    @spock.lang.Unroll
+    def "get_set_hub_metrics via dispatch snapshots memory/temp/db (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        sharedLocation.hub = new TestHub(uptime: 172800G)
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> '123456' }
+        hubGet.register('/hub/advanced/internalTempCelsius') { params -> '45.5' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '200000' }
+        script.metaClass.downloadHubFile = { String fileName -> null }
+        script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
+
+        when:
+        def response = mcpDriver.callTool('get_set_hub_metrics', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.current.freeMemoryKB == '123456'
+        inner.current.internalTempC == '45.5'
+        inner.current.uptimeFormatted == '2d 0h 0m'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_set_hub_metrics via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('get_set_hub_metrics', [:])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Hub Admin Read')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "get_set_hub_metrics warns on high temperature"() {
         given:
         settingsMap.enableHubAdminRead = true
@@ -219,6 +263,33 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.directJavaMaxKB == 2200
     }
 
+    @spock.lang.Unroll
+    def "get_memory_history via dispatch parses CSV + summary (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        def csv = [
+            'Date/time,Free OS,5m CPU avg,Total Java,Free Java,Direct Java',
+            '2026-04-19 10:00,200000,0.5,500000,100000,2000',
+            '2026-04-19 10:10,100000,0.9,500000, 80000,2200'
+        ].join('\n')
+        hubGet.register('/hub/advanced/freeOSMemoryHistory') { params -> csv }
+
+        when:
+        def response = mcpDriver.callTool('get_memory_history', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.entries.size() == 2
+        inner.summary.totalEntries == 2
+        inner.summary.currentMemoryKB == 100000
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "get_memory_history emits low-memory warning when current is below 50000"() {
         given:
         settingsMap.enableHubAdminRead = true
@@ -299,6 +370,33 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.contains('+30000KB')
     }
 
+    @spock.lang.Unroll
+    def "force_garbage_collection via dispatch triggers GC and reports before/after (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        def beforeAfter = ['90000', '120000']
+        def idx = 0
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> beforeAfter[idx++] }
+        hubGet.register('/hub/forceGC') { params -> '' }
+
+        when:
+        def response = mcpDriver.callTool('force_garbage_collection', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        idx == 2
+        inner.beforeFreeMemoryKB == 90000
+        inner.afterFreeMemoryKB == 120000
+        inner.deltaKB == 30000
+        inner.memoryReclaimed == true
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "force_garbage_collection reports 'could not read' summary when memory probes fail"() {
         given:
         settingsMap.enableHubAdminRead = true
@@ -347,6 +445,32 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.staleDevices[0].name == 'Stale Sensor'
         result.unknownDevices[0].lastActivity == 'never'
         result.recommendation.contains('1 stale and 1 unknown')
+    }
+
+    @spock.lang.Unroll
+    def "device_health_check via dispatch classifies devices (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def nowMs = 1234567890000L
+        def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
+        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 3600000L) }
+        def stale = new TestDevice(id: 2, name: 'Stale', label: 'Stale Sensor')
+        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        settingsMap.selectedDevices = [fresh, stale]
+
+        when:
+        def response = mcpDriver.callTool('device_health_check', [staleHours: 24])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.summary.totalDevices == 2
+        inner.summary.healthyCount == 1
+        inner.summary.staleCount == 1
+
+        where:
+        useGateways << [true, false]
     }
 
     def "device_health_check includeHealthy=true attaches healthyDevices list"() {
@@ -727,6 +851,28 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Rule not found')
     }
 
+    @spock.lang.Unroll
+    def "get_rule_diagnostics via dispatch maps ruleId-not-found IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        // The tool name in executeTool dispatch is custom_get_rule_diagnostics; the
+        // custom_* engine gate at the top of executeTool requires enableCustomRuleEngine=true
+        // (or enableBuiltinApp=true for readonly tools like this one) before the dispatch
+        // reaches the tool body and its own validation.
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_get_rule_diagnostics', [ruleId: 'nope'])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Rule not found')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "get_rule_diagnostics returns rule structure + recent logs + errors"() {
         given: 'a MCP rule child app with 2 triggers / 1 condition / 3 actions'
         def rule = new TestChildApp(id: 42L, label: 'My Rule')
@@ -768,6 +914,50 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.logs.errors[0].message == 'boom'
     }
 
+    @spock.lang.Unroll
+    def "get_rule_diagnostics via dispatch returns rule structure + recent logs + errors (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        // custom_* gate
+        settingsMap.enableCustomRuleEngine = true
+        def rule = new TestChildApp(id: 42L, label: 'My Rule')
+        rule.ruleData = [
+            id: 42L, name: 'My Rule', description: 'desc',
+            enabled: true, createdAt: 1000L, updatedAt: 2000L,
+            executionCount: 5, lastTriggered: 3000L,
+            triggers: [[type: 'device'], [type: 'time']],
+            conditions: [[op: '>']],
+            actions: [[cmd: 'on'], [cmd: 'off'], [cmd: 'setLevel']],
+            conditionLogic: 'all',
+            localVariables: [counter: 3]
+        ]
+        childAppsList << rule
+        stateMap.debugLogs = [
+            entries: [
+                [timestamp: 1L, level: 'info',  component: 'rules', message: 'ran', ruleId: '42'],
+                [timestamp: 2L, level: 'error', component: 'rules', message: 'boom', ruleId: '42', stackTrace: 't1']
+            ],
+            config: [logLevel: 'debug', maxEntries: 100]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('custom_get_rule_diagnostics', [ruleId: '42'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rule.id == 42L
+        inner.rule.name == 'My Rule'
+        inner.structure.triggerCount == 2
+        inner.structure.conditionCount == 1
+        inner.structure.actionCount == 3
+        inner.logs.errorCount == 1
+
+        where:
+        useGateways << [true, false]
+    }
+
     // -------- toolGetZwaveDetails --------
 
     def "get_zwave_details throws when Hub Admin Read is disabled"() {
@@ -796,6 +986,31 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.endpoint == '/hub/zwaveDetails/json'
         result.zwaveData.firmware == '7.17.1'
         result.zwaveData.deviceCount == 12
+    }
+
+    @spock.lang.Unroll
+    def "get_zwave_details via dispatch returns combined zwaveVersion + zwaveData (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        sharedLocation.hub = new TestHub(zwaveVersion: '7.17.1')
+        hubGet.register('/hub/zwaveDetails/json') { params ->
+            JsonOutput.toJson([firmware: '7.17.1', sdkVersion: '6.82', deviceCount: 12])
+        }
+
+        when:
+        def response = mcpDriver.callTool('get_zwave_details', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.zwaveVersion == '7.17.1'
+        inner.source == 'hub_api'
+        inner.zwaveData.firmware == '7.17.1'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "get_zwave_details falls back to sdk_only when all zwave endpoints fail"() {
@@ -857,6 +1072,32 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.source == 'hub_api'
         result.zigbeeData.panId == '0xABCD'
         result.zigbeeData.deviceCount == 7
+    }
+
+    @spock.lang.Unroll
+    def "get_zigbee_details via dispatch returns channel + zigbeeId + parsed details (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
+        hubGet.register('/hub/zigbeeDetails/json') { params ->
+            JsonOutput.toJson([panId: '0xABCD', channel: 25, deviceCount: 7])
+        }
+
+        when:
+        def response = mcpDriver.callTool('get_zigbee_details', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.zigbeeChannel == 25
+        inner.zigbeeId == '0x1234'
+        inner.source == 'hub_api'
+        inner.zigbeeData.panId == '0xABCD'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "get_zigbee_details falls back to sdk_only when all endpoints fail"() {
@@ -947,6 +1188,51 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.response == 'repair started'
     }
 
+    @spock.lang.Unroll
+    def "zwave_repair via dispatch posts and reports success (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def postedPath = null
+        script.metaClass.hubInternalPost = { String path, Map body = null ->
+            postedPath = path
+            'repair started'
+        }
+
+        when:
+        def response = mcpDriver.callTool('zwave_repair', [confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        postedPath == '/hub/zwaveRepair'
+        inner.success == true
+        inner.message.contains('Z-Wave network repair')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "zwave_repair via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('zwave_repair', [:])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('SAFETY CHECK FAILED')
+        response.error.message.contains('confirm=true')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "zwave_repair reports failure without throwing when POST throws"() {
         given:
         enableHubAdminWrite()
@@ -991,6 +1277,30 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.capturedStates[0].stateId == 'newer'
         result.capturedStates[0].deviceCount == 2
         result.capturedStates[1].stateId == 'older'
+    }
+
+    @spock.lang.Unroll
+    def "list_captured_states via dispatch returns entries sorted newest-first (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        stateMap.capturedDeviceStates = [
+            older: [devices: [[id: '1', name: 'D1']], timestamp: 1000L, deviceCount: 1],
+            newer: [devices: [[id: '2', name: 'D2'], [id: '3', name: 'D3']], timestamp: 5000L, deviceCount: 2]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('list_captured_states', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.count == 2
+        inner.capturedStates[0].stateId == 'newer'
+        inner.capturedStates[1].stateId == 'older'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "list_captured_states surfaces an at-capacity warning"() {
@@ -1052,6 +1362,31 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         !stateMap.capturedDeviceStates.containsKey('gone')
     }
 
+    @spock.lang.Unroll
+    def "delete_captured_state via dispatch removes the specified entry (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        stateMap.capturedDeviceStates = [
+            keep: [devices: [], timestamp: 1000L, deviceCount: 0],
+            gone: [devices: [], timestamp: 2000L, deviceCount: 0]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('delete_captured_state', [stateId: 'gone'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.remaining == 1
+        stateMap.capturedDeviceStates.containsKey('keep')
+        !stateMap.capturedDeviceStates.containsKey('gone')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "delete_captured_state reports not-found without throwing"() {
         given:
         stateMap.capturedDeviceStates = [keep: [devices: [], timestamp: 1000L, deviceCount: 0]]
@@ -1081,6 +1416,31 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.success == true
         result.cleared == 3
         stateMap.capturedDeviceStates == [:]
+    }
+
+    @spock.lang.Unroll
+    def "clear_captured_states via dispatch empties state and returns count (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        stateMap.capturedDeviceStates = [
+            a: [devices: [], timestamp: 1000L, deviceCount: 0],
+            b: [devices: [], timestamp: 2000L, deviceCount: 0],
+            c: [devices: [], timestamp: 3000L, deviceCount: 0]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('clear_captured_states', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.cleared == 3
+        stateMap.capturedDeviceStates == [:]
+
+        where:
+        useGateways << [true, false]
     }
 
     def "clear_captured_states is idempotent on empty state"() {

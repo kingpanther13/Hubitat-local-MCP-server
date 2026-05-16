@@ -38,6 +38,23 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         ex.message.contains('Built-in App')
     }
 
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = false
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Built-in App')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "RM 5.x single-entry Map shape with mixed String/Integer keys coerces all ids to Integer"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -56,6 +73,32 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.rules.every { it.id instanceof Integer }
         result.rules*.id.sort() == [413, 832]
         result.count == 2
+    }
+
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch coerces mixed String/Integer keys to Integer (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.stubRuleList5 = [
+            ['413': 'Living Room Relax'],
+            [832: 'Auto - Living Room TV Lights']
+        ]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 2
+        inner.rules.every { it.id instanceof Integer }
+        inner.rules*.id.sort() == [413, 832]
+        inner.count == 2
+
+        where:
+        useGateways << [true, false]
     }
 
     def "RM 4.x explicit-fields shape passes all fields through"() {
@@ -78,6 +121,33 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         rule.type == 'Rule-4.1'
     }
 
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch passes RM 4.x explicit fields through (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.stubRuleList4 = [
+            [id: 100, label: 'Alpha', name: 'A', type: 'Rule-4.1']
+        ]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        def rule = inner.rules[0]
+        rule.id == 100
+        rule.label == 'Alpha'
+        rule.name == 'A'
+        rule.type == 'Rule-4.1'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "same rule id in both v4 and v5 appears exactly once (first-seen wins)"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -92,6 +162,29 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.rules.size() == 1
         result.rules[0].id == 200
         result.rules[0].rmVersion == '4.x'
+    }
+
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch dedups same id across v4 and v5 (first-seen wins) (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.stubRuleList4 = [[id: 200, label: 'From v4', name: 'From v4', type: 'Rule-4.1']]
+        rmUtils.stubRuleList5 = [[200: 'From v5']]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        inner.rules[0].id == 200
+        inner.rules[0].rmVersion == '4.x'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "both-absent quiet path: count=0, informational note, success NOT false"() {
@@ -110,6 +203,30 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.note?.toLowerCase()?.contains('rule machine')
         result.success != false  // unset or truthy
         result.warning == null
+    }
+
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch both-absent NoClassDefFound quiet path (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
+        rmUtils.throwOnGetRuleList5 = new NoClassDefFoundError("hubitat.helper.RMUtils")
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.count == 0
+        inner.note?.toLowerCase()?.contains('rule machine')
+        inner.success != false
+        inner.warning == null
+
+        where:
+        useGateways << [true, false]
     }
 
     def "both-absent via sandbox-wrapped 'Cannot get property helper' shape: quiet path"() {
@@ -133,6 +250,30 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.warning == null
     }
 
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch both-absent 'Cannot get property helper' quiet path (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
+        rmUtils.throwOnGetRuleList5 = new RuntimeException("Cannot get property 'helper' on null object")
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.count == 0
+        inner.note?.toLowerCase()?.contains('rule machine')
+        inner.success != false
+        inner.warning == null
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "both failed with mixed shapes returns success=false error mentioning both versions"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -148,6 +289,29 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains('v4=') == true
         result.error?.contains('v5=') == true
+    }
+
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch both-failed mixed shapes returns success=false (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
+        rmUtils.throwOnGetRuleList5 = new RuntimeException("timeout connecting to RM")
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error?.contains('v4=') == true
+        inner.error?.contains('v5=') == true
+
+        where:
+        useGateways << [true, false]
     }
 
     def "MissingMethodException mentioning getRuleList on one side is quiet (old firmware shape)"() {
@@ -167,6 +331,29 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.warning == null
     }
 
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch MissingMethodException on getRuleList is quiet (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method getRuleList() is applicable")
+        rmUtils.stubRuleList5 = [[500: 'My v5 Rule']]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        inner.rules[0].id == 500
+        inner.warning == null
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "MissingMethodException NOT scoped to getRuleList surfaces as a warning"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -182,6 +369,29 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.rules.size() == 1
         result.warning != null
         result.warning.contains('setXYZ')
+    }
+
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch MME not scoped to getRuleList surfaces warning (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method setXYZ() is applicable")
+        rmUtils.stubRuleList5 = [[600: 'My Rule']]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        inner.warning != null
+        inner.warning.contains('setXYZ')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "Cannot-get-property with 'helper' substring is quiet (hubitat.helper path)"() {
@@ -200,6 +410,28 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.warning == null
     }
 
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch Cannot-get-property helper substring is quiet (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
+        rmUtils.stubRuleList5 = [[700: 'Only v5 Rule']]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        inner.warning == null
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "Cannot-get-property WITHOUT 'helper' substring surfaces as a warning"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -216,6 +448,28 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.warning != null
     }
 
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch Cannot-get-property WITHOUT helper surfaces warning (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'label' on null object")
+        rmUtils.stubRuleList5 = [[800: 'Rule']]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        inner.warning != null
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "hard RuntimeException on one side with other succeeding surfaces warning"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -230,6 +484,29 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         result.rules.size() == 1
         result.warning != null
         result.warning.contains('v4=')
+    }
+
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch hard RuntimeException on one side surfaces warning (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.throwOnGetRuleList4 = new RuntimeException("timeout")
+        rmUtils.stubRuleList5 = [[900: 'My Rule']]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        inner.warning != null
+        inner.warning.contains('v4=')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "registerRmRule skips entries with non-Integer-coercible keys and emits a sandbox-safe warn log"() {
@@ -278,6 +555,47 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         }
     }
 
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch skips non-Integer-coercible keys and emits warn log (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        and: 'collect mcpLog calls via per-test metaClass override'
+        def mcpLogCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            mcpLogCalls << [level: level, component: component, msg: msg]
+        }
+
+        and: 'v5 list contains one bad String key and one valid numeric key'
+        rmUtils.stubRuleList5 = [
+            ['not-a-number': 'Bad rule'],
+            [123: 'Good rule']
+        ]
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules*.id == [123]
+        inner.count == 1
+        inner.success != false
+
+        and: 'warn log fires with the instanceof-ladder type classification'
+        mcpLogCalls.any {
+            it.level == 'warn' &&
+            it.component == 'rm-interop' &&
+            it.msg.contains("'not-a-number'") &&
+            it.msg.contains('type=String')
+        }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "list_rm_rules filters out RMUtils ghosts and reports them in ghostsFiltered"() {
         given: 'two rules in RMUtils; only one is live in /hub2/appsList'
         settingsMap.enableBuiltinApp = true
@@ -307,6 +625,42 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         and: 'the ghost id is recorded in ghostsFiltered with an explanatory note'
         result.ghostsFiltered == [301]
         result.ghostNote?.contains("no longer exist")
+    }
+
+    @spock.lang.Unroll
+    def "list_rm_rules via dispatch filters out RMUtils ghosts and reports them in ghostsFiltered (useGateways=#useGateways)"() {
+        given: 'two rules in RMUtils; only one is live in /hub2/appsList'
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        rmUtils.stubRuleList5 = [
+            [300: 'Live Rule'],
+            [301: 'Ghost Rule']
+        ]
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [
+                [data: [id: 21, name: "Rule Machine", type: "Rule Machine", user: false, hidden: false],
+                 children: [
+                    [data: [id: 300, name: "Live Rule", type: "Rule Machine", user: true, hidden: false], children: []]
+                ]]
+            ]])
+        }
+
+        when:
+        def response = mcpDriver.callTool('list_rm_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 1
+        inner.rules[0].id == 300
+
+        and: 'the ghost id is recorded in ghostsFiltered with an explanatory note'
+        inner.ghostsFiltered == [301]
+        inner.ghostNote?.contains("no longer exist")
+
+        where:
+        useGateways << [true, false]
     }
 
     def "gateway dispatch via handleGateway routes to list_rm_rules"() {

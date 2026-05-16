@@ -53,6 +53,32 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files[0].directDownload.contains('/local/a.txt')
     }
 
+    @spock.lang.Unroll
+    def "list_files via dispatch returns sorted file list (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'b.csv', size: 200, date: '2026-04-19'],
+                [name: 'a.txt', size: 100, date: '2026-04-18']
+            ])
+        }
+
+        when:
+        def response = mcpDriver.callTool('list_files', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.total == 2
+        inner.files[0].name == 'a.txt'
+        inner.files[1].name == 'b.csv'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "list_files falls back to /hub/fileManager when /json fails"() {
         given:
         hubGet.register('/hub/fileManager/json') { params ->
@@ -128,6 +154,23 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('fileName is required')
     }
 
+    @spock.lang.Unroll
+    def "read_file via dispatch maps missing-fileName IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('read_file', [:])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('fileName is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "read_file returns full content when it fits in one chunk"() {
         given:
         script.metaClass.downloadHubFile = { String name ->
@@ -146,6 +189,31 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.chunkLength == 13
         result.hasMore == false
         result.directDownload.contains('/local/notes.txt')
+    }
+
+    @spock.lang.Unroll
+    def "read_file via dispatch returns full content envelope when it fits in one chunk (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.downloadHubFile = { String name ->
+            name == 'notes.txt' ? 'Hello, world!'.getBytes('UTF-8') : null
+        }
+
+        when:
+        def response = mcpDriver.callTool('read_file', [fileName: 'notes.txt'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.fileName == 'notes.txt'
+        inner.content == 'Hello, world!'
+        inner.totalLength == 13
+        inner.hasMore == false
+
+        where:
+        useGateways << [true, false]
     }
 
     def "read_file returns a chunk + nextOffset hint when content exceeds max chunk"() {
@@ -299,6 +367,56 @@ class ToolManageFilesSpec extends ToolSpecBase {
         uploads[0].content == 'hello'
     }
 
+    @spock.lang.Unroll
+    def "write_file via dispatch creates a new file (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name -> null }
+        script.metaClass.uploadHubFile = { String name, byte[] content ->
+            uploads << [name: name, content: new String(content, 'UTF-8')]
+        }
+
+        when:
+        def response = mcpDriver.callTool('write_file', [fileName: 'new.txt', content: 'hello', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.message.contains("'new.txt' created")
+        inner.fileName == 'new.txt'
+        inner.contentLength == 5
+        inner.backupFile == null
+        uploads.size() == 1
+        uploads[0].name == 'new.txt'
+        uploads[0].content == 'hello'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "write_file via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('write_file', [fileName: 'x.txt', content: 'hi'])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('SAFETY CHECK FAILED')
+        response.error.message.contains('confirm=true')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "write_file backs up an existing file before overwriting"() {
         given:
         enableHubAdminWrite()
@@ -440,6 +558,54 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.backupFile.startsWith('notes_backup_')
         result.backupDownload.contains('/local/notes_backup_')
         result.undoHint.contains('read_file')
+    }
+
+    @spock.lang.Unroll
+    def "delete_file via dispatch backs up then deletes (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        def uploads = []
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name ->
+            name == 'notes.txt' ? 'saved content'.getBytes('UTF-8') : null
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+
+        when:
+        def response = mcpDriver.callTool('delete_file', [fileName: 'notes.txt', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        uploads.size() == 1
+        uploads[0].startsWith('notes_backup_')
+        deleted == ['notes.txt']
+        inner.success == true
+        inner.fileName == 'notes.txt'
+        inner.backupFile.startsWith('notes_backup_')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "delete_file via dispatch maps Hub-Admin-Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('delete_file', [fileName: 'x.txt', confirm: true])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Hub Admin Write')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "delete_file skips auto-backup on files that are already backups (#fileName)"() {

@@ -482,6 +482,219 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     // -------- Dispatcher-level LogWrapper regression guard --------
 
+    // -------- Dispatch-envelope counterparts (#187, #121) --------
+    // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
+    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // verified end-to-end alongside the direct-call golden paths above.
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch writes setting (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [enableCustomRuleEngine: false],
+            confirm: true
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.updated == [enableCustomRuleEngine: false]
+        sharedAppStub.settingsStore['enableCustomRuleEngine'] == [type: 'bool', value: false]
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch maps developer-mode-off to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [debugLogging: true], confirm: true
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Developer Mode tools are disabled')
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [debugLogging: true]
+        ])
+
+        then:
+        response.error?.code == -32602
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch maps empty-settings to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [:], confirm: true
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('settings must be a non-empty map')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch maps disallowed-key to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [enableHubAdminWrite: false], confirm: true
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains("'enableHubAdminWrite'")
+        response.error.message.contains('not allowed')
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch maps null-value to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [debugLogging: null], confirm: true
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains("'debugLogging'")
+        response.error.message.contains('cannot be null')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch coerces string-bool 'true' (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [debugLogging: 'true'], confirm: true
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        sharedAppStub.settingsStore['debugLogging'] == [type: 'bool', value: true]
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch rejects bad-bool 'yes' to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [debugLogging: 'yes'], confirm: true
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains("'debugLogging'")
+        response.error.message.contains('boolean')
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch applies mcpLogLevel to state cache (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [mcpLogLevel: 'warn'], confirm: true
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        stateMap.debugLogs.config.logLevel == 'warn'
+        sharedAppStub.settingsStore['mcpLogLevel'] == [type: 'enum', value: 'warn']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_mcp_settings via dispatch maps bad mcpLogLevel enum to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('update_mcp_settings', [
+            settings: [mcpLogLevel: 'blarg'], confirm: true
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('mcpLogLevel')
+        response.error.message.contains('blarg')
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "toggle-off path through handleToolsCall returns clean -32602, never cascades"() {
         // Regression guard for the LogWrapper bug: previously, the dispatcher's broad
         // Exception catch called `log.error "msg", throwable`, which Hubitat's
@@ -495,6 +708,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         // This spec exercises (1) directly via handleToolsCall. (2) is locked in by
         // sandbox lint + the source-line itself.
         given: 'Hub Admin Write enabled but Developer Mode toggle is off'
+        settingsMap.useGateways = true  // calling manage_mcp_self requires gateway mode on
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
 

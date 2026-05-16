@@ -363,6 +363,312 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         childAppsList.findAll { it.id?.toString() == '11' } == []
     }
 
+    // -------- Dispatch-envelope counterparts (#187, #121) --------
+    // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
+    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // verified end-to-end alongside the direct-call golden paths above. The
+    // tools live under the manage_rules_admin gateway; their dispatch names are
+    // custom_* (custom_test_rule, custom_export_rule, custom_import_rule,
+    // custom_clone_rule, custom_delete_rule) per the gateway config at
+    // hubitat-mcp-server.groovy:761.
+
+    @spock.lang.Unroll
+    def "custom_test_rule via dispatch returns child app result (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def childApp = new TestChildApp(id: 42L, label: 'Motion Test Rule')
+        childApp.metaClass.testRuleFromParent = { -> [success: true, message: 'evaluated'] }
+        childAppsList << childApp
+
+        when:
+        def response = mcpDriver.callTool('custom_test_rule', [ruleId: '42'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.message == 'evaluated'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_test_rule via dispatch maps unknown ruleId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_test_rule', [ruleId: '9999'])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Rule not found')
+        response.error.message.contains('9999')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_export_rule via dispatch returns export payload (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def childApp = new TestChildApp(id: 7L, label: 'Sunset Lights')
+        childApp.ruleData = [
+            name: 'Sunset Lights',
+            description: 'Turn porch light on at sunset',
+            enabled: true,
+            conditionLogic: 'all',
+            triggers: [[type: 'time', time: 'sunset']],
+            conditions: [],
+            actions: [[type: 'delay', seconds: 0]],
+            localVariables: [:]
+        ]
+        childAppsList << childApp
+
+        when:
+        def response = mcpDriver.callTool('custom_export_rule', [ruleId: '7'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.exportVersion == '1.0'
+        inner.rule.name == 'Sunset Lights'
+        inner.deviceManifest == []
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_export_rule via dispatch maps missing ruleId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_export_rule', [:])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('ruleId is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_export_rule via dispatch maps unknown ruleId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_export_rule', [ruleId: '404'])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Rule not found')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_import_rule via dispatch creates rule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def exportPayload = [
+            exportVersion: '1.0',
+            rule: [
+                name: 'Imported Rule',
+                description: '',
+                enabled: true,
+                triggers: [[type: 'time', time: '09:00']],
+                conditions: [],
+                actions: [[type: 'delay', seconds: 2]]
+            ]
+        ]
+        mockChildAppForCreate = new TestChildApp(id: 101L, label: 'Imported Rule')
+
+        when:
+        def response = mcpDriver.callTool('custom_import_rule', [exportData: exportPayload])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == '101'
+        inner.imported == true
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_import_rule via dispatch maps missing exportData to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_import_rule', [:])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('exportData is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_import_rule via dispatch maps missing rule object to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_import_rule', [exportData: [exportVersion: '1.0']])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains("missing 'rule' object")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_clone_rule via dispatch clones rule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def source = new TestChildApp(id: 5L, label: 'Original Rule')
+        source.ruleData = [
+            name: 'Original Rule',
+            enabled: true,
+            conditionLogic: 'all',
+            triggers: [[type: 'time', time: '07:30']],
+            conditions: [],
+            actions: [[type: 'delay', seconds: 3]],
+            localVariables: [:]
+        ]
+        childAppsList << source
+        def cloned = new TestChildApp(id: 6L, label: 'Copy of Original Rule')
+        mockChildAppForCreate = cloned
+
+        when:
+        def response = mcpDriver.callTool('custom_clone_rule', [ruleId: '5'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == '6'
+        inner.clonedFrom == '5'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_clone_rule via dispatch maps missing ruleId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_clone_rule', [:])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('ruleId is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_delete_rule via dispatch requires confirm (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_delete_rule', [ruleId: '1'])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('confirm=true')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_delete_rule via dispatch deletes with auto-backup (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def childApp = new TestChildApp(id: 9L, label: 'Doomed Rule')
+        childApp.settingsStore.ruleName = 'Doomed Rule'
+        childApp.ruleData = [
+            name: 'Doomed Rule',
+            enabled: true,
+            triggers: [[type: 'time', time: '12:00']],
+            conditions: [],
+            actions: [[type: 'delay', seconds: 1]],
+            localVariables: [:]
+        ]
+        childAppsList << childApp
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fileName, byte[] content ->
+            uploads << [name: fileName, size: content.length]
+            return true
+        }
+
+        when:
+        def response = mcpDriver.callTool('custom_delete_rule', [ruleId: '9', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.backupFile == uploads[0].name
+        childAppsList.findAll { it.id?.toString() == '9' } == []
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_delete_rule via dispatch maps unknown ruleId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_delete_rule', [ruleId: '9999', confirm: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Rule not found')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "import_rule applies deviceMapping across triggers, conditions, and actions"() {
         given: 'an exported rule that references deviceId 100 in every section'
         def exportPayload = [

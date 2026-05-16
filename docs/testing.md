@@ -39,7 +39,7 @@ Tool specs extend `ToolSpecBase` (which extends `HarnessSpec`). `ToolSpecBase` i
 
 `src/test/groovy/rules/RuleHarnessSpec.groovy`. Same JVM-cache + per-spec-Mock + reflective-api-rebind pattern as `HarnessSpec`, but loads `hubitat-mcp-rule.groovy` instead of the server file, and exposes a mockable `parent` (the server reference the rule engine reads from for `findDevice` etc.).
 
-One asymmetry to know about: `RuleHarnessSpec`'s `settingsMap` / `stateMap` / `atomicStateMap` are per-spec-instance `@Shared` fields rather than JVM-static like `HarnessSpec`'s `SHARED_*` constants. `sandbox.run()` captures the FIRST subclass's `settingsMap` into eighty20results' `AppPreferencesReader` for the JVM's lifetime; subsequent specs' settings reads flow through `api.getSettings()` (stubbed per-spec to the current instance's `settingsMap`), so the orphan reference is unreachable today. If a future eighty20results change ever routes `script.settings` through `preferencesReader` directly, those fields should be hoisted to JVM-static to keep cross-spec isolation honest.
+One asymmetry to know about: the mutable collection fields (`settingsMap` / `stateMap` / `atomicStateMap`) are per-spec-instance `@Shared` fields on `RuleHarnessSpec` rather than JVM-static like `HarnessSpec`'s `SHARED_*` constants — the script-cache and per-spec-Mock rebind pattern is the same. `sandbox.run()` captures the FIRST subclass's `settingsMap` into eighty20results' `AppPreferencesReader` for the JVM's lifetime; subsequent specs' settings reads flow through `api.getSettings()` (stubbed per-spec to the current instance's `settingsMap`), so the orphan reference is unreachable today. If a future eighty20results change ever routes `script.settings` through `preferencesReader` directly, those fields should be hoisted to JVM-static to keep cross-spec isolation honest.
 
 `parent` is a writable property on the spec: specs assign it in their `given:` block (e.g. `parent = new SmokeParent(...)`), and the setter propagates the value to the loaded script via `HubitatAppScript.setParent()`. eighty20results' `HubitatAppScript` defines `parent` as a private field accessed via its `@CompileStatic` `getProperty("parent")` override, so mocking `AppExecutor.getParent()` no longer intercepts property access — `setParent()` is the only reliable hook.
 
@@ -56,14 +56,89 @@ One asymmetry to know about: `RuleHarnessSpec`'s `settingsMap` / `stateMap` / `a
 
 `src/main/groovy/hubitat/helper/RMUtils.groovy` and `.../NetworkUtils.groovy` are main-source-set stubs of Hubitat's platform helpers. They exist so both test-side Groovy references AND sandbox-loaded production code can resolve these classes under the test JVM. Sandbox-loaded references get here via `support.PassThroughSandboxClassLoader`, which bypasses eighty20results' standard `hubitat.X` → `me.biocomp.hubitat_ci.api.X` remap for the specific class names we stub. Main-source-set rather than test-source-set because `SandboxClassLoader`'s parent chain (AppClassLoader) sees Gradle's main source-set output but not the test classpath. Not deployed to the hub — `packageManifest.json` ships only `hubitat-mcp-server.groovy` and `hubitat-mcp-rule.groovy`. To add a new helper, stub at `src/main/groovy/hubitat/<pkg>/<Class>.groovy` AND add its FQN to `PassThroughSandboxClassLoader.PASSTHROUGH_NAMES`.
 
+## Test pyramid: direct-call vs dispatch-envelope
+
+Every tool feature should have coverage at **both** layers:
+
+| Layer | Entry point | What it covers | When to use |
+|---|---|---|---|
+| **Direct-call (unit)** | `script.toolFoo(args)` — invokes the tool method on the loaded script directly. | The tool's internal logic: argument validation, state reads/mutations, hub-call shapes, return value. Fast and pinpoints the exact line that regressed. | Always. This is the default for any new tool feature or bug fix; one direct-call test per branch (golden path + each error condition). |
+| **Dispatch-envelope (integration)** | `mcpDriver.callTool('tool_name', args)` — drives the full production path: `request.JSON → handleMcpRequest → tools/call dispatch → gateway routing (when applicable) → tool method → error mapping → render(Map)` envelope. | Wiring: that the tool is reachable by its public name from the JSON-RPC catalog, that gateway routing resolves correctly, that thrown exceptions land in the right JSON-RPC envelope shape, and that the response wrapper produces a parsable body. | At least one per tool feature (the happy path), plus an error-path counterpart for any tool that throws `IllegalArgumentException` (validation) or other exceptions (runtime). A direct-call-only suite can pass while a tool is silently unreachable through the production envelope. |
+
+A regression in the dispatch layer (gateway routing changes, render envelope tweaks, JSON-RPC error mapping) shows up in dispatch tests without affecting direct-call tests. A regression in tool internals (bad state mutation, wrong hub endpoint) shows up in direct-call tests first. Keeping both layers makes the failure surface unambiguous.
+
+### `mcpDriver.callTool(toolName, args)` helper
+
+Signature: `Map callTool(String toolName, Map args)`. Returns the parsed JSON-RPC response Map. Internally:
+
+1. Generates a fresh monotonic `id` (readable via `mcpDriver.lastSentId` for `response.id == mcpDriver.lastSentId` assertions).
+2. Builds the canonical envelope `[jsonrpc: '2.0', id: <id>, method: 'tools/call', params: [name: toolName, arguments: args ?: [:]]]`.
+3. Pushes it through `mcpDriver.pushBody(...)` so the next `request.JSON` read returns it.
+4. Calls `script.handleMcpRequest()` — production code runs end-to-end.
+5. Captures the `render(Map)` payload and parses `data` as JSON.
+
+`args` may be `null` or `[:]` for tools that take no arguments. For deliberately-malformed envelopes (missing `name`, batch shape, throwing `request.JSON`), bypass the helper and use `mcpDriver.pushBody(...)` / `pushBodyThrowing(...)` directly — see `HandleToolsCallSpec` "missing tool name returns -32602".
+
+### `@Unroll where: useGateways << [true, false]` pattern
+
+Each dispatch test pins the gateway toggle explicitly via a data-driven Spock feature so the same envelope path runs under both routing modes in one feature method:
+
+```groovy
+import spock.lang.Unroll
+
+@Unroll
+def "create_room dispatches successfully through the envelope (useGateways=#useGateways)"() {
+    given:
+    settingsMap.useGateways = useGateways
+    httpPostHandler = { Map params, Closure responseCb ->
+        responseCb.call([status: 200, data: ''])
+    }
+
+    when:
+    def response = mcpDriver.callTool('create_room', [name: 'Garage', confirm: true])
+
+    then:
+    response.jsonrpc == '2.0'
+    response.id == mcpDriver.lastSentId
+    response.result.isError != true
+
+    where:
+    useGateways << [true, false]
+}
+```
+
+The CI matrix (see "CI" below) runs the full suite under both default modes, but pinning per-feature keeps the dispatch test honest even under the single-mode matrix entry the developer happens to run locally.
+
+### Error-path envelope shapes
+
+Two distinct production paths produce different envelope shapes — assert the right one:
+
+- **`IllegalArgumentException` from a tool → JSON-RPC error `-32602`.** Validation errors surface in the `response.error` slot:
+
+  ```groovy
+  response.error.code == -32602
+  response.error.message.startsWith('Invalid params:')
+  ```
+
+- **Generic `Exception` from a tool → success envelope with `isError: true`.** Per the MCP spec, tool *execution* errors stay in the success channel so clients can present them as tool output:
+
+  ```groovy
+  response.error == null
+  response.result.isError == true
+  response.result.content[0].type == 'text'
+  response.result.content[0].text.startsWith('Tool error:')
+  ```
+
+`HandleToolsCallSpec` is the canonical reference for both shapes.
+
 ## Adding a new server tool spec
 
 1. Create `src/test/groovy/server/Tool<Name>Spec.groovy` extending `support.ToolSpecBase`.
 2. In `given:`, seed any device/child-app fixtures and settings flags the tool reads. Example: `settingsMap.enableHubAdminRead = true`, `childDevicesList << myMockDevice`.
 3. Stub `hubGet.register(path) { ... }` for every internal endpoint the tool calls.
-4. Call `script.tool<Name>(args)` in `when:`.
-5. Assert on the return value AND any state mutations or mock interactions.
-6. Always include at least one error-path test alongside the golden path.
+4. **Add direct-call tests** that call `script.tool<Name>(args)` in `when:` and assert on the return value AND any state mutations or mock interactions. Always include at least one error-path test alongside the golden path.
+5. **Add dispatch-counterpart tests** that drive `mcpDriver.callTool('<tool_name>', args)` for the happy path and for each error condition the tool can produce. Use `@Unroll where: useGateways << [true, false]` so the dispatch feature runs under both routing modes. Assert envelope shape (`response.jsonrpc`, `response.id == mcpDriver.lastSentId`) plus the layer-specific shape from the error-path table above.
+6. If the tool is reached through a gateway (`manage_rooms`, `manage_rule_machine`, etc.), the dispatch test catches gateway-routing regressions automatically by virtue of running with `useGateways=true` — no separate gateway-routing test needed.
 
 ## Which interception point to use (dispatch cheat sheet)
 
@@ -180,8 +255,8 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
 The test suite is layered:
 
-- **Tier 1 — unit specs.** Call tool / rule-primitive methods directly (`script.toolFoo(args)`, `script.handleToolsCall(msg)`, `script.handleDeviceEvent(evt)`). Fast, focused, and pinpoints regressions at tool granularity. This is the right default.
-- **Tier 2 — integration dispatch specs (this section).** Drive the full in-process request-dispatch path (`request.JSON → handleMcpRequest → dispatch → render`) or the full rule install loop (`initialize → subscribeToTriggers → subscribe → fireEvent → handler → action`). Still one JVM, Spock Mocks for the hub runtime, no real HTTP.
+- **Tier 1 — unit / direct-call specs.** Call tool / rule-primitive methods directly (`script.toolFoo(args)`, `script.handleToolsCall(msg)`, `script.handleDeviceEvent(evt)`). Fast, focused, and pinpoints regressions at tool granularity. This is the right default for the "tool internals" half of the pyramid (see "Test pyramid" above).
+- **Tier 2 — integration dispatch specs (this section).** Drive the full in-process request-dispatch path (`request.JSON → handleMcpRequest → tools/call dispatch → gateway routing → tool method → error mapping → render`) via `mcpDriver.callTool('tool_name', args)`, or the full rule install loop (`initialize → subscribeToTriggers → subscribe → fireEvent → handler → action`). Still one JVM, Spock Mocks for the hub runtime, no real HTTP. Every tool feature should have at least one dispatch counterpart paired with its direct-call test.
 - **Tier 3 — true E2E with a fake hub.** Out-of-process HTTP, real JSON-RPC over real HTTP, real sandbox classloader. **Not implemented.** Tracked under issue #77 as a research item.
 
 Some seams only come alive at tier 2. Two are wired into the harness:
@@ -298,5 +373,26 @@ Some production code references platform helper classes like `hubitat.helper.RMU
 - Triggers on `pull_request` targeting `main` and `push` to `main`
 - JDK 17 (Temurin) via `actions/setup-java@v5`
 - Gradle wrapper cached by `gradle/actions/setup-gradle@v6`
-- Runs `./gradlew test --info --warning-mode all`
-- Uploads `build/reports/tests/test/` as the `test-report` artifact on failure
+- Runs `./gradlew test --info --warning-mode all` under the matrix below
+- Uploads `build/reports/tests/test/` per matrix entry as `test-report-<mode>-<dispatch-mode>` on failure
+
+### Matrix (4 parallel lanes)
+
+The Unit Tests workflow expands a 2×2 strategy matrix — every PR runs the full Spock suite four times in parallel, with wall-clock unchanged versus a single run:
+
+| `mode` | `dispatch-mode` | Gradle flags | What it isolates |
+|---|---|---|---|
+| `normal` | `gateway` | (none) | Baseline. Default settings: lenient metaClass check, `useGateways=true`. |
+| `strict` | `gateway` | `-PharnessStrictMetaClass=true` | Flags any per-instance ExpandoMetaClass entries that survive the dual wipe in `HarnessSpec.setup()`. A `strict`-only failure attributes the regression to a metaClass-wipe escape rather than tool behaviour. See `HarnessSpec#checkMetaClassClean`. |
+| `normal` | `flat` | `-Pharness.useGateways=false` | `HarnessSpec.setup()` reads the system property and seeds `settingsMap.useGateways = false` before each test, so any spec that doesn't explicitly pin `useGateways` in `given:` runs under the flat dispatch path (tests that do pin it still win). A `flat`-only failure attributes the regression to the gateway-toggle code path rather than tool behaviour. |
+| `strict` | `flat` | both | Combined corner. Catches metaClass-wipe escapes that only surface under flat dispatch. |
+
+A status-check summary job named `test` aggregates the four matrix entries into a single check the branch ruleset can gate on (the matrix expansion produces `test (normal, gateway)` / `test (normal, flat)` / `test (strict, gateway)` / `test (strict, flat)` — none of which match the literal `test` check name on their own).
+
+Local equivalents of the non-baseline lanes:
+
+```bash
+./gradlew test -PharnessStrictMetaClass=true              # strict-only
+./gradlew test -Pharness.useGateways=false                # flat-only
+./gradlew test -PharnessStrictMetaClass=true -Pharness.useGateways=false  # both
+```

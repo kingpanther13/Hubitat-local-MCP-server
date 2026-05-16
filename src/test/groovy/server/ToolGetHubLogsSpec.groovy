@@ -56,6 +56,34 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         result.count == 3
     }
 
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch returns most-recent-first log entries (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App 1\tinfo\tOldest message\t2026-04-19 10:00:00.000\ttype',
+            'App 1\tinfo\tMiddle message\t2026-04-19 10:00:01.000\ttype',
+            'App 1\tinfo\tNewest message\t2026-04-19 10:00:02.000\ttype'
+        ])
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.logs.size() == 3
+        inner.logs[0].message == 'Newest message'
+        inner.logs[1].message == 'Middle message'
+        inner.logs[2].message == 'Oldest message'
+        inner.count == 3
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "throws when Hub Admin Read is disabled"() {
         given:
         settingsMap.enableHubAdminRead = false
@@ -66,6 +94,24 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Hub Admin Read')
+    }
+
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = false
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [:])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Hub Admin Read')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "rejects non-integer appId (numeric-validation regression)"() {
@@ -111,6 +157,31 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         result.logs.every { it.message.startsWith('ERROR') }
     }
 
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch applies pattern filter (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        registerLogs([
+            'App 1\tinfo\tSomething normal\t2026-04-19 10:00:00.000\ttype',
+            'App 1\terror\tERROR: disk full\t2026-04-19 10:00:01.000\ttype',
+            'App 1\terror\tERROR: timeout\t2026-04-19 10:00:02.000\ttype'
+        ])
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [pattern: 'ERROR.*'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.logs.size() == 2
+        inner.logs.every { it.message.startsWith('ERROR') }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "pattern match is case-insensitive"() {
         given:
         settingsMap.enableHubAdminRead = true
@@ -138,6 +209,25 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('[unclosed')
         ex.message.toLowerCase().contains('invalid regex pattern')
+    }
+
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch maps invalid-regex IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [pattern: '[unclosed'])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('[unclosed')
+        response.error.message.toLowerCase().contains('invalid regex')
+
+        where:
+        useGateways << [true, false]
     }
 
     // ==================== patterns + patternMode ====================
@@ -591,6 +681,50 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         result.count == 2
     }
 
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch applies kitchen-sink filter pipeline (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        long nowMs = 1234567890000L
+        def utcSdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
+        utcSdf.setTimeZone(TimeZone.getTimeZone("UTC"))
+        def fmtDate = { long ms -> utcSdf.format(new Date(ms)) }
+        def recent = fmtDate(nowMs - 1 * 3600 * 1000L)
+        def old    = fmtDate(nowMs - 3 * 3600 * 1000L)
+        registerLogs([
+            "testapp\twarn\tkeyword foo result\t${recent}\tapp".toString(),
+            "testapp\twarn\tkeyword bar result\t${recent}\tapp".toString(),
+            "testapp\tinfo\tkeyword foo result\t${recent}\tapp".toString(),
+            "otherone\twarn\tkeyword foo result\t${recent}\tapp".toString(),
+            "testapp\twarn\tnokeyword here\t${recent}\tapp".toString(),
+            "testapp\twarn\tkeyword foo result\t${old}\tapp".toString()
+        ])
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [
+            level      : 'warn',
+            source     : 'testapp',
+            pattern    : 'keyword',
+            patterns   : ['foo', 'bar'],
+            patternMode: 'any',
+            since      : '2h',
+            limit      : 5
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.logs.size() == 2
+        inner.logs.every { it.level == 'warn' }
+        inner.logs.every { it.name?.toLowerCase()?.contains('testapp') }
+        inner.count == 2
+
+        where:
+        useGateways << [true, false]
+    }
+
     // ==================== combined filter ====================
 
     def "level plus pattern plus since all apply as intersection"() {
@@ -916,6 +1050,26 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalStateException)
         ex.message.toLowerCase().contains('failed to fetch hub logs')
+    }
+
+    @spock.lang.Unroll
+    def "get_hub_logs via dispatch wraps IllegalStateException as isError=true envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        // No hubGet.register() -- the unstubbed path throws and production rethrows as
+        // IllegalStateException. handleToolsCall maps non-IAE exceptions to isError=true.
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [:])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        response.result.content[0].text.toLowerCase().contains('failed to fetch hub logs')
+
+        where:
+        useGateways << [true, false]
     }
 
     // ==================== I8: additional validation scenarios ====================

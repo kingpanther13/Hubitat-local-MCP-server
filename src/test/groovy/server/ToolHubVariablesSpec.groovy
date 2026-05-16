@@ -983,4 +983,388 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         atomicStateMap.inUseHubVars == ['existing']
         noExceptionThrown()
     }
+
+    // -------- Dispatch-envelope counterparts (#187, #121) --------
+    // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
+    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // verified end-to-end alongside the direct-call golden paths above. Tools
+    // live in the manage_hub_variables gateway; dispatched directly by snake-
+    // case name through executeTool() per hubitat-mcp-server.groovy:3098-3105.
+
+    @spock.lang.Unroll
+    def "list_variables via dispatch returns hub + rule vars (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getAllGlobalVars = { ->
+            ['temp_setpoint': [name: 'temp_setpoint', type: 'Number', value: 72, deviceId: 305, attribute: 'variable']]
+        }
+        stateMap.ruleVariables = [last_motion: '2026-04-21T10:00:00']
+
+        when:
+        def response = mcpDriver.callTool('list_variables', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.hubVariables.size() == 1
+        inner.hubVariables[0].name == 'temp_setpoint'
+        inner.ruleVariables.size() == 1
+        inner.total == 2
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "list_variables via dispatch returns empty collections when no vars (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        when:
+        def response = mcpDriver.callTool('list_variables', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.hubVariables == []
+        inner.ruleVariables == []
+        inner.total == 0
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_variable via dispatch returns hub var (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getGlobalVar = { String name ->
+            [name: 'outdoor_temp', type: 'Decimal', value: 68.4, deviceId: 312, attribute: 'variable']
+        }
+
+        when:
+        def response = mcpDriver.callTool('get_variable', [name: 'outdoor_temp'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.name == 'outdoor_temp'
+        inner.value == 68.4
+        inner.type == 'Decimal'
+        inner.source == 'hub'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_variable via dispatch maps unknown to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getGlobalVar = { String n -> null }
+        stateMap.ruleVariables = [:]
+
+        when:
+        def response = mcpDriver.callTool('get_variable', [name: 'nonexistent'])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Variable not found')
+        response.error.message.contains('nonexistent')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "set_variable via dispatch writes hub var (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def captured = [:]
+        script.metaClass.setGlobalVar = { String name, Object value ->
+            captured[name] = value
+            return true
+        }
+
+        when:
+        def response = mcpDriver.callTool('set_variable', [name: 'vacation_mode', value: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.name == 'vacation_mode'
+        inner.value == true
+        inner.source == 'hub'
+        captured == [vacation_mode: true]
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "set_variable via dispatch falls back to rule_engine when hub var missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.setGlobalVar = { String name, Object value -> false }
+
+        when:
+        def response = mcpDriver.callTool('set_variable', [name: 'new_rule_var', value: 42])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.source == 'rule_engine'
+        inner.value == 42
+        stateMap.ruleVariables == [new_rule_var: 42]
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "delete_variable via dispatch removes rule var (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [scratch_var: 'to-be-removed', keep_me: 42]
+
+        when:
+        def response = mcpDriver.callTool('delete_variable', [name: 'scratch_var', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.deleted == true
+        inner.source == 'rule_engine'
+        inner.previousValue == 'to-be-removed'
+        stateMap.ruleVariables == [keep_me: 42]
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "delete_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [scratch_var: 'value']
+
+        when:
+        def response = mcpDriver.callTool('delete_variable', [name: 'scratch_var'])
+
+        then:
+        response.error?.code == -32602
+        stateMap.ruleVariables == [scratch_var: 'value']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "delete_variable via dispatch maps missing-name to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('delete_variable', [confirm: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('name is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "delete_variable via dispatch maps unknown var to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        script.metaClass.getGlobalVar = { String n -> null }
+        stateMap.ruleVariables = [:]
+
+        when:
+        def response = mcpDriver.callTool('delete_variable', [name: 'nonexistent', confirm: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains("'nonexistent'")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "delete_variable via dispatch refuses on consumer ref without force (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [shared_var: 'in-use']
+        def consumer = new support.TestChildApp(id: 99L, label: 'Rule Using Shared Var')
+        consumer.ruleData = [
+            triggers: [],
+            conditions: [[type: 'variable', name: 'shared_var', operator: '=', value: 'on']],
+            actions: []
+        ]
+        childAppsList << consumer
+
+        when:
+        def response = mcpDriver.callTool('delete_variable', [name: 'shared_var', confirm: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains("'shared_var'")
+        response.error.message.contains('force=true')
+        stateMap.ruleVariables == [shared_var: 'in-use']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "create_variable via dispatch maps forbidden-character to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('create_variable', [name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('forbidden character')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "create_variable via dispatch maps unknown-type to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('create_variable', [name: 'goodName', type: 'NotAType', value: 'x', confirm: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('NotAType')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "create_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('create_variable', [name: 'goodName', type: 'String', value: 'x'])
+
+        then:
+        response.error?.code == -32602
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "create_variable via dispatch maps existing hub var to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        script.metaClass.getGlobalVar = { String n ->
+            n == 'taken' ? [name: 'taken', type: 'String', value: 'already here', deviceId: null, attribute: null] : null
+        }
+
+        when:
+        def response = mcpDriver.callTool('create_variable', [name: 'taken', type: 'String', value: 'new', confirm: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('already exists')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_variable_history via dispatch caps at limit (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        atomicStateMap.variableHistory = (1..10).collect { i -> [name: 'v', value: i, timestamp: i] }
+
+        when:
+        def response = mcpDriver.callTool('get_variable_history', [limit: 3])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.entries.size() == 3
+        inner.entries[0].value == 10
+        inner.bufferSize == 10
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_variable_history via dispatch filters by name (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        atomicStateMap.variableHistory = [
+            [name: 'foo', value: 1, timestamp: 1],
+            [name: 'bar', value: 2, timestamp: 2],
+            [name: 'foo', value: 3, timestamp: 3]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('get_variable_history', [name: 'foo'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.entries.size() == 2
+        inner.entries.every { it.name == 'foo' }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_variable_history via dispatch returns empty when buffer is empty (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        atomicStateMap.variableHistory = []
+
+        when:
+        def response = mcpDriver.callTool('get_variable_history', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.entries == []
+        inner.bufferSize == 0
+
+        where:
+        useGateways << [true, false]
+    }
 }

@@ -56,6 +56,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
     def "tools/list returns the tool catalog with known tools present"() {
         given:
+        settingsMap.useGateways = true  // assertion expects gateway entries; pin against harness flat-mode pre-seed
         mcpDriver.pushBody([jsonrpc: '2.0', id: 2, method: 'tools/list', params: [:]])
 
         when:
@@ -141,7 +142,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
     }
 
     def "tools/list gateway-mode catalog fits on a single page (no nextCursor)"() {
-        given: 'default useGateways=true; catalog is 36 entries, under page size of 50'
+        given: 'useGateways=true; catalog is 36 entries, under page size of 50'
+        settingsMap.useGateways = true  // pin against harness flat-mode pre-seed
         mcpDriver.pushBody([jsonrpc: '2.0', id: 60, method: 'tools/list', params: [:]])
 
         when:
@@ -240,7 +242,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.content[0].type == 'text'
 
         and: 'the inner JSON parses back to the tool-result shape'
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rooms*.name.containsAll(['Living Room', 'Kitchen'])
     }
 

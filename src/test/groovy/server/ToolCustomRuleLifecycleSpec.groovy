@@ -126,4 +126,147 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message == 'Rule not found: 999'
     }
+
+    // ---- Dispatch-envelope counterparts (#187, #121) -------------------------
+    // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
+    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // verified end-to-end alongside the direct-call golden paths above.
+
+    @spock.lang.Unroll
+    def "custom_create_rule via dispatch creates rule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def childApp = Spy(TestChildApp) {
+            getId() >> 42
+        }
+        mockChildAppForCreate = childApp
+
+        when:
+        def response = mcpDriver.callTool('custom_create_rule', [
+            name: 'Test Rule',
+            description: 'smoke test',
+            triggers: [[type: 'time', time: '08:30']],
+            actions: [[type: 'delay', seconds: 5]]
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == '42'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_create_rule via dispatch maps missing rule name to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_create_rule', [
+            triggers: [[type: 'time', time: '08:30']],
+            actions: [[type: 'delay', seconds: 5]]
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Rule name is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_create_rule via dispatch maps empty triggers to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_create_rule', [
+            name: 'Test Rule',
+            triggers: [],
+            actions: [[type: 'delay', seconds: 5]]
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('At least one trigger is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_create_rule via dispatch maps empty actions to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def response = mcpDriver.callTool('custom_create_rule', [
+            name: 'Test Rule',
+            triggers: [[type: 'time', time: '08:30']],
+            actions: []
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('At least one action is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_update_rule via dispatch updates rule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def mockChildApp = Spy(TestChildApp) {
+            getId() >> 42
+        }
+        mockChildApp.settingsStore['ruleName'] = 'Updated Name'
+        childAppsList << mockChildApp
+
+        when:
+        def response = mcpDriver.callTool('custom_update_rule', [
+            ruleId: '42', name: 'Updated Name'
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == '42'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "custom_update_rule via dispatch maps unknown ruleId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        childAppsList.clear()
+
+        when:
+        def response = mcpDriver.callTool('custom_update_rule', [
+            ruleId: '999', name: 'x'
+        ])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('Rule not found: 999')
+
+        where:
+        useGateways << [true, false]
+    }
 }

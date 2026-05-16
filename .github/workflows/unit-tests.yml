@@ -18,8 +18,20 @@ jobs:
         #             is unchanged; a strict-only failure cleanly attributes
         #             the regression to a metaClass-wipe escape rather than
         #             tool behaviour. See HarnessSpec#checkMetaClassClean.
+        #
+        # `dispatch-mode` is a second dimension covering the gateway toggle:
+        # `gateway` = default useGateways=true behaviour.
+        # `flat`    = -Pharness.useGateways=false; HarnessSpec.setup() reads
+        #             the system property and seeds settingsMap.useGateways
+        #             before each test, so any spec that doesn't explicitly
+        #             pin useGateways in given: runs under the flat
+        #             dispatch path. Tests that do pin it still win.
+        #             A flat-only failure cleanly attributes the regression
+        #             to the gateway-toggle code path rather than tool
+        #             behaviour. See issue #187 / #121.
         mode: [normal, strict]
-    name: test (${{ matrix.mode }})
+        dispatch-mode: [gateway, flat]
+    name: test (${{ matrix.mode }}, ${{ matrix.dispatch-mode }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -32,23 +44,26 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v6
       - name: Run unit tests
-        run: ./gradlew test --info --warning-mode all ${{ matrix.mode == 'strict' && '-PharnessStrictMetaClass=true' || '' }}
+        run: ./gradlew test --info --warning-mode all
+          ${{ matrix.mode == 'strict' && '-PharnessStrictMetaClass=true' || '' }}
+          ${{ matrix.dispatch-mode == 'flat' && '-Pharness.useGateways=false' || '' }}
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-report-${{ matrix.mode }}
+          name: test-report-${{ matrix.mode }}-${{ matrix.dispatch-mode }}
           path: |
             build/reports/tests/test/
             build/test-results/test/
 
   # Summary gate. The repo ruleset on main requires a status check named
-  # `test`; matrix expansion produces `test (normal)` and `test (strict)`,
-  # so without this summary job the literal `test` check never reports
-  # and the ruleset blocks merge forever. This job depends on the matrix
-  # via `needs:`, runs always (so it reports even when the matrix fails),
-  # and fails iff any matrix entry failed — collapsing both modes into
-  # one check the ruleset can gate on.
+  # `test`; matrix expansion produces `test (normal, gateway)`,
+  # `test (normal, flat)`, `test (strict, gateway)`, and
+  # `test (strict, flat)`, so without this summary job the literal `test`
+  # check never reports and the ruleset blocks merge forever. This job
+  # depends on the matrix via `needs:`, runs always (so it reports even
+  # when the matrix fails), and fails iff any matrix entry failed —
+  # collapsing all four entries into one check the ruleset can gate on.
   test:
     name: test
     runs-on: ubuntu-latest
@@ -62,4 +77,4 @@ jobs:
             echo "matrix-test result: $result — at least one matrix entry failed"
             exit 1
           fi
-          echo "All matrix entries (normal, strict) passed"
+          echo "All matrix entries (normal/strict x gateway/flat) passed"

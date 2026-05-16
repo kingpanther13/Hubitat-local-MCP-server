@@ -57,6 +57,23 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         ex.message.contains('Built-in App')
     }
 
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = false
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 1])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Built-in App')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "throws when ruleId is missing"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -67,6 +84,23 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('ruleid is required')
+    }
+
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [:])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('ruleid is required')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "action=rule dispatches runRule"() {
@@ -82,6 +116,27 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
     }
 
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch action=rule dispatches runRule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 101, action: 'rule'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == 101
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "action=actions dispatches runRuleAct"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -92,6 +147,26 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRuleAct' }
+    }
+
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch action=actions dispatches runRuleAct (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 102, action: 'actions'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRuleAct' }
+
+        where:
+        useGateways << [true, false]
     }
 
     def "action=stop clicks stopRule button when rule is currently running (state.stopped=false)"() {
@@ -114,6 +189,34 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         !rmUtils.calls.any { it.method == 'sendAction' && it.action == 'stopRuleAct' }
     }
 
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch action=stop clicks stopRule button when running (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/installedapp/statusJson/103') { params -> minimalStatusJson(103, false) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 103, action: 'stop'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == 103
+        posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
+        !rmUtils.calls.any { it.method == 'sendAction' && it.action == 'stopRuleAct' }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "action=stop is idempotent — no-ops when rule is already stopped"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -131,6 +234,33 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.success == true
         result.rmAction == 'noop'
         posts.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch action=stop is idempotent when already stopped (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/installedapp/statusJson/104') { params -> minimalStatusJson(104, true) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 104, action: 'stop'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.rmAction == 'noop'
+        posts.isEmpty()
+
+        where:
+        useGateways << [true, false]
     }
 
     def "action=start clicks stopRule button when rule is currently stopped (state.stopped=true)"() {
@@ -152,6 +282,33 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
     }
 
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch action=start clicks stopRule button when stopped (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/installedapp/statusJson/105') { params -> minimalStatusJson(105, true) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 105, action: 'start'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == 105
+        posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "action=start is idempotent — no-ops when rule is already running"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -171,6 +328,33 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch action=start is idempotent when already running (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/installedapp/statusJson/106') { params -> minimalStatusJson(106, false) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 106, action: 'start'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.rmAction == 'noop'
+        posts.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "default action (no action arg) dispatches runRule"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -183,6 +367,26 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
     }
 
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch default action dispatches runRule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 107])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "invalid action throws IllegalArgumentException"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -193,6 +397,23 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('invalid action')
+    }
+
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch returns -32602 envelope on invalid action (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 108, action: 'explode'])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('invalid action')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "String ruleId is coerced to Integer before dispatch"() {
@@ -208,6 +429,27 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.ruleId instanceof Integer
     }
 
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch coerces String ruleId to Integer (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: '202'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleId == 202
+        inner.ruleId instanceof Integer
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "non-numeric ruleId throws IllegalArgumentException"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -218,6 +460,23 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('integer')
+    }
+
+    @spock.lang.Unroll
+    def "run_rm_rule via dispatch returns -32602 envelope on non-numeric ruleId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 'not-a-number'])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('integer')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "gateway dispatch via handleGateway routes to run_rm_rule"() {

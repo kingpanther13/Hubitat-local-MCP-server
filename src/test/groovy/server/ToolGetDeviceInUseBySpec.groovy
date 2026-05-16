@@ -59,6 +59,43 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         ex.message.contains('999')
     }
 
+    @spock.lang.Unroll
+    def "get_device_in_use_by via dispatch maps device-not-found IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('get_device_in_use_by', [deviceId: '999'])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Device not found')
+        response.error.message.contains('999')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "get_device_in_use_by via dispatch maps Built-in-App-disabled IAE to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = false
+
+        when:
+        def response = mcpDriver.callTool('get_device_in_use_by', [:])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('Built-in App')
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "golden path: returns appsUsing list with extraBreadcrumb as deviceName"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -95,6 +132,43 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         result.appsUsing[0].name == 'Room Lighting'
         result.appsUsing[1].disabled == true
         result.appsUsing[1].trueLabel == 'Auto Rule'
+    }
+
+    @spock.lang.Unroll
+    def "get_device_in_use_by via dispatch returns appsUsing list (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def mockDevice = [id: '42', label: 'Kitchen Switch', name: 'Generic Switch']
+        childDevicesList << mockDevice
+        def responseJson = JsonOutput.toJson([
+            extraBreadcrumb: 'Kitchen Switch (breadcrumb)',
+            name: 'Generic Switch',
+            label: 'Kitchen Switch',
+            appsUsing: [
+                [id: 100, name: 'Room Lighting', label: 'Kitchen Lights', trueLabel: null, disabled: false],
+                [id: 200, name: 'Rule-5.1', label: '<b>Auto Rule</b>', trueLabel: 'Auto Rule', disabled: true]
+            ],
+            appsUsingCount: 2,
+            parentApp: null
+        ])
+        hubGet.register('/device/fullJson/42') { params -> responseJson }
+
+        when:
+        def response = mcpDriver.callTool('get_device_in_use_by', [deviceId: '42'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.deviceId == '42'
+        inner.deviceName == 'Kitchen Switch (breadcrumb)'
+        inner.count == 2
+        inner.appsUsing.size() == 2
+        inner.appsUsing[0].name == 'Room Lighting'
+
+        where:
+        useGateways << [true, false]
     }
 
     def "deviceName falls back to .name when extraBreadcrumb is absent"() {
@@ -187,6 +261,29 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         then:
         result.success == false
         result.error?.toLowerCase()?.contains('empty') == true
+    }
+
+    @spock.lang.Unroll
+    def "get_device_in_use_by via dispatch returns success=false envelope on empty hub body (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def mockDevice = [id: '88', label: 'Dev', name: 'Dev']
+        childDevicesList << mockDevice
+        hubGet.register('/device/fullJson/88') { params -> '' }
+
+        when:
+        def response = mcpDriver.callTool('get_device_in_use_by', [deviceId: '88'])
+
+        then: 'tool wraps the empty-body fallback into a success-envelope success=false'
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error?.toLowerCase()?.contains('empty') == true
+
+        where:
+        useGateways << [true, false]
     }
 
     def "gateway dispatch via handleGateway routes correctly"() {
