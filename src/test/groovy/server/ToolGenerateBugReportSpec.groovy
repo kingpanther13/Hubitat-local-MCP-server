@@ -565,4 +565,162 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('shown_anyway_in_public_mode')
     }
 
+    // ---------------------------------------------------------------------------
+    // Dispatch-envelope counterparts (issue #187)
+    //
+    // generate_bug_report is routed through the executeTool switch (no gateway
+    // group), so useGateways doesn't change tool resolution — the parameter is
+    // varied to assert envelope behaviour is identical in both modes. The tool
+    // has no IAE paths exercised by the direct features (all features here
+    // build a report and return success), so dispatch counterparts focus on
+    // distinct success-envelope shapes:
+    //   - default invocation (bug template, success envelope with inner result)
+    //   - issueType routing (enhancement -> [feature] prefix + template)
+    //   - log scoping (relevantCount + hint surfaces through the envelope)
+    //   - privacy mode (public-safe report body suppresses raw logs)
+    //   - ruleId related-rule section
+    // ---------------------------------------------------------------------------
+
+    private Object parseInner(Map response) {
+        new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
+    }
+
+    @Unroll
+    def "generate_bug_report via dispatch returns success envelope with bug report fields (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def response = mcpDriver.callTool('generate_bug_report', baseArgs())
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.success == true
+        inner.issueType == 'bug'
+        inner.privacyMode == 'private'
+        inner.suggestedTitle.startsWith('[bug] ')
+        inner.submitUrl.contains('?template=bug_report.yml')
+        inner.report.contains('## Environment')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "generate_bug_report via dispatch routes issueType=enhancement to [feature] + enhancement.yml template (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def response = mcpDriver.callTool('generate_bug_report', baseArgs([issueType: 'enhancement']))
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.issueType == 'enhancement'
+        inner.suggestedTitle.startsWith('[feature] ')
+        inner.submitUrl.contains('?template=enhancement.yml')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "generate_bug_report via dispatch surfaces log scoping fields on the envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = new TestHub()
+        long anchor = 1_700_000_000_000L
+        seedLogs([
+            logEntry(timestamp: anchor - 500_000, level: 'error', details: [tool: 'other_tool'],                       message: 'unrelated_old_log'),
+            logEntry(timestamp: anchor,           level: 'error', details: [tool: 'manage_native_rules_and_apps'],     message: 'the_real_failure'),
+            logEntry(timestamp: anchor + 5_000,   level: 'warn',  details: [tool: 'manage_native_rules_and_apps'],     message: 'followup_warn'),
+            logEntry(timestamp: anchor + 10_000,  level: 'error', details: [tool: 'different_tool'],                   message: 'noise_after'),
+        ])
+
+        when:
+        def response = mcpDriver.callTool('generate_bug_report', baseArgs([failingTool: 'manage_native_rules_and_apps']))
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.logs.scoped == true
+        inner.logs.relevantCount == 2
+        inner.logs.otherRecentLogCount == 2
+        inner.logs.hint != null
+        inner.logs.hint.contains('includeUnrelatedRecentLogs=true')
+        inner.report.contains('the_real_failure')
+        inner.report.contains('followup_warn')
+        !inner.report.contains('unrelated_old_log')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "generate_bug_report via dispatch in privacyMode=public suppresses raw log text in the report body (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = new TestHub()
+        seedLogs([
+            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'manage_native_rules_and_apps'], message: 'secret_message_in_log'),
+        ])
+
+        when:
+        def response = mcpDriver.callTool('generate_bug_report', baseArgs([
+            failingTool : 'manage_native_rules_and_apps',
+            privacyMode : 'public',
+        ]))
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.privacyMode == 'public'
+        inner.report.contains('<hub-name>')
+        !inner.report.contains('secret_message_in_log')
+        inner.instructions.toLowerCase().contains('if you are an llm')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "generate_bug_report via dispatch renders Related Custom MCP Rule section when ruleId resolves (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def child = new TestChildApp(id: 42L, label: 'My Test Rule')
+        child.ruleData = [
+            name: 'My Test Rule', enabled: true,
+            triggers: [[type: 'time']], conditions: [], actions: [[type: 'on']],
+            lastTriggered: 1_700_000_000_000L, executionCount: 7,
+        ]
+        childAppsList << child
+
+        when:
+        def response = mcpDriver.callTool('generate_bug_report', baseArgs([ruleId: '42']))
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.report.contains('## Related Custom MCP Rule')
+        inner.report.contains('**Rule ID:** 42')
+        inner.report.contains('**Rule Name:** My Test Rule')
+        inner.report.contains('**Execution Count:** 7')
+
+        where:
+        useGateways << [true, false]
+    }
+
 }
