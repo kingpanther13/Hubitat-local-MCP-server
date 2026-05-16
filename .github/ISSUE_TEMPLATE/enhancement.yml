@@ -1,0 +1,20 @@
+name: Enhancement / feature request
+description: Suggest a new feature or behavior change for the Hubitat MCP server.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what_request
+    attributes:
+      label: What feature or behavior change you'd like
+      description: Describe the enhancement in your own words. What problem does it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: agent_report
+    attributes:
+      label: Agent report output (optional)
+      description: If you used the `generate_bug_report` tool with issueType=enhancement, paste its output here.
+      render: markdown
+    validations:
+      required: false

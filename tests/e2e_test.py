@@ -174,7 +174,21 @@ class HubitatMcpClient:
         })
 
     def list_tools(self) -> dict:
-        return self._send("tools/list")
+        """Fetch the full tool catalog, iterating cursor-based pagination per MCP 2024-11-05.
+
+        Returns a single combined response dict {"tools": [...]} so callers don't need to know
+        about pagination. Caps at 20 pages defensively to avoid runaway on a buggy server.
+        """
+        combined: list = []
+        params: Optional[dict] = None
+        for _ in range(20):
+            page_result = self._send("tools/list", params)
+            combined.extend(page_result.get("tools", []))
+            next_cursor = page_result.get("nextCursor")
+            if not next_cursor:
+                return {"tools": combined}
+            params = {"cursor": next_cursor}
+        raise McpError("tools/list pagination did not terminate within 20 pages")
 
     def call_tool(self, name: str, arguments: Optional[dict] = None) -> Any:
         """Call an MCP tool. Returns parsed content text (dict/list/str)."""
@@ -393,7 +407,7 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
-        assert len(tools) == 35, f"Expected 35 tools (23 core + 12 gateways), got {len(tools)}"
+        assert len(tools) == 36, f"Expected 36 tools (23 core + 13 gateways), got {len(tools)}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:

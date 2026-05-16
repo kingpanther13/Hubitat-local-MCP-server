@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a bug in the Hubitat MCP server (a tool crashed, returned wrong output, or left broken state).
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! If you used the `generate_bug_report` MCP tool, the title is already pre-filled — just paste the agent's report below.
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened (in your own words)
+      description: Briefly describe what you were trying to do and what went wrong.
+      placeholder: I asked the agent to add a trigger to a native RM rule and it failed with...
+    validations:
+      required: true
+  - type: textarea
+    id: agent_report
+    attributes:
+      label: Agent report output
+      description: Paste the full output of the `generate_bug_report` tool here.
+      render: markdown
+    validations:
+      required: false

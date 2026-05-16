@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 101 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **12 domain-named gateways** that proxy 78 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 103 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **13 domain-named gateways** that proxy 80 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -204,6 +204,12 @@ Core tools (always visible):
 
 Via `manage_hub_variables` gateway:
 - `list_variables` / `get_variable` / `set_variable` - Hub variables
+
+## HPM Package Introspection
+
+Via `manage_hpm` gateway (2 tools, Hub Admin Read required):
+- `list_hpm_packages` - List all HPM-tracked packages with full component inventory. Data-quality issues (non-scalar heID, empty heID, whitespace-padded heID) emit inline `_warning` on each component **because** consumers enumerate components per-package and need the warning co-located.
+- `get_hpm_drift` - Cross-reference HPM state against the hub; surfaces `missing-required`, `orphan-app`, `orphan-driver` signals. Data-quality issues land in a separate `dataQualityWarnings[]` aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count.
 
 ## Performance Tips
 

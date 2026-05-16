@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 101 MCP tools (35 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 103 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 101 tools total — 23 core tools are always visible, while 78 additional tools are organized behind 12 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 103 tools total — 23 core tools are always visible, while 80 additional tools are organized behind 13 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,9 +221,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (101 total — 35 on tools/list)
+### MCP Tools (103 total — 36 on tools/list)
 
-The server has 101 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **78 additional tools** are organized behind **12 domain-named gateways**. The AI sees 35 items on `tools/list` (23 + 12 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **80 additional tools** are organized behind **13 domain-named gateways**. The AI sees 36 items on `tools/list` (23 + 13 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (23) — Always visible on tools/list
 
@@ -309,7 +309,7 @@ The server has 101 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 </details>
 
-#### Gateway Tools (12) — Each gateway proxies multiple tools
+#### Gateway Tools (13) — Each gateway proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -465,6 +465,18 @@ Write/delete require Hub Admin Write + confirm.
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
 
 `list_installed_apps` and `get_device_in_use_by` require opt-in **Enable Built-in App Tools** setting. `get_app_config` and `list_app_pages` require Hub Admin Read.
+
+</details>
+
+<details>
+<summary><b>manage_hpm</b> (2) — Hubitat Package Manager state introspection (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Hub Admin Read. |
+| `get_hpm_drift` | Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Optional `packageFilter` substring. Surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail. Currently the only data-quality warning types are: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `get_tool_guide` section=manage_hpm for full details. Hub Admin Read. |
+
+Both tools require Hub Admin Read. HPM itself must be installed on the hub.
 
 </details>
 
@@ -1081,12 +1093,12 @@ For easier bug reporting:
   > 5. For uninstall: `delete_app`/`delete_driver` for code, investigate `/installedapp/disable` for instances
 
 - [ ] **Check for updates across installed packages** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions — same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's internal state is not accessible from another app. A parallel tracking database would be needed.
+  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions -- same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's installed-package state IS readable via hub-internal endpoints (`/installedapp/statusJson/` + `/hub2/appsList`), as demonstrated by `list_hpm_packages` and `get_hpm_drift`. A `check_package_updates` tool could cross-reference HPM's recorded manifest URLs and versions against live manifest files to detect available updates.
   >
   > **Implementation plan:**
   > 1. Create `check_package_updates` MCP tool
-  > 2. Read MCP-tracked package list from File Manager
-  > 3. Fetch each manifest URL and compare version fields
+  > 2. Read MCP-tracked package list from File Manager (for MCP-installed packages)
+  > 3. For HPM-managed packages: use `_hpmFetchManifests` to get recorded manifest URLs and versions; fetch each live URL and compare version fields
   > 4. Return list of packages with available updates
   > 5. Handle fetch failures gracefully (GitHub rate limiting, network issues)
 
@@ -1463,10 +1475,14 @@ For easier bug reporting:
 
 
 
+
 ---
 
 ## Version History
 
+- **v1.3.2** - test: cut gradle test suite time ~87% via per-JVM compile cache + strict-mode CI matrix; feat: add identify-hub LED option to get_hub_info and device_health_check; feat(tools/list, manage_hpm): cursor pagination + R7 doc/spec follow-up. PRs: [#184](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/184), [#186](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/186), [#180](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/180)
+- **v1.3.1** - feat: rework generate_bug_report for issue templates, scoped logs, public-safe mode. PRs: [#182](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/182)
+- **v1.3.0** - chore(sandbox_lint): enforce tool-count consistency + sync doc drift; feat(manage_hpm): HPM read-only gateway — list_hpm_packages + get_hpm_drift. PRs: [#165](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/165), [#167](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/167)
 - **v1.2.1** - feat(manage_app_driver_code): library management (install/update/delete/get_source). PRs: [#164](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/164)
 - **v1.2.0** - feat: add clone/export/import_native_app via Hubitat appCloner. PRs: [#158](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/158)
 - **v1.1.2** - docs(futureplans): align rule-tool names with PR #134 custom_ rename; feat(manage_app_driver_code): driver-code lifecycle improvements -- sourceFile + bulk + token-economy. PRs: [#162](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/162), [#163](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/163)

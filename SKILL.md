@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 101 tools (35 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 103 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 101 tools (35 on tools/list + gateways) │  │
+│  │  - 103 tools (36 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,19 +93,19 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 101 items to 35. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 103 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
 
 **Architecture:**
-- `getGatewayConfig()` — defines 12 gateways, each with a description, tools list, and summaries map
-- `getToolDefinitions()` — returns 23 core tools + 12 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 101 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getGatewayConfig()` — defines 13 gateways, each with a description, tools list, and summaries map
+- `getToolDefinitions()` — returns 23 core tools + 13 gateway tool definitions (client-visible)
+- `getAllToolDefinitions()` — returns all 103 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
 
-**12 gateways (78 proxied tools):**
+**13 gateways (80 proxied tools):**
 | Gateway | Tools | Domain |
 |---------|-------|--------|
 | `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
@@ -118,6 +118,7 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 | `manage_diagnostics` | 11 | Diagnostics, state capture, zwave/zigbee details, zwave repair, memory history, GC |
 | `manage_files` | 4 | File Manager CRUD |
 | `manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
+| `manage_hpm` | 2 | HPM package state introspection (list tracked packages, drift signals) -- read-only, Hub Admin Read |
 | `manage_native_rules_and_apps` | 12 | Rule Machine interop (RMUtils: list/run/pause/resume/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete/clone/export/import_native_app + check_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
 | `manage_mcp_self` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |
 
@@ -492,8 +493,9 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/advanced/freeOSMemory` | Free memory in KB (text) |
 | `/hub/advanced/internalTempCelsius` | CPU temperature (text) |
 | `/hub/advanced/databaseSize` | Database size in KB (text) |
-| `/hub2/userAppTypes` | Installed user apps (JSON array: id, name, namespace) |
-| `/hub2/userDeviceTypes` | Installed user drivers (JSON array: id, name, namespace) |
+| `/hub/advanced/blinkLED` | Fires the hub's identify-LED sequence (blue → red → green) once. Returns the literal text `true`. Single GET, no body, self-resetting. Surfaced via the opt-in `identifyHub` flag on `get_hub_info` and `device_health_check`. |
+| `/hub2/userAppTypes` | Apps Code definitions (JSON array: id, name, namespace). Each entry is a code definition, NOT a running instance -- child-app templates appear here even with zero active instances. Distinct from the `userAppTypes[]` key embedded in `/hub2/appsList` (which is the instance tree). Used by `list_hub_apps` and `get_hpm_drift` (orphan-app detection). |
+| `/hub2/userDeviceTypes` | Drivers Code definitions (JSON array: id, name, namespace, capabilities, lastModified, usedBy[]). Despite the name, this is the Drivers Code registry (code definitions, not device instances). Used by `list_hub_drivers` and `get_hpm_drift` (orphan-driver detection). Note: hub uses `userDeviceTypes` for the driver registry while apps use `userAppTypes` -- the naming asymmetry is a hub convention, not an error. |
 | `/hub2/zwaveInfo` | Z-Wave radio details (JSON) |
 | `/hub2/zigbeeInfo` | Zigbee radio details (JSON) |
 | `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
@@ -507,6 +509,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `list_installed_apps`. |
 | `/device/fullJson/<id>` | Comprehensive device JSON — includes `appsUsing` array (apps referencing this device: `{id, name, label, trueLabel, disabled}`), `appsUsingCount`, `parentApp`, plus device commands/attributes/settings/dashboards. Used by `get_device_in_use_by`. |
 | `/installedapp/configure/json/<id>[/<pageName>]` | SDK-level config-page serialization for any installed app using `dynamicPage()`. Returns `{app, configPage: {name, title, sections: [{title, input: [...], body: [...]}]}, settings, childApps}`. `app` carries identity (label, name, appType, disabled, parentAppId). Sections hold typed inputs with current values. The Web UI itself consumes this endpoint. Used by `get_app_config`. |
+| `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `list_hpm_packages` and `get_hpm_drift` to read HPM's `state.manifests` package registry. Requires Hub Admin Read. |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |
@@ -540,6 +543,7 @@ The server implements MCP protocol version `2024-11-05`:
 - **Methods**: `initialize`, `tools/list`, `tools/call`, `ping`
 - **Notifications**: Handled silently (HTTP 204)
 - **Error codes**: `-32700` (parse), `-32600` (invalid request), `-32601` (method not found), `-32602` (invalid params from `IllegalArgumentException`), `-32603` (internal error)
+- **`tools/list` pagination** (v1.3.x+): cursor-paginated per MCP spec. Request takes optional `params.cursor` (opaque string); response carries `tools` plus optional `nextCursor` when more pages exist. Page size 50, chosen so gateway-mode (~36 tools) stays single-page (no client-visible behaviour change) while flat-mode (100+ tools) paginates to keep responses under the hub's 128KB JSON-RPC limit. Cursor validation errors (non-numeric, negative, or out-of-range) surface as `-32602`.
 
 ### Common Pitfalls
 

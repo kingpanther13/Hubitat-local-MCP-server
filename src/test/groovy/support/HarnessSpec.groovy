@@ -8,25 +8,28 @@ import spock.lang.Shared
 import spock.lang.Specification
 
 /**
- * Base class for server and rule-engine specs. Loads the real Groovy app
- * file into a HubitatCI sandbox once per spec class (in {@code setupSpec})
- * and reuses the compiled script across feature methods, with {@code setup}
- * clearing the shared fixture collections so tests stay isolated.
+ * Base class for server-side specs. Loads the real Groovy app file into a
+ * HubitatCI sandbox ONCE per JVM (first subclass's {@code setupSpec} fires
+ * the compile, the result is cached as {@code SHARED_SCRIPT} for every
+ * subsequent subclass to reuse). Every spec's {@code setupSpec} then builds
+ * a fresh {@code AppExecutor} Mock and reflectively rebinds it onto
+ * {@code SHARED_SCRIPT.api} via {@code API_FIELD}; per-test {@code setup}
+ * clears the JVM-shared fixture collections and wipes both metaClass
+ * levels so subclass-installed overrides don't leak across specs.
  *
- * Before this refactor, {@code setup()} re-read, re-parsed, re-AST-validated
- * and re-compiled the 8000+ line {@code hubitat-mcp-server.groovy} file on
- * every single feature method — ~3 seconds of pure compile overhead per
- * test, which added up to most of the CI test-job runtime. Caching the
- * sandbox+script at spec-class scope removes that overhead.
+ * Sandbox parse + AST + compile is multi-second on the large server file
+ * and used to fire once per spec class — amortising it across every
+ * subclass in the JVM is the dominant suite-time win.
  *
  * Isolation contract: subclasses interact with the same set of protected
  * fields as before ({@code script}, {@code appExecutor}, {@code stateMap},
  * {@code atomicStateMap}, {@code settingsMap}, {@code childDevicesList},
  * {@code childAppsList}, {@code mockChildAppForCreate}, {@code hubGet}).
- * The collection fields keep stable references across tests — only the
- * contents reset between features — so any closure, delegate or metaClass
- * hook set up in {@code setupSpec} continues to see the current test's
- * state through the live map/list.
+ * Collection fields are JVM-static singletons (the {@code SHARED_*}
+ * constants), aliased into each spec instance via {@code @Shared}; their
+ * contents reset between features so any closure, delegate or metaClass
+ * hook set up at compile time continues to see the current test's state
+ * through the live map/list.
  *
  * Uses {@code sandbox.run()} with an explicit {@link PassThroughAppValidator}
  * (not {@code sandbox.compile()}) for two reasons:
@@ -80,35 +83,56 @@ import spock.lang.Specification
  * change.
  */
 abstract class HarnessSpec extends Specification {
-    // Shared across every feature method in a given spec class — the
-    // sandbox parse+compile (~3s for the 8000-line server file) is the
-    // dominant cost, so amortising it across all tests in a class keeps
-    // the CI job from scaling linearly with test count.
-    @Shared protected AppExecutor appExecutor
-    @Shared protected script
-    @Shared private PermissiveLog sharedLog = new PermissiveLog()
-
-    // Stable references — contents mutated by tests and cleared in setup().
-    // The AppExecutor mock's stubs capture these references in setupSpec,
-    // so per-test content updates are visible via the normal stub paths.
-    @Shared protected final Map stateMap = [:]
-    @Shared protected final Map atomicStateMap = [:]
+    // Per-JVM cache for the compiled script. sandbox.run() (parse + AST
+    // + compile) is multi-second on the large server file and used to
+    // fire once per spec class — amortising it across every subclass
+    // is the dominant test-suite speedup in this PR.
+    //
+    // The AppExecutor Mock is built fresh per spec class (Spock 2.x
+    // ties Mocks to their creating Spec's MockController via thread-
+    // local registration in setupSpec, so a Mock created by spec A
+    // has no controller wired up when spec B's setupSpec runs and
+    // re-stubbing on it would no-op). Each spec's setupSpec builds
+    // its own Mock and reflectively rebinds it onto SHARED_SCRIPT.api.
+    // The script's userSettingsMap / preferencesReader wiring (bound
+    // at sandbox.run time using the JVM-shared SHARED_SETTINGS_MAP)
+    // stays valid because the Map reference is the same across specs.
+    private static HubitatAppScript SHARED_SCRIPT
+    private static final Object COMPILE_LOCK = new Object()
+    private static final java.lang.reflect.Field API_FIELD = {
+        def f = HubitatAppScript.getDeclaredField('api')
+        f.accessible = true
+        f
+    }()
+    private static final PermissiveLog SHARED_LOG = new PermissiveLog()
+    private static final Map SHARED_STATE_MAP = [:]
+    private static final Map SHARED_ATOMIC_STATE_MAP = [:]
     // Must be non-empty at sandbox.run() time — HubitatCI's
     // readUserSettingValues does a Groovy truthy check on the passed map
     // and silently swaps in a fresh empty Map when it's empty, breaking
     // the shared reference that specs rely on to mutate settings from
     // their given: blocks. setup() restores this seed entry after
     // clearing so every test starts from the same baseline.
-    @Shared protected final Map settingsMap = [selectedDevices: []]
-    @Shared protected final List childDevicesList = []
-    @Shared protected final List childAppsList = []
-    @Shared protected final HubInternalGetMock hubGet = new HubInternalGetMock()
+    private static final Map SHARED_SETTINGS_MAP = [selectedDevices: []]
+    private static final List SHARED_CHILD_DEVICES_LIST = []
+    private static final List SHARED_CHILD_APPS_LIST = []
+    private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
+    private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
+
+    @Shared protected AppExecutor appExecutor
+    @Shared protected script
+    @Shared protected final Map stateMap = SHARED_STATE_MAP
+    @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
+    @Shared protected final Map settingsMap = SHARED_SETTINGS_MAP
+    @Shared protected final List childDevicesList = SHARED_CHILD_DEVICES_LIST
+    @Shared protected final List childAppsList = SHARED_CHILD_APPS_LIST
+    @Shared protected final HubInternalGetMock hubGet = SHARED_HUB_GET
     // Drives handleMcpRequest end-to-end: push a JSON body, let the
     // script's `request.JSON` resolve through here, capture the script's
-    // `render(...)` call. Shared across features; reset() in setup() keeps
-    // per-test state clean while the instance reference stays stable for
-    // the metaClass + Mock stubs wired in setupSpec.
-    @Shared protected final McpRequestDriver mcpDriver = new McpRequestDriver()
+    // `render(...)` call. Reset between features via mcpDriver.reset();
+    // the instance reference stays stable across the JVM so wire-ups
+    // installed against it remain valid.
+    @Shared protected final McpRequestDriver mcpDriver = SHARED_MCP_DRIVER
 
     // Per-test fixture — specs assign in given: blocks to drive
     // addChildApp's return value. Not @Shared: wireScriptOverrides() runs
@@ -117,13 +141,62 @@ abstract class HarnessSpec extends Specification {
     protected def mockChildAppForCreate
 
     def setupSpec() {
-        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-server.groovy'))
-        appExecutor = Mock(AppExecutor) {
-            _ * getState() >> stateMap
-            _ * getAtomicState() >> atomicStateMap
-            _ * getChildDevices() >> childDevicesList
+        appExecutor = buildAppExecutorMock()
+        // build.gradle pins maxParallelForks=1 and Spock's default test
+        // ordering is sequential, so contention here is theoretical
+        // today. The synchronized block keeps the cache correct if a
+        // future config change ever enables parallel forks/threads
+        // within one JVM.
+        synchronized (COMPILE_LOCK) {
+            if (SHARED_SCRIPT == null) {
+                compileSharedScript()
+            } else {
+                rebindApi(appExecutor)
+            }
+        }
+        script = SHARED_SCRIPT
+    }
+
+    private void rebindApi(AppExecutor mock) {
+        try {
+            API_FIELD.set(SHARED_SCRIPT, mock)
+        } catch (Throwable t) {
+            // Loud, contextual failure. If eighty20results renames or
+            // re-types HubitatAppScript.api on an upgrade, the static
+            // initializer for API_FIELD will throw at class-load time
+            // (which surfaces clearly). But if the field exists with a
+            // different shape (final modifier, incompatible type, etc.),
+            // .set() fails here — and that happens AFTER the first spec
+            // has run successfully, so a maintainer needs a hint to look
+            // at HarnessSpec rather than their own spec.
+            throw new IllegalStateException(
+                "Failed to rebind AppExecutor on cached SHARED_SCRIPT for " +
+                "${this.class.simpleName}. An eighty20results upgrade may have " +
+                "changed HubitatAppScript.api field shape; see HarnessSpec " +
+                "for the rebind contract.", t)
+        }
+    }
+
+    private AppExecutor buildAppExecutorMock() {
+        // Don't add `getApp() >> X` here — several specs (e.g. ToolManageLogsSpec,
+        // ToolUpdateMcpSettingsSpec, AppLifecycleMigrationSpec) layer their own
+        // additive `appExecutor.getApp() >> sharedAppStub` in setupSpec. The
+        // Mock is per-spec, so stacking would happen WITHIN one spec (base
+        // stub here + additive stub in subclass), and Spock's resolution order
+        // between the two is version-dependent. To find current consumers if
+        // the list above goes stale, grep `appExecutor.getApp() >>` under
+        // src/test/groovy/.
+        def mock = Mock(AppExecutor) {
+            _ * getState() >> SHARED_STATE_MAP
+            _ * getAtomicState() >> SHARED_ATOMIC_STATE_MAP
+            _ * getChildDevices() >> SHARED_CHILD_DEVICES_LIST
             _ * now() >> 1234567890000L
-            _ * getLog() >> sharedLog
+            _ * getLog() >> SHARED_LOG
+            // Script delegates `settings` reads to api.getSettings(). When we
+            // rebind api per spec, we have to stub this explicitly — the
+            // sandbox.run() path that normally wires it only runs on the
+            // first spec.
+            _ * getSettings() >> SHARED_SETTINGS_MAP
         }
         // render(Map) is declared on AppExecutor — class-2 of the dispatch
         // cheat sheet. Install a permanent dispatcher stub that routes every
@@ -132,28 +205,33 @@ abstract class HarnessSpec extends Specification {
         // `return render(...)` still gets a value back (the driver returns
         // the same Map). Without this, `handleMcpRequest()` short-circuits
         // with MissingMethodException inside the Mock's @Delegate chain.
-        appExecutor.render(_) >> { args -> mcpDriver.captureRender(args[0] as Map) }
+        mock.render(_) >> { args -> SHARED_MCP_DRIVER.captureRender(args[0] as Map) }
         // No-arg render() isn't used by any production path today, but
         // AppExecutor declares both overloads. Fail loudly if a future
         // handler picks up the no-arg form — silent default (null return,
         // no capture) would leave parseResponseJson reading the *previous*
         // test's state, which is exactly the kind of cross-test leak this
         // harness is built to prevent.
-        appExecutor.render() >> {
+        mock.render() >> {
             throw new IllegalStateException(
                 "No-arg render() is not wired into McpRequestDriver. If a new " +
                 "handler path needs it, extend the driver to capture the no-arg " +
                 "call and relax this stub. See src/test/groovy/support/HarnessSpec.groovy.")
         }
+        return mock
+    }
+
+    private void compileSharedScript() {
+        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-server.groovy'))
         def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
             Flags.DontRunScript
         ])
-        script = sandbox.run(
+        SHARED_SCRIPT = sandbox.run(
             api: appExecutor,
-            userSettingValues: settingsMap,
+            userSettingValues: SHARED_SETTINGS_MAP,
             childAppResolver: { String ns, String name ->
                 throw new IllegalStateException(
                     "childAppResolver fired for ${ns}:${name} — HarnessSpec's " +
@@ -184,13 +262,80 @@ abstract class HarnessSpec extends Specification {
         // overrides into the next feature, making tests order-dependent.
         // The standard hooks installed by wireScriptOverrides() below are
         // re-applied immediately so they're always present.
+        //
+        // Both removals matter when SHARED_SCRIPT is reused across spec
+        // classes: removeMetaClass(class) clears the class-level
+        // ExpandoMetaClass, and script.setMetaClass(null) clears the
+        // per-instance one. Tests that do `script.metaClass.mcpLog = ...`
+        // attach to the per-instance EMC; without the second wipe, the
+        // closure (which captured the previous spec's local list) keeps
+        // intercepting calls in subsequent specs.
         GroovySystem.metaClassRegistry.removeMetaClass(script.getClass())
+        script.setMetaClass(null)
+        checkMetaClassClean(script, 'HarnessSpec')
         // Re-run metaClass + reflective wires in setup (not setupSpec) so
         // closures capture the *current* Specification instance. This lets
         // subclasses override wireScriptOverrides() with closures that
         // reference non-@Shared spec fields (e.g. per-feature stubs) and
         // still see their own test's values.
         wireScriptOverrides()
+    }
+
+    /**
+     * Strict-mode invariant check: after both metaClass wipes, before any
+     * harness re-installs, the script's metaClass should have no per-
+     * instance ExpandoMetaClass entries left over from prior tests. Off by
+     * default (saves a small per-test cost); enable with
+     * `-PharnessStrictMetaClass=true` when chasing a metaClass-leak
+     * regression. Loud failure pinpoints which dynamic surface escaped the
+     * wipe so future maintainers can extend setup() rather than archaeology
+     * a flaky cross-spec test.
+     *
+     * Static so {@link StrictMetaClassCheckSpec} can exercise the failure
+     * path directly without standing up a full Spec lifecycle.
+     */
+    static void checkMetaClassClean(Object scriptInstance, String specName) {
+        if (System.getProperty('harnessStrictMetaClass') != 'true') return
+        // `getMetaClass()` returns a HandleMetaClass wrapper (a
+        // DelegatingMetaClass) for objects whose metaClass has been
+        // touched via the DSL; unwrap to the underlying ExpandoMetaClass
+        // before inspecting expando entries. Without this unwrap the
+        // instanceof check returns false on real script instances and
+        // the strict assertion silently no-ops — exactly the failure
+        // mode this helper exists to surface.
+        def mc = scriptInstance.getMetaClass()
+        while (mc instanceof groovy.lang.DelegatingMetaClass) {
+            mc = mc.getAdaptee()
+        }
+        // ExpandoMetaClass extends MetaClassImpl, so check EMC first.
+        if (mc instanceof ExpandoMetaClass) {
+            // fall through to expando-entry inspection
+        } else if (mc instanceof groovy.lang.MetaClassImpl) {
+            // Pristine default — no per-instance EMC was ever attached
+            // because nothing did `script.metaClass.X = closure`. Safe.
+            return
+        } else {
+            // Something else entirely — a future Groovy upgrade or an
+            // eighty20results-installed custom MetaClass. We can't
+            // introspect it for leaks, so fail loudly rather than
+            // silently passing (the silent-no-op trap this helper
+            // exists to avoid).
+            throw new IllegalStateException(
+                "Unexpected metaClass type ${mc.getClass().name} after dual wipe in ${specName}.setup(). " +
+                "checkMetaClassClean only knows how to introspect ExpandoMetaClass and the default " +
+                "MetaClassImpl. Extend the helper for the new shape, or strict-mode silently no-ops.")
+        }
+        def methods = mc.expandoMethods
+        def props = mc.expandoProperties
+        if (!methods.isEmpty() || !props.isEmpty()) {
+            throw new IllegalStateException(
+                "Per-instance metaClass not clean after dual wipe in ${specName}.setup(). " +
+                "Surviving expando methods=${methods*.name}, expando properties=${props*.name}. " +
+                "Some override escaped both removeMetaClass(class) and setMetaClass(null) — " +
+                "likely set on a supertype (HubitatAppScript.metaClass.X instead of " +
+                "script.metaClass.X) or via a static holder. Extend setup() to cover the " +
+                "new surface.")
+        }
     }
 
     protected void wireScriptOverrides() {
