@@ -1375,8 +1375,13 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "get_hub_info",
-            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
-            inputSchema: [type: "object", properties: [:]]
+            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read. Pass blinkLED=true to also fire the hub's identify-LED sequence (blue → red → green) — useful for physically locating which hub returned this info when multiple hubs are deployed.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    blinkLED: [type: "boolean", description: "Trigger the hub's identify-LED sequence (blue → red → green) for physical identification. Non-destructive and self-resetting. Default: false.", default: false]
+                ]
+            ]
         ],
         [
             name: "get_modes",
@@ -1753,14 +1758,15 @@ Verify rule after creation.""",
         ],
         [
             name: "device_health_check",
-            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call.",
+            description: "Check device staleness, (optionally) ICMP-ping arbitrary hosts, and (optionally) fire the hub's identify-LED sequence. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). identifyHub blinks the hub's LED (blue → red → green) so you can physically locate the hub. Any combination may be used in a single call.",
             inputSchema: [
                 type: "object",
                 properties: [
                     staleHours: [type: "integer", description: "Flag devices with no activity in this many hours. Default: 24.", default: 24],
                     includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
                     pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call). Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only."],
-                    pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3]
+                    pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
+                    identifyHub: [type: "boolean", description: "Trigger the hub's identify-LED sequence (blue → red → green) so you can physically locate which hub answered. Non-destructive and self-resetting. Result echoed as identifyHubTriggered. Default: false.", default: false]
                 ]
             ]
         ],
@@ -3033,7 +3039,7 @@ def executeTool(toolName, args) {
         case "custom_test_rule": return toolTestRule(args.ruleId)
 
         // System Tools
-        case "get_hub_info": return toolGetHubInfo()
+        case "get_hub_info": return toolGetHubInfo(args)
         case "get_modes": return toolGetModes()
         case "set_mode": return toolSetMode(args.mode)
         case "list_variables": return toolListVariables()
@@ -4631,7 +4637,7 @@ def applyDeviceMapping(data, Map mapping) {
 
 // ==================== SYSTEM TOOLS ====================
 
-def toolGetHubInfo() {
+def toolGetHubInfo(args = null) {
     def hub = location.hub
     def info = [
         temperatureScale: location.temperatureScale
@@ -4727,6 +4733,19 @@ def toolGetHubInfo() {
         try { info.hubData = hub?.data } catch (Exception e) { info.hubData = null }
     } else {
         info.hubAdminReadRequired = "Hub Admin Read is not enabled. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
+    }
+
+    // Optional identify-LED blink (firmware 2.5.0.123+). Non-destructive: fires a
+    // single LED rotation sequence on the hub for physical identification.
+    if (args?.blinkLED == true) {
+        try {
+            hubInternalGet("/hub/advanced/blinkLED")
+            info.blinkLEDTriggered = true
+        } catch (Exception e) {
+            info.blinkLEDTriggered = false
+            info.blinkLEDError = e.message
+            mcpLog("warn", "hub-info", "blinkLED request failed: ${e.message}")
+        }
     }
 
     return info
@@ -9095,12 +9114,26 @@ def toolDeviceHealthCheck(args) {
 
     def pingResults = pingHosts ? runPingChecks(pingHosts, pingCount) : null
 
+    // Optional identify-LED blink (firmware 2.5.0.123+). Non-destructive: fires a
+    // single LED rotation sequence on the hub for physical identification.
+    def identifyHubResult = null
+    if (args?.identifyHub == true) {
+        try {
+            hubInternalGet("/hub/advanced/blinkLED")
+            identifyHubResult = [triggered: true]
+        } catch (Exception e) {
+            identifyHubResult = [triggered: false, error: e.message]
+            mcpLog("warn", "monitoring", "device_health_check identifyHub blinkLED request failed: ${e.message}")
+        }
+    }
+
     if (!settings.selectedDevices) {
         def emptyResult = [
             message: "No devices selected for MCP access",
             summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]
         ]
         if (pingResults != null) emptyResult.pingResults = pingResults
+        if (identifyHubResult != null) emptyResult.identifyHub = identifyHubResult
         return emptyResult
     }
 
@@ -9179,6 +9212,10 @@ def toolDeviceHealthCheck(args) {
 
     if (pingResults != null) {
         result.pingResults = pingResults
+    }
+
+    if (identifyHubResult != null) {
+        result.identifyHub = identifyHubResult
     }
 
     mcpLog("info", "monitoring", "Device health check: ${healthy.size()} healthy, ${stale.size()} stale, ${unknown.size()} unknown (threshold: ${staleHours}h)")

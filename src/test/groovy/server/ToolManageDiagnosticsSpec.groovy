@@ -593,6 +593,65 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         high.message.contains('between 1 and 5')
     }
 
+    // -------- device_health_check identifyHub (issue #132) --------
+
+    def "device_health_check identifyHub=true fires /hub/advanced/blinkLED and surfaces identifyHub.triggered=true"() {
+        given:
+        def nowMs = 1234567890000L
+        def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
+        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        settingsMap.selectedDevices = [fresh]
+        hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
+
+        when:
+        def result = script.toolDeviceHealthCheck([identifyHub: true])
+
+        then:
+        result.identifyHub == [triggered: true]
+        hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "device_health_check identifyHub=true with no devices selected still triggers blink and reports it"() {
+        given:
+        // settingsMap.selectedDevices intentionally absent — triggers the early-return path
+        hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
+
+        when:
+        def result = script.toolDeviceHealthCheck([identifyHub: true])
+
+        then:
+        result.message.contains('No devices selected')
+        result.identifyHub == [triggered: true]
+        hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "device_health_check without identifyHub does not hit the blinkLED endpoint or emit the field"() {
+        given:
+        def nowMs = 1234567890000L
+        def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
+        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        settingsMap.selectedDevices = [fresh]
+        // Intentionally no hubGet.register('/hub/advanced/blinkLED')
+
+        when:
+        def result = script.toolDeviceHealthCheck([:])
+
+        then:
+        !result.containsKey('identifyHub')
+        !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "device_health_check identifyHub=true with endpoint failure surfaces triggered=false plus error"() {
+        given:
+        hubGet.register('/hub/advanced/blinkLED') { params -> throw new RuntimeException('LED unavailable') }
+
+        when:
+        def result = script.toolDeviceHealthCheck([identifyHub: true])
+
+        then:
+        result.identifyHub == [triggered: false, error: 'LED unavailable']
+    }
+
     def "device_health_check pingHosts: non-numeric pingCount surfaces friendly IllegalArgumentException"() {
         when:
         script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 'three'])

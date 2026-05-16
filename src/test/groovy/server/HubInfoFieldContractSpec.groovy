@@ -75,6 +75,65 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == false
     }
 
+    // -------- toolGetHubInfo identify-LED (issue #132) --------
+
+    def "getHubInfo blinkLED=true fires /hub/advanced/blinkLED and reports blinkLEDTriggered=true"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
+
+        when:
+        def result = script.toolGetHubInfo([blinkLED: true])
+
+        then:
+        result.blinkLEDTriggered == true
+        !result.containsKey('blinkLEDError')
+        hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "getHubInfo without blinkLED arg does not hit the blinkLED endpoint or emit the field"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        // Intentionally no hubGet.register('/hub/advanced/blinkLED') — calling it
+        // would throw IllegalStateException("Unstubbed hubInternalGet"), which the
+        // tool's catch block would convert to blinkLEDTriggered=false. We rely on
+        // BOTH the missing-field assertion and the no-call assertion to prove the
+        // code path is skipped entirely, not just its result swallowed.
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        !result.containsKey('blinkLEDTriggered')
+        !result.containsKey('blinkLEDError')
+        !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "getHubInfo blinkLED=false does not hit the blinkLED endpoint"() {
+        given:
+        sharedLocation.hub = new TestHub()
+
+        when:
+        def result = script.toolGetHubInfo([blinkLED: false])
+
+        then:
+        !result.containsKey('blinkLEDTriggered')
+        !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
+    }
+
+    def "getHubInfo blinkLED=true with endpoint failure surfaces blinkLEDTriggered=false and blinkLEDError"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/advanced/blinkLED') { params -> throw new RuntimeException('LED endpoint missing on this firmware') }
+
+        when:
+        def result = script.toolGetHubInfo([blinkLED: true])
+
+        then:
+        result.blinkLEDTriggered == false
+        result.blinkLEDError == 'LED endpoint missing on this firmware'
+    }
+
     // -------- toolGetHubDetails --------
 
     def "getHubDetails includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
