@@ -891,7 +891,7 @@ def getGatewayConfig() {
             tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
             summaries: [
                 get_hub_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex AND/OR), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
-                get_device_history: "Get device event history (up to 7 days). Args: deviceId, hours, attribute",
+                get_device_history: "Get device or location event history (up to 7 days). Omit deviceId for location events. Args: deviceId (optional), hoursBack, attribute, limit",
                 get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
                 get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
@@ -901,7 +901,7 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 get_hub_logs: "errors warnings messages trace syslog output print recent latest newest device app scope regex pattern filter time window since until last hour minute",
-                get_device_history: "events timeline past activity what happened sensor",
+                get_device_history: "events timeline past activity what happened sensor mode hsm location hub variable",
                 get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 get_hub_jobs: "scheduled cron timer recurring what is running next automation",
                 get_debug_logs: "mcp internal troubleshoot trace",
@@ -1765,16 +1765,15 @@ Verify rule after creation.""",
         ],
         [
             name: "get_device_history",
-            description: "Get device event history over a time range (up to 7 days). Supports attribute filtering.",
+            description: "Get device or location event history (up to 7 days). Omit deviceId for location events (mode/HSM/hub variable/sendLocationEvent). Supports attribute filtering.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID"],
+                    deviceId: [type: "string", description: "Device ID. Omit for location-level events."],
                     hoursBack: [type: "integer", description: "How many hours of history to retrieve. Default: 24, max: 168 (7 days).", default: 24],
-                    attribute: [type: "string", description: "Filter to a specific attribute name (e.g., 'temperature', 'switch')"],
+                    attribute: [type: "string", description: "Event name filter. Device: an attribute (e.g. 'switch'). Location: 'mode', 'hsmStatus', 'hsmAlert', or hub-variable name."],
                     limit: [type: "integer", description: "Max events to return. Default: 100, max: 500.", default: 100]
-                ],
-                required: ["deviceId"]
+                ]
             ]
         ],
         [
@@ -8716,16 +8715,54 @@ def toolGetHubLogs(args) {
 }
 
 def toolGetDeviceHistory(args) {
-    if (!args.deviceId) throw new IllegalArgumentException("deviceId is required")
-    def device = findDevice(args.deviceId)
-    if (!device) throw new IllegalArgumentException("Device not found: ${args.deviceId}. Device must be selected in MCP Rule Server app settings.")
-
     def hoursBack = Math.min(args.hoursBack ?: 24, 168)
     def limit = Math.min(args.limit ?: 100, 500)
     def attributeFilter = args.attribute
+    def sinceDate = new Date(now() - (hoursBack * 3600000L))
+
+    // Location-scope branch: when deviceId is omitted, fold in
+    // Hubitat's getLocationEventsSince(Date) so callers can pull
+    // mode/HSM/hub-variable/sendLocationEvent history alongside
+    // device history through one tool.
+    if (!args.deviceId) {
+        def locEvents
+        try {
+            locEvents = location.eventsSince(sinceDate, [max: limit])
+        } catch (Exception e) {
+            mcpLog("warn", "monitoring", "location.eventsSince failed: ${e.message}")
+            return [error: "location.eventsSince not supported or failed: ${e.message}", source: "location"]
+        }
+
+        def locResults = locEvents?.collect { evt ->
+            [
+                name: evt.name,
+                value: evt.value,
+                unit: evt.unit,
+                description: evt.descriptionText,
+                date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+                isStateChange: evt.isStateChange
+            ]
+        } ?: []
+
+        if (attributeFilter) {
+            locResults = locResults.findAll { it.name == attributeFilter }
+        }
+
+        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${hoursBack}h back)")
+        return [
+            source: "location",
+            hoursBack: hoursBack,
+            attributeFilter: attributeFilter,
+            events: locResults,
+            count: locResults.size(),
+            sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+        ]
+    }
+
+    def device = findDevice(args.deviceId)
+    if (!device) throw new IllegalArgumentException("Device not found: ${args.deviceId}. Device must be selected in MCP Rule Server app settings.")
 
     def deviceLabel = device.label ?: device.name ?: "Device ${args.deviceId}"
-    def sinceDate = new Date(now() - (hoursBack * 3600000L))
 
     def events
     try {
@@ -8746,13 +8783,13 @@ def toolGetDeviceHistory(args) {
         ]
     } ?: []
 
-    // Apply attribute filter post-query
     if (attributeFilter) {
         results = results.findAll { it.name == attributeFilter }
     }
 
     mcpLog("info", "monitoring", "Retrieved ${results.size()} history events for ${deviceLabel} (${hoursBack}h back)")
     return [
+        source: "device",
         device: deviceLabel,
         deviceId: args.deviceId,
         hoursBack: hoursBack,
