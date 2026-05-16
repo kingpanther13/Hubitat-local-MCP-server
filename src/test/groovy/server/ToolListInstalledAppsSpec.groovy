@@ -1,6 +1,7 @@
 package server
 
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -10,8 +11,21 @@ import support.ToolSpecBase
  * Covers: gate-throw, golden path flattening with parentId wiring, the
  * includeHidden promotion logic, each filter value, invalid filter rejection,
  * empty and non-JSON response bodies.
+ *
+ * Each direct-call feature has a parallel "via dispatch" feature that fires
+ * the same tool through {@code mcpDriver.callTool} so the production
+ * envelope path (JSON-RPC parse → tools/call → executeTool routing → error
+ * mapping → response wrapping) is covered alongside the unit-level tool
+ * internals. Dispatch features are @Unroll'd across useGateways true/false;
+ * the JSON-RPC dispatch routes sub-tool names directly through the
+ * executeTool switch regardless of the gateway flag.
  */
 class ToolListInstalledAppsSpec extends ToolSpecBase {
+
+    /** Parse the JSON-RPC response's inner tool-result text payload. */
+    private Object parseInner(Map response) {
+        new JsonSlurper().parseText(response.result.content[0].text as String)
+    }
 
     def "throws when Built-in App Read is disabled"() {
         given:
@@ -23,6 +37,23 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Built-in App')
+    }
+
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = false
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [:])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('Built-in App')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "golden path: 2-level tree flattens with parentId wiring"() {
@@ -66,6 +97,45 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         child12.parentId == 10
     }
 
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch flattens 2-level tree with parentId wiring (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [
+                    data: [id: 10, name: 'Rule Machine', type: 'Rule Machine', user: false, disabled: false, hidden: false],
+                    children: [
+                        [data: [id: 11, name: 'My Rule', type: 'Rule-5.1', user: false, disabled: false, hidden: false], children: []],
+                        [data: [id: 12, name: 'Another Rule', type: 'Rule-5.1', user: false, disabled: false, hidden: false], children: []]
+                    ]
+                ]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'all'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.count == 3
+        inner.totalOnHub == 3
+        inner.filter == 'all'
+        def parent = inner.apps.find { it.id == 10 }
+        parent.parentId == null
+        parent.hasChildren == true
+        parent.childCount == 2
+        inner.apps.find { it.id == 11 }.parentId == 10
+        inner.apps.find { it.id == 12 }.parentId == 10
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "filter=builtin returns only non-user apps"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -84,6 +154,33 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         result.apps.size() == 1
         result.apps[0].id == 1
+    }
+
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch filter=builtin returns only non-user apps (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [data: [id: 1, name: 'Builtin App', type: 'Builtin', user: false, disabled: false, hidden: false], children: []],
+                [data: [id: 2, name: 'User App', type: 'UserApp', user: true, disabled: false, hidden: false], children: []]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'builtin'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.apps.size() == 1
+        inner.apps[0].id == 1
+
+        where:
+        useGateways << [true, false]
     }
 
     def "filter=user returns only user apps"() {
@@ -106,6 +203,33 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         result.apps[0].id == 2
     }
 
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch filter=user returns only user apps (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [data: [id: 1, name: 'Builtin App', type: 'Builtin', user: false, disabled: false, hidden: false], children: []],
+                [data: [id: 2, name: 'User App', type: 'UserApp', user: true, disabled: false, hidden: false], children: []]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'user'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.apps.size() == 1
+        inner.apps[0].id == 2
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "filter=disabled returns only disabled apps"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -124,6 +248,33 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         result.apps.size() == 1
         result.apps[0].id == 2
+    }
+
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch filter=disabled returns only disabled apps (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [data: [id: 1, name: 'Active App', type: 'X', user: false, disabled: false, hidden: false], children: []],
+                [data: [id: 2, name: 'Disabled App', type: 'X', user: false, disabled: true, hidden: false], children: []]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'disabled'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.apps.size() == 1
+        inner.apps[0].id == 2
+
+        where:
+        useGateways << [true, false]
     }
 
     def "filter=parents returns only apps with children"() {
@@ -150,6 +301,37 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         result.apps[0].id == 10
     }
 
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch filter=parents returns only apps with children (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [
+                    data: [id: 10, name: 'Parent App', type: 'X', user: false, disabled: false, hidden: false],
+                    children: [
+                        [data: [id: 11, name: 'Child App', type: 'X', user: false, disabled: false, hidden: false], children: []]
+                    ]
+                ]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'parents'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.apps.size() == 1
+        inner.apps[0].id == 10
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "filter=children returns only apps with a non-null parentId"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -172,6 +354,37 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         result.apps.size() == 1
         result.apps[0].id == 11
+    }
+
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch filter=children returns only apps with parentId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [
+                    data: [id: 10, name: 'Parent App', type: 'X', user: false, disabled: false, hidden: false],
+                    children: [
+                        [data: [id: 11, name: 'Child App', type: 'X', user: false, disabled: false, hidden: false], children: []]
+                    ]
+                ]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'children'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.apps.size() == 1
+        inner.apps[0].id == 11
+
+        where:
+        useGateways << [true, false]
     }
 
     def "hidden parent excluded by default and child is promoted to root (parentId=null)"() {
@@ -203,6 +416,39 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         child.parentId == null
     }
 
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch excludes hidden parent and promotes child to root (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [
+                    data: [id: 20, name: 'Hidden Parent', type: 'X', user: false, disabled: false, hidden: true],
+                    children: [
+                        [data: [id: 21, name: 'Visible Child', type: 'X', user: false, disabled: false, hidden: false], children: []]
+                    ]
+                ]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'all'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        !inner.apps.any { it.id == 20 }
+        def child = inner.apps.find { it.id == 21 }
+        child != null
+        child.parentId == null
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "hidden parent in the middle of a three-level tree: grandchildren promote to nearest visible ancestor"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -229,6 +475,39 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         result.apps*.id == [1, 3]                                       // HiddenParent excluded
         result.apps.find { it.id == 3 }.parentId == 1                   // grandchild promoted to grandparent, NOT null and NOT 2
         result.totalOnHub == 2
+    }
+
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch promotes grandchildren past hidden middle ancestor (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { _ ->
+            JsonOutput.toJson([apps: [[
+                data: [id: 1, name: 'GrandParent', type: 'Group', disabled: false, user: false, hidden: false],
+                children: [[
+                    data: [id: 2, name: 'HiddenParent', type: 'Group', disabled: false, user: false, hidden: true],
+                    children: [[
+                        data: [id: 3, name: 'Child', type: 'Rule', disabled: false, user: false, hidden: false],
+                        children: []
+                    ]]
+                ]]
+            ]]])
+        }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.apps*.id == [1, 3]
+        inner.apps.find { it.id == 3 }.parentId == 1
+        inner.totalOnHub == 2
+
+        where:
+        useGateways << [true, false]
     }
 
     def "includeHidden=true includes hidden parent and wires child parentId to it"() {
@@ -258,6 +537,37 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         child.parentId == 20
     }
 
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch includeHidden=true includes hidden parent (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        def treeJson = JsonOutput.toJson([
+            apps: [
+                [
+                    data: [id: 20, name: 'Hidden Parent', type: 'X', user: false, disabled: false, hidden: true],
+                    children: [
+                        [data: [id: 21, name: 'Visible Child', type: 'X', user: false, disabled: false, hidden: false], children: []]
+                    ]
+                ]
+            ]
+        ])
+        hubGet.register('/hub2/appsList') { params -> treeJson }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'all', includeHidden: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.apps.any { it.id == 20 }
+        inner.apps.find { it.id == 21 }.parentId == 20
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "throws IllegalArgumentException for an invalid filter value"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -270,6 +580,23 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('invalid filter')
+    }
+
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch returns -32602 envelope for invalid filter (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [filter: 'bogus'])
+
+        then:
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('invalid filter')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "returns success=false with empty-response error when hub body is empty"() {
@@ -285,6 +612,27 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         result.error?.toLowerCase()?.contains('empty') == true
     }
 
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch returns success=false envelope when hub body is empty (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params -> '' }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.success == false
+        inner.error?.toLowerCase()?.contains('empty') == true
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "returns success=false with parse error when hub body is non-JSON"() {
         given:
         settingsMap.enableBuiltinApp = true
@@ -296,6 +644,27 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error != null
+    }
+
+    @spock.lang.Unroll
+    def "list_installed_apps via dispatch returns success=false envelope when hub body is non-JSON (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableBuiltinApp = true
+        hubGet.register('/hub2/appsList') { params -> 'not json at all' }
+
+        when:
+        def response = mcpDriver.callTool('list_installed_apps', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = parseInner(response)
+        inner.success == false
+        inner.error != null
+
+        where:
+        useGateways << [true, false]
     }
 
     def "gateway dispatch via handleGateway also returns apps list"() {
