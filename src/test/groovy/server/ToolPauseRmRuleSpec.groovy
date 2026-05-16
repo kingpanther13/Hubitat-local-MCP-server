@@ -106,7 +106,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 400
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'pauseRule' }
@@ -140,7 +140,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 401
         inner.ruleId instanceof Integer

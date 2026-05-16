@@ -1006,7 +1006,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.hubVariables.size() == 1
         inner.hubVariables[0].name == 'temp_setpoint'
         inner.ruleVariables.size() == 1
@@ -1028,7 +1028,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.hubVariables == []
         inner.ruleVariables == []
         inner.total == 0
@@ -1051,7 +1051,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.name == 'outdoor_temp'
         inner.value == 68.4
         inner.type == 'Decimal'
@@ -1096,7 +1096,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.name == 'vacation_mode'
         inner.value == true
@@ -1119,7 +1119,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.source == 'rule_engine'
         inner.value == 42
@@ -1142,7 +1142,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.deleted == true
         inner.source == 'rule_engine'
@@ -1315,7 +1315,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.entries.size() == 3
         inner.entries[0].value == 10
         inner.bufferSize == 10
@@ -1340,7 +1340,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.entries.size() == 2
         inner.entries.every { it.name == 'foo' }
 
@@ -1360,7 +1360,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.entries == []
         inner.bufferSize == 0
 

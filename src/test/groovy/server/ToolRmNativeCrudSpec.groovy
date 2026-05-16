@@ -5847,7 +5847,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.appId == 974
         inner.appType == "rule_machine"
@@ -5902,7 +5902,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         def updatePost = posts.find { it.path == "/installedapp/update/json" }
         updatePost.body["settings[tDev0]"] == "8,9"
@@ -5936,7 +5936,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.mode == "forcedelete"
         inner.backup?.backupKey?.startsWith("rm-rule_200_")
@@ -5996,7 +5996,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.sourceAppId == 100
         inner.clonerAppId == 4242
@@ -6038,7 +6038,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.sourceAppId == 100
         inner.clonerAppId == 4242
@@ -6121,7 +6121,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.newAppId == 700
         inner.originalSourceId == 42
@@ -6147,7 +6147,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.ok == true
         inner.label == "Healthy Rule"
         inner.brokenMarkers == [] || inner.brokenMarkers?.isEmpty()
@@ -6171,7 +6171,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.ok == false
         inner.issues != null
         inner.issues.any { it.toString().toLowerCase().contains("broken") }

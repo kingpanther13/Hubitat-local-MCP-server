@@ -63,7 +63,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].label == 'Kitchen Light'
         inner.total == 1
@@ -100,7 +100,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].label == 'Kitchen Light'
 
@@ -135,7 +135,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 2
 
         where:
@@ -169,7 +169,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 2
 
         where:
@@ -202,7 +202,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 0
         inner.total == 0
 
@@ -242,7 +242,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 2
         inner.devices*.label as Set == ['Light Switch', 'Dimmer'] as Set
 
@@ -278,7 +278,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].label == 'Light Switch'
 
@@ -313,7 +313,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 2
 
         where:
@@ -355,7 +355,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceIds == [1, 2, 3]
         inner.count == 3
         inner.total == 3
@@ -396,7 +396,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceIds == [1, 3]
         inner.count == 2
         inner.total == 2
@@ -440,7 +440,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         def dev = inner.devices[0]
         dev.id == '1'
@@ -485,7 +485,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         def dev = inner.devices[0]
         dev.capabilities != null
@@ -564,7 +564,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         def dev = inner.devices[0]
         dev.containsKey('id')
@@ -649,7 +649,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].id == '1'
 
@@ -696,7 +696,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.total == 4
         inner.count == 2
         inner.devices[0].id == '2'
@@ -740,7 +740,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].label == 'Compat Light'
         inner.devices[0].containsKey('currentStates')
@@ -780,7 +780,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceIds.size() == 3
         inner.hasMore == true
         inner.nextOffset == 3
@@ -827,7 +827,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         def dev = inner.devices[0]
         dev.capabilities != null
@@ -872,7 +872,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.containsKey('deviceIds')
         inner.deviceIds == []
         inner.count == 0
@@ -951,7 +951,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.total == 2
         inner.unfilteredTotal == 3
 
@@ -993,7 +993,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.total == 2
         inner.unfilteredTotal == 3
         inner.deviceIds as Set == [1, 3] as Set
@@ -1039,7 +1039,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceIds == []
         inner.count == 0
         inner.total == 2
@@ -1113,7 +1113,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 0
         inner.containsKey('capabilityFilterMatchedKnownCapability')
         inner.capabilityFilterMatchedKnownCapability == false
@@ -1155,7 +1155,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 0
         inner.containsKey('capabilityFilterMatchedKnownCapability')
         inner.capabilityFilterMatchedKnownCapability == true
@@ -1303,7 +1303,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].id == '1'
         inner.devices[0].label == 'My Light'
@@ -1353,7 +1353,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].containsKey('currentStates')
         !calls.isEmpty()
@@ -1421,7 +1421,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.total == 4
         inner.count == 2
         inner.hasMore == true
@@ -1471,7 +1471,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].label == 'kitchen light'
 
@@ -1505,7 +1505,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].label == 'Light'
 
@@ -1544,7 +1544,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
         inner.devices[0].id == '99'
         inner.devices[0].label == 'No-Id Requested'

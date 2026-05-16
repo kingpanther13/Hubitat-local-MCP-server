@@ -73,7 +73,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.logs.size() == 3
         inner.logs[0].message == 'Newest message'
         inner.logs[1].message == 'Middle message'
@@ -174,7 +174,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.logs.size() == 2
         inner.logs.every { it.message.startsWith('ERROR') }
 
@@ -715,7 +715,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.logs.size() == 2
         inner.logs.every { it.level == 'warn' }
         inner.logs.every { it.name?.toLowerCase()?.contains('testapp') }

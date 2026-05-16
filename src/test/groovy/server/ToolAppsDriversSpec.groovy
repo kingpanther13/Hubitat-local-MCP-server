@@ -1,6 +1,5 @@
 package server
 
-import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -33,11 +32,6 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     private void enableHubAdminRead() {
         settingsMap.enableHubAdminRead = true
-    }
-
-    /** Parse the JSON-RPC response's inner tool-result text payload. */
-    private Object parseInner(Map response) {
-        new JsonSlurper().parseText(response.result.content[0].text as String)
     }
 
     // -------- toolListHubApps --------
@@ -98,7 +92,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.source == 'hub_api'
         inner.count == 2
         inner.apps*.name == ['App One', 'App Two']
@@ -134,7 +128,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.source == 'hub_api_raw'
         inner.rawResponse.contains('not json')
         inner.note.contains('not JSON')
@@ -174,7 +168,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.source == 'mcp_only'
         inner.note.contains('endpoint not available')
         inner.apps == []
@@ -241,7 +235,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.source == 'hub_api'
         inner.count == 1
         inner.drivers[0].name == 'Generic Z-Wave Switch'
@@ -282,7 +276,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.source == 'unavailable'
         inner.count == 0
         inner.drivers == []
@@ -387,7 +381,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.appId == '123'
         inner.version == 7
@@ -430,7 +424,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('No such app')
 
@@ -491,7 +485,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.totalLength == 70000
         inner.chunkLength == 64000
@@ -542,7 +536,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.driverId == '88'
         inner.source.contains('metadata')
@@ -604,7 +598,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.backups == []
         inner.total == 0
         inner.message.contains('No item backups')
@@ -652,7 +646,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.total == 2
         inner.backups[0].backupKey == 'driver_20'
         inner.backups[1].backupKey == 'app_10'
@@ -722,7 +716,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.error.contains("'app_missing'")
         inner.availableBackups.contains('app_1')
         inner.hint.contains('list_item_backups')
@@ -774,7 +768,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.backupKey == 'app_5'
         inner.type == 'app'
         inner.id == '5'
@@ -820,7 +814,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.error.contains("'mcp-backup-app-6.groovy'")
         inner.backupKey == 'app_6'
         inner.suggestion.contains('File Manager')
@@ -865,7 +859,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.sourceTooLargeForResponse == true
         inner.source == null
         inner.message.contains('60001')
@@ -925,7 +919,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.backupKey == 'library_42'
         inner.type == 'library'
         inner.id == '42'

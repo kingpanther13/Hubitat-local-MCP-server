@@ -91,7 +91,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 2
         inner.rules.every { it.id instanceof Integer }
         inner.rules*.id.sort() == [413, 832]
@@ -136,7 +136,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         def rule = inner.rules[0]
         rule.id == 100
@@ -178,7 +178,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         inner.rules[0].id == 200
         inner.rules[0].rmVersion == '4.x'
@@ -219,7 +219,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.count == 0
         inner.note?.toLowerCase()?.contains('rule machine')
         inner.success != false
@@ -264,7 +264,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.count == 0
         inner.note?.toLowerCase()?.contains('rule machine')
         inner.success != false
@@ -305,7 +305,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error?.contains('v4=') == true
         inner.error?.contains('v5=') == true
@@ -345,7 +345,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         inner.rules[0].id == 500
         inner.warning == null
@@ -385,7 +385,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         inner.warning != null
         inner.warning.contains('setXYZ')
@@ -424,7 +424,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         inner.warning == null
 
@@ -462,7 +462,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         inner.warning != null
 
@@ -500,7 +500,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         inner.warning != null
         inner.warning.contains('v4=')
@@ -579,7 +579,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules*.id == [123]
         inner.count == 1
         inner.success != false
@@ -651,7 +651,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rules.size() == 1
         inner.rules[0].id == 300
 

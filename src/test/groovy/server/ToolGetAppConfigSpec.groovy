@@ -1,7 +1,6 @@
 package server
 
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -88,11 +87,6 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // Merge overrides at top level
         overrides.each { k, v -> base[k] = v }
         return JsonOutput.toJson(base)
-    }
-
-    /** Parse the JSON-RPC response's inner tool-result text payload. */
-    private Object parseInner(Map response) {
-        new JsonSlurper().parseText(response.result.content[0].text as String)
     }
 
     // -------------------------------------------------------------------------
@@ -338,7 +332,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.app.id == 35
         inner.app.label == 'My Rule'
@@ -397,7 +391,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         correctPathCalled == true
         inner.endpoint == '/installedapp/configure/json/35/prefPkgModify'
@@ -462,7 +456,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.app.label == 'Colored Rule'
         !inner.app.label.contains('<span')
@@ -507,7 +501,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.containsKey('settingsKeyCount')
         inner.settingsKeyCount > 0
@@ -550,7 +544,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.containsKey('settings')
         inner.settings instanceof Map
@@ -592,7 +586,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
         inner.error.toLowerCase().contains('empty')
@@ -646,7 +640,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
         inner.error.toLowerCase().contains('app')
@@ -684,7 +678,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
         inner.fingerprint == 'top-level not a Map'
@@ -719,7 +713,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error?.toLowerCase()?.contains('parse') == true
 
@@ -767,7 +761,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'missing configPage'
         inner.error?.toLowerCase()?.contains('configpage') == true
@@ -818,7 +812,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'sections not a list'
         inner.error.contains('list_app_pages')
@@ -920,7 +914,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         def modeInput = inner.page.sections[0].inputs.find { it.name == 'modeSelect' }
         modeInput != null
@@ -1022,7 +1016,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         def sceneInput = inner.page.sections[0].inputs.find { it.name == 'sceneSelect' }
         sceneInput != null
@@ -1067,7 +1061,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.app.id == 35
 
@@ -1102,7 +1096,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
 
         where:
@@ -1193,7 +1187,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         def loggingInput = inner.page.sections[0].inputs.find { it.name == 'logging' }
         loggingInput != null
@@ -1281,7 +1275,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         def loggingInput = inner.page.sections[0].inputs.find { it.name == 'logging' }
         loggingInput != null
@@ -1373,7 +1367,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         def sensorInput = inner.page.sections[0].inputs.find { it.name == 'mySensor' }
         sensorInput != null

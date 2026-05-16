@@ -1,7 +1,6 @@
 package server
 
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -21,11 +20,6 @@ import support.ToolSpecBase
  * executeTool switch regardless of the gateway flag.
  */
 class ToolListInstalledAppsSpec extends ToolSpecBase {
-
-    /** Parse the JSON-RPC response's inner tool-result text payload. */
-    private Object parseInner(Map response) {
-        new JsonSlurper().parseText(response.result.content[0].text as String)
-    }
 
     def "throws when Built-in App Read is disabled"() {
         given:
@@ -121,7 +115,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.count == 3
         inner.totalOnHub == 3
         inner.filter == 'all'
@@ -175,7 +169,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.apps.size() == 1
         inner.apps[0].id == 1
 
@@ -222,7 +216,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.apps.size() == 1
         inner.apps[0].id == 2
 
@@ -269,7 +263,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.apps.size() == 1
         inner.apps[0].id == 2
 
@@ -324,7 +318,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.apps.size() == 1
         inner.apps[0].id == 10
 
@@ -379,7 +373,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.apps.size() == 1
         inner.apps[0].id == 11
 
@@ -439,7 +433,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         !inner.apps.any { it.id == 20 }
         def child = inner.apps.find { it.id == 21 }
         child != null
@@ -501,7 +495,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.apps*.id == [1, 3]
         inner.apps.find { it.id == 3 }.parentId == 1
         inner.totalOnHub == 2
@@ -560,7 +554,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.apps.any { it.id == 20 }
         inner.apps.find { it.id == 21 }.parentId == 20
 
@@ -625,7 +619,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error?.toLowerCase()?.contains('empty') == true
 
@@ -659,7 +653,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
 

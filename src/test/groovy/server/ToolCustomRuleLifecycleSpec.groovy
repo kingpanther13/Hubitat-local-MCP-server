@@ -153,7 +153,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == '42'
 
@@ -242,7 +242,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == '42'
 

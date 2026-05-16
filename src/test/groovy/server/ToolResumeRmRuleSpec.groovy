@@ -106,7 +106,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 600
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'resumeRule' }
@@ -140,7 +140,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 601
         inner.ruleId instanceof Integer

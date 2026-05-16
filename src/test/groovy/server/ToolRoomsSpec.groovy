@@ -52,11 +52,6 @@ class ToolRoomsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
-    /** Parse the JSON-RPC response's inner tool-result text payload. */
-    private Object parseInner(Map response) {
-        new JsonSlurper().parseText(response.result.content[0].text as String)
-    }
-
     /**
      * Per-feature handler for httpPost calls. Tests assign this in their
      * given: block with a closure taking (Map params, Closure responseCb)
@@ -116,7 +111,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.rooms == []
         inner.count == 0
         inner.message.contains('No rooms')
@@ -161,7 +156,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.count == 3
         inner.rooms*.name == ['Bedroom', 'Kitchen', 'Living Room']
         inner.rooms[0].deviceCount == 1
@@ -202,7 +197,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.count == 1
         inner.rooms[0].deviceCount == 0
         inner.rooms[0].deviceIds == []
@@ -243,7 +238,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.id == '1'
         inner.name == 'Kitchen'
         inner.deviceCount == 0
@@ -281,7 +276,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.id == '42'
         inner.name == 'Office'
 
@@ -400,7 +395,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceCount == 2
         def known = inner.devices.find { it.id == '100' }
         known != null
@@ -563,7 +558,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         capturedBody.roomId == 0
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.room.id == '77'
         inner.room.name == 'Garage'
@@ -692,7 +687,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.deletedRoom.id == '5'
         inner.deletedRoom.name == 'Old Room'
@@ -760,7 +755,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.deletedRoom.id == '12'
         rooms == []
@@ -869,7 +864,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         rooms[0].name == 'Home Office'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
 
         where:
@@ -933,7 +928,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         rooms[0].name == 'Kids Room'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
 
         where:

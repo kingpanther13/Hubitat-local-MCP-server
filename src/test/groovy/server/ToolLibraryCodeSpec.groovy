@@ -1,6 +1,5 @@
 package server
 
-import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -55,11 +54,6 @@ def helperMethod() { return "ok" }
     private void enableHubAdminWrite() {
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
-    }
-
-    /** Parse the JSON-RPC response's inner tool-result text payload. */
-    private Object parseInner(Map response) {
-        new JsonSlurper().parseText(response.result.content[0].text as String)
     }
 
     // -------- toolGetLibrarySource --------
@@ -153,7 +147,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '42'
         inner.version == 1
@@ -195,7 +189,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('999')
         inner.error.toLowerCase().contains('not found')
@@ -230,7 +224,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Empty response')
 
@@ -285,7 +279,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.totalLength == 65000
         inner.hasMore == true
@@ -331,7 +325,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.offset == 100
         inner.chunkLength == 50
@@ -509,7 +503,7 @@ def helperMethod() { return "ok" }
         capturedBody.source == SAMPLE_SOURCE
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '100'
         inner.version == 1
@@ -570,7 +564,7 @@ def helperMethod() { return "ok" }
         capturedBody.source == SAMPLE_SOURCE
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '101'
         inner.sourceMode == 'sourceFile'
@@ -642,7 +636,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('installation failed')
         inner.error.contains('Cannot parse library definition')
@@ -683,7 +677,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('installation failed')
         inner.error.contains('connection refused')
@@ -729,7 +723,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.libraryId == '200'
         inner.error.contains('unverified')
@@ -780,7 +774,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '201'
         inner.verified == true
@@ -831,7 +825,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '202'
         inner.verified == false
@@ -876,7 +870,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.libraryId == '203'
         inner.error.contains('unverified')
@@ -916,7 +910,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('unverified')
         inner.error.contains('empty/null response')
@@ -962,7 +956,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('unverified')
         inner.error.contains('missing id field')
@@ -1154,7 +1148,7 @@ def helperMethod() { return "ok" }
         capturedBody.source == SAMPLE_SOURCE
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '42'
         inner.previousVersion == 1
@@ -1237,7 +1231,7 @@ def helperMethod() { return "ok" }
         atomicStateMap.itemBackupManifest['library_42'].timestamp == (1234567890000L - 60_000L)
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '42'
         inner.newVersion == 2
@@ -1293,7 +1287,7 @@ def helperMethod() { return "ok" }
         capturedBody.source == SAMPLE_SOURCE
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.sourceMode == 'sourceFile'
         inner.note.contains('File Manager')
@@ -1374,7 +1368,7 @@ def helperMethod() { return "ok" }
         capturedBody.version == 1
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.sourceMode == 'resave'
         inner.note.contains('no cloud round-trip')
@@ -1449,7 +1443,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Compilation error')
         inner.note.contains('syntax errors')
@@ -1616,7 +1610,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
@@ -1688,7 +1682,7 @@ def helperMethod() { return "ok" }
         uploads == []
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
@@ -1733,7 +1727,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.message.contains('backup failed')
         inner.backupWarning.contains('permanently lost')
@@ -1779,7 +1773,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Library is in use')
         inner.libraryId == '42'
@@ -1824,7 +1818,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('deletion failed')
         inner.error.contains('connection reset')
@@ -1867,7 +1861,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Delete may have failed')
         inner.libraryId == '42'
@@ -1915,7 +1909,7 @@ def helperMethod() { return "ok" }
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Delete response was not valid JSON')
         inner.libraryId == '42'

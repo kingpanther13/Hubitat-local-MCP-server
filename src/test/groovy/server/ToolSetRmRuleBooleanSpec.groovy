@@ -138,7 +138,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
 
@@ -170,7 +170,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
 
@@ -202,7 +202,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
 
@@ -234,7 +234,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
 

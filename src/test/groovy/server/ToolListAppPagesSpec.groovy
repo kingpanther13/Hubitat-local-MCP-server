@@ -1,7 +1,6 @@
 package server
 
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -60,11 +59,6 @@ class ToolListAppPagesSpec extends ToolSpecBase {
             childApps: []
         ]
         return JsonOutput.toJson(data)
-    }
-
-    /** Parse the JSON-RPC response's inner tool-result text payload. */
-    private Object parseInner(Map response) {
-        new JsonSlurper().parseText(response.result.content[0].text as String)
     }
 
     // -------------------------------------------------------------------------
@@ -250,7 +244,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.app.id == 35
         inner.app.appTypeName == 'Hubitat Package Manager'
@@ -306,7 +300,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.pages.size() == 1
         inner.pages[0].name == 'mainPage'
@@ -356,7 +350,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.pages.size() == 1
         inner.pages[0].name == 'mainPage'
@@ -398,7 +392,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
         inner.error.toLowerCase().contains('empty')
@@ -448,7 +442,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
         inner.fingerprint == 'missing app'
@@ -483,7 +477,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'top-level not a Map'
 
@@ -531,7 +525,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'missing configPage'
         inner.error?.toLowerCase()?.contains('configpage') == true
@@ -567,7 +561,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error?.toLowerCase()?.contains('parse') == true
         inner.error?.toLowerCase()?.contains('firmware') == true
@@ -616,7 +610,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.pages.size() == 1
         inner.pages[0].name == 'mainPage'
@@ -664,7 +658,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.pages.size() == 1
         inner.pages[0].name == 'mainPage'
@@ -710,7 +704,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.pages.size() == 1
         inner.pages[0].name == 'mainPage'
@@ -756,7 +750,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.pages.size() == 5
         inner.pages*.name.contains('prefOptions')
@@ -806,7 +800,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
 
         where:

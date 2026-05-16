@@ -70,7 +70,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.total == 2
         inner.files[0].name == 'a.txt'
         inner.files[1].name == 'b.csv'
@@ -205,7 +205,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.fileName == 'notes.txt'
         inner.content == 'Hello, world!'
@@ -384,7 +384,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.message.contains("'new.txt' created")
         inner.fileName == 'new.txt'
@@ -579,7 +579,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         uploads.size() == 1
         uploads[0].startsWith('notes_backup_')
         deleted == ['notes.txt']

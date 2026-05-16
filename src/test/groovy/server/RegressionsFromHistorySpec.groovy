@@ -1,7 +1,6 @@
 package server
 
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import spock.lang.Shared
 import spock.lang.Unroll
 import support.TestChildApp
@@ -41,13 +40,6 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
-    }
-
-    private static final JsonSlurper SLURPER = new JsonSlurper()
-
-    /** Parse the tool body out of the dispatch envelope's content[0].text payload. */
-    private static Object innerBody(Map response) {
-        SLURPER.parseText(response.result.content[0].text as String)
     }
 
     // --- formatAge singular grammar (v0.7.7) --------------------------------
@@ -177,7 +169,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         response.jsonrpc == '2.0'
         response.id == mcpDriver.lastSentId
         response.error == null
-        def inner = innerBody(response)
+        def inner = mcpDriver.parseInner(response)
 
         and: 'the v0.7.6 one-decimal-in-hours shape survives the dispatch path'
         def entries = (inner.healthyDevices ?: []) + (inner.staleDevices ?: []) + (inner.unknownDevices ?: [])
@@ -238,7 +230,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         then:
         positiveResp.jsonrpc == '2.0'
         positiveResp.error == null
-        def positive = innerBody(positiveResp)
+        def positive = mcpDriver.parseInner(positiveResp)
         positive.logs.size() == 1
         positive.logs[0].message.contains('Thermostat')
 
@@ -247,7 +239,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         then:
         negativeResp.error == null
-        def negative = innerBody(negativeResp)
+        def negative = mcpDriver.parseInner(negativeResp)
         negative.logs.size() == 0
 
         where:
@@ -295,7 +287,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         then:
         response.jsonrpc == '2.0'
         response.error == null
-        def inner = innerBody(response)
+        def inner = mcpDriver.parseInner(response)
         inner.logs.size() == 2
         inner.logs[0].message == 'Second'
         inner.logs[1].message == 'First'
@@ -434,7 +426,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports success with the fresh previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
-        def inner = innerBody(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 12
 
@@ -491,7 +483,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         response.jsonrpc == '2.0'
         response.id == mcpDriver.lastSentId
         response.error == null
-        def inner = innerBody(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.installedVersion instanceof String
         // Semver-ish pin; mirrors HandleMcpRequestDispatchSpec's initialize check.
@@ -569,7 +561,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports success with the fallback previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
-        def inner = innerBody(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 5
 
@@ -658,7 +650,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports the fresh previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
-        def inner = innerBody(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 9
 
@@ -736,7 +728,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'dispatch envelope reports success with the fallback previousVersion'
         response.jsonrpc == '2.0'
         response.error == null
-        def inner = innerBody(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousVersion == 7
 

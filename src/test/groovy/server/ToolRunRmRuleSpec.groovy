@@ -128,7 +128,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 101
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
@@ -161,7 +161,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRuleAct' }
 
@@ -207,7 +207,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 103
         posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
@@ -254,7 +254,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.rmAction == 'noop'
         posts.isEmpty()
@@ -300,7 +300,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 105
         posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
@@ -346,7 +346,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.rmAction == 'noop'
         posts.isEmpty()
@@ -379,7 +379,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
 
@@ -441,7 +441,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == 202
         inner.ruleId instanceof Integer

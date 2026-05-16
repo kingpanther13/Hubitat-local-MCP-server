@@ -160,7 +160,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceId == '42'
         inner.deviceName == 'Kitchen Switch (breadcrumb)'
         inner.count == 2
@@ -278,7 +278,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         then: 'tool wraps the empty-body fallback into a success-envelope success=false'
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error?.toLowerCase()?.contains('empty') == true
 

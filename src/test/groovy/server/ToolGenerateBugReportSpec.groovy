@@ -581,10 +581,6 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
     //   - ruleId related-rule section
     // ---------------------------------------------------------------------------
 
-    private Object parseInner(Map response) {
-        new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
-    }
-
     @Unroll
     def "generate_bug_report via dispatch returns success envelope with bug report fields (useGateways=#useGateways)"() {
         given:
@@ -598,7 +594,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.issueType == 'bug'
         inner.privacyMode == 'private'
@@ -623,7 +619,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.issueType == 'enhancement'
         inner.suggestedTitle.startsWith('[feature] ')
         inner.submitUrl.contains('?template=enhancement.yml')
@@ -651,7 +647,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.logs.scoped == true
         inner.logs.relevantCount == 2
         inner.logs.otherRecentLogCount == 2
@@ -683,7 +679,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.privacyMode == 'public'
         inner.report.contains('<hub-name>')
         !inner.report.contains('secret_message_in_log')
@@ -713,7 +709,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.report.contains('## Related Custom MCP Rule')
         inner.report.contains('**Rule ID:** 42')
         inner.report.contains('**Rule Name:** My Test Rule')

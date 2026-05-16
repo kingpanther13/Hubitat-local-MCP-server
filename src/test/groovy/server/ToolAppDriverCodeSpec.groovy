@@ -1,6 +1,5 @@
 package server
 
-import groovy.json.JsonSlurper
 import spock.lang.Shared
 import support.TestChildApp
 import support.ToolSpecBase
@@ -46,11 +45,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     private void enableHubAdminWrite() {
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
-    }
-
-    /** Parse the JSON-RPC response's inner tool-result text payload. */
-    private Object parseInner(Map response) {
-        new JsonSlurper().parseText(response.result.content[0].text as String)
     }
 
     // -------- toolInstallApp / toolInstallDriver --------
@@ -219,7 +213,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.body.create == ''
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.appId == '4242'
         inner.sourceMode == 'source'
@@ -273,7 +267,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.appId == '5555'
         inner.sourceMode == 'sourceFile'
@@ -345,7 +339,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.appId == null
         inner.error.contains('no item ID')
@@ -392,7 +386,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.appId == '9900'
         inner.error.contains('Compilation failed')
@@ -434,7 +428,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('installation failed')
         inner.error.contains('compile error')
@@ -484,7 +478,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.appId == '7100'
         inner.verified == false
@@ -531,7 +525,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.appId == '7200'
         inner.error.contains('empty verify body')
@@ -578,7 +572,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.appId == '7300'
         inner.error.contains('unparseable verify body')
@@ -664,7 +658,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         postedPath == '/driver/save'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.driverId == '9001'
         inner.sourceMode == 'source'
@@ -717,7 +711,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.driverId == '7777'
         inner.sourceMode == 'sourceFile'
@@ -764,7 +758,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.driverId == '8800'
         inner.error.contains('Unknown identifier')
@@ -813,7 +807,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.driverId == '6600'
         inner.verified == false
@@ -859,7 +853,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.driverId == '6700'
         inner.error.contains('empty verify body')
@@ -903,7 +897,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.driverId == '6800'
         inner.error.contains('unparseable verify body')
@@ -1087,7 +1081,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.driverId == null
         inner.error.contains('no item ID')
@@ -1128,7 +1122,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('installation failed')
         inner.error.contains('compile error')
@@ -1285,7 +1279,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.message.contains('3')
         inner.installs.size() == 3
@@ -1367,7 +1361,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.message.contains('2 of 3')
         inner.installs[0].success == true
@@ -1443,7 +1437,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.installs.size() == 3
         inner.installs[0].sourceMode == 'source'
@@ -1497,7 +1491,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.installs.size() == 1
         inner.installs[0].driverId == '8900'
@@ -1561,7 +1555,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.installs.size() == 3
         inner.installs[0].success == true
@@ -1645,7 +1639,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.installs.size() == 3
         inner.installs.every { it.success == true }
@@ -1734,7 +1728,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.installs.size() == 3
         inner.installs[0].success == true
@@ -1917,7 +1911,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         uploads[0] == 'mcp-backup-app-50.groovy'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.sourceMode == 'source'
         inner.sourceLength == 'new source'.length()
@@ -1980,7 +1974,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.body.source == 'source from file'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.sourceMode == 'sourceFile'
         inner.note.contains('File Manager')
@@ -2067,7 +2061,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.body.version == 7
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.sourceMode == 'resave'
         inner.note.contains('no cloud round-trip')
@@ -2115,7 +2109,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Compilation failed')
         inner.note.contains('syntax')
@@ -2206,7 +2200,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.path == '/driver/ajax/update'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.driverId == '55'
         inner.sourceMode == 'source'
@@ -2371,7 +2365,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.message.contains('3')
         inner.updates.size() == 3
@@ -2461,7 +2455,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.message.contains('2 of 3')
         inner.updates[0].success == true
@@ -2548,7 +2542,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.updates.size() == 3
         inner.updates[0].sourceMode == 'resave'
@@ -2635,7 +2629,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.updates.size() == 3
         inner.updates[0].success == true
@@ -2692,7 +2686,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.toLowerCase().contains('installation failed')
         inner.driverId == '4444'
@@ -2833,7 +2827,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.appId == '33'
         inner.backupFile == 'mcp-backup-app-33.groovy'
@@ -2879,7 +2873,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.message.contains('backup failed')
         inner.backupWarning.contains('permanently lost')
@@ -2927,7 +2921,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Delete may have failed')
         inner.appId == '55'
@@ -2981,7 +2975,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         deletePath == '/driver/editor/deleteJson/77'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.driverId == '77'
         inner.backupFile == 'mcp-backup-driver-77.groovy'
@@ -3083,7 +3077,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('app_missing')
         inner.availableBackups.contains('app_existing')
@@ -3186,7 +3180,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.body.source == 'old source v4'
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.type == 'app'
         inner.id == '99'
@@ -3250,7 +3244,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('bad code')
         inner.message.contains('preserved')
@@ -3926,7 +3920,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = parseInner(response)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('use install_library or update_library_code')
         inner.backupFile == 'mcp-backup-library-42.groovy'

@@ -105,7 +105,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         postedPath == '/hub/reboot'
         inner.success == true
         inner.message.contains('reboot')
@@ -167,7 +167,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         then: 'tool catches the exception internally and reports success=false via the success envelope'
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Reboot failed')
         inner.error.contains('Connection refused')
@@ -237,7 +237,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         postedPath == '/hub/shutdown'
         inner.success == true
         inner.message.contains('shutdown initiated')
@@ -379,7 +379,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         lookupCalls == 2
         inner.success == true
         inner.deviceId == '42'

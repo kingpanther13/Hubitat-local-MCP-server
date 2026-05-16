@@ -1,7 +1,6 @@
 package server
 
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -83,7 +82,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.result.content[0].type == 'text'
 
         and: 'the text payload parses back to the tool result shape'
-        def inner = new JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.logs == []
         inner.count == 0
     }

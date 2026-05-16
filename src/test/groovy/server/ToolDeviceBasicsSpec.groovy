@@ -137,7 +137,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.id == '10'
         inner.label == 'Test Switch'
         inner.room == 'Living Room'
@@ -226,7 +226,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         and: 'the dispatch envelope carries the success result'
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.command == 'on'
         inner.device == 'Test Switch'

@@ -1289,7 +1289,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.finalValue == 'on'
         inner.timedOut == false
@@ -1322,7 +1322,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.timedOut == true
         inner.finalValue == 'off'
@@ -1437,7 +1437,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         then: 'InterruptedException is caught inside the tool and surfaced as a normal tool result'
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text as String)
+        def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.interrupted == true
         inner.finalValue == 'off'

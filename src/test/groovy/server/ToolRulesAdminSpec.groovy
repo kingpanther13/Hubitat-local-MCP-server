@@ -387,7 +387,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.message == 'evaluated'
 
@@ -437,7 +437,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.exportVersion == '1.0'
         inner.rule.name == 'Sunset Lights'
         inner.deviceManifest == []
@@ -504,7 +504,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == '101'
         inner.imported == true
@@ -572,7 +572,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.ruleId == '6'
         inner.clonedFrom == '5'
@@ -643,7 +643,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.backupFile == uploads[0].name
         childAppsList.findAll { it.id?.toString() == '9' } == []

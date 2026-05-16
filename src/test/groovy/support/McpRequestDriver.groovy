@@ -202,6 +202,17 @@ class McpRequestDriver {
     }
 
     /**
+     * Parse the inner tool-result payload from a successful tools/call response.
+     * MCP wraps tool output as {@code response.result.content[0].text}, JSON-encoded;
+     * dispatch-envelope specs commonly assert on the decoded shape. Centralized here
+     * to share the {@link #SLURPER} instance and remove the boilerplate inline
+     * {@code new JsonSlurper().parseText(...)} pattern from every spec.
+     */
+    Object parseInner(Map response) {
+        SLURPER.parseText(response.result.content[0].text as String)
+    }
+
+    /**
      * Stand-in for the hub's {@code request} that the script's
      * {@code @CompileStatic getProperty("request")} returns (after the
      * harness wires this into {@code injectedMappingHandlerData['request']}).

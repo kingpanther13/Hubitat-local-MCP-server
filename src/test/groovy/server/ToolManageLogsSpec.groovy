@@ -105,7 +105,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.logs.size() == 1
         inner.logs[0].level == 'warn'
         inner.logs[0].message == 'Warn msg'
@@ -396,7 +396,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceId == '42'
         inner.device == 'Kitchen Light'
         inner.count == 2
@@ -498,7 +498,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.deviceStats.size() == 2
         inner.deviceStats[0].name == 'SlowDevice'
         inner.deviceStats[1].name == 'FastDevice'
@@ -662,7 +662,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.scheduledJobs.count == 1
         inner.scheduledJobs.jobs[0].name == 'NightlyBackup'
         inner.runningJobs.count == 1
@@ -723,7 +723,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.count == 2
         inner.totalStored == 2
         inner.entries[-1].message == 'boom'
@@ -851,7 +851,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.clearedCount == 2
 
@@ -927,7 +927,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.previousLevel == 'info'
         inner.newLevel == 'warn'
@@ -988,7 +988,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.totalEntries == 5
         inner.entriesByLevel.debug == 1
         inner.entriesByLevel.warn == 2

@@ -124,7 +124,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.current.freeMemoryKB == '123456'
         inner.current.internalTempC == '45.5'
         inner.current.uptimeFormatted == '2d 0h 0m'
@@ -281,7 +281,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.entries.size() == 2
         inner.summary.totalEntries == 2
         inner.summary.currentMemoryKB == 100000
@@ -386,7 +386,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         idx == 2
         inner.beforeFreeMemoryKB == 90000
         inner.afterFreeMemoryKB == 120000
@@ -464,7 +464,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.summary.totalDevices == 2
         inner.summary.healthyCount == 1
         inner.summary.staleCount == 1
@@ -946,7 +946,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rule.id == 42L
         inner.rule.name == 'My Rule'
         inner.structure.triggerCount == 2
@@ -1004,7 +1004,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.zwaveVersion == '7.17.1'
         inner.source == 'hub_api'
         inner.zwaveData.firmware == '7.17.1'
@@ -1090,7 +1090,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.zigbeeChannel == 25
         inner.zigbeeId == '0x1234'
         inner.source == 'hub_api'
@@ -1205,7 +1205,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         postedPath == '/hub/zwaveRepair'
         inner.success == true
         inner.message.contains('Z-Wave network repair')
@@ -1294,7 +1294,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.count == 2
         inner.capturedStates[0].stateId == 'newer'
         inner.capturedStates[1].stateId == 'older'
@@ -1377,7 +1377,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.remaining == 1
         stateMap.capturedDeviceStates.containsKey('keep')
@@ -1434,7 +1434,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.cleared == 3
         stateMap.capturedDeviceStates == [:]

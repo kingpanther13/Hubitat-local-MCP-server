@@ -397,7 +397,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedDataValues['mcpDriverNamespace'] == 'level99-vesync'
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.device.id == '77'
         inner.device.driverNamespace == 'level99-vesync'
@@ -498,7 +498,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.device.driverNamespace == 'NiklasGustafsson'
         mcpLogCalls.any { it.level == 'warn' && it.msg.contains('mcpDriverNamespace') }
@@ -737,7 +737,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedDataValues['mcpDriverNamespace'] == 'hubitat'
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.device.id == '42'
         inner.device.driverNamespace == 'hubitat'
@@ -940,7 +940,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success != false
         inner.devices.size() >= 1
         def d = inner.devices.find { it.id == '99' }
@@ -1007,7 +1007,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success != false
         def d = inner.devices.find { it.id == '100' }
         d != null
@@ -1074,7 +1074,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success != false
         def d = inner.devices.find { it.id == '101' }
         d != null
@@ -1109,7 +1109,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success != false
         def d = inner.devices.find { it.id == '103' }
         d != null
@@ -1180,7 +1180,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success != false
         def d = inner.devices.find { it.id == '104' }
         d != null
@@ -1244,7 +1244,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success != false
         def d = inner.devices.find { it.id == '105' }
         d != null
@@ -1307,7 +1307,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success != false
         def d = inner.devices.find { it.id == '102' }
         d != null
@@ -1691,7 +1691,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedNs == '123'
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
 
         where:

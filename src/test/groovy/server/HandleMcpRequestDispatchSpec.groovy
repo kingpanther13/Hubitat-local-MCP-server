@@ -242,7 +242,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.content[0].type == 'text'
 
         and: 'the inner JSON parses back to the tool-result shape'
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.rooms*.name.containsAll(['Living Room', 'Kitchen'])
     }
 

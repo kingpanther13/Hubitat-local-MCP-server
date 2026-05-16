@@ -502,7 +502,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.updated == [enableCustomRuleEngine: false]
         sharedAppStub.settingsStore['enableCustomRuleEngine'] == [type: 'bool', value: false]

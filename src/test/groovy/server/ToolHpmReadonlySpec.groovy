@@ -3067,7 +3067,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.count == 1
         inner.packages[0].packageName == 'BOND Home Integration'
@@ -3090,7 +3090,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.count == 1
 
@@ -3112,7 +3112,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.count == 0
 
@@ -3178,7 +3178,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.packagesChecked == 1
         inner.packagesWithActionableDrift == 0
@@ -3213,7 +3213,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.totalDriftSignals >= 1
         inner.drift.any { it.signals?.any { s -> s.type == 'orphan-app' } }
@@ -3246,7 +3246,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         then:
         response.error == null
         !response.result.isError
-        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.packagesChecked == 0
 
