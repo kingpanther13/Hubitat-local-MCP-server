@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 1.3.2 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 1.3.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -20913,7 +20913,7 @@ private Map _rmRestoreFromBackup(Map entry) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "1.3.2"
+    return "1.3.3"
 }
 
 def isNewerVersion(String remote, String local) {
