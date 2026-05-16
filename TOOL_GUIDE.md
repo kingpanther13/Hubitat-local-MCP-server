@@ -26,6 +26,50 @@ Default is **ON** (gateways enabled). Existing installations keep the gateway be
 
 `tools/list` is cursor-paginated per the MCP protocol. Request a page with `params: { cursor: "<opaque-string>" }` (omit `cursor` for the first page); the response carries `tools: [...]` plus an optional `nextCursor` string when more pages exist. Page size is 50 — the gateway-mode catalog (~36 entries) fits in a single page so most MCP clients see no behaviour change, while the flat-mode catalog (100+ entries with the toggle off) returns multiple pages and the client iterates `nextCursor` until absent. Pagination keeps the response under the hub's 128KB JSON-RPC limit as the catalog grows. Cursor validation errors (`-32602`): non-numeric cursor and out-of-range cursor (including negative values) both surface as JSON-RPC `-32602 "Invalid params"` with a diagnostic message.
 
+### `tools/call` Response-Size Guard (v1.3.x+, fail-soft)
+
+Every `tools/call` response is measured before send. If the wire-encoded response exceeds the universal 120 KB cap (8 KB headroom under the hub's 128 KB JSON-RPC limit), the inner content is replaced with a structured fail-soft envelope:
+
+```json
+{
+  "response_too_large": true,
+  "truncated": true,
+  "estimatedBytes": 145320,
+  "sizeLimitBytes": 120000,
+  "tool": "list_installed_apps",
+  "suggestion": "Set includeHidden=false (the default), narrow via filter ..., or pass cursor to page through the apps list."
+}
+```
+
+The outer JSON-RPC envelope still reports success (this is not a tool error — the tool ran, the result just didn't fit). Treat `response_too_large=true` as a hint to either (a) narrow your query — the per-tool `suggestion` field names the specific knob — or (b) opt into pagination on tools that support it. The `tool` field reflects the actual sub-tool on gateway-routed calls so you can re-issue a narrower call directly.
+
+Opt-in cursor pagination is currently wired into the following read-only tools. All follow the same contract: omit `cursor` for the full list (backward-compatible, backstopped by the size guard), pass `cursor: ""` for the first page, then iterate `nextCursor` until absent. Cursor is opaque per the MCP convention; non-numeric / out-of-range values reject as `-32602`.
+
+These tools intentionally diverge from the `tools/list` "omit cursor = first page" convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in.
+
+| Tool | Page size | Notes |
+|---|---|---|
+| `list_devices` | 50 (when `limit` unset) | Cursor is an alias for the existing `offset`+`limit` shape; `nextCursor` is emitted alongside `nextOffset`. |
+| `list_installed_apps` | 50 | Cursor respects `filter` — pages the filtered set. |
+| `list_hub_apps` | 50 | Catalog of installable apps on the hub. |
+| `list_hub_drivers` | 50 | Catalog of installable drivers. |
+| `list_hpm_packages` | 25 | Smaller page because each HPM entry carries the full app/driver/file inventory. |
+| `list_rm_rules` | 50 | RM 4.x + 5.x deduplicated rules. |
+| `custom_list_rules` | 50 | Legacy MCP rule engine. |
+| `list_variables` | 100 | Pages `hubVariables`; `ruleVariables` stays in full alongside the page. |
+| `list_captured_states` | 50 | Capacity warnings still emitted regardless of pagination. |
+| `list_item_backups` | 50 | Sorted newest-first; page boundaries are stable as long as the manifest doesn't change. |
+| `list_files` | 100 | File Manager listing. |
+| `list_virtual_devices` | 50 | MCP-managed virtual devices. |
+| `list_rooms` | 100 | Rooms with device counts. |
+| `device_health_check` | 100 | Pages `staleDevices`; `unknownDevices` (and `healthyDevices` when `includeHealthy=true`) stay in full. |
+| `get_device_in_use_by` | 100 | Pages `appsUsing`. |
+| `get_hub_logs` | 100 | Filters + `limit` apply first; cursor pages within the filtered result. |
+| `get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
+| `get_debug_logs` | 100 | Filters apply first; cursor pages within. |
+
+Tools without cursor support (`get_app_config`, `export_native_app`, `get_app_source`, `get_driver_source`, `get_library_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `list_files`/`read_file` round-trip) plus the universal size guard as the backstop.
+
 ## Device Authorization (CRITICAL)
 
 **Exact match rule:**

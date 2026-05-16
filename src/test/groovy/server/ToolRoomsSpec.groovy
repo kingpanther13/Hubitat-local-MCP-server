@@ -206,6 +206,50 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "list_rooms cursor pagination opt-in (#174)"() {
+        // Representative spec for the cursor-helper rollout: every tool that wires
+        // _paginateList behaves identically -- no cursor returns the full list, cursor=''
+        // emits a bounded page with total + nextCursor, last page omits nextCursor,
+        // non-numeric/out-of-range cursors throw IllegalArgumentException so dispatch
+        // surfaces -32602. The per-tool spec is exercised exhaustively for list_rooms
+        // here; the other paginated tools rely on the shared _paginateList contract
+        // pinned by ToolListInstalledAppsSpec.
+        given: '150 rooms -> 2 pages of 100 + 50'
+        installGetRoomsStub((0..<150).collect { i -> [id: i + 1, name: "Room-${String.format('%03d', i)}", deviceIds: []] })
+
+        when: 'no cursor: backward-compatible full list'
+        def all = script.toolListRooms()
+
+        then:
+        all.rooms.size() == 150
+        !all.containsKey('nextCursor')
+        !all.containsKey('total')
+
+        when: 'first page (cursor="")'
+        def page1 = script.toolListRooms([cursor: ''])
+
+        then:
+        page1.rooms.size() == 100
+        page1.total == 150
+        page1.nextCursor == '100'
+
+        when: 'last page'
+        def page2 = script.toolListRooms([cursor: '100'])
+
+        then:
+        page2.rooms.size() == 50
+        page2.total == 150
+        !page2.containsKey('nextCursor')
+
+        when: 'non-numeric cursor'
+        script.toolListRooms([cursor: 'banana'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('cursor')
+        ex.message.contains('list_rooms')
+    }
+
     // -------- toolGetRoom --------
 
     def "get_room returns room details when located by name (case-insensitive)"() {

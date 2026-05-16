@@ -4,6 +4,14 @@ Quick reference for all 103 MCP tools. The server exposes **36 items on `tools/l
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
+## Universal response-size guard + opt-in cursor pagination
+
+Every `tools/call` response is bounded by a 120 KB wire-encoded size guard. Oversized responses come back as a structured `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}` envelope rather than vanishing into a hub `-32603`. The `suggestion` field gives the LLM a specific narrowing hint per tool.
+
+Opt-in cursor pagination is wired into the read-only list-returning tools below. All follow the same shape: omit `cursor` for the full list (backward-compatible), pass `cursor: ""` for the first page, iterate `nextCursor` until absent. Non-numeric / out-of-range cursors reject as `-32602`.
+
+**Tools with cursor:** `list_devices`, `list_installed_apps`, `list_hub_apps`, `list_hub_drivers`, `list_hpm_packages`, `list_rm_rules`, `custom_list_rules`, `list_variables`, `list_captured_states`, `list_item_backups`, `list_files`, `list_virtual_devices`, `list_rooms`, `device_health_check`, `get_device_in_use_by`, `get_hub_logs`, `get_memory_history`, `get_debug_logs`. See [TOOL_GUIDE.md](../../TOOL_GUIDE.md) for per-tool page sizes.
+
 ## Core Tools (23) — Always visible on tools/list
 
 ### Device Tools (6)
@@ -169,7 +177,7 @@ Performance monitoring, health checks, diagnostics, radio info, memory / GC, and
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history. | Hub Admin Read |
-| `device_health_check` | Find stale/offline devices. | Hub Admin Read |
+| `device_health_check` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Hub Admin Read |
 | `custom_get_rule_diagnostics` | Comprehensive diagnostics for a specific custom rule. | None |
 | `get_zwave_details` | Z-Wave radio info. | Hub Admin Read |
 | `get_zigbee_details` | Zigbee radio info. | Hub Admin Read |
@@ -197,7 +205,7 @@ Read-only visibility into all installed apps (built-in + user): enumerate with p
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. | Built-in App Read |
+| `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. Optional `cursor` opt-in pagination (page size 50). | Built-in App Read |
 | `get_device_in_use_by` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Built-in App Read |
 | `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: list_installed_apps or list_rm_rules -> get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
 | `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before get_app_config on multi-page apps. | Hub Admin Read |

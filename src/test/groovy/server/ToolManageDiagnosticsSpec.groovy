@@ -488,6 +488,106 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.healthyDevices[0].name == 'Fresh Sensor'
     }
 
+    def "device_health_check cursor paginates staleDevices and emits nextCursor (#174)"() {
+        given: '150 stale devices -> 2 pages of 100 + 50'
+        def nowMs = 1234567890000L
+        def staleDevs = (0..<150).collect { i ->
+            def d = new TestDevice(id: 1000 + i, name: "S${i}", label: "Stale Sensor ${i}")
+            d.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+            d
+        }
+        settingsMap.selectedDevices = staleDevs
+
+        when: 'first page (cursor="")'
+        def page1 = script.toolDeviceHealthCheck([staleHours: 24, cursor: ''])
+
+        then: 'page is bounded but the summary still reflects the full stale count'
+        page1.summary.staleCount == 150
+        page1.staleDevices.size() == 100
+        page1.nextCursor == '100'
+
+        and: 'top-level total mirrors list_installed_apps so paginating clients read the same shape across tools'
+        page1.total == 150
+
+        when: 'second page (cursor=100)'
+        def page2 = script.toolDeviceHealthCheck([staleHours: 24, cursor: '100'])
+
+        then: 'remaining 50 stale devices, no nextCursor'
+        page2.staleDevices.size() == 50
+        page2.total == 150
+        !page2.containsKey('nextCursor')
+    }
+
+    def "device_health_check without cursor returns the full staleDevices list (backward compatible)"() {
+        given:
+        def nowMs = 1234567890000L
+        def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
+        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        settingsMap.selectedDevices = [stale]
+
+        when:
+        def result = script.toolDeviceHealthCheck([staleHours: 24])
+
+        then: 'no cursor=null leaks pagination fields'
+        result.staleDevices.size() == 1
+        result.containsKey('nextCursor') == false
+    }
+
+    def "device_health_check cursor='0' on an empty stale list returns an empty page (no IOOBE)"() {
+        // Selected device exists (so we don't take the "No devices selected" early-return)
+        // but it's healthy -- stale list is therefore empty when cursor is supplied.
+        given:
+        def nowMs = 1234567890000L
+        def fresh = new TestDevice(id: 1, name: 'F', label: 'Fresh')
+        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        settingsMap.selectedDevices = [fresh]
+
+        when:
+        def result = script.toolDeviceHealthCheck([staleHours: 24, cursor: '0'])
+
+        then:
+        result.staleDevices == []
+        result.total == 0
+        !result.containsKey('nextCursor')
+    }
+
+    def "device_health_check cursor='5' on an empty stale list throws IllegalArgumentException with the friendly out-of-range message"() {
+        // Regression guard for the empty-list edge case -- without the offset>0 clause in
+        // _parseListCursor, subList(5, 0) would throw a JVM gibberish IAE that the dispatch
+        // layer surfaces as "Invalid params: fromIndex(5) > toIndex(0)" with no actionable
+        // hint that the real cause is a stale cursor against a now-empty list.
+        given:
+        def nowMs = 1234567890000L
+        def fresh = new TestDevice(id: 1, name: 'F', label: 'Fresh')
+        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        settingsMap.selectedDevices = [fresh]
+
+        when:
+        script.toolDeviceHealthCheck([staleHours: 24, cursor: '5'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('out of range')
+        ex.message.contains('size=0')
+        !ex.message.contains('fromIndex')
+    }
+
+    def "device_health_check cursor rejects non-numeric values"() {
+        given:
+        def nowMs = 1234567890000L
+        def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
+        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        settingsMap.selectedDevices = [stale]
+
+        when:
+        script.toolDeviceHealthCheck([cursor: 'banana'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('cursor')
+        ex.message.contains('device_health_check')
+    }
+
     def "device_health_check pingHosts: happy + failure paths populate pingResults"() {
         given:
         def network = new NetworkUtilsMock()
