@@ -1,7 +1,9 @@
 package server
 
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import spock.lang.Shared
+import spock.lang.Unroll
 import support.TestChildApp
 import support.TestDevice
 import support.ToolSpecBase
@@ -21,6 +23,13 @@ import support.ToolSpecBase
  * {@code sandbox_lint.py} (SANDBOX-001) at CI lint time; see PR #103 +
  * PR #107 for the rationale.
  *
+ * Layering: each tool-body regression keeps its direct-call feature
+ * (locks the historical tool-body shape) AND adds a parallel dispatch
+ * feature that drives the same scenario through {@code mcpDriver.callTool}
+ * under both gateway and flat modes (#121 / #187). The dispatch features
+ * exercise the production handleMcpRequest envelope path; the direct-call
+ * features still serve as the tight unit-level pin on the tool body.
+ *
  * Source: CHANGELOG.md + packageManifest.json releaseNotes + README
  * Version History. Issue #76 tracks the backfill.
  */
@@ -32,6 +41,13 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
+    }
+
+    private static final JsonSlurper SLURPER = new JsonSlurper()
+
+    /** Parse the tool body out of the dispatch envelope's content[0].text payload. */
+    private static Object innerBody(Map response) {
+        SLURPER.parseText(response.result.content[0].text as String)
     }
 
     // --- formatAge singular grammar (v0.7.7) --------------------------------
@@ -144,6 +160,35 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         Math.abs(entries[0].hoursAgo - 2.7d) < 0.1d
     }
 
+    @Unroll
+    def "device_health_check via dispatch reports hoursAgo as fractional hours (useGateways=#useGateways)"() {
+        given: 'a selected device whose lastActivity is 2.7h before the harness now()'
+        settingsMap.useGateways = useGateways
+        def twoPointSevenHoursAgo = new Date(1234567890000L - (long)(2.7 * 3_600_000L))
+        def device = new TestDevice(id: 1, name: 'sensor', label: 'Sensor')
+        device.metaClass.getLastActivity = { -> twoPointSevenHoursAgo }
+        childDevicesList << device
+        settingsMap.selectedDevices = [device]
+
+        when:
+        def response = mcpDriver.callTool('device_health_check', [staleHours: 24, includeHealthy: true])
+
+        then: 'JSON-RPC envelope present with parseable content'
+        response.jsonrpc == '2.0'
+        response.id == mcpDriver.lastSentId
+        response.error == null
+        def inner = innerBody(response)
+
+        and: 'the v0.7.6 one-decimal-in-hours shape survives the dispatch path'
+        def entries = (inner.healthyDevices ?: []) + (inner.staleDevices ?: []) + (inner.unknownDevices ?: [])
+        entries.size() == 1
+        entries[0].hoursAgo != null
+        Math.abs((entries[0].hoursAgo as Double) - 2.7d) < 0.1d
+
+        where:
+        useGateways << [true, false]
+    }
+
     // --- get_hub_logs source filter applied to the message field (v0.8.5) --
     //
     // The pre-fix code compared the source filter against `entry.time`
@@ -175,6 +220,40 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         negative.logs.size() == 0
     }
 
+    @Unroll
+    def "get_hub_logs via dispatch filters against message field, not timestamp (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/logs/past/json') { params ->
+            JsonOutput.toJson([
+                'sys\tinfo\tapp|42|Thermostat|turned on\t2026-04-19 10:00:00.000\ttype',
+                'sys\tinfo\tdev|99|Porch Light|level changed\t2026-04-19 10:00:01.000\ttype'
+            ])
+        }
+
+        when: 'source filter matches a word that only appears in the message field'
+        def positiveResp = mcpDriver.callTool('get_hub_logs', [source: 'Thermostat'])
+
+        then:
+        positiveResp.jsonrpc == '2.0'
+        positiveResp.error == null
+        def positive = innerBody(positiveResp)
+        positive.logs.size() == 1
+        positive.logs[0].message.contains('Thermostat')
+
+        when: 'source filter matches the timestamp prefix — a pre-fix hit, a post-fix miss'
+        def negativeResp = mcpDriver.callTool('get_hub_logs', [source: '2026-04-19'])
+
+        then:
+        negativeResp.error == null
+        def negative = innerBody(negativeResp)
+        negative.logs.size() == 0
+
+        where:
+        useGateways << [true, false]
+    }
+
     // --- get_hub_logs JSON array parsing + line-split fallback (v0.5.1) ---
     //
     // v0.5.1 fixed JSON array parsing of /logs/past/json. The current
@@ -198,6 +277,31 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         result.logs.size() == 2
         result.logs[0].message == 'Second'
         result.logs[1].message == 'First'
+    }
+
+    @Unroll
+    def "get_hub_logs via dispatch handles non-JSON newline-delimited response (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/logs/past/json') { params ->
+            "App 1\tinfo\tFirst\t2026-04-19 10:00:00.000\ttype\n" +
+            "App 1\tinfo\tSecond\t2026-04-19 10:00:01.000\ttype"
+        }
+
+        when:
+        def response = mcpDriver.callTool('get_hub_logs', [:])
+
+        then:
+        response.jsonrpc == '2.0'
+        response.error == null
+        def inner = innerBody(response)
+        inner.logs.size() == 2
+        inner.logs[0].message == 'Second'
+        inner.logs[1].message == 'First'
+
+        where:
+        useGateways << [true, false]
     }
 
     // --- send_command parameter normalisation (v0.8.2 + v0.8.5) -------------
@@ -294,6 +398,50 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         result.previousVersion == 12
     }
 
+    @Unroll
+    def "update_app_code via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
+        given: 'a recent cached backup whose manifest carries a stale version=5'
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [app_50: [
+            type: 'app', id: '50',
+            fileName: 'mcp-backup-app-50.groovy',
+            version: 5,
+            timestamp: 1234567890000L - 60_000L,
+            sourceLength: 100
+        ]]
+
+        and: '/app/ajax/code returns version=12 — the current fresh value'
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 12, "source": "does-not-matter"}'
+        }
+
+        and: 'capture the version passed into the update POST'
+        def posted = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            posted.path = path
+            posted.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+
+        then: 'update POST carries the fresh version=12'
+        posted.body.version == 12
+
+        and: 'dispatch envelope reports success with the fresh previousVersion'
+        response.jsonrpc == '2.0'
+        response.error == null
+        def inner = innerBody(response)
+        inner.success == true
+        inner.previousVersion == 12
+
+        where:
+        useGateways << [true, false]
+    }
+
     // ---- isNewerVersion semver comparison ----------------------------------------
     // Tests the strict-semver comparison helper: patch/minor/major bumps, equal
     // versions, prerelease/malformed-string guard path (returns false + warn log
@@ -321,6 +469,36 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         "0.12.0"        | "v0.11.0"   | false   // 'v' prefix on local: not strict semver -- warn + false
         null            | "0.12.0"    | false   // null remote: guarded before regex (would NPE otherwise)
         "not-a-version" | "0.12.0"    | false   // non-semver string: semver pattern guard fires
+    }
+
+    // Companion dispatch feature for the isNewerVersion data table: exercises
+    // check_for_update through the envelope so the version-check tool surface
+    // is locked under both gateway modes. The data-table above pins the pure
+    // helper; this pins the tool that consumes it.
+    @Unroll
+    def "check_for_update via dispatch returns success envelope with installedVersion (useGateways=#useGateways)"() {
+        given: 'clear any prior updateCheck so the tool forces a fresh async check'
+        settingsMap.useGateways = useGateways
+        stateMap.remove('updateCheck')
+
+        and: 'intercept doUpdateCheck so the async path does not actually fire'
+        script.metaClass.doUpdateCheck = { -> /* no-op: tool returns current snapshot */ }
+
+        when:
+        def response = mcpDriver.callTool('check_for_update', [:])
+
+        then: 'JSON-RPC success envelope; tool body reports success + a version'
+        response.jsonrpc == '2.0'
+        response.id == mcpDriver.lastSentId
+        response.error == null
+        def inner = innerBody(response)
+        inner.success == true
+        inner.installedVersion instanceof String
+        // Semver-ish pin; mirrors HandleMcpRequestDispatchSpec's initialize check.
+        (inner.installedVersion as String) ==~ /\d+\.\d+\.\d+.*/
+
+        where:
+        useGateways << [true, false]
     }
 
     def "update_app_code falls back to the cached backup version when the fresh-fetch fails (v0.4.6)"() {
@@ -354,6 +532,49 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         posted.body.version == 5
         result.success == true
         result.previousVersion == 5
+    }
+
+    @Unroll
+    def "update_app_code via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
+        given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [app_50: [
+            type: 'app', id: '50',
+            fileName: 'mcp-backup-app-50.groovy',
+            version: 5,
+            timestamp: 1234567890000L - 60_000L,
+            sourceLength: 100
+        ]]
+
+        and: '/app/ajax/code throws on the fresh-version attempt'
+        hubGet.register('/app/ajax/code') { params ->
+            throw new RuntimeException('simulated hub offline')
+        }
+
+        and: 'capture the version passed into the update POST'
+        def posted = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            posted.body = body
+            [status: 200, location: null, data: '{"status": "success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+
+        then: 'best-effort fallback — use the cached version=5'
+        posted.body.version == 5
+
+        and: 'dispatch envelope reports success with the fallback previousVersion'
+        response.jsonrpc == '2.0'
+        response.error == null
+        def inner = innerBody(response)
+        inner.success == true
+        inner.previousVersion == 5
+
+        where:
+        useGateways << [true, false]
     }
 
     // --- update_library_code dedup-path version correctness ------------------
@@ -402,6 +623,49 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         result.previousVersion == 9
     }
 
+    @Unroll
+    def "update_library_code via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
+        given: 'a recent cached backup whose manifest carries a stale version=1'
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [library_42: [
+            type: 'library', id: '42',
+            fileName: 'mcp-backup-library-42.groovy',
+            version: 1,
+            timestamp: 1234567890000L - 60_000L,
+            sourceLength: 100
+        ]]
+
+        and: '/library/list/single/data/42 returns version=9 -- the current value'
+        hubGet.register('/library/list/single/data/42') { params ->
+            groovy.json.JsonOutput.toJson([[id: 42, version: 9, source: 'library(name:"L")', name: 'L', namespace: 'n']])
+        }
+
+        and: 'capture the JSON body posted to saveOrUpdateJson'
+        def capturedBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            capturedBody = new groovy.json.JsonSlurper().parseText(body)
+            [success: true, message: '', id: 42, version: 10]
+        }
+
+        when:
+        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: 'new source', confirm: true])
+
+        then: 'POST body carries the fresh version=9'
+        capturedBody.version == 9
+
+        and: 'dispatch envelope reports the fresh previousVersion'
+        response.jsonrpc == '2.0'
+        response.error == null
+        def inner = innerBody(response)
+        inner.success == true
+        inner.previousVersion == 9
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "update_library_code dedup path falls back to the cached backup version when the fresh-fetch fails"() {
         given: 'a recent cached backup with version=7 (stale, but the only value available)'
         settingsMap.enableHubAdminWrite = true
@@ -435,5 +699,48 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         and: 'tool still reports success using the fallback version'
         result.success == true
         result.previousVersion == 7
+    }
+
+    @Unroll
+    def "update_library_code via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
+        given: 'a recent cached backup with version=7 (stale, but the only value available)'
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [library_42: [
+            type: 'library', id: '42',
+            fileName: 'mcp-backup-library-42.groovy',
+            version: 7,
+            timestamp: 1234567890000L - 60_000L,
+            sourceLength: 100
+        ]]
+
+        and: '/library/list/single/data/42 throws (hub transiently offline)'
+        hubGet.register('/library/list/single/data/42') { params ->
+            throw new RuntimeException('hub offline')
+        }
+
+        and: 'capture the version in the update POST'
+        def capturedBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            capturedBody = new groovy.json.JsonSlurper().parseText(body)
+            [success: true, message: '', id: 42, version: 8]
+        }
+
+        when:
+        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: 'new source', confirm: true])
+
+        then: 'best-effort fallback -- use the cached version=7'
+        capturedBody.version == 7
+
+        and: 'dispatch envelope reports success with the fallback previousVersion'
+        response.jsonrpc == '2.0'
+        response.error == null
+        def inner = innerBody(response)
+        inner.success == true
+        inner.previousVersion == 7
+
+        where:
+        useGateways << [true, false]
     }
 }
