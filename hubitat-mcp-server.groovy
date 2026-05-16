@@ -885,7 +885,7 @@ def getGatewayConfig() {
                 get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
                 get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
                 force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
-                device_health_check: "Check device staleness and/or ICMP-ping arbitrary IPs (router, NAS, server). Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5)",
+                device_health_check: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
                 custom_get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
                 get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
                 get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count). Requires Hub Admin Read",
@@ -898,7 +898,7 @@ def getGatewayConfig() {
                 get_set_hub_metrics: "temperature database size trending monitoring over time",
                 get_memory_history: "ram free used leak trending over time java heap nio",
                 force_garbage_collection: "free reclaim ram cleanup java heap",
-                device_health_check: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway",
+                device_health_check: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway identify led blink locate physical hub",
                 custom_get_rule_diagnostics: "automation troubleshoot broken not working debug why",
                 get_zwave_details: "zwave mesh network frequency firmware 908mhz 700 800 series",
                 get_zigbee_details: "zigbee mesh network channel pan coordinator 2400mhz",
@@ -1375,11 +1375,11 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "get_hub_info",
-            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read. Pass blinkLED=true to also fire the hub's identify-LED sequence (blue → red → green) — useful for physically locating which hub returned this info when multiple hubs are deployed.",
+            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    blinkLED: [type: "boolean", description: "Trigger the hub's identify-LED sequence (blue → red → green) for physical identification. Non-destructive and self-resetting. Default: false.", default: false]
+                    identifyHub: [type: "boolean", description: "Blink the hub's identify LED (blue → red → green) to physically locate which hub answered. Default: false.", default: false]
                 ]
             ]
         ],
@@ -1758,7 +1758,7 @@ Verify rule after creation.""",
         ],
         [
             name: "device_health_check",
-            description: "Check device staleness, (optionally) ICMP-ping arbitrary hosts, and (optionally) fire the hub's identify-LED sequence. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). identifyHub blinks the hub's LED (blue → red → green) so you can physically locate the hub. Any combination may be used in a single call.",
+            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1766,7 +1766,7 @@ Verify rule after creation.""",
                     includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
                     pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call). Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only."],
                     pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
-                    identifyHub: [type: "boolean", description: "Trigger the hub's identify-LED sequence (blue → red → green) so you can physically locate which hub answered. Non-destructive and self-resetting. Result echoed as identifyHubTriggered. Default: false.", default: false]
+                    identifyHub: [type: "boolean", description: "Blink the hub's identify LED (blue → red → green) to physically locate which hub answered. Default: false.", default: false]
                 ]
             ]
         ],
@@ -4735,16 +4735,15 @@ def toolGetHubInfo(args = null) {
         info.hubAdminReadRequired = "Hub Admin Read is not enabled. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
     }
 
-    // Optional identify-LED blink (firmware 2.5.0.123+). Non-destructive: fires a
-    // single LED rotation sequence on the hub for physical identification.
-    if (args?.blinkLED == true) {
+    if (args?.identifyHub == true) {
         try {
             hubInternalGet("/hub/advanced/blinkLED")
-            info.blinkLEDTriggered = true
+            info.identifyHubTriggered = true
         } catch (Exception e) {
-            info.blinkLEDTriggered = false
-            info.blinkLEDError = e.message
-            mcpLog("warn", "hub-info", "blinkLED request failed: ${e.message}")
+            def msg = e.message ?: e.toString()
+            info.identifyHubTriggered = false
+            info.identifyHubError = msg
+            mcpLog("warn", "system", "identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
         }
     }
 
@@ -9114,16 +9113,15 @@ def toolDeviceHealthCheck(args) {
 
     def pingResults = pingHosts ? runPingChecks(pingHosts, pingCount) : null
 
-    // Optional identify-LED blink (firmware 2.5.0.123+). Non-destructive: fires a
-    // single LED rotation sequence on the hub for physical identification.
-    def identifyHubResult = null
+    Map identifyHubFields = null
     if (args?.identifyHub == true) {
         try {
             hubInternalGet("/hub/advanced/blinkLED")
-            identifyHubResult = [triggered: true]
+            identifyHubFields = [identifyHubTriggered: true]
         } catch (Exception e) {
-            identifyHubResult = [triggered: false, error: e.message]
-            mcpLog("warn", "monitoring", "device_health_check identifyHub blinkLED request failed: ${e.message}")
+            def msg = e.message ?: e.toString()
+            identifyHubFields = [identifyHubTriggered: false, identifyHubError: msg]
+            mcpLog("warn", "monitoring", "device_health_check identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
         }
     }
 
@@ -9133,7 +9131,7 @@ def toolDeviceHealthCheck(args) {
             summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]
         ]
         if (pingResults != null) emptyResult.pingResults = pingResults
-        if (identifyHubResult != null) emptyResult.identifyHub = identifyHubResult
+        if (identifyHubFields != null) emptyResult.putAll(identifyHubFields)
         return emptyResult
     }
 
@@ -9214,8 +9212,8 @@ def toolDeviceHealthCheck(args) {
         result.pingResults = pingResults
     }
 
-    if (identifyHubResult != null) {
-        result.identifyHub = identifyHubResult
+    if (identifyHubFields != null) {
+        result.putAll(identifyHubFields)
     }
 
     mcpLog("info", "monitoring", "Device health check: ${healthy.size()} healthy, ${stale.size()} stale, ${unknown.size()} unknown (threshold: ${staleHours}h)")

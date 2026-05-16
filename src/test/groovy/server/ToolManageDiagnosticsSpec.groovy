@@ -593,9 +593,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         high.message.contains('between 1 and 5')
     }
 
-    // -------- device_health_check identifyHub (issue #132) --------
+    // -------- device_health_check identifyHub --------
 
-    def "device_health_check identifyHub=true fires /hub/advanced/blinkLED and surfaces identifyHub.triggered=true"() {
+    def "device_health_check identifyHub=true fires /hub/advanced/blinkLED and surfaces identifyHubTriggered=true"() {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
@@ -607,7 +607,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def result = script.toolDeviceHealthCheck([identifyHub: true])
 
         then:
-        result.identifyHub == [triggered: true]
+        result.identifyHubTriggered == true
+        !result.containsKey('identifyHubError')
         hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
@@ -621,7 +622,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
         then:
         result.message.contains('No devices selected')
-        result.identifyHub == [triggered: true]
+        result.identifyHubTriggered == true
+        !result.containsKey('identifyHubError')
         hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
@@ -631,17 +633,17 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
         fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
         settingsMap.selectedDevices = [fresh]
-        // Intentionally no hubGet.register('/hub/advanced/blinkLED')
 
         when:
         def result = script.toolDeviceHealthCheck([:])
 
         then:
-        !result.containsKey('identifyHub')
+        !result.containsKey('identifyHubTriggered')
+        !result.containsKey('identifyHubError')
         !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
-    def "device_health_check identifyHub=true with endpoint failure surfaces triggered=false plus error"() {
+    def "device_health_check identifyHub=true with endpoint failure surfaces identifyHubTriggered=false plus identifyHubError"() {
         given:
         hubGet.register('/hub/advanced/blinkLED') { params -> throw new RuntimeException('LED unavailable') }
 
@@ -649,7 +651,41 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def result = script.toolDeviceHealthCheck([identifyHub: true])
 
         then:
-        result.identifyHub == [triggered: false, error: 'LED unavailable']
+        result.identifyHubTriggered == false
+        result.identifyHubError == 'LED unavailable'
+    }
+
+    def "device_health_check identifyHub=true with null-message exception falls back to e.toString()"() {
+        given:
+        hubGet.register('/hub/advanced/blinkLED') { params -> throw new IOException() }
+
+        when:
+        def result = script.toolDeviceHealthCheck([identifyHub: true])
+
+        then:
+        result.identifyHubTriggered == false
+        result.identifyHubError != null
+        result.identifyHubError.toLowerCase().contains('ioexception')
+    }
+
+    def "device_health_check identifyHub=true and pingHosts together both surface in one response"() {
+        given:
+        def network = new NetworkUtilsMock()
+        network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.0, rttMin: 1.0, rttMax: 1.0]
+        network.install()
+        hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
+
+        when:
+        def result = script.toolDeviceHealthCheck([identifyHub: true, pingHosts: ['10.0.0.1']])
+
+        then:
+        result.identifyHubTriggered == true
+        result.pingResults.size() == 1
+        result.pingResults[0].reachable == true
+        hubGet.calls.findAll { it.path == '/hub/advanced/blinkLED' }.size() == 1
+
+        cleanup:
+        network.uninstall()
     }
 
     def "device_health_check pingHosts: non-numeric pingCount surfaces friendly IllegalArgumentException"() {

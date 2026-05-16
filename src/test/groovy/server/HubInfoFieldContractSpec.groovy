@@ -75,63 +75,75 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == false
     }
 
-    // -------- toolGetHubInfo identify-LED (issue #132) --------
+    // -------- toolGetHubInfo identify-LED --------
 
-    def "getHubInfo blinkLED=true fires /hub/advanced/blinkLED and reports blinkLEDTriggered=true"() {
+    def "getHubInfo identifyHub=true fires /hub/advanced/blinkLED and reports identifyHubTriggered=true"() {
         given:
         sharedLocation.hub = new TestHub()
         hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
 
         when:
-        def result = script.toolGetHubInfo([blinkLED: true])
+        def result = script.toolGetHubInfo([identifyHub: true])
 
         then:
-        result.blinkLEDTriggered == true
-        !result.containsKey('blinkLEDError')
+        result.identifyHubTriggered == true
+        !result.containsKey('identifyHubError')
         hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
-    def "getHubInfo without blinkLED arg does not hit the blinkLED endpoint or emit the field"() {
+    def "getHubInfo without identifyHub arg does not hit the blinkLED endpoint or emit the field"() {
         given:
         sharedLocation.hub = new TestHub()
-        // Intentionally no hubGet.register('/hub/advanced/blinkLED') — calling it
-        // would throw IllegalStateException("Unstubbed hubInternalGet"), which the
-        // tool's catch block would convert to blinkLEDTriggered=false. We rely on
-        // BOTH the missing-field assertion and the no-call assertion to prove the
-        // code path is skipped entirely, not just its result swallowed.
+        // No hubGet.register — the no-call assertion is the strict-stronger guarantee;
+        // field-absent alone would miss a fire-and-forget regression that calls the
+        // endpoint without ever writing the result field.
 
         when:
         def result = script.toolGetHubInfo()
 
         then:
-        !result.containsKey('blinkLEDTriggered')
-        !result.containsKey('blinkLEDError')
+        !result.containsKey('identifyHubTriggered')
+        !result.containsKey('identifyHubError')
         !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
-    def "getHubInfo blinkLED=false does not hit the blinkLED endpoint"() {
+    def "getHubInfo identifyHub=false does not hit the blinkLED endpoint"() {
         given:
         sharedLocation.hub = new TestHub()
 
         when:
-        def result = script.toolGetHubInfo([blinkLED: false])
+        def result = script.toolGetHubInfo([identifyHub: false])
 
         then:
-        !result.containsKey('blinkLEDTriggered')
+        !result.containsKey('identifyHubTriggered')
         !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
-    def "getHubInfo blinkLED=true with endpoint failure surfaces blinkLEDTriggered=false and blinkLEDError"() {
+    def "getHubInfo identifyHub=true with endpoint failure surfaces identifyHubTriggered=false and identifyHubError"() {
         given:
         sharedLocation.hub = new TestHub()
         hubGet.register('/hub/advanced/blinkLED') { params -> throw new RuntimeException('LED endpoint missing on this firmware') }
 
         when:
-        def result = script.toolGetHubInfo([blinkLED: true])
+        def result = script.toolGetHubInfo([identifyHub: true])
 
         then:
-        result.blinkLEDTriggered == false
-        result.blinkLEDError == 'LED endpoint missing on this firmware'
+        result.identifyHubTriggered == false
+        result.identifyHubError == 'LED endpoint missing on this firmware'
+    }
+
+    def "getHubInfo identifyHub=true with null-message exception falls back to e.toString()"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/advanced/blinkLED') { params -> throw new IOException() }
+
+        when:
+        def result = script.toolGetHubInfo([identifyHub: true])
+
+        then:
+        result.identifyHubTriggered == false
+        result.identifyHubError != null
+        result.identifyHubError.toLowerCase().contains('ioexception')
     }
 
     // -------- toolGetHubDetails --------
