@@ -1363,6 +1363,72 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         varValueWrite.body["settings[varValue]"] == "true"
     }
 
+    @spock.lang.Unroll
+    def "addLocalVariable writes varType=#rmType for #rmType type with value #rawValue"() {
+        // Covers all 5 RM 5.1 local-variable types end-to-end. The helper
+        // validates the type label up front (rejects unknown labels with
+        // IllegalArgumentException) and canonicalizes case before any write,
+        // so this spec pins the wire-encoding contract: the canonical label
+        // survives to settings[varType] and the raw value reaches
+        // settings[varValue]. Boolean coercion is owned by the dedicated
+        // spec above; this one walks the type matrix.
+        given:
+        enableHubAdminWrite()
+        def selActsAfter = [
+            [name: "hbVar", type: "text"],
+            [name: "varType", type: "enum", options: ["Number", "Decimal", "String", "Boolean", "DateTime"]],
+            [name: "varValue", type: "text"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: [[name: "allLocalVars", value: [(varName): [type: rmType.toLowerCase(), value: rawValue]]]],
+                state: [:]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addLocalVariable: [name: varName, type: rmType, value: rawValue],
+            confirm: true
+        ])
+
+        then: "the varType setting lands with the exact RM type label"
+        def varTypeWrite = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varType]") }
+        varTypeWrite != null
+        varTypeWrite.body["settings[varType]"]?.toString() == rmType
+
+        and: "the varValue setting lands with the type-coerced string"
+        // varValue is wire-encoded as a string in every case. Boolean values
+        // go through the dedicated coercion path covered by the spec above,
+        // but the resulting wire shape is still the literal "true"/"false"
+        // string, so the comparison below stays uniform across the 5 types.
+        def varValueWrite = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varValue]") }
+        varValueWrite != null
+        varValueWrite.body["settings[varValue]"]?.toString() == rawValue.toString()
+
+        and: "the result reflects the committed type"
+        result.success == true
+        result.variable?.type == rmType
+
+        where:
+        rmType     | varName       | rawValue
+        "Number"   | "counter"     | 42
+        "Decimal"  | "ratio"       | 0.5
+        "String"   | "label"       | "ready"
+        "Boolean"  | "flag"        | true
+        "DateTime" | "lastSeenAt"  | "2026-05-17T14:30:00.000-0400"
+    }
+
     def "removeAction throws when delAct click is silently no-oped (action still present after all retries)"() {
         given:
         enableHubAdminWrite()
@@ -2075,6 +2141,265 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.before.inputs.find { it.name == "tCapab1" } != null
         // introspect leaves before == after (no mutation)
         result.after?.inputs == result.before.inputs
+    }
+
+    def "walkStep click fires a /installedapp/btn POST with the requested button name + stateAttribute"() {
+        // Direct unit cover for walkStep operation='click' — the dispatcher
+        // routes through _rmClickAppButton which POSTs to /installedapp/btn
+        // with name=<btnName>, settings[btnName]=clicked, stateAttribute (when
+        // supplied), pageBreadcrumbs=["mainPage"], currentPage=<page>.
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["switchActs"]],
+                [name: "moreVar", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [page: "selectActions", operation: "click", click: [name: "moreVar", stateAttribute: "moreVar"]],
+            confirm: true
+        ])
+
+        then: "the button POST is issued with the click payload shape"
+        result.success == true
+        def btnPost = posts.find { it.path == "/installedapp/btn" && it.body?.name == "moreVar" }
+        btnPost != null
+        btnPost.body["settings[moreVar]"] == "clicked"
+        btnPost.body["moreVar.type"] == "button"
+        btnPost.body.stateAttribute == "moreVar"
+        btnPost.body.currentPage == "selectActions"
+        btnPost.body.pageBreadcrumbs == '["mainPage"]'
+
+        and: "the result echoes the clicked button under opResult"
+        result.opResult?.clicked?.name == "moreVar"
+        result.opResult?.clicked?.stateAttribute == "moreVar"
+    }
+
+    def "walkStep navigate emits the two-part href marker + params_for_action_href payload"() {
+        // walkStep operation='navigate' routes through _rmNavigateToPage. For
+        // sub-page navigation with href params (Periodic Schedule is the
+        // archetype — its href carries {n:1}), the LIVE wire pair is:
+        //   _action_href_<linkName>|<page>|<idx>=clicked
+        //   params_for_action_href_<linkName>|<page>|<idx>=<json-of-params>
+        // Without the second marker the target sub-page renders with
+        // state.<paramKey>=null and the schema appears empty.
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [],
+                                         // hrefs live in section.body[] with element=href +
+                                         // a page/params pair. _rmCollectWalkSchema extracts these
+                                         // into the beforeSchema.hrefs list so walkStep navigate
+                                         // can recover the linkName + params for the marker pair.
+                                         body: [[element: "href", name: "periodic1", page: "periodic", params: [n: 1]]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // Target page returned in the nav-response body (the only place
+        // state.n is in scope).
+        hubGet.register('/installedapp/configure/json/100/periodic') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, version: 7], configPage: [name: "periodic", sections: [[input: [[name: "whichPeriod1", type: "enum"]]]]], settings: [:]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: JsonOutput.toJson([
+                app: [id: 100, version: 7], configPage: [name: "periodic", sections: [[input: [[name: "whichPeriod1", type: "enum"]]]]]
+            ])]
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [page: "selectTriggers", operation: "navigate", navigate: [targetPage: "periodic"]],
+            confirm: true
+        ])
+
+        then: "the nav POST emits both halves of the href marker pair"
+        result.success == true
+        def navPost = posts.find { it.path == "/installedapp/update/json" && it.body?.any { k, v -> k.toString().startsWith("_action_href_") } }
+        navPost != null
+        def actionKey = navPost.body.keySet().find { it.toString().startsWith("_action_href_") }
+        actionKey.toString().endsWith("|periodic|1")
+        def paramsKey = navPost.body.keySet().find { it.toString().startsWith("params_for_action_href_") }
+        paramsKey != null
+        navPost.body[paramsKey].toString().contains('"n":1')
+        navPost.body.currentPage == "selectTriggers"
+
+        and: "the result reflects the navigation under opResult"
+        result.opResult?.navigated?.to == "periodic"
+        result.opResult?.navigated?.from == "selectTriggers"
+
+        and: "the target sub-page schema is exposed in result.after (consumed from the nav response, not a follow-up GET)"
+        // _rmNavigateToPage's response is the only place state.<paramKey>
+        // is in scope; if the navigate op dropped the JSON parse and fell
+        // back to a plain GET, the target schema would render empty and
+        // subsequent walkStep writes would silent-reject. The whichPeriod1
+        // input being visible here pins the parse + extraction path.
+        result.after?.inputs?.any { it?.name == "whichPeriod1" }
+    }
+
+    def "walkStep done submits sub-page with _action_previous=Done + paramsForPage routing"() {
+        // walkStep operation='done' routes through _rmSubmitSubPageDone, which
+        // first round-trips the nav POST to bring state.<paramKey> into scope
+        // (otherwise the sub-page's schema renders empty), then issues the
+        // Done POST carrying settings[X] + per-type sidecars + paramsForPage.
+        // The live periodic-page Done is what bakes the trigger description
+        // ("Every Hour at :15") into the parent's row — forward-nav markers
+        // alone leave the row as "?".
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // Sub-page schema with one settable field so the Done body carries a
+        // real settings[X] entry (the helper requires at least one field to
+        // exercise the merge path).
+        hubGet.register('/installedapp/configure/json/100/periodic') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, version: 7],
+                configPage: [name: "periodic", title: "Periodic", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "whichPeriod1", type: "enum", options: ["Hourly"], value: "Hourly"]
+                             ]]]],
+                settings: [:]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "periodic1", type: "href", page: "periodic", params: [n: 1]]])
+        }
+        // statusJson must include the sub-page's settings so the Done body
+        // can recover the live value (the merge reads from appSettings).
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "whichPeriod1", type: "enum", value: "Hourly"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Return the periodic schema for the nav round-trip so
+            // _rmSubmitSubPageDone can read the version field.
+            [status: 200, location: null, data: JsonOutput.toJson([
+                app: [id: 100, version: 7],
+                configPage: [name: "periodic", sections: [[input: [[name: "whichPeriod1", type: "enum", value: "Hourly"]]]]]
+            ])]
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [
+                page: "periodic",
+                operation: "done",
+                hrefContext: [fromPage: "selectTriggers", hrefName: "periodic1", hrefParams: [n: 1]]
+            ],
+            confirm: true
+        ])
+
+        then: "a /installedapp/update/json POST carries _action_previous=Done with sub-page settings + paramsForPage"
+        result.success == true
+        def donePost = posts.find {
+            it.path == "/installedapp/update/json" && it.body?.containsKey("_action_previous")
+        }
+        donePost != null
+        donePost.body["_action_previous"] == "Done"
+        // The live sub-page settings are merged into the Done body — the
+        // helper reads them out of statusJson's appSettings and echoes
+        // every visible input under settings[X]. If the merge regressed,
+        // the trigger row's description would render as "?" because the
+        // hub treats an empty settings[whichPeriod1] as "no schedule set".
+        donePost.body["settings[whichPeriod1]"] == "Hourly"
+        donePost.body.containsKey("paramsForPage")
+        donePost.body.paramsForPage.toString().contains('"n":1')
+        // pageBreadcrumbs carries parent context so the hub renders selectTriggers
+        // in the response — without it the Done can't bake the parent row.
+        donePost.body.pageBreadcrumbs?.toString()?.contains("selectTriggers")
+
+        and: "the result captures the done transition under opResult"
+        result.opResult?.done?.from == "periodic"
+        result.opResult?.done?.parent == "selectTriggers"
+    }
+
+    def "walkStep done on a top-level page (no hrefContext) submits Done with no paramsForPage and root-only breadcrumbs"() {
+        // Coverage for the top-level branch of walkStep done. When the caller
+        // does NOT supply hrefContext, _rmSubmitSubPageDone is invoked with
+        // parentPage=null and hrefParams=null. That collapses the Done body
+        // to: _action_previous=Done, pageBreadcrumbs=["mainPage"] (no parent
+        // appended), and NO paramsForPage marker (the merge only adds it when
+        // hrefParams is non-empty). The companion spec above pins the
+        // sub-page branch with hrefContext; this one pins the top-level
+        // branch so a regression that swapped the two would surface here
+        // rather than via a BAT-only signal. Note: the wizard-Done residual
+        // isCondTrig.<N>=false finalize lives on the addTrigger commit path
+        // (covered at :1122), not on walkStep done.
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, version: 7],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"]
+                             ]]]],
+                settings: ["tCapab1": "Switch"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: JsonOutput.toJson([
+                app: [id: 100, version: 7],
+                configPage: [name: "selectTriggers", sections: [[input: [[name: "tCapab1", type: "enum", value: "Switch"]]]]]
+            ])]
+        }
+
+        when: "Done on selectTriggers (no hrefContext — top-level page Done)"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [page: "selectTriggers", operation: "done"],
+            confirm: true
+        ])
+
+        then: "the Done POST has root-only breadcrumbs and NO paramsForPage"
+        result.success == true
+        def donePost = posts.find {
+            it.path == "/installedapp/update/json" && it.body?.containsKey("_action_previous")
+        }
+        donePost != null
+        donePost.body["_action_previous"] == "Done"
+        donePost.body.pageBreadcrumbs == '["mainPage"]'
+        !donePost.body.containsKey("paramsForPage")
+
+        and: "opResult.done carries the page name and a null parent (no hrefContext)"
+        // The parent==null assertion guards against cross-contamination from
+        // the sub-page branch (which sets parent=<fromPage>). A regression that
+        // swapped the two branches would surface here.
+        result.opResult?.done?.from == "selectTriggers"
+        result.opResult?.done?.parent == null
     }
 
     def "addTriggers bulk shortcut returns partial: true when one inner spec fails"() {
@@ -2864,6 +3189,49 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.capabilities.any { it.name == "Mode" }
     }
 
+    def "backup-before-write is a hard gate: a backup failure aborts the call BEFORE any write/click POST is issued"() {
+        // Every non-discover update_native_app path runs _rmBackupRuleSnapshot
+        // before dispatching to a write helper (settings/button/addTrigger/
+        // addAction/removeAction/clearActions/moveAction/walkStep/etc.).
+        // If the snapshot throws (config fetch fails, uploadHubFile fails,
+        // serialization fails) the dispatcher must propagate the failure
+        // with NO downstream wire effect — otherwise a future hub-side
+        // problem in the snapshot pipeline would silently leave callers
+        // with a half-mutated rule and no restore point.
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // Force the backup to fail at the uploadHubFile step — _rmBackupRuleSnapshot
+        // re-throws as IllegalArgumentException("Cannot save backup file ...").
+        script.metaClass.uploadHubFile = { String fn, byte[] b ->
+            throw new RuntimeException("simulated hub File Manager failure")
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a non-discover write path tries to run with a broken backup pipeline"
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "the call throws — backup is a non-recoverable gate"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("backup")
+
+        and: "no write POST and no button-click POST escaped the gate"
+        // The exact strings here are the two endpoints that mutate rule state.
+        // Any post-backup wiring that fires before backup verification would
+        // hit one of these.
+        !posts.any { it.path == "/installedapp/update/json" }
+        !posts.any { it.path == "/installedapp/btn" }
+    }
+
     def "addAction discover=true returns schema with discriminator and capabilities list"() {
         given: "only Built-in App tools enabled -- Hub Admin Write NOT required"
         enableReadOnly()
@@ -3451,6 +3819,160 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "updateRule fires even for conditional=true triggers"
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
+    def "addTrigger.condition Map drives the inline condition sub-wizard (isCondTrig+condTrig+rCapab/rDev/state writes land)"() {
+        // The `condition` Map shape is distinct from the `conditional` boolean
+        // flag. When supplied it drives _rmBuildCondition inline:
+        //   isCondTrig.<idx>=true   (opens conditional editor)
+        //   condTrig.<idx>="a"      (selects "Add new condition")
+        //   rCapab_<idx>=<cap>      (condition capability)
+        //   rDev_<idx>=<deviceIds>  (condition devices)
+        //   state_<idx>=<state>     (condition state)
+        //   hasAll click            (commits the condition; the helper returns
+        //                           idx as the conditionId by construction --
+        //                           RM allocates sequentially so id == idx)
+        // Then idx is bumped (condition wizard consumed the slot) and the
+        // outer trigger writes tCapab/tDev/tstate at idx+1, finally writing
+        // isCondTrig.<idx+1>=true + condTrig.<idx+1>=<conditionId> to bind.
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // Progressive paragraph counter so _rmWriteSettingOnPage's render-hash
+        // diff fires on every successive write (otherwise a static schema
+        // makes every write route to settingsSkipped with reason=silent_rejection).
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 // Condition wizard slot at idx 1
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "condTrig.1", type: "enum", options: ["a", "b"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Switch", "Motion"]],
+                                 [name: "rDev_1", type: "capability.switch", multiple: true],
+                                 [name: "state_1", type: "enum", options: ["on", "off"]],
+                                 // Bound trigger at idx 2 (post-condition bump)
+                                 [name: "tCapab2", type: "enum", options: ["Switch"]],
+                                 [name: "tDev2", type: "capability.switch", multiple: true],
+                                 [name: "tstate2", type: "enum", options: ["on", "off"]],
+                                 [name: "isCondTrig.2", type: "bool"],
+                                 [name: "condTrig.2", type: "enum", options: ["1"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
+
+        when: "addTrigger with an explicit condition Map (Motion-active gates Switch-on)"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [8],
+                state: "on",
+                condition: [capability: "Motion", deviceIds: [9], state: "active"]
+            ],
+            confirm: true
+        ])
+
+        then: "the condition-wizard writes go through at idx 1 (the consumed slot)"
+        // isCondTrig.1=true opens the conditional editor at the original idx.
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[isCondTrig.1]"]?.toString() == "true"
+        }
+        // condTrig.1="a" picks "Add new condition" from the dropdown.
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[condTrig.1]"]?.toString() == "a"
+        }
+        // rCapab_1=Motion lands the condition capability.
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[rCapab_1]"]?.toString() == "Motion"
+        }
+        // rDev_1 carries the condition's device ID (CSV per multiple=true contract).
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[rDev_1]"]?.toString()?.contains("9")
+        }
+        // state_1=active is the condition's compared state.
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[state_1]"]?.toString() == "active"
+        }
+        // hasAll click commits the condition (auto-assigns id) and advances
+        // the wizard to the next trigger index.
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+
+        and: "the outer trigger then commits at idx 2 (post-bump) and binds to the saved condition"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tCapab2]"]?.toString() == "Switch"
+        }
+        // The bound trigger's device + state must also reach the schema —
+        // without these the trigger row commits as "Broken Trigger" and the
+        // earlier condition write is wasted work.
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tDev2]"]?.toString()?.contains("8")
+        }
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tstate2]"]?.toString() == "on"
+        }
+        // The post-tCapab finalize binds isCondTrig.2=true + condTrig.2=<conditionId>
+        // so the trigger references the condition we just built.
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[isCondTrig.2]"]?.toString() == "true"
+        }
+
+        and: "the wizard write ordering is preserved (RM is order-sensitive)"
+        // RM 5.1 silently commits a broken trigger if these phases interleave:
+        //   - condition setup MUST land before the condition's hasAll click
+        //   - the condition's hasAll click MUST land before the bumped-idx
+        //     tCapab2 writes (otherwise the trigger fields target the
+        //     condition's slot)
+        //   - tCapab2 MUST land before the trigger's final hasAll click
+        // Two hasAll clicks fire in this flow -- one to commit the condition
+        // (findIndexOf = first match), one to commit the trigger (findLast).
+        def condSetupIdx = posts.findIndexOf {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[rCapab_1]"]?.toString() == "Motion"
+        }
+        def condHasAllIdx = posts.findIndexOf {
+            it.path == "/installedapp/btn" && it.body?.name == "hasAll"
+        }
+        def trigCapabIdx = posts.findIndexOf {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tCapab2]"]?.toString() == "Switch"
+        }
+        def trigHasAllIdx = posts.findLastIndexOf {
+            it.path == "/installedapp/btn" && it.body?.name == "hasAll"
+        }
+        condSetupIdx >= 0 && condHasAllIdx >= 0 && trigCapabIdx >= 0 && trigHasAllIdx >= 0
+        condSetupIdx < condHasAllIdx
+        condHasAllIdx < trigCapabIdx
+        trigCapabIdx < trigHasAllIdx
+
+        and: "the call returns success"
+        result.success == true
     }
 
     // ---------- addAction success/partial semantic matrix ----------
