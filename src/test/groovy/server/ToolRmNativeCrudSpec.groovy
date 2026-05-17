@@ -1365,10 +1365,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "addLocalVariable writes varType=#rmType for #rmType type with value #rawValue"() {
-        // Covers all 5 RM 5.1 local-variable types end-to-end. The varType setting
-        // must carry the EXACT type label RM recognises — picking the wrong label
-        // silently creates a "Number" var regardless of input. Boolean coercion is
-        // owned by the dedicated spec above; this one walks the type matrix.
+        // Covers all 5 RM 5.1 local-variable types end-to-end. The helper
+        // validates the type label up front (rejects unknown labels with
+        // IllegalArgumentException) and canonicalizes case before any write,
+        // so this spec pins the wire-encoding contract: the canonical label
+        // survives to settings[varType] and the raw value reaches
+        // settings[varValue]. Boolean coercion is owned by the dedicated
+        // spec above; this one walks the type matrix.
         given:
         enableHubAdminWrite()
         def selActsAfter = [
@@ -2247,6 +2250,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the result reflects the navigation under opResult"
         result.opResult?.navigated?.to == "periodic"
         result.opResult?.navigated?.from == "selectTriggers"
+
+        and: "the target sub-page schema is exposed in result.after (consumed from the nav response, not a follow-up GET)"
+        // _rmNavigateToPage's response is the only place state.<paramKey>
+        // is in scope; if the navigate op dropped the JSON parse and fell
+        // back to a plain GET, the target schema would render empty and
+        // subsequent walkStep writes would silent-reject. The whichPeriod1
+        // input being visible here pins the parse + extraction path.
+        result.after?.inputs?.any { it?.name == "whichPeriod1" }
     }
 
     def "walkStep done submits sub-page with _action_previous=Done + paramsForPage routing"() {
@@ -2380,10 +2391,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         donePost != null
         donePost.body["_action_previous"] == "Done"
-        // Root-only breadcrumb -- parentPage was null so no parent suffix.
         donePost.body.pageBreadcrumbs == '["mainPage"]'
-        // No paramsForPage marker since hrefParams was null.
         !donePost.body.containsKey("paramsForPage")
+
+        and: "opResult.done carries the page name and a null parent (no hrefContext)"
+        // The parent==null assertion guards against cross-contamination from
+        // the sub-page branch (which sets parent=<fromPage>). A regression that
+        // swapped the two branches would surface here.
+        result.opResult?.done?.from == "selectTriggers"
+        result.opResult?.done?.parent == null
     }
 
     def "addTriggers bulk shortcut returns partial: true when one inner spec fails"() {
@@ -3813,7 +3829,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //   rCapab_<idx>=<cap>      (condition capability)
         //   rDev_<idx>=<deviceIds>  (condition devices)
         //   state_<idx>=<state>     (condition state)
-        //   hasAll click            (commits the condition; auto-assigns id)
+        //   hasAll click            (commits the condition; the helper returns
+        //                           idx as the conditionId by construction --
+        //                           RM allocates sequentially so id == idx)
         // Then idx is bumped (condition wizard consumed the slot) and the
         // outer trigger writes tCapab/tDev/tstate at idx+1, finally writing
         // isCondTrig.<idx+1>=true + condTrig.<idx+1>=<conditionId> to bind.
@@ -3924,6 +3942,34 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it.path == "/installedapp/update/json" &&
             it.body["settings[isCondTrig.2]"]?.toString() == "true"
         }
+
+        and: "the wizard write ordering is preserved (RM is order-sensitive)"
+        // RM 5.1 silently commits a broken trigger if these phases interleave:
+        //   - condition setup MUST land before the condition's hasAll click
+        //   - the condition's hasAll click MUST land before the bumped-idx
+        //     tCapab2 writes (otherwise the trigger fields target the
+        //     condition's slot)
+        //   - tCapab2 MUST land before the trigger's final hasAll click
+        // Two hasAll clicks fire in this flow -- one to commit the condition
+        // (findIndexOf = first match), one to commit the trigger (findLast).
+        def condSetupIdx = posts.findIndexOf {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[rCapab_1]"]?.toString() == "Motion"
+        }
+        def condHasAllIdx = posts.findIndexOf {
+            it.path == "/installedapp/btn" && it.body?.name == "hasAll"
+        }
+        def trigCapabIdx = posts.findIndexOf {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tCapab2]"]?.toString() == "Switch"
+        }
+        def trigHasAllIdx = posts.findLastIndexOf {
+            it.path == "/installedapp/btn" && it.body?.name == "hasAll"
+        }
+        condSetupIdx >= 0 && condHasAllIdx >= 0 && trigCapabIdx >= 0 && trigHasAllIdx >= 0
+        condSetupIdx < condHasAllIdx
+        condHasAllIdx < trigCapabIdx
+        trigCapabIdx < trigHasAllIdx
 
         and: "the call returns success"
         result.success == true
