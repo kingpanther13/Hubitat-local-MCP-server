@@ -1404,6 +1404,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         varTypeWrite != null
         varTypeWrite.body["settings[varType]"]?.toString() == rmType
 
+        and: "the varValue setting lands with the type-coerced string"
+        // varValue is wire-encoded as a string in every case. Boolean values
+        // go through the dedicated coercion path covered by the spec above,
+        // but the resulting wire shape is still the literal "true"/"false"
+        // string, so the comparison below stays uniform across the 5 types.
+        def varValueWrite = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varValue]") }
+        varValueWrite != null
+        varValueWrite.body["settings[varValue]"]?.toString() == rawValue.toString()
+
         and: "the result reflects the committed type"
         result.success == true
         result.variable?.type == rmType
@@ -2302,6 +2311,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         donePost != null
         donePost.body["_action_previous"] == "Done"
+        // The live sub-page settings are merged into the Done body — the
+        // helper reads them out of statusJson's appSettings and echoes
+        // every visible input under settings[X]. If the merge regressed,
+        // the trigger row's description would render as "?" because the
+        // hub treats an empty settings[whichPeriod1] as "no schedule set".
+        donePost.body["settings[whichPeriod1]"] == "Hourly"
         donePost.body.containsKey("paramsForPage")
         donePost.body.paramsForPage.toString().contains('"n":1')
         // pageBreadcrumbs carries parent context so the hub renders selectTriggers
@@ -2313,37 +2328,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.opResult?.done?.parent == "selectTriggers"
     }
 
-    def "walkStep done on selectTriggers writes residual isCondTrig.<N>=false for any non-conditional trigger row"() {
-        // The wizard-Done residual finalize: when a Conditional Trigger row
-        // exists at index N but the user selected a non-conditional trigger,
-        // the row's isCondTrig.<N> defaults to true unless explicitly closed.
-        // Without the residual write the rule renders "Broken Trigger N+1"
-        // because the wizard parsed the open conditional slot. The Done op
-        // on selectTriggers walks every trigger index in the current schema
-        // and writes isCondTrig.<N>=false for any row missing the finalize
-        // marker.
+    def "walkStep done on a top-level page (no hrefContext) submits Done with no paramsForPage and root-only breadcrumbs"() {
+        // Coverage for the top-level branch of walkStep done. When the caller
+        // does NOT supply hrefContext, _rmSubmitSubPageDone is invoked with
+        // parentPage=null and hrefParams=null. That collapses the Done body
+        // to: _action_previous=Done, pageBreadcrumbs=["mainPage"] (no parent
+        // appended), and NO paramsForPage marker (the merge only adds it when
+        // hrefParams is non-empty). The companion spec above pins the
+        // sub-page branch with hrefContext; this one pins the top-level
+        // branch so a regression that swapped the two would surface here
+        // rather than via a BAT-only signal. Note: the wizard-Done residual
+        // isCondTrig.<N>=false finalize lives on the addTrigger commit path
+        // (covered at :1122), not on walkStep done.
         given:
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        // selectTriggers schema with trigger row 1 in non-conditional state
-        // (isCondTrig.1 visible + bool type) but the open-conditional flag
-        // still set — the residual finalize should close it on Done.
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             JsonOutput.toJson([
                 app: [id: 100, version: 7],
                 configPage: [name: "selectTriggers", title: "T", install: false, error: null,
                              sections: [[title: "", input: [
-                                 [name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"],
-                                 [name: "isCondTrig.1", type: "bool", value: true]
+                                 [name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"]
                              ]]]],
-                settings: ["tCapab1": "Switch", "isCondTrig.1": true]
+                settings: ["tCapab1": "Switch"]
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, [
-                [name: "tCapab1", type: "enum", value: "Switch"],
-                [name: "isCondTrig.1", type: "bool", value: true]
-            ])
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Switch"]])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -2351,7 +2362,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             [status: 200, location: null, data: JsonOutput.toJson([
                 app: [id: 100, version: 7],
-                configPage: [name: "selectTriggers", sections: [[input: [[name: "isCondTrig.1", type: "bool", value: false]]]]]
+                configPage: [name: "selectTriggers", sections: [[input: [[name: "tCapab1", type: "enum", value: "Switch"]]]]]
             ])]
         }
 
@@ -2362,13 +2373,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "selectTriggers Done POST goes out as the parent submit"
+        then: "the Done POST has root-only breadcrumbs and NO paramsForPage"
         result.success == true
         def donePost = posts.find {
             it.path == "/installedapp/update/json" && it.body?.containsKey("_action_previous")
         }
         donePost != null
         donePost.body["_action_previous"] == "Done"
+        // Root-only breadcrumb -- parentPage was null so no parent suffix.
+        donePost.body.pageBreadcrumbs == '["mainPage"]'
+        // No paramsForPage marker since hrefParams was null.
+        !donePost.body.containsKey("paramsForPage")
     }
 
     def "addTriggers bulk shortcut returns partial: true when one inner spec fails"() {
@@ -3891,6 +3906,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any {
             it.path == "/installedapp/update/json" &&
             it.body["settings[tCapab2]"]?.toString() == "Switch"
+        }
+        // The bound trigger's device + state must also reach the schema —
+        // without these the trigger row commits as "Broken Trigger" and the
+        // earlier condition write is wasted work.
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tDev2]"]?.toString()?.contains("8")
+        }
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tstate2]"]?.toString() == "on"
         }
         // The post-tCapab finalize binds isCondTrig.2=true + condTrig.2=<conditionId>
         // so the trigger references the condition we just built.
