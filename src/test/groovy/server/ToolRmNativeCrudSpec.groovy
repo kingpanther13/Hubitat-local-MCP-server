@@ -4148,10 +4148,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "condition writes xVar_1 (source variable on the condition side)"
+        then: "condition writes xVar_1 (source variable on the condition side) and selects 'Add new condition'"
         posts.any {
             it.path == "/installedapp/update/json" &&
             it.body["settings[xVar_1]"]?.toString() == "A"
+        }
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[condTrig.1]"]?.toString() == "a"
         }
 
         and: "RelrDev_1 carries the comparator with `!=` mapped to Unicode `≠`"
@@ -4177,7 +4181,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it.path == "/installedapp/update/json" && it.body.containsKey("settings[compareCond_1]")
         }
 
-        and: "the outer trigger commits at idx 2 (post-condition bump) with the typed xVar2 picker"
+        and: "the outer trigger commits at idx 2 (post-condition bump) with the typed xVar2 picker and its own comparator"
         posts.any {
             it.path == "/installedapp/update/json" &&
             it.body["settings[tCapab2]"]?.toString() == "Variable"
@@ -4186,11 +4190,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it.path == "/installedapp/update/json" &&
             it.body["settings[xVar2]"]?.toString() == "A"
         }
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[ReltDev2]"]?.toString() == "*changed*"
+        }
 
-        and: "isCondTrig.2=true + condTrig.2=1 binds the trigger to the saved condition"
+        and: "isCondTrig.2=true + condTrig.2=1 binds the trigger to the saved condition (separate writes in helper)"
         posts.any {
             it.path == "/installedapp/update/json" &&
             it.body["settings[isCondTrig.2]"]?.toString() == "true"
+        }
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[condTrig.2]"]?.toString() == "1"
         }
 
         and: "call returns success"
