@@ -2849,8 +2849,8 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map matching the addRequiredExpression per-condition shape: {capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}. When provided, addTrigger drives the conditional-trigger sub-wizard (rCapab_<N> / rDev_<N> / state_<N> / hasAll) inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together.
-  - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.)
+  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`). Distinct from addRequiredExpression conditions: this sub-wizard supports Variable comparisons that the required-expression page does not.
+  - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
@@ -14384,6 +14384,22 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
     }
 }
 
+/**
+ * Map common ASCII comparator aliases to the Unicode glyphs RM 5.1's
+ * comparator enum accepts. Verified live 2026-05-17 on firmware
+ * 2.5.0.135: writing "!=" silently rejects because the enum option set
+ * is the Unicode "≠". Pass-through for unrecognized values so callers
+ * who already pass the Unicode glyphs continue to work.
+ */
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+String _rmNormalizeComparator(Object raw) {
+    if (raw == null) return null
+    def s = raw.toString()
+    if (s == "!=" || s == "<>") return "≠"
+    if (s == "==") return "="
+    return s
+}
+
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
@@ -14510,14 +14526,35 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         writeIfPresent("tDev${idx}", triggerSpec.deviceIds)
     }
 
+    // Hub Variable trigger: tCapab<N>=Variable exposes xVar<N> (variable
+    // picker, no device IDs). Comparator is the standard ReltDev<N> below.
+    // Verified live 2026-05-17: xVar<N> options are populated from the
+    // hub variables list; writing it advances the schema to expose
+    // ReltDev<N>.
+    if (capCanonical == "Variable") {
+        if (triggerSpec.rawSettings != null && !(triggerSpec.rawSettings instanceof Map)) {
+            throw new IllegalArgumentException("triggers[].rawSettings must be a Map, got ${triggerSpec.rawSettings.class?.name}.")
+        }
+        def hasRawXVar = triggerSpec.rawSettings instanceof Map &&
+            ((triggerSpec.rawSettings as Map).any { k, _v -> k.toString().replace("@N", idx.toString()) == "xVar${idx}".toString() })
+        if (triggerSpec.variable == null && !hasRawXVar) {
+            throw new IllegalArgumentException("triggers[].variable is required when capability='Variable' (hub variable name). Use list_variables to discover available names.")
+        }
+        if (triggerSpec.variable != null) {
+            writeIfPresent("xVar${idx}", triggerSpec.variable)
+        }
+    }
+
     // Numeric / text comparator path (Temperature, Humidity, Battery,
-    // Custom Attribute, etc.)
+    // Custom Attribute, Variable, etc.) Some comparators on the live
+    // wizard are Unicode (e.g. '≠' for not-equal). Normalize common
+    // ASCII aliases so callers can pass "!=" / "==" / "<>".
     if (triggerSpec.comparator != null) {
         // Custom Attribute requires picking the attribute first.
         if (triggerSpec.attribute != null) {
             writeIfPresent("tCustomAttr${idx}", triggerSpec.attribute)
         }
-        writeIfPresent("ReltDev${idx}", triggerSpec.comparator)
+        writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
     }
 
     // Button capability has its own button-number field.
@@ -14633,10 +14670,14 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         writeIfPresent("SSecs${idx}", s.seconds != null ? s.seconds : 0)
     }
 
-    // Caller escape hatch.
+    // Caller escape hatch. Supports the '@N' token in field names —
+    // replaced with the auto-assigned trigger index. Matches addAction's
+    // rawSettings expansion (verified live 2026-05-17): users pass
+    // `xVar@N` and the helper writes `xVar1` (or whatever idx landed on).
     if (triggerSpec.rawSettings instanceof Map) {
         triggerSpec.rawSettings.each { k, v ->
-            writeIfPresent(k.toString(), v)
+            def fieldName = k.toString().replace("@N", idx.toString())
+            writeIfPresent(fieldName, v)
         }
     }
 
@@ -15130,6 +15171,21 @@ private Map _rmTriggerSchemaForDiscover() {
                     [name: "modeIds", type: "List<String or Integer>", description: "Mode IDs directly (alternative to state). Use when you already have the ID from get_modes. E.g. ['3'] or ['3', '5']. When provided, state is not required."]
                 ],
                 notes: "No deviceIds required. Triggers when hub mode becomes any of the listed modes. IMPORTANT: internally writes modesX<N> (not tstate<N>) -- passing only rawSettings with tstate will produce a broken trigger."
+            ],
+            [
+                name: "Variable",
+                family: "variable",
+                requiredFields: [
+                    [name: "variable", type: "String", description: "Hub variable name. Use list_variables to discover."]
+                ],
+                optionalFields: [
+                    [name: "comparator", type: "enum", values: ["=", "!= (or ≠)", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"], description: "Default: *changed*. ASCII '!=' / '<>' map to Unicode '≠'."],
+                    [name: "value", type: "Number or String", description: "Comparison value (omit for *changed* family)"],
+                    [name: "conditional", type: "Boolean"],
+                    [name: "condition", type: "Map", description: "Inline conditional gate. For 'Variable A changed ONLY IF A != B': {capability: 'Variable', variable: 'A', comparator: '!=', compareToVariable: 'B'}. condition fields: capability, variable, comparator, value | compareToVariable, not?, rawSettings?."],
+                    [name: "rawSettings", type: "Map", description: "Escape hatch -- '@N' token in field names is replaced with the trigger index (e.g. {'xVar@N': 'myVar'})."]
+                ],
+                notes: "No deviceIds. Fires on hub-variable change. Conditional Variable triggers use condition.compareToVariable for 'A vs B' comparisons."
             ]
         ]
     ]
@@ -17962,14 +18018,58 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     if (condSpec.deviceIds != null) {
         _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condSpec.deviceIds, applied, null, skipped)
     }
+    // Hub Variable condition: rCapab_<N>=Variable exposes xVar_<N>
+    // (variable picker, no device IDs). Verified live 2026-05-17.
+    if (condCap == "Variable") {
+        if (condSpec.rawSettings != null && !(condSpec.rawSettings instanceof Map)) {
+            throw new IllegalArgumentException("condition.rawSettings must be a Map, got ${condSpec.rawSettings.class?.name}.")
+        }
+        def hasRawXVar = condSpec.rawSettings instanceof Map &&
+            ((condSpec.rawSettings as Map).any { k, _v -> k.toString().replace("@N", idx.toString()) == "xVar_${idx}".toString() })
+        if (condSpec.variable == null && !hasRawXVar) {
+            throw new IllegalArgumentException("condition.variable is required when condition.capability='Variable' (hub variable name). Use list_variables to discover available names.")
+        }
+        if (condSpec.variable != null) {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "xVar_${idx}", condSpec.variable, applied, null, skipped)
+        }
+    }
     if (condSpec.comparator != null) {
         if (condSpec.attribute != null) {
             _rmWriteSettingOnPage(appId, "selectTriggers", "rCustomAttr_${idx}", condSpec.attribute, applied, null, skipped)
         }
-        _rmWriteSettingOnPage(appId, "selectTriggers", "compareCond_${idx}", condSpec.comparator, applied, null, skipped)
+        // RM 5.1's condition wizard exposes RelrDev_<N> (with underscore,
+        // 'Relr') as the comparator field on every condition-wizard page
+        // (selectTriggers, doActPage's ifThen, STPage's required-expression)
+        // — verified live 2026-05-17 on firmware 2.5.0.135 for Variable, and
+        // already used by _rmAddAction (doActPage) and
+        // _rmAddRequiredExpression (STPage) for Custom Attribute. The
+        // previous compareCond_<N> name silently skipped on all three pages.
+        _rmWriteSettingOnPage(appId, "selectTriggers", "RelrDev_${idx}", _rmNormalizeComparator(condSpec.comparator), applied, null, skipped)
     }
     if (condSpec.buttonNumber != null) {
         _rmWriteSettingOnPage(appId, "selectTriggers", "ButtontDev_${idx}", condSpec.buttonNumber, applied, null, skipped)
+    }
+    // Compare-to-variable for Variable conditions: isVar_<N>=true exposes
+    // xVarR_<N> (right-hand variable picker). When isVar_<N> is false the
+    // comparator's RHS is a numeric value in state_<N>. Verified live
+    // 2026-05-17: writing isVar_<N>=true alone exposes xVarR_<N> in the
+    // schema; without it, xVarR_<N> is silently dropped.
+    //
+    // If both writes get routed to `skipped` (e.g. the comparator wasn't
+    // recognized, so the schema didn't advance to expose isVar_<N>), the
+    // RHS would silently fall through to a numeric state_<N>=0 default
+    // and the caller would think they got "A != B" but actually got
+    // "A != 0". Detect that and fail loudly instead.
+    if (condCap == "Variable" && condSpec.compareToVariable != null) {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isVar_${idx}", true, applied, null, skipped)
+        _rmWriteSettingOnPage(appId, "selectTriggers", "xVarR_${idx}", condSpec.compareToVariable, applied, null, skipped)
+        // The RHS picker xVarR_<N> is the load-bearing write -- it carries
+        // the variable name. If it didn't land, the condition will render
+        // as "A <comparator> 0" (state_<N> default) instead of "A vs B".
+        // Fail loudly rather than letting the caller think they got A vs B.
+        if (!(applied ?: []).contains("xVarR_${idx}".toString())) {
+            throw new IllegalStateException("condition.compareToVariable=${condSpec.compareToVariable} could not be written: xVarR_${idx} not in schema after the comparator + isVar_${idx} writes. Likely cause: condSpec.comparator='${condSpec.comparator}' didn't advance the wizard. Verify the comparator is one of: =, ≠ (or !=), <, >, <=, >=, in.")
+        }
     }
     def stateValue = condSpec.state != null ? condSpec.state : condSpec.value
     if (stateValue != null) {
@@ -17978,9 +18078,15 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     if (condSpec.not == true) {
         _rmWriteSettingOnPage(appId, "selectTriggers", "not${idx}", true, applied, null, skipped)
     }
+    // Caller escape hatch. Supports the '@N' token in field names —
+    // replaced with the condition index. Mirrors trigger-side @N
+    // expansion so {xVar_@N: 'foo'} writes xVar_<idx>=foo.
     if (condSpec.rawSettings instanceof Map) {
         condSpec.rawSettings.each { k, v ->
-            if (v != null) _rmWriteSettingOnPage(appId, "selectTriggers", k.toString(), v, applied, null, skipped)
+            if (v != null) {
+                def fieldName = k.toString().replace("@N", idx.toString())
+                _rmWriteSettingOnPage(appId, "selectTriggers", fieldName, v, applied, null, skipped)
+            }
         }
     }
 
