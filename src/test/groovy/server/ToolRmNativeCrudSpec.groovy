@@ -3975,6 +3975,289 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
     }
 
+    def "addTrigger Variable capability writes xVar<N> picker and ReltDev<N> comparator (no deviceIds)"() {
+        // Hub Variable triggers don't take deviceIds -- the wizard exposes
+        // xVar<N> (variable picker enum) populated from hub variables, and
+        // ReltDev<N> for the comparator. Verified live 2026-05-17: with no
+        // typed `variable` field the request fails with a clear message,
+        // pointing the caller at list_variables.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Switch", "Variable"]],
+                                 [name: "xVar1", type: "enum", options: ["myVar", "otherVar"]],
+                                 [name: "ReltDev1", type: "enum", options: ["=", "≠", "<", ">", "<=", ">=", "in", "*changed*"]],
+                                 [name: "tstate1", type: "enum", options: ["*changed*"]],
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "addTrigger Variable with typed variable + comparator"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Variable", variable: "myVar", comparator: "*changed*"],
+            confirm: true
+        ])
+
+        then: "xVar1 carries the typed variable name"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[xVar1]"]?.toString() == "myVar"
+        }
+
+        and: "ReltDev1 carries the comparator"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[ReltDev1]"]?.toString() == "*changed*"
+        }
+
+        and: "no tDev1 write -- Variable triggers don't take device IDs"
+        !posts.any {
+            it.path == "/installedapp/update/json" && it.body.containsKey("settings[tDev1]")
+        }
+
+        and: "trigger commits successfully"
+        result.success == true
+    }
+
+    def "addTrigger Variable without `variable` field fails with a list_variables pointer"() {
+        // Caller forgot the variable name. The helper should refuse before
+        // mutating anything so the user gets a clear error instead of a
+        // half-baked broken trigger.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Variable"]],
+                                 [name: "xVar1", type: "enum", options: ["myVar"]],
+                                 [name: "isCondTrig.1", type: "bool"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Variable"],
+            confirm: true
+        ])
+
+        then: "success=false with a pointer at list_variables in the error message"
+        result.success == false
+        result.error?.toString()?.contains("variable")
+        result.error?.toString()?.contains("list_variables")
+    }
+
+    def "addTrigger Variable conditional A!=B writes xVar_<N>+RelrDev_<N>+isVar_<N>+xVarR_<N> via typed condition fields"() {
+        // The issue-169 shape: trigger on Var A change, gate on A != B.
+        // Verified live 2026-05-17 against firmware 2.5.0.135: the condition
+        // sub-wizard inside selectTriggers exposes RelrDev_<N> (NOT
+        // compareCond_<N>, which is used for non-Variable conditions),
+        // isVar_<N> toggles a "compare to another variable" mode, and
+        // xVarR_<N> picks the right-hand variable. All four typed fields
+        // must land for the rule to render correctly in Hubitat.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 // Condition wizard at slot 1
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "condTrig.1", type: "enum", options: ["a", "b"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                                 [name: "xVar_1", type: "enum", options: ["A", "B"]],
+                                 [name: "RelrDev_1", type: "enum", options: ["=", "≠", "<", ">", "<=", ">="]],
+                                 [name: "isVar_1", type: "bool"],
+                                 [name: "xVarR_1", type: "enum", options: ["A", "B"]],
+                                 // Conditional trigger at slot 2 (post-condition bump)
+                                 [name: "tCapab2", type: "enum", options: ["Variable"]],
+                                 [name: "xVar2", type: "enum", options: ["A", "B"]],
+                                 [name: "ReltDev2", type: "enum", options: ["*changed*"]],
+                                 [name: "isCondTrig.2", type: "bool"],
+                                 [name: "condTrig.2", type: "enum", options: ["1"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "addTrigger Variable with conditional A!=B comparison"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Variable",
+                variable: "A",
+                comparator: "*changed*",
+                condition: [
+                    capability: "Variable",
+                    variable: "A",
+                    comparator: "!=",
+                    compareToVariable: "B"
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "condition writes xVar_1 (source variable on the condition side)"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[xVar_1]"]?.toString() == "A"
+        }
+
+        and: "RelrDev_1 carries the comparator with `!=` mapped to Unicode `≠`"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[RelrDev_1]"]?.toString() == "≠"
+        }
+
+        and: "isVar_1=true unlocks the right-hand variable picker"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[isVar_1]"]?.toString() == "true"
+        }
+
+        and: "xVarR_1 carries the compareToVariable name"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[xVarR_1]"]?.toString() == "B"
+        }
+
+        and: "compareCond_1 is NOT written -- Variable conditions use RelrDev_, not compareCond_"
+        !posts.any {
+            it.path == "/installedapp/update/json" && it.body.containsKey("settings[compareCond_1]")
+        }
+
+        and: "the outer trigger commits at idx 2 (post-condition bump) with the typed xVar2 picker"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tCapab2]"]?.toString() == "Variable"
+        }
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[xVar2]"]?.toString() == "A"
+        }
+
+        and: "isCondTrig.2=true + condTrig.2=1 binds the trigger to the saved condition"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[isCondTrig.2]"]?.toString() == "true"
+        }
+
+        and: "call returns success"
+        result.success == true
+    }
+
+    def "addTrigger rawSettings expands the `@N` token to the trigger index"() {
+        // The user's issue-169 call shape passed raw fields with `@N` token
+        // (matching addAction's well-established escape hatch). Before the
+        // fix, addTrigger / _rmBuildCondition wrote the keys verbatim
+        // (xVar@N) and the wizard silently skipped them. With expansion in
+        // place the rawSettings escape hatch finally works for triggers too.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Variable"]],
+                                 [name: "xVar1", type: "enum", options: ["foo"]],
+                                 [name: "ReltDev1", type: "enum", options: ["*changed*"]],
+                                 [name: "customField1", type: "text"],
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "addTrigger with rawSettings using @N placeholder"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Variable",
+                variable: "foo",
+                comparator: "*changed*",
+                rawSettings: ["customField@N": "extraValue"]
+            ],
+            confirm: true
+        ])
+
+        then: "customField1 (with @N expanded to 1) is written"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[customField1]"]?.toString() == "extraValue"
+        }
+
+        and: "the literal `customField@N` key is NOT written"
+        !posts.any {
+            it.path == "/installedapp/update/json" && it.body.containsKey("settings[customField@N]")
+        }
+
+        and: result.success == true
+    }
+
     // ---------- addAction success/partial semantic matrix ----------
 
     /**
