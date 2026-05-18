@@ -18061,12 +18061,14 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     // and the caller would think they got "A != B" but actually got
     // "A != 0". Detect that and fail loudly instead.
     if (condCap == "Variable" && condSpec.compareToVariable != null) {
-        def appliedBefore = (applied ?: []).size()
         _rmWriteSettingOnPage(appId, "selectTriggers", "isVar_${idx}", true, applied, null, skipped)
         _rmWriteSettingOnPage(appId, "selectTriggers", "xVarR_${idx}", condSpec.compareToVariable, applied, null, skipped)
-        def landed = (applied ?: []).size() - appliedBefore
-        if (landed == 0) {
-            throw new IllegalStateException("condition.compareToVariable=${condSpec.compareToVariable} could not be written: isVar_${idx}/xVarR_${idx} not in schema after the comparator write. Likely cause: condSpec.comparator='${condSpec.comparator}' didn't advance the wizard. Verify the comparator is one of: =, ≠ (or !=), <, >, <=, >=, in.")
+        // The RHS picker xVarR_<N> is the load-bearing write -- it carries
+        // the variable name. If it didn't land, the condition will render
+        // as "A <comparator> 0" (state_<N> default) instead of "A vs B".
+        // Fail loudly rather than letting the caller think they got A vs B.
+        if (!(applied ?: []).contains("xVarR_${idx}".toString())) {
+            throw new IllegalStateException("condition.compareToVariable=${condSpec.compareToVariable} could not be written: xVarR_${idx} not in schema after the comparator + isVar_${idx} writes. Likely cause: condSpec.comparator='${condSpec.comparator}' didn't advance the wizard. Verify the comparator is one of: =, ≠ (or !=), <, >, <=, >=, in.")
         }
     }
     def stateValue = condSpec.state != null ? condSpec.state : condSpec.value
