@@ -21,6 +21,8 @@ on:
       - '.github/scripts/lease_release.sh'
       - '.github/scripts/mcp_setup_env.sh'
       - '.github/scripts/mcp_restore_env.sh'
+      - '.github/scripts/mcp_deploy_source.sh'
+      - '.github/scripts/mcp_restore_source.sh'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -129,6 +131,20 @@ jobs:
         # itself is off (UI-only to enable).
         run: bash .github/scripts/mcp_setup_env.sh
 
+      - name: Deploy PR source to test hub
+        if: steps.gate.outputs.available == 'true'
+        # Self-update is permitted because mcp_setup_env.sh already verified
+        # Developer Mode is on (the guard update_app_code checks for
+        # self-modification on the MCP server's own app row).
+        #
+        # continue-on-error: a ~1.18 MB inline update_app_code(source=...)
+        # reliably 504s at the cloud gateway before the hub receives it.
+        # Until a chunked manage_files write tool exists, deploy is
+        # advisory — the snapshot reads (small) still work, so restore
+        # logic stays meaningful once a deploy ever lands.
+        continue-on-error: true
+        run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
+
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
         run: python tests/e2e_test.py
@@ -139,6 +155,15 @@ jobs:
         # but a crashed run can strand virtual devices / rules / variables
         # under the BAT_E2E_ prefix. This sweeps anything left over.
         run: python tests/e2e_test.py --cleanup-only
+
+      - name: Restore previous app source (push pre-deploy snapshot back)
+        if: always() && steps.gate.outputs.available == 'true'
+        # Pushes $RUNNER_TEMP/mcp_pre_source.groovy back to the hub so the
+        # next run (and any user inspecting the hub afterwards) sees the
+        # source that was live before this run mutated it. Tolerant of a
+        # missing snapshot file: if the deploy step never ran or never
+        # captured, this is a no-op.
+        run: bash .github/scripts/mcp_restore_source.sh
 
       - name: Restore test environment (settings back to pre-run state)
         if: always() && steps.gate.outputs.available == 'true'
