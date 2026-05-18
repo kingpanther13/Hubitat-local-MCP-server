@@ -133,21 +133,15 @@ jobs:
 
       - name: Deploy PR source to test hub
         if: steps.gate.outputs.available == 'true'
-        # Snapshots the hub's current parent-app source to
-        # $RUNNER_TEMP/mcp_pre_source.groovy, then attempts to push the PR's
-        # hubitat-mcp-server.groovy via update_app_code. Self-update is
-        # permitted because mcp_setup_env.sh already verified Developer Mode
-        # is on.
+        # Self-update is permitted because mcp_setup_env.sh already verified
+        # Developer Mode is on (the guard update_app_code checks for
+        # self-modification on the MCP server's own app row).
         #
-        # continue-on-error: this step is structurally blocked on the cloud
-        # gateway's request-body cap (~1 MB) -- a 1.18 MB inline source push
-        # reliably 504s before the hub receives it (confirmed by @level99 in
-        # #192). The unblock is a chunked manage_files write tool that
-        # doesn't yet exist; until it lands, treat deploy as advisory so the
-        # remaining E2E steps still run + report against whatever's
-        # currently deployed on the hub. The snapshot side of this script
-        # is unaffected (small reads), so the restore step at the end can
-        # still put the hub back if a future deploy ever does land.
+        # continue-on-error: a ~1.18 MB inline update_app_code(source=...)
+        # reliably 504s at the cloud gateway before the hub receives it.
+        # Until a chunked manage_files write tool exists, deploy is
+        # advisory — the snapshot reads (small) still work, so restore
+        # logic stays meaningful once a deploy ever lands.
         continue-on-error: true
         run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
 

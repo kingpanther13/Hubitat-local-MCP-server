@@ -1,23 +1,15 @@
 #!/usr/bin/env bash
-# Push the pre-deploy parent-app source snapshot back to the test hub so
-# the hub is returned to whatever was live before this run mutated it.
-# Reads the Apps Code class ID + pre-deploy charlen that
-# mcp_deploy_source.sh wrote alongside the snapshot.
+# Push the pre-deploy source snapshot back to the test hub. Gated on the
+# deploy-landed marker that mcp_deploy_source.sh only writes after a
+# verified write -- no marker means deploy was a no-op and there's
+# nothing to undo.
 #
-# The 1.2MB recompile of the parent app reliably exceeds cloud.hubitat.com's
-# ~10s gateway timeout, so HTTP 504 from update_app_code is expected; we
-# verify the write landed by polling get_app_source for the source length
-# to match the pre-deploy baseline (PRE_LEN) -- which is the same charlen
-# we want the hub back at.
+# Runs in `if: always()` cleanup. Every error path falls through with a
+# warning and exit 0 so lease release + env restore still run.
 #
-# Tolerant of a missing pre-source file (early-exit no-op) so it can live
-# in an `if: always()` workflow step alongside the env restore + lease
-# release. Restore failure logs a warning but does not exit non-zero --
-# remaining cleanup (lease release, env restore) must still run.
-#
-# Usage:  mcp_restore_source.sh
-# Env:    MCP_URL              -- full cloud OAuth URL with access_token
-#         RUNNER_TEMP          -- GHA-provided temp dir; falls back to /tmp
+# Usage: mcp_restore_source.sh
+# Env:   MCP_URL     -- full cloud OAuth URL with access_token
+#        RUNNER_TEMP -- GHA temp dir; falls back to /tmp
 
 set -euo pipefail
 
@@ -26,13 +18,24 @@ set -euo pipefail
 PRE_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source.groovy"
 CLASS_ID_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_class_id"
 PRE_LEN_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_charlen"
+DEPLOY_LANDED_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_landed"
 
 POST_RESTORE_VERIFY_SLEEP=20
 POST_RESTORE_VERIFY_TIMEOUT=90
 POST_RESTORE_VERIFY_INTERVAL=8
 
+# Marker-gated: deploy writes this only after verifying the hub actually
+# took the write. Absent marker = deploy was a no-op = nothing to undo.
+# Saves a wasted 1.2MB cleanup push against the donated test hub on every
+# run while the cloud body cap blocks deploys.
+if [ ! -f "$DEPLOY_LANDED_FILE" ]; then
+  echo "No deploy-landed marker at $DEPLOY_LANDED_FILE -- deploy never mutated the hub. Skipping restore."
+  exit 0
+fi
+echo "Deploy-landed marker present: $(cat "$DEPLOY_LANDED_FILE")"
+
 if [ ! -f "$PRE_SOURCE_FILE" ]; then
-  echo "No pre-source snapshot at $PRE_SOURCE_FILE -- deploy step likely failed before capture. Skipping restore."
+  echo "::warning::Deploy-landed marker is present but no snapshot at $PRE_SOURCE_FILE -- can't restore. Hub may be on stale PR source."
   exit 0
 fi
 
@@ -74,16 +77,18 @@ curl -sS --max-time 120 -X POST "$MCP_URL" \
   --data-binary "@$RESTORE_RPC_FILE" > "$RESTORE_RESP_FILE" || true
 rm -f "$RESTORE_RPC_FILE"
 
+# `sed '$d'` to drop the trailing status line is portable; GNU's
+# `head -c -N` is not.
 HTTP_CODE=$(tail -n1 "$RESTORE_RESP_FILE")
-RESTORE_BODY=$(head -c -$((${#HTTP_CODE} + 1)) "$RESTORE_RESP_FILE")
+RESTORE_BODY=$(sed '$d' "$RESTORE_RESP_FILE")
 echo "Hub responded HTTP $HTTP_CODE; body length=$(printf '%s' "$RESTORE_BODY" | wc -c)"
 rm -f "$RESTORE_RESP_FILE"
 
 # Polls get_app_source until totalLength matches the pre-deploy charlen
-# (meaning the restore landed). Returns 0 on match, non-zero on timeout.
+# (meaning the restore landed).
 verify_restored_to_pre_len() {
   if [ -z "$PRE_LEN" ] || [ "$PRE_LEN" = "0" ]; then
-    echo "No PRE_LEN sidecar to verify against -- skipping length-match check."
+    echo "::warning::No PRE_LEN sidecar to verify against -- restore landed unverified."
     return 0
   fi
   local elapsed=0
@@ -113,7 +118,7 @@ verify_restored_to_pre_len() {
 # cleanup (lease release, env restore), so every error path falls through
 # with a warning and exit 0.
 if [ "$HTTP_CODE" = "200" ]; then
-  RESTORE_TEXT=$(printf '%s' "$RESTORE_BODY" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+  RESTORE_TEXT=$(printf '%s' "$RESTORE_BODY" | jq -r '.result.content[0].text // empty' || true)
   if [ -n "$RESTORE_TEXT" ] && [ "$(echo "$RESTORE_TEXT" | jq -r '.success // false')" = "true" ]; then
     echo "Restore succeeded (200/JSON). Hub class $CLASS_ID source returned to pre-run state."
     exit 0
