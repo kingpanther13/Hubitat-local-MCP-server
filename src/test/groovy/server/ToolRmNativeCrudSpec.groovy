@@ -4041,9 +4041,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger Variable without `variable` field fails with a list_variables pointer"() {
-        // Caller forgot the variable name. The helper should refuse before
-        // mutating anything so the user gets a clear error instead of a
-        // half-baked broken trigger.
+        // Caller forgot the variable name. The helper should refuse with a
+        // clear error pointing at list_variables instead of letting the
+        // wizard silently commit a half-baked broken trigger.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -4067,6 +4067,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 childApps: []
             ])
         }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
         def result = script.toolUpdateNativeApp([
