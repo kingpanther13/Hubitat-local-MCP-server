@@ -684,39 +684,25 @@ def handleInitialize(msg) {
 }
 
 def handleToolsList(msg) {
-    // Cursor-based pagination for tools/list, matching the MCP protocol version this server
-    // declares in handleInitialize (see protocolVersion above). Cursor and nextCursor are
-    // the wire-contract pagination fields specified for tools/list and remain stable across
-    // MCP revisions, so this is forward-compatible with a protocol-version bump that keeps
-    // the same field shape. Page size 50 keeps the response under the hub's 128KB JSON-RPC
-    // limit even as the catalog grows -- a page of 50 tools at the current average
-    // description size (~1.2 KB) stays well within budget. Gateway-mode catalog (~36
-    // entries) fits in one page so there is no client-visible behaviour change. Flat-mode
-    // catalog (100+ entries) gets paginated; MCP clients iterate nextCursor per the protocol.
-    // (Inlined rather than declared `private static final` because Hubitat's app-DSL script
-    // context rejects access modifiers on top-level statements -- "Modifier 'private' not
-    // allowed here" at compile time.)
-    final int pageSize = 50
+    // tools/list returns the full catalog in a single response. Pagination was
+    // attempted in #180 (page size 50, cursor-based; ported via #190), but in
+    // practice many MCP clients -- including Claude.ai's connector -- do NOT
+    // iterate `nextCursor` automatically, so any client that ignored pagination
+    // only ever saw the first 50 tools (silent catalog truncation, ~50% of the
+    // flat-mode catalog invisible to those clients). The MCP protocol allows
+    // but does not require server-side pagination of tools/list; the safer
+    // default is "send the whole catalog and let the universal response-size
+    // guard at handleMcpRequest() backstop oversized responses with a loud
+    // -32603 envelope" rather than "split silently and hope the client iterates."
+    //
+    // Stale clients that pass a `cursor` param get the full catalog regardless;
+    // there is no longer a nextCursor in the response, so any iteration loop
+    // terminates after one call. Cursor pagination on tools/call (list_devices,
+    // list_installed_apps, list_rm_rules, etc. via _paginateList) is unchanged
+    // -- that is opt-in and the size guard's "suggestion" hints already point
+    // callers at it when needed.
     def all = getToolDefinitions()
-    def cursor = msg.params?.cursor
-    int startIdx = 0
-    if (cursor != null && cursor != "") {
-        try {
-            startIdx = (cursor as String).toInteger()
-        } catch (NumberFormatException ignored) {
-            return jsonRpcError(msg.id, -32602, "Invalid params: cursor must be the opaque string returned by a prior tools/list nextCursor (got: ${cursor})")
-        }
-        if (startIdx < 0 || startIdx >= all.size()) {
-            return jsonRpcError(msg.id, -32602, "Invalid params: cursor ${cursor} is out of range")
-        }
-    }
-    def endIdx = Math.min(startIdx + pageSize, all.size())
-    def page = all.subList(startIdx, endIdx)
-    def result = [tools: page]
-    if (endIdx < all.size()) {
-        result.nextCursor = endIdx.toString()
-    }
-    return jsonRpcResult(msg.id, result)
+    return jsonRpcResult(msg.id, [tools: all])
 }
 
 def handleToolsCall(msg) {
@@ -1174,8 +1160,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     }
 
     if (!toolName) {
-        // Catalog mode: return full schemas for all tools in this gateway
-        def defMap = getAllToolDefinitions().collectEntries { [(it.name): it] }
+        // Catalog mode: return full schemas for all tools in this gateway.
+        // Strip [[FLAT_TRIM]] marker tokens but KEEP the content -- gateway catalog
+        // mode is the disclosure surface where full descriptions belong (size cap
+        // does not apply per-tool here, only the per-response cap).
+        def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
+            .collectEntries { [(it.name): it] }
 
         return [
             gateway: gatewayName,
@@ -1226,9 +1216,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         toolArgs = parsed as Map
     }
 
-    // Option D: Pre-validate required parameters and return helpful error with full schema
+    // Option D: Pre-validate required parameters and return helpful error with full schema.
+    // Strip [[FLAT_TRIM]] marker tokens before reading param descriptions for the hint --
+    // missing-param error is a client-visible surface where markers would leak.
     def safeArgs = toolArgs ?: [:]
-    def defMap = getAllToolDefinitions().collectEntries { [(it.name): it] }
+    def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
+        .collectEntries { [(it.name): it] }
     def toolDef = defMap[toolName]
     if (toolDef?.inputSchema?.required) {
         def missing = toolDef.inputSchema.required.findAll { !safeArgs.containsKey(it) }
@@ -1251,6 +1244,74 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     }
 
     return executeTool(toolName, safeArgs)
+}
+
+// Flat-mode schema trim (issue #181). Heavy tool descriptions can wrap prose
+// in `[[FLAT_TRIM]] ... [[/FLAT_TRIM]]` markers to signal "drop this in flat
+// mode, keep it everywhere else". Flat `tools/list` (useGateways=false) emits
+// every tool individually and pushes against the hub's 124,000-byte cap; we
+// recover headroom by stripping the marker BLOCKS in that one path. All other
+// emission surfaces (gateway-catalog mode via `handleGateway`, the search_tools
+// corpus, missing-param error hints) strip just the marker TOKENS so the
+// content stays available where size isn't the constraint.
+//
+// The transform operates in place on the fresh Map literals returned by
+// `getAllToolDefinitions()`; no caching means each call gets a clean copy.
+def stripFlatTrim(String text, boolean dropContent) {
+    if (text == null) return null
+    // Markers must be balanced and non-nested. The two branches handle the
+    // unbalanced case asymmetrically by design:
+    //
+    //   dropContent=true (flat-mode tools/list): both regexes require BOTH markers
+    //   to match. An unmatched open or close survives unchanged so the CI
+    //   marker-leakage test on the rendered JSON trips loud -- silently dropping
+    //   content for an unmatched marker would be dangerous (data loss).
+    //
+    //   dropContent=false (gateway catalog, search corpus, missing-param hint):
+    //   each regex strips any lone marker token (the `\/?` makes the slash
+    //   optional). A stray marker token in these surfaces would itself be the bug
+    //   to prevent, so silent removal is the right behaviour -- the wrapped
+    //   content survives, only the noise tokens disappear.
+    //
+    // Own-line markers also require at least one preceding character in the
+    // description; today every wrapped block has paragraph prose before it. A
+    // first-char marker placement would fall to the inline pass and leak a
+    // leading newline -- not enforced in code, would surface as a JSON-leak test
+    // failure for the (today unused) first-char placement.
+    if (dropContent) {
+        return text
+            // Own-line block first: eats the leading newline + marker line + content
+            // + closing marker line + its trailing newline. (?s) = dotall so .*? spans
+            // newlines. Greedy newline consumption keeps paragraph spacing tidy.
+            .replaceAll(/(?s)\n\[\[FLAT_TRIM\]\]\n.*?\n\[\[\/FLAT_TRIM\]\]\n/, "")
+            // Then catches any remaining (mid-line/inline) marker pair. Drops content
+            // and both markers, leaving surrounding text characters intact.
+            .replaceAll(/(?s)\[\[FLAT_TRIM\]\].*?\[\[\/FLAT_TRIM\]\]/, "")
+    }
+    return text
+        // Own-line marker first: strip the marker line entirely (token + its trailing
+        // newline). (?m) makes ^ match at every line start.
+        .replaceAll(/(?m)^\[\[\/?FLAT_TRIM\]\]\n/, "")
+        // Then any remaining inline marker token: strip the token only, preserving
+        // any surrounding whitespace.
+        .replaceAll(/\[\[\/?FLAT_TRIM\]\]/, "")
+}
+
+def applyDescriptionTransform(List tools, boolean dropContent) {
+    tools.each { tool ->
+        if (tool?.description instanceof String) {
+            tool.description = stripFlatTrim(tool.description as String, dropContent)
+        }
+        def props = tool?.inputSchema?.properties
+        if (props instanceof Map) {
+            (props as Map).each { _propName, propDef ->
+                if (propDef instanceof Map && propDef.description instanceof String) {
+                    propDef.description = stripFlatTrim(propDef.description as String, dropContent)
+                }
+            }
+        }
+    }
+    return tools
 }
 
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
@@ -1309,7 +1370,9 @@ def getToolDefinitions() {
                 "getAllToolDefinitions(). Update getToolDefinitions() if the tool was renamed."
             )
         }
-        return filtered
+        // Flat-mode tools/list is the size-constrained path -- drop content inside
+        // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
+        return applyDescriptionTransform(filtered, true)
     }
 
     def gatewayConfig = getGatewayConfig()
@@ -1342,7 +1405,11 @@ def getToolDefinitions() {
         ]]
     }
 
-    return baseTools + gatewayTools
+    // Gateway-mode tools/list returns the gateway entries (short prose + sub-tool
+    // summaries) plus any base tools. None of those descriptions currently carry
+    // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
+    // if a future author adds one to a base-tool description.
+    return applyDescriptionTransform(baseTools + gatewayTools, false)
 }
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
@@ -1357,9 +1424,12 @@ DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> sugges
 
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
 
+[[FLAT_TRIM]]
 Summary response always includes: id, name (driver type), label (user name), room, disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Summary mode also returns currentStates (dict); detailed mode replaces currentStates with capabilities, attributes, and commands.
 
-Server-side filtering (all applied before pagination): filter for enabled/disabled/stale; labelFilter for case-insensitive substring match on device label; capabilityFilter for case-insensitive exact match on capability name (e.g. 'Switch'). Use format='ids' for a flat ID array (cheapest shape). Use fields=[...] to project only named fields and skip expensive hub reads (e.g. fields=['id','label'] skips currentStates). To count children of a parent device, group the response by parentDeviceId.""",
+Server-side filtering (all applied before pagination): filter for enabled/disabled/stale; labelFilter for case-insensitive substring match on device label; capabilityFilter for case-insensitive exact match on capability name (e.g. 'Switch'). Use format='ids' for a flat ID array (cheapest shape). Use fields=[...] to project only named fields and skip expensive hub reads (e.g. fields=['id','label'] skips currentStates). To count children of a parent device, group the response by parentDeviceId.
+[[/FLAT_TRIM]]
+See TOOL_GUIDE.md → `list_devices` (Performance Tips) for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1367,11 +1437,11 @@ Server-side filtering (all applied before pagination): filter for enabled/disabl
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale)."],
-                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Only devices whose label (or name) contains this string are returned. Applied after filter, before pagination. Empty or omitted = no label filtering."],
-                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Only devices with this capability are returned. Applied after labelFilter, before pagination. Capability names are camelCase, no spaces -- e.g., 'ColorControl', not 'Color Control'. Example: 'Switch', 'TemperatureMeasurement'. Empty or omitted = no capability filtering. When count=0, response includes capabilityFilterMatchedKnownCapability (bool) to distinguish 'no devices have this capability' from a typo."],
-                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg and detailed=true -- format='ids' always wins). detailed=true overrides format='summary' and produces detailed-mode output."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside the existing nextOffset. Existing offset+limit shape still works; use whichever fits the caller."]
+                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Applied after filter, before pagination."],
+                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement'). Applied after labelFilter, before pagination. When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo."],
+                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary'."],
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] See TOOL_GUIDE.md → `list_devices` (Performance Tips) for valid field names and projection semantics."],
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
                 ]
             ]
         ],
@@ -2636,15 +2706,17 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         ],
         [
             name: "get_hpm_drift",
-            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces three classes of drift signal:
-
-- missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
-- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall).
-- orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
+            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces actionable drift signals (missing-required, orphan-app, orphan-driver) plus a separate `dataQualityWarnings[]` stream for manifest-shape issues.
 
 Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced.
 
 If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages, including the multi-instance throw with up to 10 ids and an "and N more (total M)" suffix). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed. All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
+
+[[FLAT_TRIM]]
+Drift signal types:
+- missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
+- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall).
+- orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
 
 Response fields: hpmAppId (echoed for caching); packagesChecked (filtered population if packageFilter narrowed); packagesWithActionableDrift (packages with at least one actionable signal -- excludes data-quality-only); totalDriftSignals (count of actionable signals only); drift[] (per-package: manifestUrl, packageName, version, signals[], optional dataQualityWarnings[]/skippedAppCount/skippedDriverCount); summary; orphanDetection ({enabled, reason?}); orphanDriverDetection (same shape for /hub2/userDeviceTypes); optional top-level dataQualityWarnings[]; optional skippedMalformed[]. On zero-match filter: filterMatchedZero=true + availablePackages[]; packagesChecked == 0 and summary reads "No drift detected across 0 tracked packages."
 
@@ -2652,11 +2724,13 @@ drift[].length may exceed packagesWithActionableDrift when data-quality-only pac
 
 signals[] entry shape: type, componentType, componentName, componentId, note. orphan-app/orphan-driver entries additionally carry heID (the orphaned id); missing-required omits heID (null by definition). If a manifest carried a non-null but invalid heID that was normalized to null, the original raw value is recoverable from the sibling dataQualityWarnings[] entry (join on componentType+componentName+componentId).
 
-Drift signal types: missing-required, orphan-app, orphan-driver (currently the only three). Data-quality warning types in dataQualityWarnings[] (do NOT inflate totalDriftSignals): heid-whitespace-normalized (padded heID normalized to trimmed value; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; lacks componentName/componentId because the source was not a Map).
+Data-quality warning types in dataQualityWarnings[] (do NOT inflate totalDriftSignals): heid-whitespace-normalized (padded heID normalized to trimmed value; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; lacks componentName/componentId because the source was not a Map).
 
 Partial-detection summary suffix: when one detection is disabled, summary appends "(partial: <name> disabled this call -- see <name> reason)"; when both, "reasons" (plural) with both names.
 
 Under-count caveats. (1) When orphanDetection.enabled or orphanDriverDetection.enabled is false, the corresponding orphan-* signals cannot fire and packagesWithActionableDrift reflects only packages with a missing-required signal -- inspect both detection fields before treating zero as 'clean'. (2) A required=true component with non-scalar heID emits heid-non-scalar-dropped and is dropped before the required check, so it does NOT contribute a missing-required signal -- inspect dataQualityWarnings[] for these entries on required components before treating zero as fully clean.
+[[/FLAT_TRIM]]
+See TOOL_GUIDE.md → `manage_hpm` → `get_hpm_drift` for the full drift-signal taxonomy, response-field reference, data-quality warning types, and under-count caveats.
 
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
@@ -2733,23 +2807,28 @@ Requires Hub Admin Read. HPM itself must be installed.""",
             name: "create_native_app",
             description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI.
 
+[[FLAT_TRIM]]
 appType (default: rule_machine): which class of native app to create.
   - "rule_machine" — Rule Machine 5.1 (the only registered type today; verified live)
   - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via update_native_app / delete_native_app with their appId.
+[[/FLAT_TRIM]]
 
 This is COMPLETELY SEPARATE from the MCP custom rule engine (custom_list_rules / custom_create_rule). Use create_native_app for native automations that show up in the hub UI; use custom_create_rule for MCP-managed rules.
 
 Workflow: create_native_app(appType=\"rule_machine\", name=\"...\") → get_app_config(appId) to read the page schema → update_native_app(appId, settings={...}) to add triggers/conditions/actions. Each update_native_app call auto-backs-up first, enforces the multiple=true capability contract, and verifies post-write that the app still renders cleanly.
 
-Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape update_native_app's `addTrigger` parameter accepts (capability + capability-specific fields). Use this when you know all the triggers up-front; for incremental editing use update_native_app(addTrigger=…) instead.
+Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape update_native_app's `addTrigger` parameter accepts. Use this when you know all the triggers up-front; for incremental editing use update_native_app(addTrigger=…) instead.
 
 Optional `actions` array: same pattern but for actions (each item shaped like update_native_app's `addAction` parameter).
 
+[[FLAT_TRIM]]
 PARTIAL-SUCCESS HANDLING (important for LLM drivers): the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
   - `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete (this includes any per-item result with `partial: true` OR `success: false`)
   - `repairHints: [...]` → concrete next-step instructions
   - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
 The right move when `partial: true` is to follow the repairHints, NOT to delete the rule and retry from scratch. Tool-only repair via update_native_app(walkStep={...}) / replaceActions / removeAction can usually finish the job. Only declare failure after exhausting those repair attempts.
+[[/FLAT_TRIM]]
+Partial-success: triggers/actions can land with `partial: true` -- inspect `partialTriggers`/`partialActions`/`repairHints` in the result. See TOOL_GUIDE.md → `create_native_app` for the full repair protocol.
 
 Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
@@ -2813,8 +2892,9 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: Switch, Motion, Contact, Lock, Presence, Certain Time (and optional date), Periodic Schedule, Mode, Custom Attribute, Battery, Temperature, Button -- full list below. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed. (Bulk addTriggers[] fires updateRule once at the end of the batch.)
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or see TOOL_GUIDE.md → `update_native_app` capability reference → `addTrigger`. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed. (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
+[[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
   - Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source):
     capability, deviceIds, state ('on', 'active', 'open', 'unlocked', etc.)
@@ -2846,6 +2926,7 @@ Capability families and the spec fields each accepts:
       rawSettings: {…}         // escape hatch for periodic-page fields not yet mapped
     }
     Without `periodic`, RM commits a phantom row with description="?". The tool walks the periodic sub-page (whichPeriod1 → everyN/select → time → Done) so the trigger description bakes correctly.
+[[/FLAT_TRIM]]
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
@@ -2879,7 +2960,7 @@ RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right.
 Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
 
 Per-condition spec fields:
-  - capability — required. RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.
+  - capability — required. See TOOL_GUIDE.md → `update_native_app` capability reference → `addRequiredExpression` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
   - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, time-based).
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
   - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).
@@ -2974,8 +3055,9 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md. Pass `addAction: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: switch, dimmer, color, colorTemp, lock, thermostat, log, notification, httpGet, httpPost, mode, runCommand, delay, repeat, ifThen -- full list below. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
+                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
 
+[[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
 
   - Switch (capability='switch'):
@@ -3087,6 +3169,7 @@ Capability families and the spec fields each accepts:
       capability='elseIf'        + expression={...}                                                  (continues IF block; needs preceding 'ifThen')
       capability='else'          (no fields; needs preceding 'ifThen' or 'elseIf')
       capability='endIf'         (no fields; closes the IF block)
+[[/FLAT_TRIM]]
 
   Per-condition shape inside any expression:
     {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}
@@ -21741,7 +21824,10 @@ def toolSearchTools(args) {
 private buildToolSearchCorpus() {
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
-    def allDefs = getAllToolDefinitions()
+    // Strip [[FLAT_TRIM]] marker tokens before BM25 corpus build -- the markers
+    // shouldn't show up as searchable tokens, but the wrapped capability lists
+    // SHOULD (so search_tools still matches "switch motion contact").
+    def allDefs = applyDescriptionTransform(getAllToolDefinitions(), false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
 
     def corpus = []

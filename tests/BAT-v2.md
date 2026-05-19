@@ -2969,19 +2969,19 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Tool returns an empty packages list without an error (validation skipped). Error message is present but missing the actual type name.
 
-### T606 — tools/list pagination: cursor / nextCursor / out-of-range and negative cursor rejection
+### T606 — tools/list returns the full flat catalog in one response (no pagination)
 
 ```json
 {
   "setup_prompt": "Disable the 'Consolidate tools behind category gateways' setting in the MCP app preferences so tools/list returns the flat catalog (100+ entries). Note the original value so it can be restored.",
-  "test_prompt": "Invoke the MCP method tools/list twice: first with no cursor, then with the nextCursor string returned by the first call. Confirm the first call's response contains both 'tools' and 'nextCursor'; the second call returns more tools and either continues or terminates pagination (nextCursor absent). Then call tools/list with cursor='-5' and confirm the response is a JSON-RPC error with code -32602 and a message containing 'out of range'. Then call tools/list with cursor='not-a-number' and confirm a JSON-RPC error with code -32602 and a message containing 'cursor'.",
+  "test_prompt": "Invoke the MCP method tools/list with no params. Confirm the response contains a 'tools' array with every flat-mode tool present (list_devices, list_rooms, list_files, list_rm_rules, list_installed_apps, custom_create_rule -- all should appear) AND no 'nextCursor' field. Then invoke tools/list again with cursor='not-a-number' and confirm the response still returns the full catalog with no error and no nextCursor (cursor is silently ignored after the pagination removal).",
   "teardown_prompt": "Re-enable the 'Consolidate tools behind category gateways' setting if it was originally on."
 }
 ```
 
-**Expected**: First call returns a `tools` array of length <= 50 plus a `nextCursor` string. Iterating until `nextCursor` is absent yields the full flat catalog (no duplicates, no missing tools). Negative cursor `-5` and non-numeric cursor `'not-a-number'` both return JSON-RPC `-32602 "Invalid params"` (not `-32603`, not a tool-result `success=false` map). The cursor is an opaque string per MCP spec; clients should not parse it.
+**Expected**: First call returns a single `tools` array containing the full flat-mode catalog (~100+ tools) with NO `nextCursor` field. Every flat-mode tool name appears exactly once. The cursor-with-bad-value follow-up call returns the same full catalog: cursor is now a no-op on `tools/list` (it stays opt-in only on `tools/call` paginated tools).
 
-**Failure modes**: Pagination not engaged (single response with all tools and no `nextCursor` — page size regressed past the catalog count; size-guard cliff returns). `nextCursor` returned as an Integer instead of String (spec violation). Negative cursor surfaces as `-32603` (IndexOutOfBoundsException leaked) instead of `-32602`. Duplicate tool names across pages (off-by-one cursor arithmetic).
+**Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
 ---
 

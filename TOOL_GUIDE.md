@@ -22,9 +22,9 @@ When the toggle is off, the dispatch contract still holds: every gateway sub-too
 
 Default is **ON** (gateways enabled). Existing installations keep the gateway behavior on update. Counts here describe the shipped catalog; runtime `tools/list` size varies based on enabled settings (Built-in App Tools, Custom Rule Engine, and the gateway toggle all add or remove entries).
 
-### `tools/list` Pagination (v1.3.x+)
+### `tools/list` Returns the Full Catalog in One Response
 
-`tools/list` is cursor-paginated per the MCP protocol. Request a page with `params: { cursor: "<opaque-string>" }` (omit `cursor` for the first page); the response carries `tools: [...]` plus an optional `nextCursor` string when more pages exist. Page size is 50 — the gateway-mode catalog (~36 entries) fits in a single page so most MCP clients see no behaviour change, while the flat-mode catalog (100+ entries with the toggle off) returns multiple pages and the client iterates `nextCursor` until absent. Pagination keeps the response under the hub's 128KB JSON-RPC limit as the catalog grows. Cursor validation errors (`-32602`): non-numeric cursor and out-of-range cursor (including negative values) both surface as JSON-RPC `-32602 "Invalid params"` with a diagnostic message.
+`tools/list` returns the complete tool catalog in a single response (no pagination). Pagination was tried briefly (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — do NOT iterate `nextCursor` automatically, which silently truncated the catalog at the first 50 tools. The full-catalog response is backstopped by the universal response-size guard inside `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub's 128KB JSON-RPC limit — better to fail loud than silently lose tools. Stale clients that pass a `cursor` param get the full catalog and find no `nextCursor`, so any iteration loop terminates after one call. Opt-in cursor pagination on `tools/call` (`list_devices`, `list_installed_apps`, `list_rm_rules`, etc.) is unaffected — see the next section.
 
 ### `tools/call` Response-Size Guard (v1.3.x+, fail-soft)
 
@@ -45,7 +45,7 @@ The outer JSON-RPC envelope still reports success (this is not a tool error — 
 
 Opt-in cursor pagination is currently wired into the following read-only tools. All follow the same contract: omit `cursor` for the full list (backward-compatible, backstopped by the size guard), pass `cursor: ""` for the first page, then iterate `nextCursor` until absent. Cursor is opaque per the MCP convention; non-numeric / out-of-range values reject as `-32602`.
 
-These tools intentionally diverge from the `tools/list` "omit cursor = first page" convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in.
+These tools follow an explicit opt-in convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in. (Pre-PR `tools/list` had its own different shape — unconditional pagination at 50/page — which is now removed; see the previous section.)
 
 | Tool | Page size | Notes |
 |---|---|---|
@@ -555,6 +555,121 @@ If a user asks "create a new RM rule" or "modify this Room Lighting instance":
 - **`list_item_backups`** + **`restore_item_backup`** (in `manage_apps_drivers` / `manage_app_driver_code`) — enumerate and restore native-app snapshots (`type="rm-rule"` entries). Restore re-applies settings in place if the app exists, or recreates the app and replays settings if it was deleted.
 
 For Room Lighting / Button Controllers / Basic Rules: `update_native_app` and `delete_native_app` already work today (they take any classic-app appId). `create_native_app` will work for them once their entries are added to `_appTypeRegistry()` — same endpoint family, just need namespace + appName + parentTypeName per type.
+
+#### `update_native_app` capability reference
+
+Reference for the three `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
+
+##### `addTrigger` capability families
+
+- **Device-state** (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source): `capability`, `deviceIds`, `state` (`'on'`, `'active'`, `'open'`, `'unlocked'`, etc.)
+- **Multi-device "all of these"**: add `allOfThese=true` to the device-state spec
+- **Numeric** (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints): `capability`, `deviceIds`, `comparator` (`=`, `<`, `>`, `<=`, `>=`, `*changed*`), `value`
+- **Button** (`capability='Button'`): `deviceIds`, `buttonNumber`, `state` (`pushed` | `held` | `doubleTapped` | `released`)
+- **Custom Attribute** (`capability='Custom Attribute'`): `deviceIds`, `attribute` (the attribute name), `comparator`, `value`
+- **And-stays sticky modifier** (any device-state or numeric trigger): add `andStays={hours, minutes, seconds}` to the spec
+- **Time / Sunrise / Sunset** (`capability='Certain Time (and optional date)'`): `time` (`'A specific time'` | `'Sunrise'` | `'Sunset'`), `atTime`, `offset` (minutes, for sunrise/sunset)
+  - `atTime` semantic: `'HH:mm'` form (e.g. `'17:00'`) = **DAILY-recurring** trigger that fires every day at that wall-clock time. Full ISO datetime (e.g. `'2026-04-29T17:00:00'` or `'2026-04-29T17:00:00.000-0500'`) = **ONE-SHOT dated** trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
+- **Mode** (`capability='Mode'`): `state='Night'` OR `state=['Away','Night']` (mode names, case-insensitive) OR `modeIds=['3']` OR `modeIds=['3','5']` (IDs directly, from `get_modes`).
+  - **IMPORTANT:** writes `modesX<N>` internally — do NOT pass `tstate` or `rawSettings.tstate` for Mode triggers (silently ignored; renders as Broken Trigger). Use `get_modes` to list valid mode names/IDs.
+- **Periodic Schedule** (`capability='Periodic Schedule'`): recurring schedule via the dedicated periodic sub-page. Spec:
+  ```
+  periodic={
+    frequency: 'Hourly'|'Daily'|'Cron String'|...,
+    everyN: <int>,                 // for "every N <unit>" mode (Hourly/Daily)
+    startingTime: 'HH:mm',         // start-time for everyN modes
+    weekdaysOnly: <bool>,          // Daily-only
+    selectedHours: [9,12],         // Hourly-only, alternative to everyN
+    selectedDaysOfMonth: [1,15],   // Daily-only, alternative to everyN/weekdays
+    minutesOffset: <int>,          // Hourly-only, when not using everyN (startingHCX1)
+    cronString: '0 * * * *',       // Cron String mode
+    rawSettings: {…}               // escape hatch for periodic-page fields not yet mapped
+  }
+  ```
+  Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod1` → `everyN`/select → time → Done) so the trigger description bakes correctly.
+
+##### `addAction` capability families
+
+For machine-readable per-field schemas (with `action` enums and per-action required fields), see `docs/rm_action_subtype_schemas.md` — that doc is generated from `_rmActionSchemaForDiscover()` and stays in sync with the live code.
+
+- **Switch** (`capability='switch'`): `action='on'`/`'off'`/`'toggle'`/`'flash'` + `deviceIds`. `action='setPerMode' + deviceIds + perMode={modeIdOrName: 'on'|'off', ...}`. `action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}`.
+  - **NOTE:** `action='flash'` starts a flash schedule on devices that support `.flash()` (Hue groups, many Z-Wave/Zigbee dimmer modules). RM 5.1 has NO native "stop flash" action subtype — calling `switch.on`/`.off` afterward does NOT cancel the flash schedule. To stop a running flash from within a rule, use `capability='runCommand'` with `command='flashOff'` on the same device list.
+- **Dimmer** (`capability='dimmer'`):
+  - `setLevel` + `deviceIds` + `level` (0–100) [required] + optional `fadeSeconds`
+  - `toggle` + `deviceIds` + `level` (0–100) [required — the level to set when toggling from off to on] + optional `fadeSeconds`
+  - `adjust` + `deviceIds` + `adjustBy` (-100..100) [required] + optional `fadeSeconds`
+  - `fade` + `deviceIds` + `targetLevel` [required] + `minutes` [required] + `direction='raise'|'lower'` + optional `intervalSeconds`
+  - `stopFade` (no fields)
+  - `startRaiseLower` + `deviceIds` + `direction='raise'|'lower'`
+  - `stopChanging` + `deviceIds`
+  - `setLevelPerMode` + `deviceIds` + `perMode={modeIdOrName: level, ...}` + optional `fadeSeconds`
+- **Color** (`capability='color'`, RGBW bulbs):
+  - `setColor` + `deviceIds` + `colorName` + optional `level`
+  - `toggleColor` + `deviceIds` + `colorName` + optional `level`
+  - `setColorPerMode` + `deviceIds` + `perMode={modeIdOrName: {color: 'Red', level: 70}, ...}`
+- **Color Temperature** (`capability='colorTemp'`):
+  - `setColorTemp` + `deviceIds` + `kelvin` + optional `level`
+  - `toggleColorTemp` + `deviceIds` + `kelvin` + optional `level`
+  - `fadeColorTemp` + `deviceIds` + `targetKelvin` + `minutes` + `direction='raise'|'lower'`
+  - `stopColorTempFade` (no fields)
+  - `setColorTempPerMode` + `deviceIds` + `perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}`
+- **Button** (`capability='button'`, pushable-button devices): `push` + `deviceIds` + `buttonNumber`. `pushPerMode` + `deviceIds` + `perMode={modeIdOrName: buttonNumber, ...}`. `choosePerMode` + `buttonNumber` + `perMode={modeIdOrName: [deviceIds], ...}`.
+- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'NUMBER',value:75},...]` + optional `useLastEventDevice`. Calls any device-driver command (`off`, `on`, `setLevel`, `flashOff`, `refresh`, custom-driver verbs, etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings.
+- **File IO** (`capability='fileWrite'`/`'fileAppend'`/`'fileDelete'`): `fileWrite` + `fileName` + `content` (overwrites). `fileAppend` + `fileName` + `content` (file must exist; `localFile` is an enum picker). `fileDelete` + `fileName`.
+- **Z-Wave Polling** (`capability='zwavePoll'`): `action='start'`/`'stop'` + `deviceIds` (Z-Wave switches/dimmers only) + `target='switches'|'dimmers'`.
+- **Lock** (`capability='lock'`): `action='lock'`/`'unlock'` + `deviceIds`.
+- **Thermostat** (`capability='thermostat'`): `action=(any)` + `deviceIds` + optional `mode`/`fanMode`/`heatingSetpoint`/`coolingSetpoint`/`adjustHeating`/`adjustCooling`.
+- **Shade/blind** (`capability='shade'`): `open`/`close`/`stop` + `deviceIds`. `setPosition` + `deviceIds` + `position` (0–100).
+- **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
+- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) or `modeName` (String).
+- **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
+- **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
+- **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`.
+- **Device control**: `capability='capture' + deviceIds`. `capability='restore'` (no fields). `capability='refresh' + deviceIds`. `capability='poll' + deviceIds`. `capability='disableDevice' + action='disable'/'enable' + deviceIds`.
+- **Flow control** (delay/wait/repeat/exit/comment/conditional):
+  - `delay` + `hours`/`minutes`/`seconds` + optional `cancelable`/`random` OR `variable=<varName>` (variable-sourced seconds)
+  - `delayPerMode` + `perMode={modeIdOrName: {hours, minutes, seconds}, ...}`
+  - `cancelDelay`, `exitRule`, `stopRepeat` (no fields)
+  - `comment` + `text`
+  - `repeat` + `hours`/`minutes`/`seconds` + optional `times` + `stoppable`
+  - `repeatWhile` + `expression={conditions:[...], operator?:..., operators?:[...]}` + optional `hours`/`minutes`/`seconds`/`times`/`stoppable`
+  - `waitExpression` + `expression={...}` + optional `delay={hours,minutes,seconds}` + `useDuration=true|false`
+  - `waitEvents` + `events=[{capability, deviceIds, state, andStays?}, ...]`. **LIMIT**: only ONE `waitEvents` action per rule; RM 5.1 stores wait events in global per-rule settings (not per-action), so a second `waitEvents` action silently overwrites the first. Combine multiple waits into one action's `events` array, or split into chained sub-rules.
+  - `ifThen` + `expression={...}` (opens IF block; close with `endIf`)
+  - `elseIf` + `expression={...}` (continues IF block; needs preceding `ifThen`)
+  - `else` (no fields; needs preceding `ifThen` or `elseIf`)
+  - `endIf` (no fields; closes the IF block)
+
+##### `addRequiredExpression` STPage capability list
+
+RM 5.1 Required Expression conditions accept these `capability` values (per-condition):
+
+- **Device-state**: `Switch`, `Motion`, `Contact`, `Lock`, `Presence`, `Smoke detector`, `Water sensor`, `Tamper alert`, `Acceleration`, `Carbon monoxide detector`, `Carbon dioxide sensor`, `Power source`, `Window Shade`
+- **Numeric**: `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`
+- **Time-based**: `Days of week`, `Between two dates`, `Between two times`, `On a Day`
+- **Hub state**: `Mode`, `Private Boolean`
+- **Custom / other**: `Custom Attribute`, `Last Event Device`, `Lock codes`
+
+Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+
+#### `create_native_app` reference
+
+##### appType options
+
+`appType` (default: `rule_machine`) selects which class of native app to create:
+
+- `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live).
+- Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `update_native_app` / `delete_native_app` already work on them today via their `appId`.
+
+##### Partial-success protocol
+
+The tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
+
+- `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete (this includes any per-item result with `partial: true` OR `success: false`).
+- `repairHints: [...]` → concrete next-step instructions.
+- Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
+
+The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `update_native_app(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.
 
 ---
 
