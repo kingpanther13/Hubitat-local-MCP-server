@@ -3016,7 +3016,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 ```json
 {
   "setup_prompt": "Hub Admin Write enabled. Create hub variable 'bat_cpvar_test' (numeric, value 50). Create a virtual switch device named 'BAT RunCmd Switch' via manage_virtual_device. Create RM rule 'BAT RunCommand Variable Param'.",
-  "test_prompt": "Add an action: capability='runCommand', command='setLevel', deviceIds=[<BAT RunCmd Switch id>], parameters=[{type:'NUMBER', variable:'bat_cpvar_test'}]. Then call check_rule_health.",
+  "test_prompt": "Add an action: capability='runCommand', command='setLevel', deviceIds=[<BAT RunCmd Switch id>], parameters=[{type:'number', variable:'bat_cpvar_test'}]. Then call check_rule_health.",
   "teardown_prompt": "Delete 'BAT RunCommand Variable Param' rule. Delete bat_cpvar_test variable. Delete virtual device 'BAT RunCmd Switch'."
 }
 ```
