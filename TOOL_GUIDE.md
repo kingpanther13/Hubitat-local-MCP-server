@@ -652,6 +652,25 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 
 Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
 
+#### `create_native_app` reference
+
+##### appType options
+
+`appType` (default: `rule_machine`) selects which class of native app to create:
+
+- `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live).
+- Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `update_native_app` / `delete_native_app` already work on them today via their `appId`.
+
+##### Partial-success protocol
+
+The tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
+
+- `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete (this includes any per-item result with `partial: true` OR `success: false`).
+- `repairHints: [...]` → concrete next-step instructions.
+- Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
+
+The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `update_native_app(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.
+
 ---
 
 ## Developer Mode

@@ -1438,9 +1438,12 @@ DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> sugges
 
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
 
+[[FLAT_TRIM]]
 Summary response always includes: id, name (driver type), label (user name), room, disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Summary mode also returns currentStates (dict); detailed mode replaces currentStates with capabilities, attributes, and commands.
 
-Server-side filtering (all applied before pagination): filter for enabled/disabled/stale; labelFilter for case-insensitive substring match on device label; capabilityFilter for case-insensitive exact match on capability name (e.g. 'Switch'). Use format='ids' for a flat ID array (cheapest shape). Use fields=[...] to project only named fields and skip expensive hub reads (e.g. fields=['id','label'] skips currentStates). To count children of a parent device, group the response by parentDeviceId.""",
+Server-side filtering (all applied before pagination): filter for enabled/disabled/stale; labelFilter for case-insensitive substring match on device label; capabilityFilter for case-insensitive exact match on capability name (e.g. 'Switch'). Use format='ids' for a flat ID array (cheapest shape). Use fields=[...] to project only named fields and skip expensive hub reads (e.g. fields=['id','label'] skips currentStates). To count children of a parent device, group the response by parentDeviceId.
+[[/FLAT_TRIM]]
+See TOOL_GUIDE.md → `list_devices` (Performance Tips) for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1448,11 +1451,11 @@ Server-side filtering (all applied before pagination): filter for enabled/disabl
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale)."],
-                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Only devices whose label (or name) contains this string are returned. Applied after filter, before pagination. Empty or omitted = no label filtering."],
-                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Only devices with this capability are returned. Applied after labelFilter, before pagination. Capability names are camelCase, no spaces -- e.g., 'ColorControl', not 'Color Control'. Example: 'Switch', 'TemperatureMeasurement'. Empty or omitted = no capability filtering. When count=0, response includes capabilityFilterMatchedKnownCapability (bool) to distinguish 'no devices have this capability' from a typo."],
-                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg and detailed=true -- format='ids' always wins). detailed=true overrides format='summary' and produces detailed-mode output."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside the existing nextOffset. Existing offset+limit shape still works; use whichever fits the caller."]
+                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Applied after filter, before pagination."],
+                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement'). Applied after labelFilter, before pagination. When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo."],
+                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary'."],
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] See TOOL_GUIDE.md → `list_devices` for valid field names and projection semantics."],
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
                 ]
             ]
         ],
@@ -2717,15 +2720,17 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         ],
         [
             name: "get_hpm_drift",
-            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces three classes of drift signal:
-
-- missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
-- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall).
-- orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
+            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces actionable drift signals (missing-required, orphan-app, orphan-driver) plus a separate `dataQualityWarnings[]` stream for manifest-shape issues.
 
 Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced.
 
 If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages, including the multi-instance throw with up to 10 ids and an "and N more (total M)" suffix). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed. All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
+
+[[FLAT_TRIM]]
+Drift signal types:
+- missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
+- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall).
+- orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
 
 Response fields: hpmAppId (echoed for caching); packagesChecked (filtered population if packageFilter narrowed); packagesWithActionableDrift (packages with at least one actionable signal -- excludes data-quality-only); totalDriftSignals (count of actionable signals only); drift[] (per-package: manifestUrl, packageName, version, signals[], optional dataQualityWarnings[]/skippedAppCount/skippedDriverCount); summary; orphanDetection ({enabled, reason?}); orphanDriverDetection (same shape for /hub2/userDeviceTypes); optional top-level dataQualityWarnings[]; optional skippedMalformed[]. On zero-match filter: filterMatchedZero=true + availablePackages[]; packagesChecked == 0 and summary reads "No drift detected across 0 tracked packages."
 
@@ -2733,11 +2738,13 @@ drift[].length may exceed packagesWithActionableDrift when data-quality-only pac
 
 signals[] entry shape: type, componentType, componentName, componentId, note. orphan-app/orphan-driver entries additionally carry heID (the orphaned id); missing-required omits heID (null by definition). If a manifest carried a non-null but invalid heID that was normalized to null, the original raw value is recoverable from the sibling dataQualityWarnings[] entry (join on componentType+componentName+componentId).
 
-Drift signal types: missing-required, orphan-app, orphan-driver (currently the only three). Data-quality warning types in dataQualityWarnings[] (do NOT inflate totalDriftSignals): heid-whitespace-normalized (padded heID normalized to trimmed value; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; lacks componentName/componentId because the source was not a Map).
+Data-quality warning types in dataQualityWarnings[] (do NOT inflate totalDriftSignals): heid-whitespace-normalized (padded heID normalized to trimmed value; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; lacks componentName/componentId because the source was not a Map).
 
 Partial-detection summary suffix: when one detection is disabled, summary appends "(partial: <name> disabled this call -- see <name> reason)"; when both, "reasons" (plural) with both names.
 
 Under-count caveats. (1) When orphanDetection.enabled or orphanDriverDetection.enabled is false, the corresponding orphan-* signals cannot fire and packagesWithActionableDrift reflects only packages with a missing-required signal -- inspect both detection fields before treating zero as 'clean'. (2) A required=true component with non-scalar heID emits heid-non-scalar-dropped and is dropped before the required check, so it does NOT contribute a missing-required signal -- inspect dataQualityWarnings[] for these entries on required components before treating zero as fully clean.
+[[/FLAT_TRIM]]
+See TOOL_GUIDE.md → `manage_hpm` → `get_hpm_drift` for the full drift-signal taxonomy, response-field reference, data-quality warning types, and under-count caveats.
 
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
@@ -2814,23 +2821,28 @@ Requires Hub Admin Read. HPM itself must be installed.""",
             name: "create_native_app",
             description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI.
 
+[[FLAT_TRIM]]
 appType (default: rule_machine): which class of native app to create.
   - "rule_machine" — Rule Machine 5.1 (the only registered type today; verified live)
   - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via update_native_app / delete_native_app with their appId.
+[[/FLAT_TRIM]]
 
 This is COMPLETELY SEPARATE from the MCP custom rule engine (custom_list_rules / custom_create_rule). Use create_native_app for native automations that show up in the hub UI; use custom_create_rule for MCP-managed rules.
 
 Workflow: create_native_app(appType=\"rule_machine\", name=\"...\") → get_app_config(appId) to read the page schema → update_native_app(appId, settings={...}) to add triggers/conditions/actions. Each update_native_app call auto-backs-up first, enforces the multiple=true capability contract, and verifies post-write that the app still renders cleanly.
 
-Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape update_native_app's `addTrigger` parameter accepts (capability + capability-specific fields). Use this when you know all the triggers up-front; for incremental editing use update_native_app(addTrigger=…) instead.
+Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape update_native_app's `addTrigger` parameter accepts. Use this when you know all the triggers up-front; for incremental editing use update_native_app(addTrigger=…) instead.
 
 Optional `actions` array: same pattern but for actions (each item shaped like update_native_app's `addAction` parameter).
 
+[[FLAT_TRIM]]
 PARTIAL-SUCCESS HANDLING (important for LLM drivers): the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
   - `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete (this includes any per-item result with `partial: true` OR `success: false`)
   - `repairHints: [...]` → concrete next-step instructions
   - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
 The right move when `partial: true` is to follow the repairHints, NOT to delete the rule and retry from scratch. Tool-only repair via update_native_app(walkStep={...}) / replaceActions / removeAction can usually finish the job. Only declare failure after exhausting those repair attempts.
+[[/FLAT_TRIM]]
+Partial-success: triggers/actions can land with `partial: true` -- inspect `partialTriggers`/`partialActions`/`repairHints` in the result. See TOOL_GUIDE.md → `create_native_app` for the full repair protocol.
 
 Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
