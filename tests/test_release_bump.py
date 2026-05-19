@@ -12,7 +12,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".github", "scripts"))
 
 import pytest
-import release_bump as rb  # pyright: ignore[reportMissingImports]
+import release_bump as rb
 
 
 # ---------------------------------------------------------------------------

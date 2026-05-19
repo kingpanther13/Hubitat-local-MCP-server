@@ -1,4 +1,4 @@
 {
   "include": [".github/scripts", "scripts", "tests"],
-  "extraPaths": [".github/scripts"]
+  "extraPaths": [".github/scripts", "scripts"]
 }
