@@ -1273,22 +1273,25 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 // `getAllToolDefinitions()`; no caching means each call gets a clean copy.
 def stripFlatTrim(String text, boolean dropContent) {
     if (text == null) return null
+    // Markers must be balanced and non-nested. An unmatched open or close passes
+    // through unchanged (fail-loud rather than silent leak); CI guards against
+    // marker leakage in the rendered JSON so a stray open never escapes.
     if (dropContent) {
-        // Two-pass so own-line markers (on their own line, around a multi-line block)
-        // and inline markers (mid-sentence) get formatted correctly after removal.
         return text
-            // Own-line block: eat the leading newline + marker line + content + closing
-            // marker + its trailing newline. (?s) = dotall so .*? spans newlines.
+            // Own-line block first: eats the leading newline + marker line + content
+            // + closing marker line + its trailing newline. (?s) = dotall so .*? spans
+            // newlines. Greedy newline consumption keeps paragraph spacing tidy.
             .replaceAll(/(?s)\n\[\[FLAT_TRIM\]\]\n.*?\n\[\[\/FLAT_TRIM\]\]\n/, "")
-            // Any remaining (inline) block: drop just the marker pair and content,
-            // leaving surrounding text intact so a sentence collapses cleanly.
+            // Then catches any remaining (mid-line/inline) marker pair. Drops content
+            // and both markers, leaving surrounding text characters intact.
             .replaceAll(/(?s)\[\[FLAT_TRIM\]\].*?\[\[\/FLAT_TRIM\]\]/, "")
     }
     return text
-        // Own-line marker: strip the marker line entirely (token + its trailing newline).
-        // (?m) makes ^ match at every line start.
+        // Own-line marker first: strip the marker line entirely (token + its trailing
+        // newline). (?m) makes ^ match at every line start.
         .replaceAll(/(?m)^\[\[\/?FLAT_TRIM\]\]\n/, "")
-        // Inline marker: strip just the token, preserving any surrounding whitespace.
+        // Then any remaining inline marker token: strip the token only, preserving
+        // any surrounding whitespace.
         .replaceAll(/\[\[\/?FLAT_TRIM\]\]/, "")
 }
 
@@ -2875,7 +2878,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: Switch, Motion, Contact, Lock, Presence, Certain Time (and optional date), Periodic Schedule, Mode, Custom Attribute, Battery, Temperature, Button -- pass `{discover: true}` for the per-capability field schema, or see TOOL_GUIDE.md → `manage_native_rules_and_apps` for the full trigger capability reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed. (Bulk addTriggers[] fires updateRule once at the end of the batch.)
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or see TOOL_GUIDE.md → `update_native_app` capability reference → `addTrigger`. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed. (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -2943,7 +2946,7 @@ RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right.
 Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
 
 Per-condition spec fields:
-  - capability — required. See TOOL_GUIDE.md → `manage_native_rules_and_apps` for the full STPage capability list (Switch, Motion, Contact, Lock, Presence, Mode, Private Boolean, Custom Attribute, numeric capabilities, time-based capabilities, etc.).[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
+  - capability — required. See TOOL_GUIDE.md → `update_native_app` capability reference → `addRequiredExpression` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
   - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, time-based).
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
   - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).
@@ -3038,7 +3041,7 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: see docs/rm_action_subtype_schemas.md, or pass `addAction: {discover: true}` to get a structured per-capability schema Map (returns immediately -- no hub mutation, no confirm/backup required). Common capabilities: switch, dimmer, color, colorTemp, lock, thermostat, log, notification, httpGet, httpPost, mode, runCommand, delay, repeat, ifThen. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
+                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:

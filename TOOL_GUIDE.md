@@ -571,7 +571,7 @@ Reference for the three `update_native_app` structured shortcuts (`addTrigger`, 
 - **Time / Sunrise / Sunset** (`capability='Certain Time (and optional date)'`): `time` (`'A specific time'` | `'Sunrise'` | `'Sunset'`), `atTime`, `offset` (minutes, for sunrise/sunset)
   - `atTime` semantic: `'HH:mm'` form (e.g. `'17:00'`) = **DAILY-recurring** trigger that fires every day at that wall-clock time. Full ISO datetime (e.g. `'2026-04-29T17:00:00'` or `'2026-04-29T17:00:00.000-0500'`) = **ONE-SHOT dated** trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
 - **Mode** (`capability='Mode'`): `state='Night'` OR `state=['Away','Night']` (mode names, case-insensitive) OR `modeIds=['3']` OR `modeIds=['3','5']` (IDs directly, from `get_modes`).
-  - Writes `modesX<N>` internally — do NOT pass `tstate` or `rawSettings.tstate` for Mode triggers (silently ignored; renders as Broken Trigger). Use `get_modes` to list valid mode names/IDs.
+  - **IMPORTANT:** writes `modesX<N>` internally — do NOT pass `tstate` or `rawSettings.tstate` for Mode triggers (silently ignored; renders as Broken Trigger). Use `get_modes` to list valid mode names/IDs.
 - **Periodic Schedule** (`capability='Periodic Schedule'`): recurring schedule via the dedicated periodic sub-page. Spec:
   ```
   periodic={
@@ -592,12 +592,21 @@ Reference for the three `update_native_app` structured shortcuts (`addTrigger`, 
 
 For machine-readable per-field schemas (with `action` enums and per-action required fields), see `docs/rm_action_subtype_schemas.md` — that doc is generated from `_rmActionSchemaForDiscover()` and stays in sync with the live code.
 
-- **Switch** (`capability='switch'`): `action='on'`/`'off'`/`'toggle'`/`'flash'` + `deviceIds`. `action='setPerMode' + perMode={modeIdOrName: 'on'|'off', ...}`. `action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}`. `flash` starts a schedule; use `runCommand` with `command='flashOff'` to stop it (RM 5.1 has no native stop-flash action).
-- **Dimmer** (`capability='dimmer'`): `setLevel`, `toggle`, `adjust`, `fade`, `stopFade`, `startRaiseLower`, `stopChanging`, `setLevelPerMode`. Per-action fields: `level` (0–100), `adjustBy` (-100..100), `fadeSeconds`, `targetLevel`, `minutes`, `direction='raise'|'lower'`, `intervalSeconds`, `perMode`.
+- **Switch** (`capability='switch'`): `action='on'`/`'off'`/`'toggle'`/`'flash'` + `deviceIds`. `action='setPerMode' + deviceIds + perMode={modeIdOrName: 'on'|'off', ...}`. `action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}`.
+  - **NOTE:** `action='flash'` starts a flash schedule on devices that support `.flash()` (Hue groups, many Z-Wave/Zigbee dimmer modules). RM 5.1 has NO native "stop flash" action subtype — calling `switch.on`/`.off` afterward does NOT cancel the flash schedule. To stop a running flash from within a rule, use `capability='runCommand'` with `command='flashOff'` on the same device list.
+- **Dimmer** (`capability='dimmer'`):
+  - `setLevel` + `deviceIds` + `level` (0–100) [required] + optional `fadeSeconds`
+  - `toggle` + `deviceIds` + `level` (0–100) [required — the level to set when toggling from off to on] + optional `fadeSeconds`
+  - `adjust` + `deviceIds` + `adjustBy` (-100..100) [required] + optional `fadeSeconds`
+  - `fade` + `deviceIds` + `targetLevel` [required] + `minutes` [required] + `direction='raise'|'lower'` + optional `intervalSeconds`
+  - `stopFade` (no fields)
+  - `startRaiseLower` + `deviceIds` + `direction='raise'|'lower'`
+  - `stopChanging` + `deviceIds`
+  - `setLevelPerMode` + `deviceIds` + `perMode={modeIdOrName: level, ...}` + optional `fadeSeconds`
 - **Color** (`capability='color'`, RGBW bulbs): `setColor`, `toggleColor`, `setColorPerMode`. Fields: `colorName`, optional `level`, `perMode={modeIdOrName: {color: 'Red', level: 70}, ...}`.
 - **Color Temperature** (`capability='colorTemp'`): `setColorTemp`, `toggleColorTemp`, `fadeColorTemp`, `stopColorTempFade`, `setColorTempPerMode`. Fields: `kelvin`, `targetKelvin`, `minutes`, `direction`, `level`, `perMode`.
-- **Button** (`capability='button'`, pushable-button devices): `push` (+ `buttonNumber`), `pushPerMode` (+ `perMode={modeIdOrName: buttonNumber, ...}`), `choosePerMode` (+ `buttonNumber` + `perMode={modeIdOrName: [deviceIds], ...}`).
-- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'NUMBER',value:75},...]` + optional `useLastEventDevice`. Use for driver commands not exposed by higher-level capability mappings (`flashOff`, custom-driver verbs).
+- **Button** (`capability='button'`, pushable-button devices): `push` + `deviceIds` + `buttonNumber`. `pushPerMode` + `deviceIds` + `perMode={modeIdOrName: buttonNumber, ...}`. `choosePerMode` + `buttonNumber` + `perMode={modeIdOrName: [deviceIds], ...}`.
+- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'NUMBER',value:75},...]` + optional `useLastEventDevice`. Calls any device-driver command (`off`, `on`, `setLevel`, `flashOff`, `refresh`, custom-driver verbs, etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings.
 - **File IO** (`capability='fileWrite'`/`'fileAppend'`/`'fileDelete'`): `fileWrite` + `fileName` + `content` (overwrites). `fileAppend` + `fileName` + `content` (file must exist; `localFile` is an enum picker). `fileDelete` + `fileName`.
 - **Z-Wave Polling** (`capability='zwavePoll'`): `action='start'`/`'stop'` + `deviceIds` (Z-Wave switches/dimmers only) + `target='switches'|'dimmers'`.
 - **Lock** (`capability='lock'`): `action='lock'`/`'unlock'` + `deviceIds`.
@@ -612,7 +621,7 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
 - **Flow control** (delay/wait/repeat/exit/comment/conditional):
   - `delay` + `hours`/`minutes`/`seconds` + optional `cancelable`/`random` OR `variable=<varName>` (variable-sourced seconds)
   - `delayPerMode` + `perMode={modeIdOrName: {hours, minutes, seconds}, ...}`
-  - `cancelDelay`, `exitRule`, `stopRepeat`, `else`, `endIf` (no fields)
+  - `cancelDelay`, `exitRule`, `stopRepeat` (no fields)
   - `comment` + `text`
   - `repeat` + `hours`/`minutes`/`seconds` + optional `times` + `stoppable`
   - `repeatWhile` + `expression={conditions:[...], operator?:..., operators?:[...]}` + optional `hours`/`minutes`/`seconds`/`times`/`stoppable`
@@ -620,6 +629,8 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
   - `waitEvents` + `events=[{capability, deviceIds, state, andStays?}, ...]`. **LIMIT**: only ONE `waitEvents` action per rule; RM 5.1 stores wait events in global per-rule settings (not per-action), so a second `waitEvents` action silently overwrites the first. Combine multiple waits into one action's `events` array, or split into chained sub-rules.
   - `ifThen` + `expression={...}` (opens IF block; close with `endIf`)
   - `elseIf` + `expression={...}` (continues IF block; needs preceding `ifThen`)
+  - `else` (no fields; needs preceding `ifThen` or `elseIf`)
+  - `endIf` (no fields; closes the IF block)
 
 ##### `addRequiredExpression` STPage capability list
 
