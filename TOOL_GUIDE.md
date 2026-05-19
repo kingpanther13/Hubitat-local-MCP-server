@@ -556,6 +556,79 @@ If a user asks "create a new RM rule" or "modify this Room Lighting instance":
 
 For Room Lighting / Button Controllers / Basic Rules: `update_native_app` and `delete_native_app` already work today (they take any classic-app appId). `create_native_app` will work for them once their entries are added to `_appTypeRegistry()` — same endpoint family, just need namespace + appName + parentTypeName per type.
 
+#### `update_native_app` capability reference
+
+Reference for the three `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
+
+##### `addTrigger` capability families
+
+- **Device-state** (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source): `capability`, `deviceIds`, `state` (`'on'`, `'active'`, `'open'`, `'unlocked'`, etc.)
+- **Multi-device "all of these"**: add `allOfThese=true` to the device-state spec
+- **Numeric** (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints): `capability`, `deviceIds`, `comparator` (`=`, `<`, `>`, `<=`, `>=`, `*changed*`), `value`
+- **Button** (`capability='Button'`): `deviceIds`, `buttonNumber`, `state` (`pushed` | `held` | `doubleTapped` | `released`)
+- **Custom Attribute** (`capability='Custom Attribute'`): `deviceIds`, `attribute` (the attribute name), `comparator`, `value`
+- **And-stays sticky modifier** (any device-state or numeric trigger): add `andStays={hours, minutes, seconds}` to the spec
+- **Time / Sunrise / Sunset** (`capability='Certain Time (and optional date)'`): `time` (`'A specific time'` | `'Sunrise'` | `'Sunset'`), `atTime`, `offset` (minutes, for sunrise/sunset)
+  - `atTime` semantic: `'HH:mm'` form (e.g. `'17:00'`) = **DAILY-recurring** trigger that fires every day at that wall-clock time. Full ISO datetime (e.g. `'2026-04-29T17:00:00'` or `'2026-04-29T17:00:00.000-0500'`) = **ONE-SHOT dated** trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
+- **Mode** (`capability='Mode'`): `state='Night'` OR `state=['Away','Night']` (mode names, case-insensitive) OR `modeIds=['3']` OR `modeIds=['3','5']` (IDs directly, from `get_modes`).
+  - Writes `modesX<N>` internally — do NOT pass `tstate` or `rawSettings.tstate` for Mode triggers (silently ignored; renders as Broken Trigger). Use `get_modes` to list valid mode names/IDs.
+- **Periodic Schedule** (`capability='Periodic Schedule'`): recurring schedule via the dedicated periodic sub-page. Spec:
+  ```
+  periodic={
+    frequency: 'Hourly'|'Daily'|'Cron String'|...,
+    everyN: <int>,                 // for "every N <unit>" mode (Hourly/Daily)
+    startingTime: 'HH:mm',         // start-time for everyN modes
+    weekdaysOnly: <bool>,          // Daily-only
+    selectedHours: [9,12],         // Hourly-only, alternative to everyN
+    selectedDaysOfMonth: [1,15],   // Daily-only, alternative to everyN/weekdays
+    minutesOffset: <int>,          // Hourly-only, when not using everyN (startingHCX1)
+    cronString: '0 * * * *',       // Cron String mode
+    rawSettings: {…}               // escape hatch for periodic-page fields not yet mapped
+  }
+  ```
+  Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod1` → `everyN`/select → time → Done) so the trigger description bakes correctly.
+
+##### `addAction` capability families
+
+For machine-readable per-field schemas (with `action` enums and per-action required fields), see `docs/rm_action_subtype_schemas.md` — that doc is generated from `_rmActionSchemaForDiscover()` and stays in sync with the live code.
+
+- **Switch** (`capability='switch'`): `action='on'`/`'off'`/`'toggle'`/`'flash'` + `deviceIds`. `action='setPerMode' + perMode={modeIdOrName: 'on'|'off', ...}`. `action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}`. `flash` starts a schedule; use `runCommand` with `command='flashOff'` to stop it (RM 5.1 has no native stop-flash action).
+- **Dimmer** (`capability='dimmer'`): `setLevel`, `toggle`, `adjust`, `fade`, `stopFade`, `startRaiseLower`, `stopChanging`, `setLevelPerMode`. Per-action fields: `level` (0–100), `adjustBy` (-100..100), `fadeSeconds`, `targetLevel`, `minutes`, `direction='raise'|'lower'`, `intervalSeconds`, `perMode`.
+- **Color** (`capability='color'`, RGBW bulbs): `setColor`, `toggleColor`, `setColorPerMode`. Fields: `colorName`, optional `level`, `perMode={modeIdOrName: {color: 'Red', level: 70}, ...}`.
+- **Color Temperature** (`capability='colorTemp'`): `setColorTemp`, `toggleColorTemp`, `fadeColorTemp`, `stopColorTempFade`, `setColorTempPerMode`. Fields: `kelvin`, `targetKelvin`, `minutes`, `direction`, `level`, `perMode`.
+- **Button** (`capability='button'`, pushable-button devices): `push` (+ `buttonNumber`), `pushPerMode` (+ `perMode={modeIdOrName: buttonNumber, ...}`), `choosePerMode` (+ `buttonNumber` + `perMode={modeIdOrName: [deviceIds], ...}`).
+- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'NUMBER',value:75},...]` + optional `useLastEventDevice`. Use for driver commands not exposed by higher-level capability mappings (`flashOff`, custom-driver verbs).
+- **File IO** (`capability='fileWrite'`/`'fileAppend'`/`'fileDelete'`): `fileWrite` + `fileName` + `content` (overwrites). `fileAppend` + `fileName` + `content` (file must exist; `localFile` is an enum picker). `fileDelete` + `fileName`.
+- **Z-Wave Polling** (`capability='zwavePoll'`): `action='start'`/`'stop'` + `deviceIds` (Z-Wave switches/dimmers only) + `target='switches'|'dimmers'`.
+- **Lock** (`capability='lock'`): `action='lock'`/`'unlock'` + `deviceIds`.
+- **Thermostat** (`capability='thermostat'`): `action=(any)` + `deviceIds` + optional `mode`/`fanMode`/`heatingSetpoint`/`coolingSetpoint`/`adjustHeating`/`adjustCooling`.
+- **Shade/blind** (`capability='shade'`): `open`/`close`/`stop` + `deviceIds`. `setPosition` + `deviceIds` + `position` (0–100).
+- **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
+- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) or `modeName` (String).
+- **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
+- **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
+- **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`.
+- **Device control**: `capability='capture' + deviceIds`. `capability='restore'` (no fields). `capability='refresh' + deviceIds`. `capability='poll' + deviceIds`. `capability='disableDevice' + action='disable'/'enable' + deviceIds`.
+- **Flow control** (delay/wait/repeat/exit/comment/conditional):
+  - `delay` + `hours`/`minutes`/`seconds` + optional `cancelable`/`random` OR `variable=<varName>` (variable-sourced seconds)
+  - `delayPerMode` + `perMode={modeIdOrName: {hours, minutes, seconds}, ...}`
+  - `cancelDelay`, `exitRule`, `stopRepeat`, `else`, `endIf` (no fields)
+  - `comment` + `text`
+  - `repeat` + `hours`/`minutes`/`seconds` + optional `times` + `stoppable`
+  - `repeatWhile` + `expression={conditions:[...], operator?:..., operators?:[...]}` + optional `hours`/`minutes`/`seconds`/`times`/`stoppable`
+  - `waitExpression` + `expression={...}` + optional `delay={hours,minutes,seconds}` + `useDuration=true|false`
+  - `waitEvents` + `events=[{capability, deviceIds, state, andStays?}, ...]`. **LIMIT**: only ONE `waitEvents` action per rule; RM 5.1 stores wait events in global per-rule settings (not per-action), so a second `waitEvents` action silently overwrites the first. Combine multiple waits into one action's `events` array, or split into chained sub-rules.
+  - `ifThen` + `expression={...}` (opens IF block; close with `endIf`)
+  - `elseIf` + `expression={...}` (continues IF block; needs preceding `ifThen`)
+
+##### `addRequiredExpression` STPage capability list
+
+RM 5.1 Required Expression conditions accept these capability values (per-condition `capability` field):
+
+`Switch`, `Motion`, `Contact`, `Lock`, `Presence`, `Smoke detector`, `Water sensor`, `Tamper alert`, `Acceleration`, `Carbon monoxide detector`, `Carbon dioxide sensor`, `Power source`, `Mode`, `Private Boolean`, `Custom Attribute`, `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`, `Window Shade`, `Days of week`, `Between two dates`, `Between two times`, `On a Day`, `Last Event Device`, `Lock codes`.
+
+Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+
 ---
 
 ## Developer Mode
