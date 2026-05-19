@@ -685,15 +685,15 @@ def handleInitialize(msg) {
 
 def handleToolsList(msg) {
     // tools/list returns the full catalog in a single response. Pagination was
-    // attempted in #190 (page size 50, cursor-based), but in practice many MCP
-    // clients -- including Claude.ai's connector -- do NOT iterate `nextCursor`
-    // automatically, so any client that ignored pagination only ever saw the
-    // first 50 tools (silent catalog truncation, ~50% of the flat-mode catalog
-    // invisible to those clients). The MCP protocol allows but does not require
-    // server-side pagination of tools/list; the safer default is "send the whole
-    // catalog and let the universal response-size guard at handleMcpRequest()
-    // backstop oversized responses with a loud -32603 envelope" rather than
-    // "split silently and hope the client iterates."
+    // attempted in #180 (page size 50, cursor-based; ported via #190), but in
+    // practice many MCP clients -- including Claude.ai's connector -- do NOT
+    // iterate `nextCursor` automatically, so any client that ignored pagination
+    // only ever saw the first 50 tools (silent catalog truncation, ~50% of the
+    // flat-mode catalog invisible to those clients). The MCP protocol allows
+    // but does not require server-side pagination of tools/list; the safer
+    // default is "send the whole catalog and let the universal response-size
+    // guard at handleMcpRequest() backstop oversized responses with a loud
+    // -32603 envelope" rather than "split silently and hope the client iterates."
     //
     // Stale clients that pass a `cursor` param get the full catalog regardless;
     // there is no longer a nextCursor in the response, so any iteration loop
@@ -1440,7 +1440,7 @@ See TOOL_GUIDE.md → `list_devices` (Performance Tips) for response-shape detai
                     labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Applied after filter, before pagination."],
                     capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement'). Applied after labelFilter, before pagination. When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo."],
                     format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary'."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] See TOOL_GUIDE.md → `list_devices` for valid field names and projection semantics."],
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] See TOOL_GUIDE.md → `list_devices` (Performance Tips) for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
                 ]
             ]

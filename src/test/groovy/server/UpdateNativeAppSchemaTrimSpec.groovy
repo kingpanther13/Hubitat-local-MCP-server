@@ -21,15 +21,16 @@ import support.ToolSpecBase
  */
 class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
-    // 121,000 = ~3 KB headroom under the hub's 124,000-byte JSON-RPC response cap
-    // (matches the "~3 KB headroom" goal in issue #181). The strict ≤120,000 number
-    // from the issue body assumed a pre-trim catalog of ~123 KB, which has since
-    // grown ~7 KB on main (PRs #168/#169/#174/#180/#182/#186/#188 all added schema
-    // content after the issue was written). The trim recovers ~10 KB at the
-    // update_native_app description level; that puts the flat catalog comfortably
-    // back under-cap, even though the strict 120,000 target now needs additional
-    // tool trims beyond this PR's "lift capability enumerations" scope.
-    private static final int FLAT_CATALOG_BYTE_BUDGET = 121_000
+    // 118,000 = ~6 KB headroom under the hub's 124,000-byte JSON-RPC response cap
+    // and ~3 KB tripwire above today's ~115 KB post-trim catalog. Issue #181 named
+    // a strict ≤120,000 target; we beat it after extending the trim to the top-4
+    // heaviest tools (update_native_app, get_hpm_drift, create_native_app,
+    // list_devices). The lower bound (FLAT_CATALOG_BYTE_FLOOR) guards against an
+    // accidental over-trim regression where someone drops content unconditionally
+    // -- if the catalog ever falls below ~100 KB on a flat-mode run, something
+    // important is missing.
+    private static final int FLAT_CATALOG_BYTE_BUDGET = 118_000
+    private static final int FLAT_CATALOG_BYTE_FLOOR = 100_000
     private static final String OPEN_MARKER = '[[FLAT_TRIM]]'
     private static final String CLOSE_MARKER = '[[/FLAT_TRIM]]'
 
@@ -38,39 +39,37 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         settingsMap.enableCustomRuleEngine = true
     }
 
-    def "flat-mode tools/list full-catalog size keeps ~3 KB headroom under the 124,000-byte cap"() {
+    def "flat-mode tools/list full-catalog size sits between the floor and budget"() {
         given: 'every feature toggle on so the flat catalog is at its widest'
         settingsMap.useGateways = false
         enableEveryToggle()
 
         when:
-        // Defense-in-depth on issue #181's headroom goal. handleToolsList paginates at
-        // page size 50, so no single wire response carries this whole catalog -- this
-        // test guards the total catalog footprint, not a wire-cap. Keeping the catalog
-        // sub-124 KB protects flat-mode clients that fetch the whole catalog at once
-        // (custom MCP wrappers, debug dumps) and protects pagination-fetch clients
-        // from per-page bloat that would still degrade hub response time.
+        // tools/list now returns the full catalog in a single response (pagination
+        // was removed in this PR); this test guards the total catalog footprint
+        // as the regression tripwire. The universal response-size guard at
+        // handleMcpRequest's response path emits -32603 if the wire response
+        // exceeds 124,000 bytes -- keep the catalog comfortably below that with
+        // the budget tripwire below.
         def tools = script.getToolDefinitions()
         def catalogBytes = JsonOutput.toJson(tools).getBytes('UTF-8').length
 
-        then: 'budget keeps ~3 KB headroom under the hub 124,000-byte JSON-RPC cap'
-        // Diagnostic on failure -- a future regression that pushes the catalog over
-        // budget should land with a list of the heaviest tools so the author knows
-        // where to start trimming. Spock's verifyAll-style block keeps the assertion
-        // shape compatible with the existing dispatch test's `assert <= N` pattern.
-        if (catalogBytes > FLAT_CATALOG_BYTE_BUDGET) {
+        then: 'catalog within [FLOOR, BUDGET] -- ~6 KB cap headroom + over-trim guard'
+        if (catalogBytes > FLAT_CATALOG_BYTE_BUDGET || catalogBytes < FLAT_CATALOG_BYTE_FLOOR) {
             def topFive = tools.collect { [name: it.name, bytes: JsonOutput.toJson(it).getBytes('UTF-8').length] }
                                .sort { -it.bytes }
                                .take(5)
                                .collect { "  ${it.name}: ${it.bytes} B" }
                                .join('\n')
             throw new AssertionError(
-                "flat-mode tools/list catalog ${catalogBytes} B exceeds budget ${FLAT_CATALOG_BYTE_BUDGET} B.\n" +
+                "flat-mode tools/list catalog ${catalogBytes} B is outside [${FLAT_CATALOG_BYTE_FLOOR}, ${FLAT_CATALOG_BYTE_BUDGET}].\n" +
                 "Top 5 tools by JSON size:\n${topFive}\n" +
-                "Consider wrapping more prose in [[FLAT_TRIM]] markers (issue #181)." as String
+                "Over-budget? Wrap more prose in [[FLAT_TRIM]] markers (issue #181).\n" +
+                "Under-floor? Someone dropped content unconditionally -- check recent edits." as String
             )
         }
         catalogBytes <= FLAT_CATALOG_BYTE_BUDGET
+        catalogBytes >= FLAT_CATALOG_BYTE_FLOOR
     }
 
     def "flat-mode tools/list catalog does not leak [[FLAT_TRIM]] tokens"() {
@@ -293,8 +292,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     }
 
     def "schema description pointers match TOOL_GUIDE.md anchor names"() {
-        given: 'the three update_native_app schema descriptions name-drop specific TOOL_GUIDE subsections'
-        def updateNativeDef = script.getAllToolDefinitions().find { it.name == 'update_native_app' }
+        given: 'schema descriptions name-drop specific TOOL_GUIDE subsections; rename of any breaks the trim contract silently'
+        def allDefs = script.getAllToolDefinitions()
+        def updateNativeDef = allDefs.find { it.name == 'update_native_app' }
+        def listDevicesDef = allDefs.find { it.name == 'list_devices' }
+        def hpmDriftDef = allDefs.find { it.name == 'get_hpm_drift' }
+        def createNativeDef = allDefs.find { it.name == 'create_native_app' }
         def addTriggerDesc = updateNativeDef.inputSchema.properties.addTrigger.description as String
         def addActionDesc = updateNativeDef.inputSchema.properties.addAction.description as String
         def addRequiredExprDesc = updateNativeDef.inputSchema.properties.addRequiredExpression.description as String
@@ -304,20 +307,142 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def toolGuide = new File('TOOL_GUIDE.md').text
 
         then: 'every TOOL_GUIDE anchor cited in the schema actually exists as a section heading'
-        // Guards against a silent renaming of a TOOL_GUIDE subsection breaking the
-        // in-schema pointer that flat-mode callers rely on after the trim.
         addTriggerDesc.contains('TOOL_GUIDE.md')
         addActionDesc.contains('docs/rm_action_subtype_schemas.md')
         addRequiredExprDesc.contains('TOOL_GUIDE.md')
 
-        and: 'the four anchors the schema names exist as markdown headings'
+        and: 'the update_native_app anchors exist as markdown headings'
         toolGuide.contains('#### `update_native_app` capability reference')
         toolGuide.contains('##### `addTrigger` capability families')
         toolGuide.contains('##### `addAction` capability families')
         toolGuide.contains('##### `addRequiredExpression` STPage capability list')
 
+        and: 'the three newly-trimmed tools point at sections that exist in TOOL_GUIDE'
+        // Anchors for the 3-tool extension (list_devices, get_hpm_drift,
+        // create_native_app). A renamed section would silently break the pointer
+        // that flat-mode callers rely on.
+        listDevicesDef.description.contains('TOOL_GUIDE.md')
+        hpmDriftDef.description.contains('TOOL_GUIDE.md')
+        createNativeDef.description.contains('TOOL_GUIDE.md')
+        toolGuide.contains('### manage_hpm (2 tools)')
+        toolGuide.contains('## Performance Tips')
+        toolGuide.contains('#### `create_native_app` reference')
+
         and: 'rm_action_subtype_schemas.md (referenced from addAction) still exists'
         new File('docs/rm_action_subtype_schemas.md').exists()
+    }
+
+    def "the 3 newly-trimmed tools strip their wrapped content in flat mode but keep it in gateway mode"() {
+        // list_devices, get_hpm_drift, and create_native_app each wrap a block of
+        // duplicate-of-TOOL_GUIDE prose. This is the per-tool counterpart to the
+        // update_native_app gateway-catalog-preservation test (above) -- catches
+        // a regression where a marker on just ONE of these tools is unbalanced
+        // (content fails to drop in flat mode) or where the whole transform path
+        // bypasses that tool's description.
+        given:
+        enableEveryToggle()
+
+        when: 'flat-mode descriptions'
+        settingsMap.useGateways = false
+        def flatTools = script.getToolDefinitions()
+        def listDevicesFlat = flatTools.find { it.name == 'list_devices' }.description as String
+        def hpmDriftFlat = flatTools.find { it.name == 'get_hpm_drift' }.description as String
+        def createNativeFlat = flatTools.find { it.name == 'create_native_app' }.description as String
+
+        and: 'gateway-mode (token-only strip) descriptions via getAllToolDefinitions + applyDescriptionTransform(false)'
+        def gwAll = script.applyDescriptionTransform(script.getAllToolDefinitions(), false)
+        def listDevicesGw = gwAll.find { it.name == 'list_devices' }.description as String
+        def hpmDriftGw = gwAll.find { it.name == 'get_hpm_drift' }.description as String
+        def createNativeGw = gwAll.find { it.name == 'create_native_app' }.description as String
+
+        then: 'flat-mode strips the wrapped sentinel prose -- specific phrases from each wrapped block must be absent'
+        !listDevicesFlat.contains('Server-side filtering (all applied before pagination)')
+        !hpmDriftFlat.contains('Drift signal types:')
+        !hpmDriftFlat.contains('Data-quality warning types in dataQualityWarnings[]')
+        !createNativeFlat.contains('PARTIAL-SUCCESS HANDLING')
+
+        and: 'flat-mode keeps the TOOL_GUIDE pointer for each -- callers must have a fallback'
+        listDevicesFlat.contains('TOOL_GUIDE.md')
+        hpmDriftFlat.contains('TOOL_GUIDE.md')
+        createNativeFlat.contains('TOOL_GUIDE.md')
+
+        and: 'gateway-mode keeps the same sentinel phrases (token-only strip preserves content)'
+        listDevicesGw.contains('Server-side filtering (all applied before pagination)')
+        hpmDriftGw.contains('Drift signal types:')
+        hpmDriftGw.contains('Data-quality warning types in dataQualityWarnings[]')
+        createNativeGw.contains('PARTIAL-SUCCESS HANDLING')
+
+        and: 'no marker tokens leak in either mode for any of the three'
+        ![listDevicesFlat, hpmDriftFlat, createNativeFlat,
+          listDevicesGw, hpmDriftGw, createNativeGw].any {
+            it.contains(OPEN_MARKER) || it.contains(CLOSE_MARKER)
+        }
+    }
+
+    def "list_devices.fields inline-marker drops the valid-name enumeration in flat mode but keeps it in gateway mode"() {
+        // list_devices isn't behind a gateway, but its `fields` property has an
+        // INLINE [[FLAT_TRIM]] marker (different from update_native_app's
+        // addRequiredExpression case in terms of placement). Pin both directions
+        // explicitly so a regression in the inline-strip path surfaces here.
+        given:
+        enableEveryToggle()
+
+        when: 'flat-mode list_devices.fields description (dropContent=true)'
+        settingsMap.useGateways = false
+        def flatFieldsDesc = script.getToolDefinitions()
+            .find { it.name == 'list_devices' }
+            .inputSchema.properties.fields.description as String
+
+        and: 'gateway-mode list_devices.fields description (dropContent=false -- tokens-only strip)'
+        def gwFieldsDesc = script.applyDescriptionTransform(script.getAllToolDefinitions(), false)
+            .find { it.name == 'list_devices' }
+            .inputSchema.properties.fields.description as String
+
+        then: 'flat-mode strips the valid-name enumeration; the pointer to TOOL_GUIDE survives'
+        // 'mcpManaged' is a field name inside the wrapped block; "auto-promotes"
+        // is the start of the projection-semantics paragraph also inside the
+        // marker. Both must be absent in flat mode.
+        !flatFieldsDesc.contains('mcpManaged')
+        !flatFieldsDesc.contains('auto-promotes the response to detailed mode')
+        flatFieldsDesc.contains('TOOL_GUIDE.md')
+
+        and: 'gateway-mode keeps the full enumeration; marker tokens stripped'
+        gwFieldsDesc.contains('mcpManaged')
+        gwFieldsDesc.contains('auto-promotes the response to detailed mode')
+        !gwFieldsDesc.contains(OPEN_MARKER)
+        !gwFieldsDesc.contains(CLOSE_MARKER)
+    }
+
+    def "tools/list size-guard backstop emits -32603 if the catalog ever overflows the 124,000-byte cap"() {
+        given: 'a stubbed getToolDefinitions returning a synthetic catalog larger than the 124,000-byte hub cap'
+        // This pins the failure-mode rationale documented in handleToolsList: with
+        // tools/list no longer paginating, the universal response-size guard inside
+        // handleMcpRequest is the only thing standing between an oversized catalog
+        // and a silent oversized wire response. If a future PR adds enough catalog
+        // content that the response crosses 124 KB, callers should see a loud
+        // -32603 envelope, NOT a truncated or hub-rejected response.
+        def jumbo = (1..200).collect { i ->
+            [
+                name: "synthetic_jumbo_${i}",
+                description: 'x' * 1200,  // ~240 KB total catalog
+                inputSchema: [type: "object", properties: [:]]
+            ]
+        }
+        script.metaClass.getToolDefinitions = { -> jumbo }
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 999, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+        def response = mcpDriver.parseResponseJson()
+
+        then: 'loud -32603 envelope with "Response too large" message; no silent truncation'
+        response.error != null
+        response.error.code == -32603
+        response.error.message.toLowerCase().contains('response too large')
+
+        // HarnessSpec.setup() wipes the per-instance metaClass and the class-level
+        // ExpandoMetaClass before every feature, so no explicit cleanup needed
+        // here -- next test gets a clean script instance.
     }
 
     def "missing-param hint surface for update_native_app strips marker tokens but keeps wrapped capability prose"() {
