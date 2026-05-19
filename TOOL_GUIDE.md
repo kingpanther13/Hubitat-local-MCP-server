@@ -634,9 +634,13 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
 
 ##### `addRequiredExpression` STPage capability list
 
-RM 5.1 Required Expression conditions accept these capability values (per-condition `capability` field):
+RM 5.1 Required Expression conditions accept these `capability` values (per-condition):
 
-`Switch`, `Motion`, `Contact`, `Lock`, `Presence`, `Smoke detector`, `Water sensor`, `Tamper alert`, `Acceleration`, `Carbon monoxide detector`, `Carbon dioxide sensor`, `Power source`, `Mode`, `Private Boolean`, `Custom Attribute`, `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`, `Window Shade`, `Days of week`, `Between two dates`, `Between two times`, `On a Day`, `Last Event Device`, `Lock codes`.
+- **Device-state**: `Switch`, `Motion`, `Contact`, `Lock`, `Presence`, `Smoke detector`, `Water sensor`, `Tamper alert`, `Acceleration`, `Carbon monoxide detector`, `Carbon dioxide sensor`, `Power source`, `Window Shade`
+- **Numeric**: `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`
+- **Time-based**: `Days of week`, `Between two dates`, `Between two times`, `On a Day`
+- **Hub state**: `Mode`, `Private Boolean`
+- **Custom / other**: `Custom Attribute`, `Last Event Device`, `Lock codes`
 
 Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
 
