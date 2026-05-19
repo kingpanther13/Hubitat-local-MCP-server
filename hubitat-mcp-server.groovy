@@ -1273,15 +1273,25 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 // `getAllToolDefinitions()`; no caching means each call gets a clean copy.
 def stripFlatTrim(String text, boolean dropContent) {
     if (text == null) return null
-    // Markers must be balanced and non-nested. An unmatched open or close passes
-    // through unchanged (fail-loud rather than silent leak); CI guards against
-    // marker leakage in the rendered JSON so a stray open never escapes.
+    // Markers must be balanced and non-nested. The two branches handle the
+    // unbalanced case asymmetrically by design:
     //
-    // Own-line markers require at least one preceding character in the description
-    // (today every wrapped block has paragraph prose before it -- adding a marker
-    // at literally position zero would fall to the inline pass and leak a leading
-    // newline). Not enforced in code; would surface as a token-leak test failure
-    // for the (today unused) first-char marker placement.
+    //   dropContent=true (flat-mode tools/list): both regexes require BOTH markers
+    //   to match. An unmatched open or close survives unchanged so the CI
+    //   marker-leakage test on the rendered JSON trips loud -- silently dropping
+    //   content for an unmatched marker would be dangerous (data loss).
+    //
+    //   dropContent=false (gateway catalog, search corpus, missing-param hint):
+    //   each regex strips any lone marker token (the `\/?` makes the slash
+    //   optional). A stray marker token in these surfaces would itself be the bug
+    //   to prevent, so silent removal is the right behaviour -- the wrapped
+    //   content survives, only the noise tokens disappear.
+    //
+    // Own-line markers also require at least one preceding character in the
+    // description; today every wrapped block has paragraph prose before it. A
+    // first-char marker placement would fall to the inline pass and leak a
+    // leading newline -- not enforced in code, would surface as a JSON-leak test
+    // failure for the (today unused) first-char placement.
     if (dropContent) {
         return text
             // Own-line block first: eats the leading newline + marker line + content

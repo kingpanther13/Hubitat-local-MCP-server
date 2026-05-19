@@ -225,11 +225,23 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         then:
         emptyOwnLine == 'before\n\nafter'
 
-        when: 'unmatched open marker with no close: passes through unchanged (no spurious removal)'
-        def lonelyOpen = script.stripFlatTrim('before [[FLAT_TRIM]] tail with no close', true)
+        when: 'unmatched open marker, dropContent=true: passes through unchanged so CI leak guard trips loud'
+        def lonelyOpenDrop = script.stripFlatTrim('before [[FLAT_TRIM]] tail with no close', true)
 
-        then: 'pinning current behaviour -- paired markers required; a stray open is left visible so the bug is fail-loud'
-        lonelyOpen == 'before [[FLAT_TRIM]] tail with no close'
+        then: 'paired markers required; a stray open is left visible (fail-loud, not silent data loss)'
+        lonelyOpenDrop == 'before [[FLAT_TRIM]] tail with no close'
+
+        when: 'unmatched open marker, dropContent=false: silently stripped (intentional asymmetry)'
+        def lonelyOpenKeep = script.stripFlatTrim('before [[FLAT_TRIM]] tail with no close', false)
+
+        then: 'token-strip mode strips ANY lone marker since the marker is itself the bug to prevent'
+        lonelyOpenKeep == 'before  tail with no close'
+
+        when: 'unmatched close marker, dropContent=false: same lone-token strip applies'
+        def lonelyCloseKeep = script.stripFlatTrim('before [[/FLAT_TRIM]] tail with no open', false)
+
+        then:
+        lonelyCloseKeep == 'before  tail with no open'
     }
 
     def "search_tools BM25 corpus contains no marker tokens in any top-level description"() {
@@ -326,8 +338,11 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !((String) result.parameters).contains(OPEN_MARKER)
         !((String) result.parameters).contains(CLOSE_MARKER)
 
-        and: 'wrapped capability prose survives -- tokens-only strip on this surface, not content drop'
-        ((String) result.parameters).contains('Periodic Schedule') ||
-            ((String) result.parameters).contains("RM's STPage capability list")
+        and: 'wrapped capability prose from BOTH addTrigger and addRequiredExpression survives'
+        // The strip-tokens-only contract on this surface should keep both wrapped
+        // blocks intact -- an OR-based assertion would silently mask one description
+        // going stale while the other survives.
+        ((String) result.parameters).contains('Periodic Schedule')      // from addTrigger FLAT_TRIM block
+        ((String) result.parameters).contains("RM's STPage capability list")  // from addRequiredExpression inline FLAT_TRIM
     }
 }
