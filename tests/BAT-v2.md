@@ -2983,6 +2983,62 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
+### T607 — addAction setVariable: set a hub variable to a constant value inside an RM rule
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create an RM rule called 'BAT SetVariable Test'. Also ensure at least one hub connector variable exists (use manage_hub_variables set_variable to create 'bat_setvar_test' = 0 if it does not exist).",
+  "test_prompt": "Add an action to the 'BAT SetVariable Test' rule: capability='setVariable', variable='bat_setvar_test', value=99. Then call check_rule_health on the rule and confirm no broken markers are present.",
+  "teardown_prompt": "Delete the 'BAT SetVariable Test' rule. Delete the hub variable 'bat_setvar_test'."
+}
+```
+
+**Expected**: `update_native_app(appId=N, addAction={capability:'setVariable', variable:'bat_setvar_test', value:99}, confirm=true)` completes with `success=true`. `check_rule_health` reports no broken-condition markers. The rule's action renders in the RM UI as "Set bat_setvar_test to 99".
+
+**Failure modes**: Tool returns "Unsupported capability 'setVariable'" (capability not wired). Rule health check reports broken marker (wrong actType/actSubType or field name). Value written as string instead of correct type. Passing an unknown `variable` returns `success=false` with an error listing available hub variables.
+
+### T608 — addAction mode with modeName resolves to ID (not literal string)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Note the hub's current mode names via get_modes. Create an RM rule called 'BAT ModeName Test'.",
+  "test_prompt": "Add an action to 'BAT ModeName Test': capability='mode', modeName='<any valid mode name from get_modes>'. Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete the 'BAT ModeName Test' rule."
+}
+```
+
+**Expected**: `update_native_app(addAction={capability:'mode', modeName:'<name>'})` resolves the name to a numeric mode ID before writing. `check_rule_health` reports no broken markers. Passing an unknown modeName returns `success=false` with an `error` field listing available mode names -- the agent should inspect `result.success` and `result.error`, not expect a protocol-level exception.
+
+**Failure modes**: Rule renders as "Mode: null" (name written literally instead of resolved ID). Unknown modeName is silently accepted and produces a broken action.
+
+### T609 — addAction runCommand with variable parameter uses moreParams + P-discovery (live-verified wire format)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write enabled. Create hub variable 'bat_cpvar_test' (numeric, value 50). Select any switch device as 'BAT Switch'. Create RM rule 'BAT RunCommand Variable Param'.",
+  "test_prompt": "Add an action: capability='runCommand', command='setLevel', deviceIds=[<BAT Switch id>], parameters=[{type:'NUMBER', variable:'bat_cpvar_test'}]. Then call check_rule_health.",
+  "teardown_prompt": "Delete 'BAT RunCommand Variable Param' rule. Delete bat_cpvar_test variable."
+}
+```
+
+**Expected**: `addAction` completes with `success=true`. `check_rule_health` returns no broken markers. RM wire: for each parameter a `moreParams` button click allocates a P-numbered slot (P starts at 2, RM-assigned); literal params write `cpType<P>.N` + `cpVal<P>.N`; variable params write `cpType<P>.N` + `uVar<P>.N=true` + `xVar<P>.N=bat_cpvar_test`. Passing an unknown variable name returns an error listing available variables.
+
+**Failure modes**: Parameter silently dropped. Rule health shows broken action. `cpVal` written with the variable NAME as a literal string (wrong path -- should use uVar+xVar). Hub variable not found in xVar enum (variable does not exist on hub).
+
+### T610 — addAction setVariable sourceVariable form (copy-from-variable wire)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create hub variables 'bat_sv_src' (numeric, value 77) and 'bat_sv_dst' (numeric, value 0). Create RM rule 'BAT SetVariable Source Test'.",
+  "test_prompt": "Add an action to 'BAT SetVariable Source Test': capability='setVariable', variable='bat_sv_dst', sourceVariable='bat_sv_src'. Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT SetVariable Source Test'. Delete hub variables bat_sv_src and bat_sv_dst."
+}
+```
+
+**Expected**: `update_native_app(addAction={capability:'setVariable', variable:'bat_sv_dst', sourceVariable:'bat_sv_src'})` completes with `success=true`. RM wire: `xVarV.N='bat_sv_dst'`, `numOp.N='variable'`, `xVar3.N='bat_sv_src'` (xVar3 is schema-gated -- revealed only after `numOp=variable` is written; the digit is RM-assigned/discovered, not hardcoded). `check_rule_health` reports no broken markers. Passing an unknown variable name (for either `variable` or `sourceVariable`) returns `success=false` with an error listing available hub variables.
+
+**Failure modes**: Action renders as "Set bat_sv_dst to null" (numOp=number written instead of variable). xVar3 not written (sourceVariable dropped). Unknown variable name accepted silently and produces a broken action.
+
 ---
 
 ## Changes from BAT v1
@@ -2998,7 +3054,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total)
 
 ---
 

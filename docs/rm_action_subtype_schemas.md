@@ -141,7 +141,7 @@ Calls any device-driver command not exposed by higher-level capability mappings 
 | `command` | String | Required. Driver command name (e.g. 'flashOff', 'refresh', 'setLevel') |
 | `deviceIds` | List\<Integer\> | Required |
 | `capabilityFilter` | String | Default 'Switch' |
-| `parameters` | List | e.g. `[{type: 'NUMBER', value: 75}]` |
+| `parameters` | List | Literal: `[{type: 'number', value: 75}]`. Variable-sourced: `[{type: 'number', variable: 'myVar'}]`. Mix literal and variable entries across slots. Fails loud (success=false with descriptive error) if the hub does not reveal the xVar enum after enabling variable mode for a slot. |
 | `useLastEventDevice` | Boolean | |
 | `delay` | Map | |
 | `rawSettings` | Map | |
@@ -151,12 +151,25 @@ Calls any device-driver command not exposed by higher-level capability mappings 
 ## Hub capabilities
 
 ### mode
-Exactly one of `modeId` or `modeName` is required at call time.
+Exactly one of `modeId` or `modeName` is required at call time. When `modeName` is supplied, it is resolved to the numeric mode ID via `location.modes` before the write -- unknown names fail fast with the valid mode list. Degenerate case: if `location.modes` returns an empty list (hub in a degraded state), the error message reads "Available modes: (none -- hub returned no modes; verify hub state via get_modes)". Use `get_modes` to confirm the hub's mode list before calling.
 
 | Field | Type | Notes |
 |---|---|---|
 | `modeId` | Integer | Provide this OR modeName |
-| `modeName` | String | Provide this OR modeId |
+| `modeName` | String | Provide this OR modeId. Case-insensitive. Resolved to ID automatically. |
+
+Note: `addAction` mode uses the `modeName` field for name-based resolution. `addTrigger` mode uses a `state` field for the mode name instead -- triggers share a generic `state` field across multiple device-state capability types, because triggers represent a superset of device-state events where a single field covers mode, switch, presence, and similar state values, while `addAction` uses the explicit `modeName` field.
+
+### setVariable
+Also accepted as `capability='variable'`. Sets a hub variable to a constant or copies it from another variable.
+
+| Field | Type | Notes |
+|---|---|---|
+| `variable` | String | Required. Target hub variable name. Must be an existing hub variable -- an unknown name is rejected before the hub write to prevent silent broken-action state. |
+| `value` | Number | Numeric constant to assign -- provide this OR `sourceVariable`. String, boolean, and datetime hub-variable targets are not supported via `value`; use `sourceVariable`, or set those types via `rawSettings`. |
+| `sourceVariable` | String | Source variable name to copy from -- provide this OR `value`. Must be an existing hub variable -- an unknown name is rejected before the hub write to prevent silent broken-action state. Schema-gated: the source-variable field is only revealed by RM after the numOp=variable write; fails loud if the hub does not reveal it. See `docs/rm_wire_format.md` for the wire sequence. |
+| `delay` | Map | |
+| `rawSettings` | Map | |
 
 ---
 
