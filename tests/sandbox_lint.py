@@ -1175,6 +1175,130 @@ def check_tool_name_consistency() -> list[dict]:
 IS_CI = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
 
 
+def check_tool_guide_pointers() -> list[dict]:
+    """Verify every get_tool_guide(section='X') pointer in the .groovy schemas
+    references a section key that actually exists in getToolGuideSections().
+
+    Three failure modes this catches:
+
+    1. **Broken pointer.** Schema description says "Call
+       `get_tool_guide(section='X')` for the foo reference" but X is not a
+       key in the getToolGuideSections() map. Flat-mode callers following
+       the pointer get a 'section not found' response. Emitted as
+       `tool-guide-broken-pointer`.
+
+    2. **Drifted heading.** Every getToolGuideSections key should have a
+       corresponding heading in TOOL_GUIDE.md (mapped through the
+       `key_to_heading_hint` table below). Presence (not exact content
+       match) so prose tweaks don't trip the lint; renames or deletes do.
+       Emitted as `tool-guide-heading-missing`.
+
+    3. **Unmapped new key.** A section added to the dispatcher without an
+       entry in `key_to_heading_hint` fails loud rather than silently
+       skipping the drift check for that key. Forces the contributor adding
+       the section to also add the hint. Emitted as
+       `tool-guide-no-heading-hint`.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
+    if not server.exists() or not tool_guide.exists():
+        return findings
+
+    src = server.read_text(encoding="utf-8", errors="replace")
+    tg = tool_guide.read_text(encoding="utf-8", errors="replace")
+
+    # 1. Extract every section key from getToolGuideSections().
+    #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
+    sections_block_match = re.search(
+        r"def getToolGuideSections\(\)\s*\{\s*return\s*\[(.*?)\n\s*\]\s*\}",
+        src,
+        re.DOTALL,
+    )
+    if not sections_block_match:
+        findings.append({
+            "file": str(server.relative_to(REPO_ROOT)),
+            "line": 1,
+            "severity": "error",
+            "code": "tool-guide-no-sections",
+            "message": "Could not locate getToolGuideSections() return literal — has the function shape changed?",
+        })
+        return findings
+
+    sections_block = sections_block_match.group(1)
+    # Match exactly the 8-space top-level indentation inside `return [ ... ]` so a stray
+    # `something: '''` inside one of the baked markdown bodies (deeper indentation, or
+    # mid-paragraph) can't be mistaken for a real section key.
+    section_keys = set(re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*'''", sections_block, re.MULTILINE))
+
+    # 2. Extract every get_tool_guide(section='X') reference from the .groovy.
+    #    Tolerate both single and double quotes; whitespace around the `=`.
+    pointer_re = re.compile(r"get_tool_guide\(section\s*=\s*['\"]([a-z_][a-z0-9_]*)['\"]\)")
+    for line_no, line in enumerate(src.splitlines(), start=1):
+        for ptr in pointer_re.findall(line):
+            if ptr not in section_keys:
+                findings.append({
+                    "file": str(server.relative_to(REPO_ROOT)),
+                    "line": line_no,
+                    "severity": "error",
+                    "code": "tool-guide-broken-pointer",
+                    "message": (
+                        f"get_tool_guide(section='{ptr}') points at a section that is NOT a key "
+                        f"in getToolGuideSections(). Either add the section to the dispatcher or "
+                        f"fix the pointer. Known sections: {sorted(section_keys)}."
+                    ),
+                })
+
+    # 3. Drift check: every section key should have a matching heading anchor in TOOL_GUIDE.md.
+    #    Translate snake_case key -> the heading text the engineer wrote it from.
+    #    Use a substring check (presence in TOOL_GUIDE.md) rather than exact slugify — keeps
+    #    the lint tolerant of prose edits while catching renames.
+    key_to_heading_hint = {
+        "device_authorization": "Device Authorization",
+        "hub_admin_write": "Hub Admin Write",
+        "virtual_devices": "Virtual Device",
+        "update_device": "update_device",
+        "rules": "Rule Structure Reference",
+        "backup": "Backup System",
+        "file_manager": "File Manager",
+        "performance": "Performance Tips",
+        "builtin_app_tools": "Built-in App Tools",
+        "update_native_app_reference": "`update_native_app` capability reference",
+        "create_native_app_reference": "`create_native_app` reference",
+    }
+    for key in section_keys:
+        hint = key_to_heading_hint.get(key)
+        if hint is None:
+            # New section added to the .groovy without a hint mapping above.
+            # Fail loud rather than silently skip — keeps this lint honest.
+            findings.append({
+                "file": str(server.relative_to(REPO_ROOT)),
+                "line": 1,
+                "severity": "error",
+                "code": "tool-guide-no-heading-hint",
+                "message": (
+                    f"getToolGuideSections key '{key}' has no entry in key_to_heading_hint "
+                    f"(in tests/sandbox_lint.py). Add a mapping so the TOOL_GUIDE.md drift "
+                    f"check can verify the heading still exists."
+                ),
+            })
+            continue
+        if hint not in tg:
+            findings.append({
+                "file": str(tool_guide.relative_to(REPO_ROOT)),
+                "line": 1,
+                "severity": "error",
+                "code": "tool-guide-heading-missing",
+                "message": (
+                    f"getToolGuideSections key '{key}' baked into the .groovy, but the matching "
+                    f"heading '{hint}' is not present in TOOL_GUIDE.md. Either restore the heading "
+                    f"or update key_to_heading_hint in tests/sandbox_lint.py."
+                ),
+            })
+
+    return findings
+
+
 def format_finding(f: dict) -> str:
     """Format a single finding for human-readable output."""
     severity = f["severity"].upper()
@@ -1930,6 +2054,12 @@ def main() -> int:
 
     # Check tool-name references in doc tables match canonical tool names
     all_findings.extend(check_tool_name_consistency())
+
+    # Check that every get_tool_guide(section='X') pointer in the schemas
+    # references a section that actually exists in getToolGuideSections().
+    # Catches the silent-truncation regression class of "trim points caller
+    # at get_tool_guide(section=Y), but Y was never added to the dispatcher".
+    all_findings.extend(check_tool_guide_pointers())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))

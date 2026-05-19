@@ -385,3 +385,155 @@ def test_check_versions_mismatch_across_files_flagged(monkeypatch, tmp_path):
     # Locks in that the message lists both versions so investigators see drift.
     assert "0.11.0" in mismatch[0]["message"]
     assert "0.10.5" in mismatch[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# check_tool_guide_pointers — schema-pointer-to-dispatcher-section coverage
+# ---------------------------------------------------------------------------
+
+def _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md):
+    """Lay down hubitat-mcp-server.groovy and TOOL_GUIDE.md in tmp_path and
+    point sl.REPO_ROOT at it. check_tool_guide_pointers reads both files via
+    REPO_ROOT, so this is all the patching needed."""
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(server_groovy)
+    (tmp_path / "TOOL_GUIDE.md").write_text(tool_guide_md)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+
+
+def test_check_tool_guide_pointers_all_valid_no_findings(monkeypatch, tmp_path):
+    """Schema points at a valid section, dispatcher has it, TOOL_GUIDE.md has
+    a matching heading -> empty findings."""
+    server_groovy = """\
+def getToolGuideSections() {
+    return [
+        device_authorization: '''## Device Authorization (CRITICAL)
+Body here.''',
+        builtin_app_tools: '''## Built-in App Tools
+Body.'''
+    ]
+}
+
+def someTool() {
+    return [description: "Call `get_tool_guide(section='device_authorization')` for details."]
+}
+"""
+    tool_guide_md = """\
+# MCP Tool Guide
+
+## Device Authorization (CRITICAL)
+Stuff.
+
+## Built-in App Tools
+Stuff.
+"""
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    assert findings == [], f"expected no findings, got: {findings}"
+
+
+def test_check_tool_guide_pointers_broken_pointer_flagged(monkeypatch, tmp_path):
+    """Schema points at section X but X is not in the dispatcher map -> tool-guide-broken-pointer."""
+    server_groovy = """\
+def getToolGuideSections() {
+    return [
+        device_authorization: '''## Device Authorization (CRITICAL)
+Body.'''
+    ]
+}
+
+def someTool() {
+    return [description: "Call `get_tool_guide(section='nonexistent_section')` for details."]
+}
+"""
+    tool_guide_md = "## Device Authorization (CRITICAL)\nStuff.\n"
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    broken = [f for f in findings if f["code"] == "tool-guide-broken-pointer"]
+    assert broken, f"expected tool-guide-broken-pointer finding, got: {findings}"
+    assert "nonexistent_section" in broken[0]["message"]
+
+
+def test_check_tool_guide_pointers_missing_hint_for_new_key_flagged(monkeypatch, tmp_path):
+    """A section key added to the dispatcher without an entry in
+    key_to_heading_hint (inside the lint) -> tool-guide-no-heading-hint.
+    This is the fail-loud-on-new-key behaviour that keeps the drift check
+    honest as the section set grows."""
+    server_groovy = """\
+def getToolGuideSections() {
+    return [
+        device_authorization: '''## Device Authorization (CRITICAL)
+Body.''',
+        brand_new_section_added_by_a_future_pr: '''## Some New Heading
+Body.'''
+    ]
+}
+"""
+    tool_guide_md = "## Device Authorization (CRITICAL)\nStuff.\n\n## Some New Heading\nStuff.\n"
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    missing_hint = [f for f in findings if f["code"] == "tool-guide-no-heading-hint"]
+    assert missing_hint, f"expected tool-guide-no-heading-hint finding, got: {findings}"
+    assert "brand_new_section_added_by_a_future_pr" in missing_hint[0]["message"]
+
+
+def test_check_tool_guide_pointers_drifted_heading_flagged(monkeypatch, tmp_path):
+    """Dispatcher has a key whose mapped heading is renamed or removed in
+    TOOL_GUIDE.md -> tool-guide-heading-missing."""
+    server_groovy = """\
+def getToolGuideSections() {
+    return [
+        device_authorization: '''## Device Authorization (CRITICAL)
+Body.'''
+    ]
+}
+"""
+    # Heading renamed -- "Device Authorization" no longer present in TOOL_GUIDE.md.
+    tool_guide_md = "## Some Unrelated Section\nStuff.\n"
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    missing_heading = [f for f in findings if f["code"] == "tool-guide-heading-missing"]
+    assert missing_heading, f"expected tool-guide-heading-missing finding, got: {findings}"
+    assert "device_authorization" in missing_heading[0]["message"]
+
+
+def test_check_tool_guide_pointers_no_dispatcher_function_flagged(monkeypatch, tmp_path):
+    """If getToolGuideSections() can't be located, fail loud rather than
+    silently passing (the worst possible failure mode: a refactor renames
+    the function and the lint goes silent)."""
+    server_groovy = "def someOtherFunction() { return [] }\n"
+    tool_guide_md = "## Whatever\n"
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    no_sections = [f for f in findings if f["code"] == "tool-guide-no-sections"]
+    assert no_sections, f"expected tool-guide-no-sections finding, got: {findings}"
+
+
+def test_check_tool_guide_pointers_8space_indent_required(monkeypatch, tmp_path):
+    """The section-key regex anchors at exactly 8 spaces of indentation so a
+    `something: '''` line at a different depth inside a baked markdown body
+    cannot be mistaken for a real section key. Confirm by embedding a
+    fake-looking pattern at 12 spaces (typical of nested-list content) and
+    asserting that a pointer at it flags as a broken pointer."""
+    # Note the 12-space indent on `nested_fake_key`. Without the strict
+    # 8-space anchor in the regex, this would be extracted as a section key
+    # and the broken-pointer test below would not trigger.
+    server_groovy = (
+        "def getToolGuideSections() {\n"
+        "    return [\n"
+        "        device_authorization: '''## Device Authorization\n"
+        "Body text.\n"
+        "            nested_fake_key: '''nested'''\n"
+        "More body.'''\n"
+        "    ]\n"
+        "}\n"
+        "\n"
+        "def someTool() {\n"
+        "    return [description: \"Call `get_tool_guide(section='nested_fake_key')` for foo.\"]\n"
+        "}\n"
+    )
+    tool_guide_md = "## Device Authorization\nStuff.\n"
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    broken = [f for f in findings if f["code"] == "tool-guide-broken-pointer"]
+    assert broken, f"expected the nested_fake_key pointer to flag as broken, got: {findings}"
+    assert "nested_fake_key" in broken[0]["message"]

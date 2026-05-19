@@ -132,16 +132,16 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         then: 'addTrigger trimmed -- per-capability families gone, but pointers remain'
         !addTrigger.contains('Capability families and the spec fields each accepts')
         addTrigger.contains('{discover: true}')
-        addTrigger.contains('TOOL_GUIDE.md')
+        addTrigger.contains("get_tool_guide(section='update_native_app_reference')")
 
         and: 'addAction trimmed -- capability list gone, but pointers remain'
         !addAction.contains('Capability families and the spec fields each accepts')
         addAction.contains('docs/rm_action_subtype_schemas.md')
         addAction.contains('{discover: true}')
 
-        and: 'addRequiredExpression trimmed -- STPage enum gone, TOOL_GUIDE pointer remains'
+        and: 'addRequiredExpression trimmed -- STPage enum gone, get_tool_guide pointer remains'
         !addRequiredExpression.contains("RM's STPage capability list")
-        addRequiredExpression.contains('TOOL_GUIDE.md')
+        addRequiredExpression.contains("get_tool_guide(section='update_native_app_reference')")
     }
 
     def "gateway-catalog mode preserves the full update_native_app description (content survives, only tokens stripped)"() {
@@ -291,8 +291,8 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         JsonOutput.toJson(firstFalse) == JsonOutput.toJson(secondFalse)
     }
 
-    def "schema description pointers match TOOL_GUIDE.md anchor names"() {
-        given: 'schema descriptions name-drop specific TOOL_GUIDE subsections; rename of any breaks the trim contract silently'
+    def "schema description pointers resolve to existing get_tool_guide sections"() {
+        given: 'schema descriptions tell callers to fetch reference content via get_tool_guide(section=X)'
         def allDefs = script.getAllToolDefinitions()
         def updateNativeDef = allDefs.find { it.name == 'update_native_app' }
         def listDevicesDef = allDefs.find { it.name == 'list_devices' }
@@ -301,35 +301,100 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def addTriggerDesc = updateNativeDef.inputSchema.properties.addTrigger.description as String
         def addActionDesc = updateNativeDef.inputSchema.properties.addAction.description as String
         def addRequiredExprDesc = updateNativeDef.inputSchema.properties.addRequiredExpression.description as String
+        def listDevicesFieldsDesc = listDevicesDef.inputSchema.properties.fields.description as String
 
-        when:
-        // Resolve TOOL_GUIDE.md relative to the project root (gradle runs from there).
-        def toolGuide = new File('TOOL_GUIDE.md').text
+        when: 'collect every section name from get_tool_guide and every pointer in the schemas'
+        def validSections = script.getToolGuideSections().keySet() as Set
+        def pointerPattern = ~/get_tool_guide\(section\s*=\s*['"]([a-z_]+)['"]\)/
+        def descriptionsToCheck = [
+            addTriggerDesc, addRequiredExprDesc,
+            listDevicesDef.description as String, listDevicesFieldsDesc,
+            hpmDriftDef.description as String,
+            createNativeDef.description as String,
+        ]
+        def pointerSections = [] as Set
+        descriptionsToCheck.each { desc ->
+            def m = pointerPattern.matcher(desc)
+            while (m.find()) {
+                pointerSections << m.group(1)
+            }
+        }
 
-        then: 'every TOOL_GUIDE anchor cited in the schema actually exists as a section heading'
-        addTriggerDesc.contains('TOOL_GUIDE.md')
+        then: 'every get_tool_guide(section=...) pointer in the schemas references a section that actually exists'
+        // Guards against silent breakage if a section is renamed in getToolGuideSections
+        // or a pointer is typoed. The previous test version pinned against TOOL_GUIDE.md
+        // headings -- correct as far as it went, but didn't ensure the content was
+        // actually reachable through the MCP layer at runtime. This is the test that
+        // proves flat-mode callers can fetch the reference content the trim points them at.
+        //
+        // 4 unique sections across the 5 trimmed description sites:
+        // - update_native_app_reference (addTrigger + addRequiredExpression both point here)
+        // - performance (list_devices top-level + .fields property)
+        // - builtin_app_tools (get_hpm_drift)
+        // - create_native_app_reference (create_native_app)
+        pointerSections.containsAll(['update_native_app_reference', 'performance', 'builtin_app_tools', 'create_native_app_reference'])
+        pointerSections.every { it in validSections }
+
+        and: 'each of the 4 trimmed tools carries at least one valid get_tool_guide pointer in its flat-mode reachable description text'
+        addTriggerDesc =~ pointerPattern
+        addRequiredExprDesc =~ pointerPattern
+        listDevicesDef.description =~ pointerPattern
+        hpmDriftDef.description =~ pointerPattern
+        createNativeDef.description =~ pointerPattern
+
+        and: 'addAction continues to rely on {discover: true} + docs/rm_action_subtype_schemas.md (separate path; covered for completeness)'
+        addActionDesc.contains('{discover: true}')
         addActionDesc.contains('docs/rm_action_subtype_schemas.md')
-        addRequiredExprDesc.contains('TOOL_GUIDE.md')
-
-        and: 'the update_native_app anchors exist as markdown headings'
-        toolGuide.contains('#### `update_native_app` capability reference')
-        toolGuide.contains('##### `addTrigger` capability families')
-        toolGuide.contains('##### `addAction` capability families')
-        toolGuide.contains('##### `addRequiredExpression` STPage capability list')
-
-        and: 'the three newly-trimmed tools point at sections that exist in TOOL_GUIDE'
-        // Anchors for the 3-tool extension (list_devices, get_hpm_drift,
-        // create_native_app). A renamed section would silently break the pointer
-        // that flat-mode callers rely on.
-        listDevicesDef.description.contains('TOOL_GUIDE.md')
-        hpmDriftDef.description.contains('TOOL_GUIDE.md')
-        createNativeDef.description.contains('TOOL_GUIDE.md')
-        toolGuide.contains('### manage_hpm (2 tools)')
-        toolGuide.contains('## Performance Tips')
-        toolGuide.contains('#### `create_native_app` reference')
-
-        and: 'rm_action_subtype_schemas.md (referenced from addAction) still exists'
         new File('docs/rm_action_subtype_schemas.md').exists()
+
+        and: 'the two new sections this PR added are present and non-empty'
+        validSections.contains('update_native_app_reference')
+        validSections.contains('create_native_app_reference')
+        (script.getToolGuideSections()['update_native_app_reference'] as String).length() > 500
+        (script.getToolGuideSections()['create_native_app_reference'] as String).length() > 200
+    }
+
+    def "get_tool_guide end-to-end: dispatcher resolves the new section keys and returns sentinel-bearing content"() {
+        // The pointer-resolution test above asserts the keys exist in the
+        // getToolGuideSections() map. This test exercises the actual runtime
+        // dispatch path -- toolGetToolGuide() does case-folding + non-alnum
+        // normalization (see hubitat-mcp-server.groovy normalization in
+        // toolGetToolGuide), and the schema enum gate guards the section
+        // parameter. A future refactor that wraps the dispatcher in a guard,
+        // tightens the normalization, or shifts the success-envelope shape
+        // would slip past the previous test but not this one.
+        when: 'fetch the two PR-introduced sections through the live dispatcher'
+        def updateNativeResult = script.toolGetToolGuide('update_native_app_reference')
+        def createNativeResult = script.toolGetToolGuide('create_native_app_reference')
+
+        then: 'success envelope with content matching the section names'
+        updateNativeResult.success == true
+        updateNativeResult.section == 'update_native_app_reference'
+        createNativeResult.success == true
+        createNativeResult.section == 'create_native_app_reference'
+
+        and: 'content carries sentinel phrases unique to each section -- catches drift to a stub even if the map key survives'
+        // update_native_app_reference must include all three sub-headings (catches
+        // a stub-replacement that drops one of the three families).
+        updateNativeResult.content.contains('`addTrigger` capability families')
+        updateNativeResult.content.contains('`addAction` capability families')
+        updateNativeResult.content.contains('`addRequiredExpression` STPage capability list')
+        // Plus a few specific capability names from the deepest bullets so a
+        // halving of the body during refactor would show up here.
+        updateNativeResult.content.contains('Periodic Schedule')
+        updateNativeResult.content.contains('Custom Attribute')
+
+        and: 'create_native_app_reference must include both subsections'
+        createNativeResult.content.contains('appType options')
+        createNativeResult.content.contains('Partial-success protocol')
+        createNativeResult.content.contains('partialTriggers')
+        createNativeResult.content.contains('repairHints')
+
+        and: 'apostrophe escape regression guard -- the bake must not introduce stray backslashes (cf review of b6fe4ab where action\\\'s appeared as a transcription error)'
+        // If the bake reintroduces backslash-escaped apostrophes, the rendered
+        // text would contain a literal backslash followed by an apostrophe.
+        !updateNativeResult.content.contains("action\\'s")
+        !createNativeResult.content.contains("action\\'s")
     }
 
     def "the 3 newly-trimmed tools strip their wrapped content in flat mode but keep it in gateway mode"() {
@@ -361,10 +426,10 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !hpmDriftFlat.contains('Data-quality warning types in dataQualityWarnings[]')
         !createNativeFlat.contains('PARTIAL-SUCCESS HANDLING')
 
-        and: 'flat-mode keeps the TOOL_GUIDE pointer for each -- callers must have a fallback'
-        listDevicesFlat.contains('TOOL_GUIDE.md')
-        hpmDriftFlat.contains('TOOL_GUIDE.md')
-        createNativeFlat.contains('TOOL_GUIDE.md')
+        and: 'flat-mode keeps a get_tool_guide pointer for each -- callers must have a fallback'
+        listDevicesFlat.contains('get_tool_guide(')
+        hpmDriftFlat.contains('get_tool_guide(')
+        createNativeFlat.contains('get_tool_guide(')
 
         and: 'gateway-mode keeps the same sentinel phrases (token-only strip preserves content)'
         listDevicesGw.contains('Server-side filtering (all applied before pagination)')
@@ -398,13 +463,13 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
             .find { it.name == 'list_devices' }
             .inputSchema.properties.fields.description as String
 
-        then: 'flat-mode strips the valid-name enumeration; the pointer to TOOL_GUIDE survives'
+        then: 'flat-mode strips the valid-name enumeration; the pointer to get_tool_guide survives'
         // 'mcpManaged' is a field name inside the wrapped block; "auto-promotes"
         // is the start of the projection-semantics paragraph also inside the
         // marker. Both must be absent in flat mode.
         !flatFieldsDesc.contains('mcpManaged')
         !flatFieldsDesc.contains('auto-promotes the response to detailed mode')
-        flatFieldsDesc.contains('TOOL_GUIDE.md')
+        flatFieldsDesc.contains("get_tool_guide(section='performance')")
 
         and: 'gateway-mode keeps the full enumeration; marker tokens stripped'
         gwFieldsDesc.contains('mcpManaged')
