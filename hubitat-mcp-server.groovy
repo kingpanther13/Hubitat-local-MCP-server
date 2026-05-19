@@ -1549,7 +1549,7 @@ At least one of expectedValue or expectedValues must be provided. If both are pr
             name: "custom_create_rule",
             description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use manage_native_rules_and_apps create_native_app instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
 
-Create a new automation rule (MCP sandbox engine). Use get_tool_guide section=rules for structure, syntax, and examples.
+Create a new automation rule (MCP sandbox engine). Call `get_tool_guide(section='rules')` for structure, syntax, and examples.
 
 Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
 Condition types: device_state, device_was, time_range, mode, variable, days_of_week, sun_position, hsm_status
@@ -2170,7 +2170,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
             name: "update_device",
             description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
 
-Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. See get_tool_guide section=update_device for preferences format.""",
+Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. Call `get_tool_guide(section='update_device')` for preferences format.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2744,7 +2744,7 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "list_rm_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires Built-in App Tools enabled. See get_tool_guide section=builtin_app_tools for details and platform limitations on RM rule internals.",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires Built-in App Tools enabled. Call `get_tool_guide(section='builtin_app_tools')` for details and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2754,7 +2754,7 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         ],
         [
             name: "run_rm_rule",
-            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires Built-in App Tools enabled. See get_tool_guide section=builtin_app_tools for action semantics.",
+            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires Built-in App Tools enabled. Call `get_tool_guide(section='builtin_app_tools')` for action semantics.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2788,7 +2788,7 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         ],
         [
             name: "set_rm_rule_boolean",
-            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires Built-in App Tools enabled. See get_tool_guide section=builtin_app_tools for pattern and coercion policy.",
+            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires Built-in App Tools enabled. Call `get_tool_guide(section='builtin_app_tools')` for pattern and coercion policy.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -10127,7 +10127,7 @@ def toolGetAppConfig(args) {
         return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
     if (!(parsed.configPage.sections instanceof List)) {
-        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call list_app_pages for this app, or consult get_tool_guide section=builtin_app_tools for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call list_app_pages for this app, or `get_tool_guide(section='builtin_app_tools')` for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
     }
 
     // Hub returns app.appType as a ~30-key metadata object (author, classLocation,
@@ -22222,11 +22222,11 @@ For BACKUP enumeration and restore, use the unified **list_item_backups** + **re
   check_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
   delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}''',
 
-        update_native_app_reference: '''#### `update_native_app` capability reference
+        update_native_app_reference: '''## `update_native_app` capability reference
 
 Reference for the three `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
 
-##### `addTrigger` capability families
+### `addTrigger` capability families
 
 - **Device-state** (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source): `capability`, `deviceIds`, `state` (`'on'`, `'active'`, `'open'`, `'unlocked'`, etc.)
 - **Multi-device "all of these"**: add `allOfThese=true` to the device-state spec
@@ -22254,9 +22254,9 @@ Reference for the three `update_native_app` structured shortcuts (`addTrigger`, 
   ```
   Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod1` → `everyN`/select → time → Done) so the trigger description bakes correctly.
 
-##### `addAction` capability families
+### `addAction` capability families
 
-For machine-readable per-field schemas (with `action` enums and per-action required fields), see `docs/rm_action_subtype_schemas.md` — that doc is generated from `_rmActionSchemaForDiscover()` and stays in sync with the live code.
+For the live machine-readable per-field schema (action enums, required and optional fields), pass `addAction: {discover: true}`. The repo-side `docs/rm_action_subtype_schemas.md` is a human-readable copy of the same content generated from `_rmActionSchemaForDiscover()`; it is not fetchable from the hub.
 
 - **Switch** (`capability='switch'`): `action='on'`/`'off'`/`'toggle'`/`'flash'` + `deviceIds`. `action='setPerMode' + deviceIds + perMode={modeIdOrName: 'on'|'off', ...}`. `action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}`.
   - **NOTE:** `action='flash'` starts a flash schedule on devices that support `.flash()` (Hue groups, many Z-Wave/Zigbee dimmer modules). RM 5.1 has NO native "stop flash" action subtype — calling `switch.on`/`.off` afterward does NOT cancel the flash schedule. To stop a running flash from within a rule, use `capability='runCommand'` with `command='flashOff'` on the same device list.
@@ -22300,13 +22300,13 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
   - `repeat` + `hours`/`minutes`/`seconds` + optional `times` + `stoppable`
   - `repeatWhile` + `expression={conditions:[...], operator?:..., operators?:[...]}` + optional `hours`/`minutes`/`seconds`/`times`/`stoppable`
   - `waitExpression` + `expression={...}` + optional `delay={hours,minutes,seconds}` + `useDuration=true|false`
-  - `waitEvents` + `events=[{capability, deviceIds, state, andStays?}, ...]`. **LIMIT**: only ONE `waitEvents` action per rule; RM 5.1 stores wait events in global per-rule settings (not per-action), so a second `waitEvents` action silently overwrites the first. Combine multiple waits into one action\\'s `events` array, or split into chained sub-rules.
+  - `waitEvents` + `events=[{capability, deviceIds, state, andStays?}, ...]`. **LIMIT**: only ONE `waitEvents` action per rule; RM 5.1 stores wait events in global per-rule settings (not per-action), so a second `waitEvents` action silently overwrites the first. Combine multiple waits into one action's `events` array, or split into chained sub-rules.
   - `ifThen` + `expression={...}` (opens IF block; close with `endIf`)
   - `elseIf` + `expression={...}` (continues IF block; needs preceding `ifThen`)
   - `else` (no fields; needs preceding `ifThen` or `elseIf`)
   - `endIf` (no fields; closes the IF block)
 
-##### `addRequiredExpression` STPage capability list
+### `addRequiredExpression` STPage capability list
 
 RM 5.1 Required Expression conditions accept these `capability` values (per-condition):
 
@@ -22318,16 +22318,16 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 
 Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.''',
 
-        create_native_app_reference: '''#### `create_native_app` reference
+        create_native_app_reference: '''## `create_native_app` reference
 
-##### appType options
+### appType options
 
 `appType` (default: `rule_machine`) selects which class of native app to create:
 
 - `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live).
 - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `update_native_app` / `delete_native_app` already work on them today via their `appId`.
 
-##### Partial-success protocol
+### Partial-success protocol
 
 The tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
 

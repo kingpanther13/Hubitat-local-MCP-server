@@ -326,7 +326,13 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // headings -- correct as far as it went, but didn't ensure the content was
         // actually reachable through the MCP layer at runtime. This is the test that
         // proves flat-mode callers can fetch the reference content the trim points them at.
-        pointerSections.size() >= 4   // at minimum update_native_app addTrigger + addRequiredExpression, list_devices, get_hpm_drift, create_native_app
+        //
+        // 4 unique sections across the 5 trimmed description sites:
+        // - update_native_app_reference (addTrigger + addRequiredExpression both point here)
+        // - performance (list_devices top-level + .fields property)
+        // - builtin_app_tools (get_hpm_drift)
+        // - create_native_app_reference (create_native_app)
+        pointerSections.containsAll(['update_native_app_reference', 'performance', 'builtin_app_tools', 'create_native_app_reference'])
         pointerSections.every { it in validSections }
 
         and: 'each of the 4 trimmed tools carries at least one valid get_tool_guide pointer in its flat-mode reachable description text'
@@ -346,6 +352,49 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         validSections.contains('create_native_app_reference')
         (script.getToolGuideSections()['update_native_app_reference'] as String).length() > 500
         (script.getToolGuideSections()['create_native_app_reference'] as String).length() > 200
+    }
+
+    def "get_tool_guide end-to-end: dispatcher resolves the new section keys and returns sentinel-bearing content"() {
+        // The pointer-resolution test above asserts the keys exist in the
+        // getToolGuideSections() map. This test exercises the actual runtime
+        // dispatch path -- toolGetToolGuide() does case-folding + non-alnum
+        // normalization (see hubitat-mcp-server.groovy normalization in
+        // toolGetToolGuide), and the schema enum gate guards the section
+        // parameter. A future refactor that wraps the dispatcher in a guard,
+        // tightens the normalization, or shifts the success-envelope shape
+        // would slip past the previous test but not this one.
+        when: 'fetch the two PR-introduced sections through the live dispatcher'
+        def updateNativeResult = script.toolGetToolGuide('update_native_app_reference')
+        def createNativeResult = script.toolGetToolGuide('create_native_app_reference')
+
+        then: 'success envelope with content matching the section names'
+        updateNativeResult.success == true
+        updateNativeResult.section == 'update_native_app_reference'
+        createNativeResult.success == true
+        createNativeResult.section == 'create_native_app_reference'
+
+        and: 'content carries sentinel phrases unique to each section -- catches drift to a stub even if the map key survives'
+        // update_native_app_reference must include all three sub-headings (catches
+        // a stub-replacement that drops one of the three families).
+        updateNativeResult.content.contains('`addTrigger` capability families')
+        updateNativeResult.content.contains('`addAction` capability families')
+        updateNativeResult.content.contains('`addRequiredExpression` STPage capability list')
+        // Plus a few specific capability names from the deepest bullets so a
+        // halving of the body during refactor would show up here.
+        updateNativeResult.content.contains('Periodic Schedule')
+        updateNativeResult.content.contains('Custom Attribute')
+
+        and: 'create_native_app_reference must include both subsections'
+        createNativeResult.content.contains('appType options')
+        createNativeResult.content.contains('Partial-success protocol')
+        createNativeResult.content.contains('partialTriggers')
+        createNativeResult.content.contains('repairHints')
+
+        and: 'apostrophe escape regression guard -- the bake must not introduce stray backslashes (cf review of b6fe4ab where action\\\'s appeared as a transcription error)'
+        // If the bake reintroduces backslash-escaped apostrophes, the rendered
+        // text would contain a literal backslash followed by an apostrophe.
+        !updateNativeResult.content.contains("action\\'s")
+        !createNativeResult.content.contains("action\\'s")
     }
 
     def "the 3 newly-trimmed tools strip their wrapped content in flat mode but keep it in gateway mode"() {

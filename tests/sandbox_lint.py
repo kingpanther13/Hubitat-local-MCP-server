@@ -1179,15 +1179,25 @@ def check_tool_guide_pointers() -> list[dict]:
     """Verify every get_tool_guide(section='X') pointer in the .groovy schemas
     references a section key that actually exists in getToolGuideSections().
 
-    Failure mode this catches: schema description text says
-    "Call get_tool_guide(section='X') for the foo reference" but X is not
-    a key in the getToolGuideSections() map. Flat-mode callers following
-    the pointer get a 'section not found' response or worse, an empty
-    payload they have to interpret.
+    Three failure modes this catches:
 
-    Drift dimension also caught: every getToolGuideSections key should have
-    a corresponding heading in TOOL_GUIDE.md. We assert presence (not exact
-    content match) so prose tweaks don't trip the lint; renames or deletes do.
+    1. **Broken pointer.** Schema description says "Call
+       `get_tool_guide(section='X')` for the foo reference" but X is not a
+       key in the getToolGuideSections() map. Flat-mode callers following
+       the pointer get a 'section not found' response. Emitted as
+       `tool-guide-broken-pointer`.
+
+    2. **Drifted heading.** Every getToolGuideSections key should have a
+       corresponding heading in TOOL_GUIDE.md (mapped through the
+       `key_to_heading_hint` table below). Presence (not exact content
+       match) so prose tweaks don't trip the lint; renames or deletes do.
+       Emitted as `tool-guide-heading-missing`.
+
+    3. **Unmapped new key.** A section added to the dispatcher without an
+       entry in `key_to_heading_hint` fails loud rather than silently
+       skipping the drift check for that key. Forces the contributor adding
+       the section to also add the hint. Emitted as
+       `tool-guide-no-heading-hint`.
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
@@ -1195,8 +1205,8 @@ def check_tool_guide_pointers() -> list[dict]:
     if not server.exists() or not tool_guide.exists():
         return findings
 
-    src = server.read_text(encoding="utf-8")
-    tg = tool_guide.read_text(encoding="utf-8")
+    src = server.read_text(encoding="utf-8", errors="replace")
+    tg = tool_guide.read_text(encoding="utf-8", errors="replace")
 
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
@@ -1216,7 +1226,10 @@ def check_tool_guide_pointers() -> list[dict]:
         return findings
 
     sections_block = sections_block_match.group(1)
-    section_keys = set(re.findall(r"^\s*([a-z_][a-z0-9_]*):\s*'''", sections_block, re.MULTILINE))
+    # Match exactly the 8-space top-level indentation inside `return [ ... ]` so a stray
+    # `something: '''` inside one of the baked markdown bodies (deeper indentation, or
+    # mid-paragraph) can't be mistaken for a real section key.
+    section_keys = set(re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*'''", sections_block, re.MULTILINE))
 
     # 2. Extract every get_tool_guide(section='X') reference from the .groovy.
     #    Tolerate both single and double quotes; whitespace around the `=`.
