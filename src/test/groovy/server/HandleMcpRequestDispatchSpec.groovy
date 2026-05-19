@@ -91,63 +91,55 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         }
     }
 
-    def "tools/list with useGateways=false returns the flat catalog through the JSON-RPC envelope (iterating cursors)"() {
+    def "tools/list with useGateways=false returns the full flat catalog in a single response (no pagination)"() {
         given: 'feature toggles on so the JSON-RPC envelope returns the full flat catalog'
         settingsMap.useGateways = false
         settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 51, method: 'tools/list', params: [:]])
 
-        when: 'iterate nextCursor until exhausted -- flat-mode catalog exceeds one page'
-        def allNamesList = []      // List (not Set) so an off-by-one cursor that duplicates a tool surfaces as a size mismatch.
-        def cursor = null
-        def pageCount = 0
-        for (;;) {
-            pageCount++
-            mcpDriver.pushBody([jsonrpc: '2.0', id: 50 + pageCount, method: 'tools/list', params: (cursor == null ? [:] : [cursor: cursor])])
-            script.handleMcpRequest()
-            def response = mcpDriver.parseResponseJson()
-            assert response.jsonrpc == '2.0'
-            assert response.id == 50 + pageCount
-            // nextCursor must be a String on the wire per MCP spec (cursor is opaque-string-typed).
-            // A regression to an Integer or other type would still round-trip via (cursor as String) on the request side,
-            // but is a spec violation -- pin it here.
-            if (response.result.nextCursor != null) {
-                assert response.result.nextCursor instanceof String : "nextCursor must be String, got ${response.result.nextCursor.class.simpleName}"
-            }
-            // Page-size invariant: each page MUST be <= pageSize entries. Pins the size
-            // constant against silent regression -- e.g., bumping to pageSize=200 would
-            // re-introduce the >128KB hub-limit failure but would still pass `pageCount > 1`
-            // and `tools.size() > 0` as long as the catalog fits in one page.
-            assert response.result.tools.size() <= 50 : "page exceeded pageSize=50: got ${response.result.tools.size()}"
-            allNamesList.addAll(response.result.tools*.name)
-            cursor = response.result.nextCursor
-            if (cursor == null) break
-            assert pageCount < 20 : "tools/list pagination iterated more than 20 pages -- runaway"
-        }
-        def allNames = allNamesList as Set
+        when:
+        script.handleMcpRequest()
+        def response = mcpDriver.parseResponseJson()
 
-        then: 'no duplicate tool surfaced across pages (off-by-one cursor arithmetic regression guard)'
-        allNamesList.size() == allNames.size()
+        then: 'JSON-RPC 2.0 success envelope'
+        response.jsonrpc == '2.0'
+        response.id == 51
+        response.error == null
 
-        and: 'gateway entries gone, sub-tools surface, search_tools suppressed'
-        !allNames.contains('manage_rooms')
-        !allNames.contains('manage_files')
-        !allNames.contains('search_tools')
-        allNames.contains('list_rooms')
-        allNames.contains('list_files')
-        allNames.contains('list_devices')
+        and: 'no nextCursor on the response -- pagination removed, full catalog returned at once'
+        // Pagination on tools/list was removed because MCP clients in the
+        // wild (including Claude.ai's connector) frequently do NOT iterate
+        // nextCursor automatically, leading to silent catalog truncation at
+        // the first page. Returning the full catalog -- backstopped by the
+        // universal response-size guard at handleMcpRequest() that emits a
+        // loud -32603 envelope if the catalog exceeds the hub's 124,000-byte
+        // cap -- avoids that footgun. Any client that DOES iterate nextCursor
+        // simply finds none and terminates after one call. Note: cursor
+        // pagination on tools/call (list_devices, list_installed_apps, etc.
+        // via _paginateList) is unchanged -- that is opt-in and remains.
+        !response.result.containsKey('nextCursor')
+
+        and: 'response carries every flat-mode tool (gateway entries gone, sub-tools surface, search_tools suppressed)'
+        def names = response.result.tools*.name as Set
+        !names.contains('manage_rooms')
+        !names.contains('manage_files')
+        !names.contains('search_tools')
+        names.contains('list_rooms')
+        names.contains('list_files')
+        names.contains('list_devices')
 
         and: 'feature-toggle-gated tools also surface (proves the envelope returns the full flat catalog, not just the cores)'
-        allNames.contains('list_rm_rules')
-        allNames.contains('list_installed_apps')
-        allNames.contains('custom_create_rule')
+        names.contains('list_rm_rules')
+        names.contains('list_installed_apps')
+        names.contains('custom_create_rule')
 
-        and: 'flat-mode catalog was big enough to require pagination'
-        pageCount > 1
+        and: 'no duplicate tool names in the response'
+        response.result.tools.size() == names.size()
     }
 
-    def "tools/list gateway-mode catalog fits on a single page (no nextCursor)"() {
-        given: 'useGateways=true; catalog is 36 entries, under page size of 50'
+    def "tools/list gateway-mode catalog also returns in a single response with no nextCursor"() {
+        given: 'useGateways=true; gateway catalog (~36 entries) was always single-response, regression guard for that'
         settingsMap.useGateways = true  // pin against harness flat-mode pre-seed
         mcpDriver.pushBody([jsonrpc: '2.0', id: 60, method: 'tools/list', params: [:]])
 
@@ -159,59 +151,19 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.tools instanceof List
         response.result.tools.size() > 0
 
-        and: 'no nextCursor because the gateway-mode catalog fits in one page'
+        and: 'no nextCursor in either mode now that tools/list pagination is removed'
         !response.result.containsKey('nextCursor')
     }
 
-    def "tools/list rejects a non-numeric cursor with -32602"() {
+    def "tools/list ignores any cursor parameter a stale client passes (graceful migration)"() {
+        // tools/list cursor handling was removed when the unconditional split was
+        // dropped. Stale clients that pass a cursor from a prior version's
+        // nextCursor (or any value -- numeric, non-numeric, out-of-range, negative,
+        // empty) now receive the full catalog rather than a -32602 error. Their
+        // iteration loop terminates on the missing nextCursor in the same response.
+        // Opt-in tools/call cursors (list_devices etc.) are not affected.
         given:
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 70, method: 'tools/list', params: [cursor: 'not-a-number']])
-
-        when:
-        script.handleMcpRequest()
-
-        then:
-        def response = mcpDriver.parseResponseJson()
-        response.error != null
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('cursor')
-    }
-
-    def "tools/list rejects an out-of-range cursor with -32602"() {
-        given:
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 71, method: 'tools/list', params: [cursor: '999999']])
-
-        when:
-        script.handleMcpRequest()
-
-        then:
-        def response = mcpDriver.parseResponseJson()
-        response.error != null
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('out of range')
-    }
-
-    def "tools/list rejects a negative cursor with -32602 (out-of-range, not -32603 IOOBE)"() {
-        // "-5".toInteger() returns -5 without throwing NumberFormatException, so it bypasses
-        // the parse-catch and lands in the startIdx < 0 disjunct of the range check. If that
-        // disjunct were ever dropped, subList(-5, end) would throw IndexOutOfBoundsException,
-        // propagating as -32603 ("Internal error") instead of -32602. Pin the -32602 contract.
-        given:
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 73, method: 'tools/list', params: [cursor: '-5']])
-
-        when:
-        script.handleMcpRequest()
-
-        then:
-        def response = mcpDriver.parseResponseJson()
-        response.error != null
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('out of range')
-    }
-
-    def "tools/list with empty cursor string starts from the first page"() {
-        given: 'empty-string cursor should behave like a missing cursor (start from beginning)'
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 72, method: 'tools/list', params: [cursor: '']])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 70, method: 'tools/list', params: [cursor: cursorValue]])
 
         when:
         script.handleMcpRequest()
@@ -221,6 +173,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.error == null
         response.result.tools instanceof List
         response.result.tools.size() > 0
+        !response.result.containsKey('nextCursor')
+
+        where:
+        cursorValue << ['not-a-number', '999999', '-5', '', '50']
     }
 
     def "tools/call returns response_too_large envelope when wire-encoded response exceeds the universal-guard threshold"() {

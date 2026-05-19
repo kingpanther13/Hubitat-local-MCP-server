@@ -22,9 +22,9 @@ When the toggle is off, the dispatch contract still holds: every gateway sub-too
 
 Default is **ON** (gateways enabled). Existing installations keep the gateway behavior on update. Counts here describe the shipped catalog; runtime `tools/list` size varies based on enabled settings (Built-in App Tools, Custom Rule Engine, and the gateway toggle all add or remove entries).
 
-### `tools/list` Pagination (v1.3.x+)
+### `tools/list` Returns the Full Catalog in One Response
 
-`tools/list` is cursor-paginated per the MCP protocol. Request a page with `params: { cursor: "<opaque-string>" }` (omit `cursor` for the first page); the response carries `tools: [...]` plus an optional `nextCursor` string when more pages exist. Page size is 50 — the gateway-mode catalog (~36 entries) fits in a single page so most MCP clients see no behaviour change, while the flat-mode catalog (100+ entries with the toggle off) returns multiple pages and the client iterates `nextCursor` until absent. Pagination keeps the response under the hub's 128KB JSON-RPC limit as the catalog grows. Cursor validation errors (`-32602`): non-numeric cursor and out-of-range cursor (including negative values) both surface as JSON-RPC `-32602 "Invalid params"` with a diagnostic message.
+`tools/list` returns the complete tool catalog in a single response (no pagination). Pagination was tried briefly (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — do NOT iterate `nextCursor` automatically, which silently truncated the catalog at the first 50 tools. The full-catalog response is backstopped by the universal response-size guard at `handleMcpRequest` (line 607, threshold 124,000 bytes) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub's 128KB JSON-RPC limit — better to fail loud than silently lose tools. Stale clients that pass a `cursor` param get the full catalog and find no `nextCursor`, so any iteration loop terminates after one call. Opt-in cursor pagination on `tools/call` (`list_devices`, `list_installed_apps`, `list_rm_rules`, etc.) is unaffected — see the next section.
 
 ### `tools/call` Response-Size Guard (v1.3.x+, fail-soft)
 
@@ -45,7 +45,7 @@ The outer JSON-RPC envelope still reports success (this is not a tool error — 
 
 Opt-in cursor pagination is currently wired into the following read-only tools. All follow the same contract: omit `cursor` for the full list (backward-compatible, backstopped by the size guard), pass `cursor: ""` for the first page, then iterate `nextCursor` until absent. Cursor is opaque per the MCP convention; non-numeric / out-of-range values reject as `-32602`.
 
-These tools intentionally diverge from the `tools/list` "omit cursor = first page" convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in.
+These tools follow an explicit opt-in convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in. (Pre-PR `tools/list` had its own different shape — unconditional pagination at 50/page — which is now removed; see the previous section.)
 
 | Tool | Page size | Notes |
 |---|---|---|

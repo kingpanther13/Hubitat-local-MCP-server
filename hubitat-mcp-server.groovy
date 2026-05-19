@@ -684,39 +684,25 @@ def handleInitialize(msg) {
 }
 
 def handleToolsList(msg) {
-    // Cursor-based pagination for tools/list, matching the MCP protocol version this server
-    // declares in handleInitialize (see protocolVersion above). Cursor and nextCursor are
-    // the wire-contract pagination fields specified for tools/list and remain stable across
-    // MCP revisions, so this is forward-compatible with a protocol-version bump that keeps
-    // the same field shape. Page size 50 keeps the response under the hub's 128KB JSON-RPC
-    // limit even as the catalog grows -- a page of 50 tools at the current average
-    // description size (~1.2 KB) stays well within budget. Gateway-mode catalog (~36
-    // entries) fits in one page so there is no client-visible behaviour change. Flat-mode
-    // catalog (100+ entries) gets paginated; MCP clients iterate nextCursor per the protocol.
-    // (Inlined rather than declared `private static final` because Hubitat's app-DSL script
-    // context rejects access modifiers on top-level statements -- "Modifier 'private' not
-    // allowed here" at compile time.)
-    final int pageSize = 50
+    // tools/list returns the full catalog in a single response. Pagination was
+    // attempted in #190 (page size 50, cursor-based), but in practice many MCP
+    // clients -- including Claude.ai's connector -- do NOT iterate `nextCursor`
+    // automatically, so any client that ignored pagination only ever saw the
+    // first 50 tools (silent catalog truncation, ~50% of the flat-mode catalog
+    // invisible to those clients). The MCP protocol allows but does not require
+    // server-side pagination of tools/list; the safer default is "send the whole
+    // catalog and let the universal response-size guard at handleMcpRequest()
+    // backstop oversized responses with a loud -32603 envelope" rather than
+    // "split silently and hope the client iterates."
+    //
+    // Stale clients that pass a `cursor` param get the full catalog regardless;
+    // there is no longer a nextCursor in the response, so any iteration loop
+    // terminates after one call. Cursor pagination on tools/call (list_devices,
+    // list_installed_apps, list_rm_rules, etc. via _paginateList) is unchanged
+    // -- that is opt-in and the size guard's "suggestion" hints already point
+    // callers at it when needed.
     def all = getToolDefinitions()
-    def cursor = msg.params?.cursor
-    int startIdx = 0
-    if (cursor != null && cursor != "") {
-        try {
-            startIdx = (cursor as String).toInteger()
-        } catch (NumberFormatException ignored) {
-            return jsonRpcError(msg.id, -32602, "Invalid params: cursor must be the opaque string returned by a prior tools/list nextCursor (got: ${cursor})")
-        }
-        if (startIdx < 0 || startIdx >= all.size()) {
-            return jsonRpcError(msg.id, -32602, "Invalid params: cursor ${cursor} is out of range")
-        }
-    }
-    def endIdx = Math.min(startIdx + pageSize, all.size())
-    def page = all.subList(startIdx, endIdx)
-    def result = [tools: page]
-    if (endIdx < all.size()) {
-        result.nextCursor = endIdx.toString()
-    }
-    return jsonRpcResult(msg.id, result)
+    return jsonRpcResult(msg.id, [tools: all])
 }
 
 def handleToolsCall(msg) {
