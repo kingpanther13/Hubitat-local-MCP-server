@@ -603,8 +603,16 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
   - `startRaiseLower` + `deviceIds` + `direction='raise'|'lower'`
   - `stopChanging` + `deviceIds`
   - `setLevelPerMode` + `deviceIds` + `perMode={modeIdOrName: level, ...}` + optional `fadeSeconds`
-- **Color** (`capability='color'`, RGBW bulbs): `setColor`, `toggleColor`, `setColorPerMode`. Fields: `colorName`, optional `level`, `perMode={modeIdOrName: {color: 'Red', level: 70}, ...}`.
-- **Color Temperature** (`capability='colorTemp'`): `setColorTemp`, `toggleColorTemp`, `fadeColorTemp`, `stopColorTempFade`, `setColorTempPerMode`. Fields: `kelvin`, `targetKelvin`, `minutes`, `direction`, `level`, `perMode`.
+- **Color** (`capability='color'`, RGBW bulbs):
+  - `setColor` + `deviceIds` + `colorName` + optional `level`
+  - `toggleColor` + `deviceIds` + `colorName` + optional `level`
+  - `setColorPerMode` + `deviceIds` + `perMode={modeIdOrName: {color: 'Red', level: 70}, ...}`
+- **Color Temperature** (`capability='colorTemp'`):
+  - `setColorTemp` + `deviceIds` + `kelvin` + optional `level`
+  - `toggleColorTemp` + `deviceIds` + `kelvin` + optional `level`
+  - `fadeColorTemp` + `deviceIds` + `targetKelvin` + `minutes` + `direction='raise'|'lower'`
+  - `stopColorTempFade` (no fields)
+  - `setColorTempPerMode` + `deviceIds` + `perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}`
 - **Button** (`capability='button'`, pushable-button devices): `push` + `deviceIds` + `buttonNumber`. `pushPerMode` + `deviceIds` + `perMode={modeIdOrName: buttonNumber, ...}`. `choosePerMode` + `buttonNumber` + `perMode={modeIdOrName: [deviceIds], ...}`.
 - **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'NUMBER',value:75},...]` + optional `useLastEventDevice`. Calls any device-driver command (`off`, `on`, `setLevel`, `flashOff`, `refresh`, custom-driver verbs, etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings.
 - **File IO** (`capability='fileWrite'`/`'fileAppend'`/`'fileDelete'`): `fileWrite` + `fileName` + `content` (overwrites). `fileAppend` + `fileName` + `content` (file must exist; `localFile` is an enum picker). `fileDelete` + `fileName`.

@@ -38,12 +38,18 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         settingsMap.enableCustomRuleEngine = true
     }
 
-    def "flat-mode tools/list catalog fits under the 121,000-byte response budget"() {
+    def "flat-mode tools/list full-catalog size keeps ~3 KB headroom under the 124,000-byte cap"() {
         given: 'every feature toggle on so the flat catalog is at its widest'
         settingsMap.useGateways = false
         enableEveryToggle()
 
         when:
+        // Defense-in-depth on issue #181's headroom goal. handleToolsList paginates at
+        // page size 50, so no single wire response carries this whole catalog -- this
+        // test guards the total catalog footprint, not a wire-cap. Keeping the catalog
+        // sub-124 KB protects flat-mode clients that fetch the whole catalog at once
+        // (custom MCP wrappers, debug dumps) and protects pagination-fetch clients
+        // from per-page bloat that would still degrade hub response time.
         def tools = script.getToolDefinitions()
         def catalogBytes = JsonOutput.toJson(tools).getBytes('UTF-8').length
 
@@ -234,17 +240,19 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def corpus = script.buildToolSearchCorpus()
 
         then: 'no marker tokens leak into any corpus entry'
-        // The corpus already drops tokens for both core and gateway-routed tools.
-        // Today the gateway-routed branch (line ~21822 in hubitat-mcp-server.groovy)
-        // uses `summary + gateway.description` which never carries markers, so the
-        // strip is defensive. If a future core tool ever wraps prose in [[FLAT_TRIM]]
-        // markers, this guard catches the case where applyDescriptionTransform was
-        // skipped on the core branch.
+        // The corpus drops tokens for both core and gateway-routed tools. Today the
+        // gateway-routed branch (line ~21822 in hubitat-mcp-server.groovy) uses
+        // `summary + gateway.description` which never carries markers, so the strip is
+        // defensive. If a future core tool ever wraps prose in [[FLAT_TRIM]] markers,
+        // this guard catches the case where applyDescriptionTransform was skipped on
+        // the core branch.
+        //
+        // We only assert on `description` -- the load-bearing field. `params` is
+        // joined property names (no descriptions) and `hints` is author-controlled
+        // config text in gatewayConfig, so neither structurally can carry markers.
         corpus.every {
             !((String) (it.description ?: '')).contains(OPEN_MARKER) &&
-            !((String) (it.description ?: '')).contains(CLOSE_MARKER) &&
-            !((String) (it.params ?: '')).contains(OPEN_MARKER) &&
-            !((String) (it.hints ?: '')).contains(OPEN_MARKER)
+            !((String) (it.description ?: '')).contains(CLOSE_MARKER)
         }
     }
 

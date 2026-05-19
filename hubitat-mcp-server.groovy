@@ -1276,6 +1276,12 @@ def stripFlatTrim(String text, boolean dropContent) {
     // Markers must be balanced and non-nested. An unmatched open or close passes
     // through unchanged (fail-loud rather than silent leak); CI guards against
     // marker leakage in the rendered JSON so a stray open never escapes.
+    //
+    // Own-line markers require at least one preceding character in the description
+    // (today every wrapped block has paragraph prose before it -- adding a marker
+    // at literally position zero would fall to the inline pass and leak a leading
+    // newline). Not enforced in code; would surface as a token-leak test failure
+    // for the (today unused) first-char marker placement.
     if (dropContent) {
         return text
             // Own-line block first: eats the leading newline + marker line + content
