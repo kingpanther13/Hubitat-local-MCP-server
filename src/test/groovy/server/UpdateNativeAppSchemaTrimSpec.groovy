@@ -21,15 +21,15 @@ import support.ToolSpecBase
  */
 class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
-    // 118,000 = ~6 KB headroom under the hub's 124,000-byte JSON-RPC response cap
-    // and ~3 KB tripwire above today's ~115 KB post-trim catalog. Issue #181 named
-    // a strict ≤120,000 target; we beat it after extending the trim to the top-4
-    // heaviest tools (update_native_app, get_hpm_drift, create_native_app,
-    // list_devices). The lower bound (FLAT_CATALOG_BYTE_FLOOR) guards against an
-    // accidental over-trim regression where someone drops content unconditionally
-    // -- if the catalog ever falls below ~100 KB on a flat-mode run, something
-    // important is missing.
-    private static final int FLAT_CATALOG_BYTE_BUDGET = 118_000
+    // 122,000 = ~2 KB headroom under the hub's 124,000-byte JSON-RPC response cap.
+    // The earlier 118,000 budget had ~6 KB headroom but no MCP `annotations.readOnlyHint`
+    // / `destructiveHint` keys -- adding those for client-side Read/Write grouping
+    // costs ~5 KB across the ~100-tool flat catalog. The 2 KB residual headroom
+    // is still wider than any single description's variance. The lower bound
+    // (FLAT_CATALOG_BYTE_FLOOR) guards against an accidental over-trim regression
+    // where someone drops content unconditionally -- if the catalog ever falls
+    // below ~100 KB on a flat-mode run, something important is missing.
+    private static final int FLAT_CATALOG_BYTE_BUDGET = 122_000
     private static final int FLAT_CATALOG_BYTE_FLOOR = 100_000
     private static final String OPEN_MARKER = '[[FLAT_TRIM]]'
     private static final String CLOSE_MARKER = '[[/FLAT_TRIM]]'

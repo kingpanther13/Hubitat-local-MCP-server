@@ -1153,6 +1153,106 @@ def getGatewayConfig() {
     ]
 }
 
+// ==================== MCP TOOL ANNOTATIONS ====================
+// MCP spec `annotations.readOnlyHint` / `destructiveHint` drive client-side
+// grouping. Claude.ai's connector UI splits a server's catalog into Read /
+// Write blocks from readOnlyHint; entries missing it land in a generic
+// "Other tools" bucket.
+//
+// Classification model (kept simple and conservative):
+//   * read-only = does not modify hub or device state. Anything else is
+//     write+destructive. There is no non-destructive-write subset --
+//     this matches the MCP spec default (destructiveHint defaults to true
+//     when readOnlyHint=false) and gets every write the more cautious
+//     permission prompt in clients that surface destructiveHint.
+//   * Both annotation keys are emitted explicitly (never omitted on writes)
+//     so clients do not need to rely on spec defaults.
+//   * The read-only set is POSITIVE: a tool that nobody lists here falls
+//     to write+destructive. New tools default to the safer prompt; the
+//     "every leaf classified" spec test forces the decision to be made
+//     in code review rather than left implicit.
+
+def getReadOnlyToolNames() {
+    return [
+        // Device introspection
+        "list_devices", "get_device", "get_attribute", "get_device_events",
+        "poll_until_attribute",
+        // Custom rule reads (legacy MCP engine) -- test_rule is dry-run, no
+        // actions fire; export is a serialization read.
+        "custom_list_rules", "custom_get_rule", "custom_test_rule",
+        "custom_get_rule_diagnostics", "custom_export_rule",
+        // Hub state reads
+        "get_hub_info", "get_modes", "get_hsm_status", "check_for_update",
+        // Variables (reads)
+        "list_variables", "get_variable", "get_variable_history",
+        // Captured states (read)
+        "list_captured_states",
+        // Diagnostics + logs (read)
+        "get_debug_logs", "get_logging_status", "generate_bug_report",
+        "get_hub_logs", "get_device_history", "get_performance_stats",
+        "get_hub_jobs", "get_memory_history",
+        "get_zwave_details", "get_zigbee_details",
+        // device_health_check has an optional identifyHub LED blink, but its
+        // primary mode is staleness + ICMP-ping observation; treating as read
+        // matches user expectation for a "health check" tool.
+        "device_health_check",
+        // Apps/drivers (read)
+        "list_hub_apps", "list_hub_drivers",
+        "get_app_source", "get_driver_source", "get_library_source",
+        "list_item_backups", "get_item_backup",
+        // Virtual devices (read)
+        "list_virtual_devices",
+        // Rooms (read)
+        "list_rooms", "get_room",
+        // Files (read)
+        "list_files", "read_file",
+        // Installed apps (read)
+        "list_installed_apps", "get_device_in_use_by", "get_app_config",
+        "list_app_pages",
+        // HPM (read)
+        "list_hpm_packages", "get_hpm_drift",
+        // Native rules (read) -- export is appCloner serialization; check_rule_health
+        // inspects only.
+        "list_rm_rules", "export_native_app", "check_rule_health",
+        // Meta
+        "get_tool_guide", "search_tools"
+    ] as Set
+}
+
+// Returns the MCP `annotations` map for a leaf tool name. Both keys are
+// emitted explicitly so the wire payload is unambiguous regardless of which
+// spec-default a given client honours.
+def annotationsForLeaf(String toolName, Set readOnlyNames) {
+    def isReadOnly = readOnlyNames.contains(toolName)
+    def ann = [readOnlyHint: isReadOnly]
+    if (!isReadOnly) {
+        // destructiveHint is meaningful only when readOnlyHint=false (per spec).
+        // Every write is treated as destructive -- matches the spec default and
+        // gets clients the cautious permission prompt.
+        ann.destructiveHint = true
+    }
+    return ann
+}
+
+// Aggregates annotations for a gateway entry from its currently-visible
+// sub-tools. Read-only iff every visible sub-tool is read-only; otherwise
+// write+destructive. Callers pass `visibleSubTools` so feature-toggle hiding
+// (Built-in App Tools off, custom engine readonly) propagates into the
+// gateway label.
+def annotationsForGateway(List visibleSubTools, Set readOnlyNames) {
+    if (!visibleSubTools) {
+        throw new IllegalArgumentException(
+            "annotationsForGateway requires at least one visible sub-tool"
+        )
+    }
+    def anyWrite = visibleSubTools.any { !readOnlyNames.contains(it) }
+    def ann = [readOnlyHint: !anyWrite]
+    if (anyWrite) {
+        ann.destructiveHint = true
+    }
+    return ann
+}
+
 def handleGateway(gatewayName, toolName, toolArgs) {
     def config = getGatewayConfig()[gatewayName]
     if (!config) {
@@ -1327,35 +1427,43 @@ def getToolDefinitions() {
     // "readonly" -- engine OFF + builtinApp ON; read subset shown, write subset hidden
     // "off"      -- engine OFF + builtinApp OFF; all custom_* hidden
     def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
+    // Single source of truth: hideByName lists every tool the current toggle
+    // combination should hide. It drives BOTH flat-mode base-tool filtering
+    // AND gateway-mode sub-tool catalog filtering (see visibleSubTools below).
+    // No parallel hideGatewaySubTools list -- a name in hideByName disappears
+    // from every surface it could appear on, so the two lists cannot drift.
     def hideByName = [] as Set
-    def hideGatewaySubTools = [:].withDefault { [] as Set }
 
     if (!builtinAppOn) {
-        def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"]
-        biTools.each { hideByName << it }
-        // Sub-tool removal from gateways (when in gateway mode):
-        //   manage_native_rules_and_apps: ALL 12 sub-tools require enableBuiltinApp → empty gateway → drops entirely
-        //   manage_installed_apps: 2/4 sub-tools require enableBuiltinApp; the other 2 (get_app_config, list_app_pages) only need Hub Admin Read
-        hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"] as Set
-        hideGatewaySubTools["manage_installed_apps"] = ["list_installed_apps", "get_device_in_use_by"] as Set
+        // All 14 of these tools require enableBuiltinApp.
+        //   manage_native_rules_and_apps: ALL 12 sub-tools require it → that
+        //     gateway empties out and drops entirely.
+        //   manage_installed_apps: 2/4 sub-tools require it (list_installed_apps,
+        //     get_device_in_use_by); the other 2 (get_app_config, list_app_pages)
+        //     only need Hub Admin Read and stay visible.
+        ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"].each {
+            hideByName << it
+        }
     }
     if (customEngineMode == "off") {
-        // Both toggles off: hide all custom_* tools (base tools + gateway sub-tools)
+        // Both toggles off: hide all custom_* tools everywhere they could appear
+        // (base tools in flat mode, sub-tools of manage_rules_admin and manage_diagnostics
+        // in gateway mode).
         ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule", "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
             hideByName << it
         }
-        // custom_get_rule_diagnostics lives in manage_diagnostics gateway; remove it
-        // from that gateway's visible sub-tool list so the catalog entry disappears.
-        hideGatewaySubTools["manage_diagnostics"] << "custom_get_rule_diagnostics"
     } else if (customEngineMode == "readonly") {
-        // Engine OFF but builtinApp ON: hide write/structural tools, keep read tools
+        // Engine OFF but builtinApp ON: hide write/structural custom_* tools,
+        // keep the read tools. custom_get_rule_diagnostics is a read tool and
+        // stays visible (inside manage_diagnostics) -- not added here.
         ["custom_create_rule", "custom_delete_rule", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
             hideByName << it
         }
-        // custom_get_rule_diagnostics lives in manage_diagnostics gateway and stays
-        // visible in readonly mode -- no gateway sub-tool removal needed for it.
     }
     // customEngineMode == "full": nothing added to hideByName for custom_* tools
+
+    // Hoist annotation source-of-truth once per call.
+    def readOnlyNames = getReadOnlyToolNames()
 
     // Flat mode: every tool advertised individually under its real name; search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
@@ -1372,7 +1480,10 @@ def getToolDefinitions() {
         }
         // Flat-mode tools/list is the size-constrained path -- drop content inside
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
-        return applyDescriptionTransform(filtered, true)
+        def transformed = applyDescriptionTransform(filtered, true)
+        return transformed.collect { tool ->
+            tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames)]
+        }
     }
 
     def gatewayConfig = getGatewayConfig()
@@ -1383,11 +1494,13 @@ def getToolDefinitions() {
         !proxiedNames.contains(it.name) && !hideByName.contains(it.name)
     }
 
-    // Gateway tools: one tool per gateway, with sub-tool list filtered. If a gateway
+    // Gateway tools: one tool per gateway, with sub-tool list filtered through
+    // the same hideByName the base-tool path uses. Sharing the filter means a
+    // toggle that hides a tool hides it on every surface (base + gateway sub-tool
+    // + flat-mode entry) with no chance of the two lists drifting. If a gateway
     // ends up with zero remaining sub-tools, drop the gateway entry entirely.
     def gatewayTools = gatewayConfig.collectMany { gwName, config ->
-        def hiddenInGw = hideGatewaySubTools[gwName] ?: ([] as Set)
-        def visibleSubTools = config.tools.findAll { !hiddenInGw.contains(it) }
+        def visibleSubTools = config.tools.findAll { !hideByName.contains(it) }
         if (!visibleSubTools) return []
         def catalog = visibleSubTools.collect { toolName ->
             "- ${toolName}: ${config.summaries[toolName]}"
@@ -1401,7 +1514,8 @@ def getToolDefinitions() {
                     tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: visibleSubTools],
                     args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
                 ]
-            ]
+            ],
+            annotations: annotationsForGateway(visibleSubTools, readOnlyNames)
         ]]
     }
 
@@ -1409,7 +1523,15 @@ def getToolDefinitions() {
     // summaries) plus any base tools. None of those descriptions currently carry
     // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
     // if a future author adds one to a base-tool description.
-    return applyDescriptionTransform(baseTools + gatewayTools, false)
+    def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
+    return transformed.collect { tool ->
+        // Gateway entries already carry annotations from the collectMany above;
+        // leaf base tools get theirs from the canonical set. The presence of
+        // readOnlyHint (not just the annotations map) is the load-bearing
+        // signal -- a partial pre-populated map without readOnlyHint still
+        // needs the leaf classifier to merge in the missing key.
+        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames)]
+    }
 }
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)

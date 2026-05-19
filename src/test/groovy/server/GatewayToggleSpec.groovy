@@ -243,6 +243,42 @@ class GatewayToggleSpec extends ToolSpecBase {
         names.contains('custom_get_rule_diagnostics')
     }
 
+    def "useGateways=true + enableCustomRuleEngine=false (readonly): gateway sub-tool catalogs shrink to read-only tools"() {
+        // Pins the unified-hideByName invariant: a name in hideByName must be filtered
+        // out of every gateway sub-tool catalog AND the input-schema enum, not just
+        // out of flat-mode base-tool placement. Previously two parallel lists
+        // (hideByName + hideGatewaySubTools) could drift; now hideByName is the single
+        // source of truth. Regression guard against a future refactor splitting them
+        // back apart and silently advertising sub-tools that fail at executeTool.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableBuiltinApp = true
+        settingsMap.enableCustomRuleEngine = false  // customEngineMode = readonly
+
+        when:
+        def tools = script.getToolDefinitions()
+        def rulesAdmin = tools.find { it.name == 'manage_rules_admin' }
+
+        then: 'gateway entry still appears (custom_test_rule remains visible)'
+        rulesAdmin != null
+
+        and: 'write/structural sub-tools are removed from the catalog prose'
+        !rulesAdmin.description.contains('custom_delete_rule')
+        !rulesAdmin.description.contains('custom_export_rule')
+        !rulesAdmin.description.contains('custom_import_rule')
+        !rulesAdmin.description.contains('custom_clone_rule')
+
+        and: 'and from the input-schema tool enum (clients should not be offered them)'
+        def toolEnum = rulesAdmin.inputSchema.properties.tool.enum as Set
+        !toolEnum.contains('custom_delete_rule')
+        !toolEnum.contains('custom_export_rule')
+        !toolEnum.contains('custom_import_rule')
+        !toolEnum.contains('custom_clone_rule')
+
+        and: 'the surviving read sub-tool is still offered'
+        toolEnum.contains('custom_test_rule')
+    }
+
     def "useGateways=false + builtin/custom both off: gateway-name hint omits hidden sub-tools"() {
         // The flat-mode guard's hint must filter through hideByName — telling a stale
         // client to call list_rm_rules when it's also disabled by enableBuiltinApp=false
