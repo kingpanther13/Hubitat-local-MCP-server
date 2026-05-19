@@ -256,11 +256,11 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     }
 
     def "gateway aggregation survives toggle-driven sub-tool hiding"() {
-        // Smoke-tests the end-to-end path: customEngineMode=off pushes
-        // custom_get_rule_diagnostics into hideGatewaySubTools["manage_diagnostics"],
-        // so the aggregator runs on a strictly narrower visibleSubTools list.
-        // manage_diagnostics still contains write sub-tools (zwave_repair etc.) so
-        // the label stays write+destructive.
+        // Smoke-tests the end-to-end path: customEngineMode=off adds
+        // custom_get_rule_diagnostics to hideByName, which now also filters
+        // gateway sub-tools, so manage_diagnostics's visibleSubTools is one
+        // shorter than its config. The remaining sub-tools still include
+        // writes (zwave_repair etc.), so the label stays write+destructive.
         given:
         settingsMap.remove('useGateways')
         settingsMap.enableBuiltinApp = false

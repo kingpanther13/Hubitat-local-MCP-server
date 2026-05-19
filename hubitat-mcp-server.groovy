@@ -1427,33 +1427,38 @@ def getToolDefinitions() {
     // "readonly" -- engine OFF + builtinApp ON; read subset shown, write subset hidden
     // "off"      -- engine OFF + builtinApp OFF; all custom_* hidden
     def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
+    // Single source of truth: hideByName lists every tool the current toggle
+    // combination should hide. It drives BOTH flat-mode base-tool filtering
+    // AND gateway-mode sub-tool catalog filtering (see visibleSubTools below).
+    // No parallel hideGatewaySubTools list -- a name in hideByName disappears
+    // from every surface it could appear on, so the two lists cannot drift.
     def hideByName = [] as Set
-    def hideGatewaySubTools = [:].withDefault { [] as Set }
 
     if (!builtinAppOn) {
-        def biTools = ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"]
-        biTools.each { hideByName << it }
-        // Sub-tool removal from gateways (when in gateway mode):
-        //   manage_native_rules_and_apps: ALL 12 sub-tools require enableBuiltinApp → empty gateway → drops entirely
-        //   manage_installed_apps: 2/4 sub-tools require enableBuiltinApp; the other 2 (get_app_config, list_app_pages) only need Hub Admin Read
-        hideGatewaySubTools["manage_native_rules_and_apps"] = ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"] as Set
-        hideGatewaySubTools["manage_installed_apps"] = ["list_installed_apps", "get_device_in_use_by"] as Set
+        // All 14 of these tools require enableBuiltinApp.
+        //   manage_native_rules_and_apps: ALL 12 sub-tools require it → that
+        //     gateway empties out and drops entirely.
+        //   manage_installed_apps: 2/4 sub-tools require it (list_installed_apps,
+        //     get_device_in_use_by); the other 2 (get_app_config, list_app_pages)
+        //     only need Hub Admin Read and stay visible.
+        ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"].each {
+            hideByName << it
+        }
     }
     if (customEngineMode == "off") {
-        // Both toggles off: hide all custom_* tools (base tools + gateway sub-tools)
+        // Both toggles off: hide all custom_* tools everywhere they could appear
+        // (base tools in flat mode, sub-tools of manage_rules_admin and manage_diagnostics
+        // in gateway mode).
         ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule", "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
             hideByName << it
         }
-        // custom_get_rule_diagnostics lives in manage_diagnostics gateway; remove it
-        // from that gateway's visible sub-tool list so the catalog entry disappears.
-        hideGatewaySubTools["manage_diagnostics"] << "custom_get_rule_diagnostics"
     } else if (customEngineMode == "readonly") {
-        // Engine OFF but builtinApp ON: hide write/structural tools, keep read tools
+        // Engine OFF but builtinApp ON: hide write/structural custom_* tools,
+        // keep the read tools. custom_get_rule_diagnostics is a read tool and
+        // stays visible (inside manage_diagnostics) -- not added here.
         ["custom_create_rule", "custom_delete_rule", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
             hideByName << it
         }
-        // custom_get_rule_diagnostics lives in manage_diagnostics gateway and stays
-        // visible in readonly mode -- no gateway sub-tool removal needed for it.
     }
     // customEngineMode == "full": nothing added to hideByName for custom_* tools
 
@@ -1489,11 +1494,13 @@ def getToolDefinitions() {
         !proxiedNames.contains(it.name) && !hideByName.contains(it.name)
     }
 
-    // Gateway tools: one tool per gateway, with sub-tool list filtered. If a gateway
+    // Gateway tools: one tool per gateway, with sub-tool list filtered through
+    // the same hideByName the base-tool path uses. Sharing the filter means a
+    // toggle that hides a tool hides it on every surface (base + gateway sub-tool
+    // + flat-mode entry) with no chance of the two lists drifting. If a gateway
     // ends up with zero remaining sub-tools, drop the gateway entry entirely.
     def gatewayTools = gatewayConfig.collectMany { gwName, config ->
-        def hiddenInGw = hideGatewaySubTools[gwName] ?: ([] as Set)
-        def visibleSubTools = config.tools.findAll { !hiddenInGw.contains(it) }
+        def visibleSubTools = config.tools.findAll { !hideByName.contains(it) }
         if (!visibleSubTools) return []
         def catalog = visibleSubTools.collect { toolName ->
             "- ${toolName}: ${config.summaries[toolName]}"
