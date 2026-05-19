@@ -101,6 +101,155 @@ def test_parse_release_notes_orphan_indented_bullet_skipped():
 
 
 # ---------------------------------------------------------------------------
+# extract_pr_number — parses the PR number out of a commit subject line.
+# Squash merges produce subjects like "Title (#N)"; if the PR title itself
+# contained an issue reference like "Title about issue (#100)", the squash
+# commit becomes "Title about issue (#100) (#150)" — and the appended #150 is
+# the actual PR, not #100. GitHub always appends the PR ref LAST, so the
+# parser must take the trailing token, not the first.
+# ---------------------------------------------------------------------------
+
+def test_extract_pr_number_plain_squash():
+    """Standard squash-merge subject yields the trailing PR number."""
+    assert rb.extract_pr_number("docs: add CONTRIBUTING.md (#197)") == 197
+
+
+def test_extract_pr_number_title_with_issue_ref_baked_in():
+    """Regression: in-title `(#issue)` references must not shadow the
+    GitHub-appended trailing `(#PR)` ref."""
+    subj = "fix: addTrigger supports Hub Variable triggers + conditional A != B (#169) (#194)"
+    assert rb.extract_pr_number(subj) == 194
+
+
+def test_extract_pr_number_multiple_issue_refs_in_title():
+    """Title with multiple parenthesized issue refs still resolves to the
+    final GitHub-appended PR number."""
+    subj = "test: add dispatch-envelope coverage across all tool specs (#187, #121) (#191)"
+    assert rb.extract_pr_number(subj) == 191
+
+
+def test_extract_pr_number_bare_issue_hash_in_title():
+    """Bare `#N` references (no parentheses) in the title are ignored;
+    only the trailing `(#N)` PR ref is returned."""
+    subj = "test: close issue #141 Section A Spock coverage gaps (#193)"
+    assert rb.extract_pr_number(subj) == 193
+
+
+def test_extract_pr_number_merge_commit_format():
+    """Traditional merge-commit format ('Merge pull request #N from ...') yields N."""
+    assert rb.extract_pr_number("Merge pull request #50 from foo/bar") == 50
+
+
+def test_extract_pr_number_no_ref_returns_none():
+    """Subject with no PR reference returns None."""
+    assert rb.extract_pr_number("chore: tweak something") is None
+
+
+def test_extract_pr_number_revert_uses_new_pr():
+    """Revert commits get a new PR number; the trailing `(#N)` is the new one."""
+    subj = 'Revert "feat: thing (#100)" (#150)'
+    assert rb.extract_pr_number(subj) == 150
+
+
+def test_extract_pr_number_cherry_pick_annotation():
+    """`(cherry picked from commit ...)` follows the PR ref; findall+last
+    still returns the PR number, not None."""
+    subj = "feat: thing (#42) (cherry picked from commit abc1234)"
+    assert rb.extract_pr_number(subj) == 42
+
+
+def test_extract_pr_number_merge_format_takes_precedence_over_trailing_paren():
+    """Hand-crafted mixed shape: merge-commit format wins even if a trailing
+    `(#N)` is also present (GitHub never produces this; the precedence only
+    matters for manually-edited subjects)."""
+    subj = "Merge pull request #50 from foo/bar (#999)"
+    assert rb.extract_pr_number(subj) == 50
+
+
+# ---------------------------------------------------------------------------
+# merged_pr_numbers_since — integration around extract_pr_number. Covers
+# the wrapping behaviors: tag=None short-circuit, CalledProcessError recovery,
+# dedup, chronological reversal, and the ::warning:: on unrecognized subjects.
+# ---------------------------------------------------------------------------
+
+def test_merged_pr_numbers_since_none_tag_returns_empty():
+    """No prior tag (first release) → empty list, no `git log` call."""
+    assert rb.merged_pr_numbers_since(None) == []
+
+
+def test_merged_pr_numbers_since_git_log_error_returns_empty(monkeypatch):
+    """`git log` failure (e.g. corrupt repo) returns [] rather than crashing
+    the whole release."""
+    import subprocess as sp
+
+    def fake_run(*args, **kwargs):
+        del kwargs
+        raise sp.CalledProcessError(returncode=128, cmd=args)
+
+    monkeypatch.setattr(rb, "run", fake_run)
+    assert rb.merged_pr_numbers_since("v1.0.0") == []
+
+
+def _stub_git_log(monkeypatch, stdout: str) -> None:
+    """Install a fake `rb.run` that returns the given stdout from any call."""
+    from subprocess import CompletedProcess
+
+    def fake_run(*args, **kwargs):
+        del kwargs
+        return CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(rb, "run", fake_run)
+
+
+def test_merged_pr_numbers_since_reverses_to_chronological(monkeypatch):
+    """`git log` emits newest-first; output must be oldest-first so the
+    release entry reads in commit order."""
+    stdout = (
+        "feat: third (#30)\n"   # newest
+        "fix: second (#20)\n"
+        "docs: first (#10)\n"   # oldest
+    )
+    _stub_git_log(monkeypatch, stdout)
+    assert rb.merged_pr_numbers_since("v1.0.0") == [10, 20, 30]
+
+
+def test_merged_pr_numbers_since_dedups_repeated_refs(monkeypatch):
+    """Two commits both referencing the same PR (e.g. an `fixup!` squashed
+    in) produce one entry, not two."""
+    stdout = (
+        "fix: redo of #5 (#5)\n"
+        "fix: initial attempt (#5)\n"
+    )
+    _stub_git_log(monkeypatch, stdout)
+    assert rb.merged_pr_numbers_since("v1.0.0") == [5]
+
+
+def test_merged_pr_numbers_since_warns_on_unrecognized_subject(monkeypatch, capsys):
+    """A direct-push or hand-crafted subject with no PR ref is skipped AND
+    surfaces a ::warning:: so the operator sees it on the Actions run page —
+    mirrors fetch_pr's anti-silent-failure contract."""
+    stdout = (
+        "feat: legitimate squash (#42)\n"
+        "chore: direct push with no PR ref\n"
+        "feat: another (#43)\n"
+    )
+    _stub_git_log(monkeypatch, stdout)
+    result = rb.merged_pr_numbers_since("v1.0.0")
+    assert result == [43, 42]
+    captured = capsys.readouterr()
+    assert "::warning::merged_pr_numbers_since" in captured.err
+    assert "direct push with no PR ref" in captured.err
+
+
+def test_merged_pr_numbers_since_skips_blank_lines(monkeypatch):
+    """Blank lines in `git log` output (rare, but possible with custom
+    formatting) are skipped silently — not warned about."""
+    stdout = "feat: real (#10)\n\nfix: also real (#20)\n"
+    _stub_git_log(monkeypatch, stdout)
+    assert rb.merged_pr_numbers_since("v1.0.0") == [20, 10]
+
+
+# ---------------------------------------------------------------------------
 # split_release_blocks
 # ---------------------------------------------------------------------------
 
@@ -511,7 +660,7 @@ def test_build_bullets_warns_on_section_with_no_bullets(monkeypatch, capsys):
         "author": {"login": "alice"},
         "body": "## Release Notes\nThis fixes a thing but the author wrote prose.",
     }
-    monkeypatch.setattr(rb, "fetch_pr", lambda n: fake_pr)
+    monkeypatch.setattr(rb, "fetch_pr", lambda _: fake_pr)
     bullets = rb.build_bullets([42])
     # Title-only fallback shape
     assert len(bullets) == 1
@@ -533,7 +682,7 @@ def test_build_bullets_no_warning_when_section_absent(monkeypatch, capsys):
         "author": {"login": "alice"},
         "body": "## Summary\nNo release notes section at all.",
     }
-    monkeypatch.setattr(rb, "fetch_pr", lambda n: fake_pr)
+    monkeypatch.setattr(rb, "fetch_pr", lambda _: fake_pr)
     rb.build_bullets([42])
     captured = capsys.readouterr()
     assert "::warning::" not in captured.err
@@ -546,6 +695,7 @@ def test_fetch_pr_handles_whitespace_only_stderr(monkeypatch, capsys):
     import subprocess as sp
 
     def fake_run(*args, **kwargs):
+        del kwargs  # rb.run accepts check= kwarg; preserve signature contract
         # Simulate gh CLI failing with whitespace-only stderr
         raise sp.CalledProcessError(
             returncode=1, cmd=args, output="", stderr="   \n  \n"
@@ -560,14 +710,24 @@ def test_fetch_pr_handles_whitespace_only_stderr(monkeypatch, capsys):
 
 
 def test_build_bullets_warns_when_fetch_pr_fails(monkeypatch, capsys):
-    """When fetch_pr returns None, build_bullets uses the placeholder bullet
-    AND fetch_pr itself emits the warning (verified here by checking that
-    the placeholder is in the output — fetch_pr's warning is exercised by
-    its own subprocess error path, which we can't easily mock without
-    overriding `run`)."""
-    monkeypatch.setattr(rb, "fetch_pr", lambda n: None)
+    """When gh pr view fails, build_bullets falls back to the `- PR #N`
+    placeholder AND fetch_pr emits a ::warning::. Both behaviours are
+    verified here by mocking the lower-level `rb.run` (so real fetch_pr
+    executes its except path) rather than mocking fetch_pr away."""
+    import subprocess as sp
+
+    def fake_run(*args, **kwargs):
+        del kwargs  # rb.run accepts check= kwarg; preserve signature contract
+        raise sp.CalledProcessError(
+            returncode=1, cmd=args, output="", stderr="not found"
+        )
+
+    monkeypatch.setattr(rb, "run", fake_run)
     bullets = rb.build_bullets([99])
     assert bullets == ["- PR #99"]
+    captured = capsys.readouterr()
+    assert "::warning::fetch_pr" in captured.err
+    assert "#99" in captured.err
 
 
 def test_bump_manifest_legacy_blob_shrinkage_regression_anchor(tmp_path, monkeypatch):
