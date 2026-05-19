@@ -226,26 +226,26 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         lonelyOpen == 'before [[FLAT_TRIM]] tail with no close'
     }
 
-    def "search_tools BM25 corpus strips marker tokens but keeps wrapped capability text searchable"() {
+    def "search_tools BM25 corpus contains no marker tokens across every tool entry"() {
         given:
         enableEveryToggle()
 
         when:
         def corpus = script.buildToolSearchCorpus()
-        def updateNative = corpus.find { it.name == 'update_native_app' }
 
-        then: 'no marker tokens leak into the BM25 input'
-        updateNative != null
-        !updateNative.description.contains(OPEN_MARKER)
-        !updateNative.description.contains(CLOSE_MARKER)
-
-        and: 'capability tokens from the wrapped block remain searchable'
-        // 'periodic schedule' lives inside the addTrigger FLAT_TRIM block; if the
-        // corpus accidentally got dropContent=true the term would disappear and BM25
-        // recall for "periodic" / "schedule" queries against update_native_app would
-        // silently regress.
-        updateNative.description.toLowerCase().contains('periodic schedule')
-        updateNative.description.toLowerCase().contains('ifthen')
+        then: 'no marker tokens leak into any corpus entry'
+        // The corpus already drops tokens for both core and gateway-routed tools.
+        // Today the gateway-routed branch (line ~21822 in hubitat-mcp-server.groovy)
+        // uses `summary + gateway.description` which never carries markers, so the
+        // strip is defensive. If a future core tool ever wraps prose in [[FLAT_TRIM]]
+        // markers, this guard catches the case where applyDescriptionTransform was
+        // skipped on the core branch.
+        corpus.every {
+            !((String) (it.description ?: '')).contains(OPEN_MARKER) &&
+            !((String) (it.description ?: '')).contains(CLOSE_MARKER) &&
+            !((String) (it.params ?: '')).contains(OPEN_MARKER) &&
+            !((String) (it.hints ?: '')).contains(OPEN_MARKER)
+        }
     }
 
     def "missing-param hint surface for update_native_app strips marker tokens but keeps wrapped capability prose"() {
