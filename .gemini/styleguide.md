@@ -16,13 +16,13 @@ PRs authored by `dependabot[bot]` are automatic dependency bumps. They use a `bu
 
 When reviewing code, refer to (do not duplicate or quote) these existing repo docs for project conventions, conventions for tool design, testing patterns, and release automation:
 
+- [AGENTS.md](../AGENTS.md) — conventions for AI coding agents working on this repo (sandbox rules, PR workflow, boundaries)
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — human-contributor guide (local dev setup, PR template walkthrough, prefix conventions, release-notes expectations)
 - [README.md](../README.md) — project overview and feature catalog
 - [SKILL.md](../SKILL.md) — tool reference and usage patterns
 - [TOOL_GUIDE.md](../TOOL_GUIDE.md) — detailed per-tool documentation
 - [docs/testing.md](../docs/testing.md) — Spock test harness conventions, including the rule that every new MCP tool must ship with unit tests
 - [docs/release-automation-design.md](../docs/release-automation-design.md) — how the release bot consumes PR metadata
-
-If `AGENTS.md` or `CONTRIBUTING.md` exist at the repo root at review time, refer to those as well — they're planned and may be present in newer PRs.
 
 Link to these docs from your review comments when relevant; do not paste their content.
 
