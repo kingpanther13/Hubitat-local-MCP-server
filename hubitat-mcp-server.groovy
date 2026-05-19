@@ -1153,6 +1153,114 @@ def getGatewayConfig() {
     ]
 }
 
+// ==================== MCP TOOL ANNOTATIONS ====================
+// MCP spec (2024-11-05+) `annotations.readOnlyHint` / `destructiveHint` drive
+// client-side grouping. Claude.ai's connector UI, for example, splits a server's
+// catalog into a "Read tools" block and a "Write tools" block based on
+// readOnlyHint; anything missing the annotation lands in a generic "Other tools"
+// bucket. Both sets below are defined POSITIVELY so a new tool that no one
+// labels here defaults to write+non-destructive, which is the safe default for
+// permission prompts (the user is asked before any unlabelled write happens).
+//
+// Gateway entries (manage_*) are annotated dynamically in getToolDefinitions():
+// a gateway is read-only iff every visible sub-tool is read-only, and
+// destructive iff any visible sub-tool is destructive. Visibility respects the
+// feature-toggle hide rules, so e.g. manage_native_rules_and_apps collapses
+// correctly when Built-in App Tools is off.
+
+def getReadOnlyToolNames() {
+    return [
+        // Device introspection
+        "list_devices", "get_device", "get_attribute", "get_device_events",
+        "poll_until_attribute",
+        // Custom rule reads (legacy MCP engine) -- test_rule is dry-run, no
+        // actions fire; export is a serialization read.
+        "custom_list_rules", "custom_get_rule", "custom_test_rule",
+        "custom_get_rule_diagnostics", "custom_export_rule",
+        // Hub state reads
+        "get_hub_info", "get_modes", "get_hsm_status", "check_for_update",
+        // Variables (reads)
+        "list_variables", "get_variable", "get_variable_history",
+        // Captured states (read)
+        "list_captured_states",
+        // Diagnostics + logs (read)
+        "get_debug_logs", "get_logging_status", "generate_bug_report",
+        "get_hub_logs", "get_device_history", "get_performance_stats",
+        "get_hub_jobs", "get_memory_history",
+        "get_zwave_details", "get_zigbee_details",
+        // device_health_check has an optional identifyHub LED blink, but its
+        // primary mode is staleness + ICMP-ping observation; treating as read
+        // matches user expectation for a "health check" tool.
+        "device_health_check",
+        // Apps/drivers (read)
+        "list_hub_apps", "list_hub_drivers",
+        "get_app_source", "get_driver_source", "get_library_source",
+        "list_item_backups", "get_item_backup",
+        // Virtual devices (read)
+        "list_virtual_devices",
+        // Rooms (read)
+        "list_rooms", "get_room",
+        // Files (read)
+        "list_files", "read_file",
+        // Installed apps (read)
+        "list_installed_apps", "get_device_in_use_by", "get_app_config",
+        "list_app_pages",
+        // HPM (read)
+        "list_hpm_packages", "get_hpm_drift",
+        // Native rules (read) -- export is appCloner serialization; check_rule_health
+        // inspects only.
+        "list_rm_rules", "export_native_app", "check_rule_health",
+        // Meta
+        "get_tool_guide", "search_tools"
+    ] as Set
+}
+
+def getDestructiveToolNames() {
+    return [
+        "custom_delete_rule",
+        "delete_variable", "remove_connector",
+        "delete_captured_state", "clear_captured_states",
+        "clear_debug_logs",
+        "reboot_hub", "shutdown_hub", "zwave_repair", "delete_device",
+        "delete_room",
+        "delete_app", "delete_driver", "delete_library",
+        "delete_file",
+        "delete_native_app",
+        // manage_virtual_device action="delete" deletes a virtual device; the
+        // create branch is non-destructive but the delete branch is, so mark
+        // the tool destructive.
+        "manage_virtual_device"
+    ] as Set
+}
+
+// Returns the MCP `annotations` map for a leaf tool name. `readOnlyHint` is
+// always set explicitly (not omitted on writes) so clients can rely on its
+// presence to drive grouping without falling back to the spec default.
+def annotationsForLeaf(String toolName, Set readOnlyNames, Set destructiveNames) {
+    def isReadOnly = readOnlyNames.contains(toolName)
+    def ann = [readOnlyHint: isReadOnly]
+    if (!isReadOnly && destructiveNames.contains(toolName)) {
+        ann.destructiveHint = true
+    }
+    return ann
+}
+
+// Aggregates annotations for a gateway entry based on its currently-visible
+// sub-tools. A gateway is read-only iff every visible sub-tool is read-only;
+// it is destructive iff any visible sub-tool is destructive. Caller passes
+// `visibleSubTools` so toggles (Built-in App Tools off, custom engine readonly,
+// etc.) that hide sub-tools change the gateway label too -- e.g. if the only
+// write sub-tools in a gateway are hidden, the gateway flips to read-only.
+def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set destructiveNames) {
+    def anyWrite = visibleSubTools.any { !readOnlyNames.contains(it) }
+    def anyDestructive = visibleSubTools.any { destructiveNames.contains(it) }
+    def ann = [readOnlyHint: !anyWrite]
+    if (anyWrite && anyDestructive) {
+        ann.destructiveHint = true
+    }
+    return ann
+}
+
 def handleGateway(gatewayName, toolName, toolArgs) {
     def config = getGatewayConfig()[gatewayName]
     if (!config) {
@@ -1357,6 +1465,12 @@ def getToolDefinitions() {
     }
     // customEngineMode == "full": nothing added to hideByName for custom_* tools
 
+    // MCP tool annotations source-of-truth -- read once per call, passed into the
+    // leaf and gateway annotation helpers so a single mutation to the canonical
+    // sets propagates everywhere tools/list builds entries.
+    def readOnlyNames = getReadOnlyToolNames()
+    def destructiveNames = getDestructiveToolNames()
+
     // Flat mode: every tool advertised individually under its real name; search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
     if (settings.useGateways == false) {
@@ -1372,7 +1486,10 @@ def getToolDefinitions() {
         }
         // Flat-mode tools/list is the size-constrained path -- drop content inside
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
-        return applyDescriptionTransform(filtered, true)
+        def transformed = applyDescriptionTransform(filtered, true)
+        return transformed.collect { tool ->
+            tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, destructiveNames)]
+        }
     }
 
     def gatewayConfig = getGatewayConfig()
@@ -1401,7 +1518,8 @@ def getToolDefinitions() {
                     tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: visibleSubTools],
                     args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
                 ]
-            ]
+            ],
+            annotations: annotationsForGateway(visibleSubTools, readOnlyNames, destructiveNames)
         ]]
     }
 
@@ -1409,7 +1527,13 @@ def getToolDefinitions() {
     // summaries) plus any base tools. None of those descriptions currently carry
     // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
     // if a future author adds one to a base-tool description.
-    return applyDescriptionTransform(baseTools + gatewayTools, false)
+    def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
+    return transformed.collect { tool ->
+        // Gateway entries already carry annotations from the collectMany above;
+        // leaf base tools get theirs from the canonical set. Don't overwrite a
+        // pre-populated annotations map.
+        tool.annotations ? tool : tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, destructiveNames)]
+    }
 }
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
