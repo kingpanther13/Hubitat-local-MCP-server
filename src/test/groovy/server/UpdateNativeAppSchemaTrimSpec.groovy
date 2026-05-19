@@ -232,28 +232,80 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         lonelyOpen == 'before [[FLAT_TRIM]] tail with no close'
     }
 
-    def "search_tools BM25 corpus contains no marker tokens across every tool entry"() {
+    def "search_tools BM25 corpus contains no marker tokens in any top-level description"() {
         given:
         enableEveryToggle()
 
         when:
         def corpus = script.buildToolSearchCorpus()
 
-        then: 'no marker tokens leak into any corpus entry'
-        // The corpus drops tokens for both core and gateway-routed tools. Today the
-        // gateway-routed branch (line ~21822 in hubitat-mcp-server.groovy) uses
-        // `summary + gateway.description` which never carries markers, so the strip is
-        // defensive. If a future core tool ever wraps prose in [[FLAT_TRIM]] markers,
-        // this guard catches the case where applyDescriptionTransform was skipped on
-        // the core branch.
+        then: 'no marker tokens leak into the indexed corpus text'
+        // SCOPE NOTE: `buildToolSearchCorpus` only feeds `tool.description` (core
+        // branch) or `summary + gateway.description` (gateway branch) into BM25 --
+        // it does NOT index `inputSchema.properties.*.description`. So today every
+        // [[FLAT_TRIM]] marker in the schema (all of them in `update_native_app`'s
+        // property descriptions) is structurally outside this guard's reach.
         //
-        // We only assert on `description` -- the load-bearing field. `params` is
-        // joined property names (no descriptions) and `hints` is author-controlled
-        // config text in gatewayConfig, so neither structurally can carry markers.
+        // The guard is defensive against a future core tool wrapping prose in its
+        // top-level description: if `applyDescriptionTransform` were skipped on the
+        // core branch (`hubitat-mcp-server.groovy:21825`), the marker would surface
+        // here as a BM25 token. We also don't assert on `params` (property names
+        // only -- structurally can't carry markers) or `hints` (author-controlled
+        // gatewayConfig text -- structurally can't carry markers either).
         corpus.every {
             !((String) (it.description ?: '')).contains(OPEN_MARKER) &&
             !((String) (it.description ?: '')).contains(CLOSE_MARKER)
         }
+    }
+
+    def "applyDescriptionTransform is idempotent -- a second call leaves the descriptions unchanged"() {
+        given: 'fresh tool defs with FLAT_TRIM markers in place'
+        def first = script.applyDescriptionTransform(script.getAllToolDefinitions(), true)
+        def afterFirst = JsonOutput.toJson(first)
+
+        when: 'apply the same transform a second time on the same in-place mutated list'
+        def second = script.applyDescriptionTransform(first, true)
+        def afterSecond = JsonOutput.toJson(second)
+
+        then: 'the second pass is a no-op -- second call must produce identical bytes'
+        // Today no consumer caches the list, but a future memoization refactor that
+        // does would silently double-strip without this guard.
+        afterFirst == afterSecond
+
+        when: 'same check for dropContent=false'
+        def firstFalse = script.applyDescriptionTransform(script.getAllToolDefinitions(), false)
+        def secondFalse = script.applyDescriptionTransform(firstFalse, false)
+
+        then:
+        JsonOutput.toJson(firstFalse) == JsonOutput.toJson(secondFalse)
+    }
+
+    def "schema description pointers match TOOL_GUIDE.md anchor names"() {
+        given: 'the three update_native_app schema descriptions name-drop specific TOOL_GUIDE subsections'
+        def updateNativeDef = script.getAllToolDefinitions().find { it.name == 'update_native_app' }
+        def addTriggerDesc = updateNativeDef.inputSchema.properties.addTrigger.description as String
+        def addActionDesc = updateNativeDef.inputSchema.properties.addAction.description as String
+        def addRequiredExprDesc = updateNativeDef.inputSchema.properties.addRequiredExpression.description as String
+
+        when:
+        // Resolve TOOL_GUIDE.md relative to the project root (gradle runs from there).
+        def toolGuide = new File('TOOL_GUIDE.md').text
+
+        then: 'every TOOL_GUIDE anchor cited in the schema actually exists as a section heading'
+        // Guards against a silent renaming of a TOOL_GUIDE subsection breaking the
+        // in-schema pointer that flat-mode callers rely on after the trim.
+        addTriggerDesc.contains('TOOL_GUIDE.md')
+        addActionDesc.contains('docs/rm_action_subtype_schemas.md')
+        addRequiredExprDesc.contains('TOOL_GUIDE.md')
+
+        and: 'the four anchors the schema names exist as markdown headings'
+        toolGuide.contains('#### `update_native_app` capability reference')
+        toolGuide.contains('##### `addTrigger` capability families')
+        toolGuide.contains('##### `addAction` capability families')
+        toolGuide.contains('##### `addRequiredExpression` STPage capability list')
+
+        and: 'rm_action_subtype_schemas.md (referenced from addAction) still exists'
+        new File('docs/rm_action_subtype_schemas.md').exists()
     }
 
     def "missing-param hint surface for update_native_app strips marker tokens but keeps wrapped capability prose"() {
