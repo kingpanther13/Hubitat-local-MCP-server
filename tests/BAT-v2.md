@@ -11,7 +11,7 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 ## Safety Rules
 
 - **All tests use the `BAT` prefix** for artifacts (rules, devices, rooms, files, variables) for easy identification and cleanup
-- **All rules are marked `testRule: true`** to skip backup on deletion
+- **All rules are marked `testRule: true`** to skip backup on deletion — this applies to `custom_create_rule`-created rules only; native rules created via `create_native_app` use the `delete_native_app` teardown path instead (no `testRule` flag)
 - **Tests only create/modify/delete test artifacts** — never touch existing production devices, rules, or hub settings
 - **Device commands only target BAT-created virtual devices** — never command physical devices
 - **Destructive hub operations are excluded** — no reboot, shutdown, Z-Wave repair, app/driver install/update/delete, or real device deletion
@@ -3015,9 +3015,9 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled. Create hub variable 'bat_cpvar_test' (numeric, value 50). Select any switch device as 'BAT Switch'. Create RM rule 'BAT RunCommand Variable Param'.",
-  "test_prompt": "Add an action: capability='runCommand', command='setLevel', deviceIds=[<BAT Switch id>], parameters=[{type:'NUMBER', variable:'bat_cpvar_test'}]. Then call check_rule_health.",
-  "teardown_prompt": "Delete 'BAT RunCommand Variable Param' rule. Delete bat_cpvar_test variable."
+  "setup_prompt": "Hub Admin Write enabled. Create hub variable 'bat_cpvar_test' (numeric, value 50). Create a virtual switch device named 'BAT RunCmd Switch' via manage_virtual_device. Create RM rule 'BAT RunCommand Variable Param'.",
+  "test_prompt": "Add an action: capability='runCommand', command='setLevel', deviceIds=[<BAT RunCmd Switch id>], parameters=[{type:'NUMBER', variable:'bat_cpvar_test'}]. Then call check_rule_health.",
+  "teardown_prompt": "Delete 'BAT RunCommand Variable Param' rule. Delete bat_cpvar_test variable. Delete virtual device 'BAT RunCmd Switch'."
 }
 ```
 

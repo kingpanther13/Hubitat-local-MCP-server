@@ -18653,7 +18653,12 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
     if (!responseText) {
         throw new IllegalArgumentException("Empty response from ${path} -- app ${appId} may not exist")
     }
-    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception pe) {
+        throw new IllegalArgumentException("Failed to parse ${path} response: ${pe.message}", pe)
+    }
     if (!(parsed instanceof Map) || !parsed.app) {
         throw new IllegalArgumentException("Unexpected response shape from ${path}: missing app object")
     }

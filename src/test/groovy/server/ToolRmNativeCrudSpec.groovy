@@ -7653,7 +7653,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "validation error surfaces in result.error; rejected name + not found + Available modes all present"
         result.success == false
         result.error?.contains("AnyMode")
-        result.error?.contains("not found")
+        result.error?.contains("modeName 'AnyMode' not found")
         result.error?.contains("Available modes")
     }
 
@@ -8082,7 +8082,124 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
         result.partial == true
         result.settingsApplied?.contains("actType.1")
+        // The reason-coded check is the load-bearing discriminator here: partial=true alone is
+        // incidentally satisfiable by an unrelated not_in_schema skip in this stub, so only
+        // the reason='moreParams_no_reveal' entry is the genuine regression pin.
         result.settingsSkipped?.any { it?.key?.toString()?.startsWith("param") && it?.reason == "moreParams_no_reveal" }
+    }
+
+    def "addAction runCommand mixed literal+variable parameters: each slot takes the correct path"() {
+        // Exercises the two-param mixed case: first param is a literal, second is variable-sourced.
+        // Consequence-gated stub: xVar3.1 (variable slot) appears only AFTER uVar3.1=true is written,
+        // mirroring the production reveal sequence so the guard is non-circular (if the code fails to
+        // write uVar3.1 the xVar3.1 enum never opens and xVar3.1 cannot be written).
+        //
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def writtenFields = [:]
+        def moreParamsFired = 0
+        def uVar3Written = false
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired++
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) {
+                        writtenFields[m[0][1]] = v
+                        if (m[0][1] == "uVar3.1") uVar3Written = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        // Three-stage doActPage reveal:
+        //   base: no cpType fields
+        //   after 1st moreParams: cpType2.1 + uVar2.1 + cpVal2.1 (literal slot P=2)
+        //   after 2nd moreParams: adds cpType3.1 + uVar3.1 + cpVal3.1 (variable slot P=3)
+        //   after uVar3.1=true:   xVar3.1 (enum) appears; cpVal3.1 hidden
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            def base = [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]],
+                [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
+                [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
+                [name: "devices.1", type: "capability.switch", multiple: true],
+                [name: "cCmd.1", type: "text"],
+                [name: "moreParams", type: "button"],
+                [name: "actionDone", type: "button"]
+            ]
+            def slot2 = [
+                [name: "cpType2.1", type: "enum", options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                [name: "uVar2.1", type: "bool"],
+                [name: "cpVal2.1", type: "text"]
+            ]
+            def slot3Pre = [
+                [name: "cpType3.1", type: "enum", options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                [name: "uVar3.1", type: "bool"],
+                [name: "cpVal3.1", type: "text"]
+            ]
+            def slot3Post = [
+                [name: "cpType3.1", type: "enum", options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                [name: "uVar3.1", type: "bool"],
+                [name: "xVar3.1", type: "enum", options: ["myVar": "myVar", "counter": "counter"]]
+                // cpVal3.1 deliberately absent after uVar3.1=true (schema-gated)
+            ]
+            def inputs = base
+            if (moreParamsFired >= 1) inputs = inputs + slot2
+            if (moreParamsFired >= 2) inputs = inputs + (uVar3Written ? slot3Post : slot3Pre)
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "runCommand",
+                command: "mixedCmd",
+                deviceIds: [42],
+                parameters: [
+                    [type: "NUMBER", value: 75],           // literal -> slot P=2
+                    [type: "NUMBER", variable: "myVar"]    // variable -> slot P=3
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "literal slot P=2 uses cpVal2.1; variable slot P=3 uses uVar3.1+xVar3.1 (not cpVal)"
+        result.success == true
+        writtenFields["cpType2.1"] == "number"
+        writtenFields["cpVal2.1"].toString() == "75"
+        writtenFields["cpType3.1"] == "number"
+        writtenFields["uVar3.1"] == "true"
+        writtenFields["xVar3.1"] == "myVar"
+
+        and: "cpType1.1 never written; variable slot has no cpVal; no cpVar fields"
+        !writtenFields.containsKey("cpType1.1")
+        !writtenFields.containsKey("cpVal3.1")
+        !writtenFields.any { k, v -> k.toString().startsWith("cpVar") }
+
+        and: "two moreParams clicks fired (one per parameter)"
+        moreParamsFired == 2
     }
 
     def "addAction runCommand variable parameter: null xVar options fail loud (not silent write)"() {
@@ -8196,7 +8313,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "validation error names the unknown variable and lists available variables"
         result.success == false
         result.error?.contains("unknownTarget")
-        result.error?.contains("not found")
+        result.error?.contains("variable 'unknownTarget' not found")
         result.error?.contains("knownVar")
     }
 
@@ -8260,7 +8377,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fails loud -- empty-hub case is not the same as an API failure"
         result.success == false
-        result.error?.contains("not found")
+        result.error?.contains("variable 'anything' not found")
         result.error?.contains("(none -- hub has no variables defined)")
     }
 

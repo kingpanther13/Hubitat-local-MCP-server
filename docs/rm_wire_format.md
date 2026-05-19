@@ -193,3 +193,13 @@ Two parameter shapes exist because RM 5.1 exposes separate literal (`cpVal<P>`) 
 variable (`uVar<P>`+`xVar<P>`) reveal paths that cannot be unified into a single write
 sequence -- the hub shows or hides `cpVal<P>` vs `xVar<P>` based on the current value
 of `uVar<P>`, so they are mutually exclusive at the schema level.
+
+**moreParams_no_reveal (consumer-actionable):**
+
+If the `moreParams` button click does not reveal a new `cpType<P>.<N>` field in the
+re-introspected schema, the parameter cannot be wired. The implementation records the
+skipped parameter in `settingsSkipped` with `reason='moreParams_no_reveal'` and sets
+`partial=true` on the action result rather than silently dropping the parameter. Callers
+should inspect `settingsSkipped` for entries with this reason and consult `repairHints`
+for next steps. Common causes: firmware version does not support parameters for this
+command, or the command name is invalid and RM did not allocate a slot.
