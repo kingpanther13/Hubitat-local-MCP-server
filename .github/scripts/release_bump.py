@@ -108,32 +108,44 @@ def compute_next(current: str, label: str) -> str:
 
 
 _MERGE_COMMIT_RE = re.compile(r"^Merge pull request #(\d+)\b")
-_TRAILING_PR_RE = re.compile(r"\(#(\d+)\)\s*$")
+_PARENS_PR_RE = re.compile(r"\(#(\d+)\)")
 
 
 def extract_pr_number(subject: str) -> int | None:
     """Return the PR number referenced by a commit subject line, or None.
 
-    Two commit subject shapes are recognized:
+    Recognized shapes:
       * Merge-commit:  ``Merge pull request #NN from <branch>`` — number at start
-      * Squash-merge:  ``<title> (#NN)`` — number in trailing parenthesized ref
+      * Squash-merge:  ``<title> (#NN)`` — appended by GitHub at squash time
+      * Squash + trailing annotation:
+          ``<title> (#NN) (cherry picked from commit abc...)``
+          ``Revert "<orig> (#X)" (#NN)``
 
-    When a PR's title contains its own ``(#N)`` reference (e.g. linking an
+    When a PR's title contains its own ``(#X)`` reference (e.g. linking an
     issue), the squash commit subject ends up with multiple ``(#N)`` tokens:
 
         fix: thing about issue (#100) (#150)
 
-    GitHub always appends the PR ref LAST, so this parser anchors the
-    squash pattern to end-of-line. Taking the first match would pick up the
-    in-title issue reference and the resulting ``gh pr view`` call would
-    fail, producing the ``- PR #NN`` placeholder bullet.
+    GitHub always appends the PR ref LAST among the parenthesized tokens,
+    so the parser returns the LAST ``(#N)`` match rather than the first.
+    Taking the first match would pick up the in-title issue reference,
+    ``gh pr view <issue#>`` would fail, and the entry would fall back to
+    the ``- PR #NN`` placeholder bullet (the bug this helper was extracted
+    for). Anchoring to end-of-line — the simpler alternative — would drop
+    cherry-pick-annotated subjects, so the parser uses ``findall`` and
+    picks the last match instead.
+
+    Merge-commit format is checked first; it takes precedence over any
+    trailing ``(#N)`` in the same subject. GitHub itself never produces a
+    subject matching both shapes — the precedence only matters for hand-
+    crafted edge cases.
     """
     m = _MERGE_COMMIT_RE.match(subject)
     if m:
         return int(m.group(1))
-    m = _TRAILING_PR_RE.search(subject)
-    if m:
-        return int(m.group(1))
+    matches = _PARENS_PR_RE.findall(subject)
+    if matches:
+        return int(matches[-1])
     return None
 
 
@@ -142,6 +154,12 @@ def merged_pr_numbers_since(tag: str | None) -> list[int]:
     and HEAD, in chronological order (oldest first). Handles both merge-commit
     format ('Merge pull request #NN') and squash-merge format ('Title (#NN)').
     Deduplicates in case multiple commits reference the same PR.
+
+    A subject whose shape doesn't match either pattern emits a ``::warning::``
+    so the operator notices direct-push commits or hand-crafted subjects
+    being dropped from the release notes. Mirrors ``fetch_pr``'s anti-silent-
+    failure contract — a missing bullet is otherwise indistinguishable from
+    a success path in the rendered output.
     """
     if tag is None:
         return []
@@ -152,8 +170,18 @@ def merged_pr_numbers_since(tag: str | None) -> list[int]:
     numbers: list[int] = []
     seen: set[int] = set()
     for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
         n = extract_pr_number(line)
-        if n is not None and n not in seen:
+        if n is None:
+            print(
+                f"::warning::merged_pr_numbers_since: commit subject did not "
+                f"match either merge or squash PR-ref pattern; dropping from "
+                f"release notes: {line!r}",
+                file=sys.stderr,
+            )
+            continue
+        if n not in seen:
             seen.add(n)
             numbers.append(n)
     return list(reversed(numbers))
