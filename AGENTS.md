@@ -47,11 +47,19 @@ Use `.github/pull_request_template.md` — keep every section.
 
   Lenient match (case-insensitive, any heading level, optional trailing colon) — same shape `release_bump.py` parses with. Run on rebase/edit too; pre-#146 PRs may not satisfy the template.
 
-## Scope discipline — Boy Scout principle
+## Boy Scout rule
 
-Leave the codebase better than you found it. When you discover a real problem during work on a PR, you do NOT get to silently defer it.
+**"Always leave the code better than you found it."**
 
-- **Small or medium fix that surfaces during the work** — roll it into the current PR. A drift, dead pointer, broken test assertion, mis-scoped boundary, or systemic issue uncovered during the change you're making IS in scope. Examples that should be rolled in: a `.md` pointer that's unreachable from the runtime, a test that asserts on file presence but not runtime availability, a header comment that's stale after a related rewrite. The PR's commit messages document the extra fix; the PR body's Changes section names it.
+When you touch a file, you fix the adjacent small stuff you notice — broken comments, stale references, dead pointers, weakly-asserting tests, mis-named variables, redundant code. Not because the PR title told you to, but because you were already in the file and you saw it. The accumulating effect over many PRs is what keeps the codebase from rotting. Skipping the small fix and walking past it is the antipattern, even when it's "not what the PR is about."
+
+This applies to anything within the file or function you're already editing, and to anything one or two file-jumps away that the fix you're making clearly implicates (e.g. a stale comment that references the function you just rewrote, a test assertion that pins the old behaviour, a pointer that points at something you renamed).
+
+## Scope discipline
+
+Scope discipline is the partner rule to Boy Scout — they're different things. Boy Scout governs the small adjacent fixes you make without asking. Scope discipline governs the larger ones you don't.
+
+- **Small or medium fix surfaced during the work** — Boy Scout it. Roll it into the current PR. Examples: a `.md` pointer that's unreachable from the runtime, a test that asserts on file presence but not runtime availability, a header comment that's stale after a related rewrite. The PR's commit messages document the extra fix; the PR body's Changes section names it.
 - **Large fix** (touches a broad surface, a separate subsystem, or would substantially expand the PR's review surface) — **ASK the user**. Present the option as: roll it in / open a follow-up PR / file a tracking issue / drop it. **The user decides scope, not the AI.**
 - **Banned phrasing** — "deferred for follow-up", "out of scope for this fix", "tracking issue", "separate concern", or any variant that defers a real problem the AI just discovered, without the user explicitly saying so. The deflection IS the antipattern; it shifts the cost of remembering onto the maintainer and lets known problems pile up.
 
