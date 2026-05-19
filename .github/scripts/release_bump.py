@@ -107,6 +107,36 @@ def compute_next(current: str, label: str) -> str:
     raise ValueError(f"Unknown release label: {label!r}")
 
 
+_MERGE_COMMIT_RE = re.compile(r"^Merge pull request #(\d+)\b")
+_TRAILING_PR_RE = re.compile(r"\(#(\d+)\)\s*$")
+
+
+def extract_pr_number(subject: str) -> int | None:
+    """Return the PR number referenced by a commit subject line, or None.
+
+    Two commit subject shapes are recognized:
+      * Merge-commit:  ``Merge pull request #NN from <branch>`` — number at start
+      * Squash-merge:  ``<title> (#NN)`` — number in trailing parenthesized ref
+
+    When a PR's title contains its own ``(#N)`` reference (e.g. linking an
+    issue), the squash commit subject ends up with multiple ``(#N)`` tokens:
+
+        fix: thing about issue (#100) (#150)
+
+    GitHub always appends the PR ref LAST, so this parser anchors the
+    squash pattern to end-of-line. Taking the first match would pick up the
+    in-title issue reference and the resulting ``gh pr view`` call would
+    fail, producing the ``- PR #NN`` placeholder bullet.
+    """
+    m = _MERGE_COMMIT_RE.match(subject)
+    if m:
+        return int(m.group(1))
+    m = _TRAILING_PR_RE.search(subject)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def merged_pr_numbers_since(tag: str | None) -> list[int]:
     """Return PR numbers referenced in commit subjects between `tag` (exclusive)
     and HEAD, in chronological order (oldest first). Handles both merge-commit
@@ -121,14 +151,11 @@ def merged_pr_numbers_since(tag: str | None) -> list[int]:
         return []
     numbers: list[int] = []
     seen: set[int] = set()
-    pr_re = re.compile(r"(?:Merge pull request #| \(#)(\d+)\b")
     for line in result.stdout.splitlines():
-        m = pr_re.search(line)
-        if m:
-            n = int(m.group(1))
-            if n not in seen:
-                seen.add(n)
-                numbers.append(n)
+        n = extract_pr_number(line)
+        if n is not None and n not in seen:
+            seen.add(n)
+            numbers.append(n)
     return list(reversed(numbers))
 
 

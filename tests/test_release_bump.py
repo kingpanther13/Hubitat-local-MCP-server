@@ -101,6 +101,62 @@ def test_parse_release_notes_orphan_indented_bullet_skipped():
 
 
 # ---------------------------------------------------------------------------
+# extract_pr_number — parses the PR number out of a commit subject line.
+# Squash merges produce subjects like "Title (#N)"; if the PR title itself
+# contained an issue reference like "Title about issue (#100)", the squash
+# commit becomes "Title about issue (#100) (#150)" — and the appended #150 is
+# the actual PR, not #100. GitHub always appends the PR ref LAST, so the
+# parser must take the trailing token, not the first.
+# ---------------------------------------------------------------------------
+
+def test_extract_pr_number_plain_squash():
+    """Standard squash-merge subject yields the trailing PR number."""
+    assert rb.extract_pr_number("docs: add CONTRIBUTING.md (#197)") == 197
+
+
+def test_extract_pr_number_title_with_issue_ref_baked_in():
+    """Regression: PR title containing `(#issue)` yields the LAST `(#N)`
+    (the GitHub-appended PR ref), not the in-title issue ref.
+
+    This is the bug behind v1.3.6/1.3.7/1.3.8 release notes showing
+    "- PR #181/#169/#187/#174" placeholders: `gh pr view <issue#>` failed
+    because the parser had returned the in-title issue number.
+    """
+    subj = "fix: addTrigger supports Hub Variable triggers + conditional A != B (#169) (#194)"
+    assert rb.extract_pr_number(subj) == 194
+
+
+def test_extract_pr_number_multiple_issue_refs_in_title():
+    """Title with multiple parenthesized issue refs still resolves to the
+    final GitHub-appended PR number."""
+    subj = "test: add dispatch-envelope coverage across all tool specs (#187, #121) (#191)"
+    assert rb.extract_pr_number(subj) == 191
+
+
+def test_extract_pr_number_bare_issue_hash_in_title():
+    """Bare `#N` references (no parentheses) in the title are ignored;
+    only the trailing `(#N)` PR ref is returned."""
+    subj = "test: close issue #141 Section A Spock coverage gaps (#193)"
+    assert rb.extract_pr_number(subj) == 193
+
+
+def test_extract_pr_number_merge_commit_format():
+    """Traditional merge-commit format ('Merge pull request #N from ...') yields N."""
+    assert rb.extract_pr_number("Merge pull request #50 from foo/bar") == 50
+
+
+def test_extract_pr_number_no_ref_returns_none():
+    """Subject with no PR reference returns None."""
+    assert rb.extract_pr_number("chore: tweak something") is None
+
+
+def test_extract_pr_number_revert_uses_new_pr():
+    """Revert commits get a new PR number; the trailing `(#N)` is the new one."""
+    subj = 'Revert "feat: thing (#100)" (#150)'
+    assert rb.extract_pr_number(subj) == 150
+
+
+# ---------------------------------------------------------------------------
 # split_release_blocks
 # ---------------------------------------------------------------------------
 
