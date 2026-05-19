@@ -12,7 +12,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".github", "scripts"))
 
 import pytest
-import release_bump as rb
+import release_bump as rb  # pyright: ignore[reportMissingImports]
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +567,7 @@ def test_build_bullets_warns_on_section_with_no_bullets(monkeypatch, capsys):
         "author": {"login": "alice"},
         "body": "## Release Notes\nThis fixes a thing but the author wrote prose.",
     }
-    monkeypatch.setattr(rb, "fetch_pr", lambda n: fake_pr)
+    monkeypatch.setattr(rb, "fetch_pr", lambda _: fake_pr)
     bullets = rb.build_bullets([42])
     # Title-only fallback shape
     assert len(bullets) == 1
@@ -589,7 +589,7 @@ def test_build_bullets_no_warning_when_section_absent(monkeypatch, capsys):
         "author": {"login": "alice"},
         "body": "## Summary\nNo release notes section at all.",
     }
-    monkeypatch.setattr(rb, "fetch_pr", lambda n: fake_pr)
+    monkeypatch.setattr(rb, "fetch_pr", lambda _: fake_pr)
     rb.build_bullets([42])
     captured = capsys.readouterr()
     assert "::warning::" not in captured.err
@@ -601,7 +601,7 @@ def test_fetch_pr_handles_whitespace_only_stderr(monkeypatch, capsys):
     """
     import subprocess as sp
 
-    def fake_run(*args, **kwargs):
+    def fake_run(*args):
         # Simulate gh CLI failing with whitespace-only stderr
         raise sp.CalledProcessError(
             returncode=1, cmd=args, output="", stderr="   \n  \n"
@@ -616,14 +616,23 @@ def test_fetch_pr_handles_whitespace_only_stderr(monkeypatch, capsys):
 
 
 def test_build_bullets_warns_when_fetch_pr_fails(monkeypatch, capsys):
-    """When fetch_pr returns None, build_bullets uses the placeholder bullet
-    AND fetch_pr itself emits the warning (verified here by checking that
-    the placeholder is in the output — fetch_pr's warning is exercised by
-    its own subprocess error path, which we can't easily mock without
-    overriding `run`)."""
-    monkeypatch.setattr(rb, "fetch_pr", lambda n: None)
+    """When gh pr view fails, build_bullets falls back to the `- PR #N`
+    placeholder AND fetch_pr emits a ::warning::. Both behaviours are
+    verified here by mocking the lower-level `rb.run` (so real fetch_pr
+    executes its except path) rather than mocking fetch_pr away."""
+    import subprocess as sp
+
+    def fake_run(*args):
+        raise sp.CalledProcessError(
+            returncode=1, cmd=args, output="", stderr="not found"
+        )
+
+    monkeypatch.setattr(rb, "run", fake_run)
     bullets = rb.build_bullets([99])
     assert bullets == ["- PR #99"]
+    captured = capsys.readouterr()
+    assert "::warning::fetch_pr" in captured.err
+    assert "#99" in captured.err
 
 
 def test_bump_manifest_legacy_blob_shrinkage_regression_anchor(tmp_path, monkeypatch):
