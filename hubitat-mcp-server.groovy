@@ -1154,19 +1154,23 @@ def getGatewayConfig() {
 }
 
 // ==================== MCP TOOL ANNOTATIONS ====================
-// MCP spec (2024-11-05+) `annotations.readOnlyHint` / `destructiveHint` drive
-// client-side grouping. Claude.ai's connector UI, for example, splits a server's
-// catalog into a "Read tools" block and a "Write tools" block based on
-// readOnlyHint; anything missing the annotation lands in a generic "Other tools"
-// bucket. Both sets below are defined POSITIVELY so a new tool that no one
-// labels here defaults to write+non-destructive, which is the safe default for
-// permission prompts (the user is asked before any unlabelled write happens).
+// MCP spec `annotations.readOnlyHint` / `destructiveHint` drive client-side
+// grouping. Claude.ai's connector UI splits a server's catalog into Read /
+// Write blocks from readOnlyHint; entries missing it land in a generic
+// "Other tools" bucket.
 //
-// Gateway entries (manage_*) are annotated dynamically in getToolDefinitions():
-// a gateway is read-only iff every visible sub-tool is read-only, and
-// destructive iff any visible sub-tool is destructive. Visibility respects the
-// feature-toggle hide rules, so e.g. manage_native_rules_and_apps collapses
-// correctly when Built-in App Tools is off.
+// Classification model (kept simple and conservative):
+//   * read-only = does not modify hub or device state. Anything else is
+//     write+destructive. There is no non-destructive-write subset --
+//     this matches the MCP spec default (destructiveHint defaults to true
+//     when readOnlyHint=false) and gets every write the more cautious
+//     permission prompt in clients that surface destructiveHint.
+//   * Both annotation keys are emitted explicitly (never omitted on writes)
+//     so clients do not need to rely on spec defaults.
+//   * The read-only set is POSITIVE: a tool that nobody lists here falls
+//     to write+destructive. New tools default to the safer prompt; the
+//     "every leaf classified" spec test forces the decision to be made
+//     in code review rather than left implicit.
 
 def getReadOnlyToolNames() {
     return [
@@ -1215,47 +1219,35 @@ def getReadOnlyToolNames() {
     ] as Set
 }
 
-def getDestructiveToolNames() {
-    return [
-        "custom_delete_rule",
-        "delete_variable", "remove_connector",
-        "delete_captured_state", "clear_captured_states",
-        "clear_debug_logs",
-        "reboot_hub", "shutdown_hub", "zwave_repair", "delete_device",
-        "delete_room",
-        "delete_app", "delete_driver", "delete_library",
-        "delete_file",
-        "delete_native_app",
-        // manage_virtual_device action="delete" deletes a virtual device; the
-        // create branch is non-destructive but the delete branch is, so mark
-        // the tool destructive.
-        "manage_virtual_device"
-    ] as Set
-}
-
-// Returns the MCP `annotations` map for a leaf tool name. `readOnlyHint` is
-// always set explicitly (not omitted on writes) so clients can rely on its
-// presence to drive grouping without falling back to the spec default.
-def annotationsForLeaf(String toolName, Set readOnlyNames, Set destructiveNames) {
+// Returns the MCP `annotations` map for a leaf tool name. Both keys are
+// emitted explicitly so the wire payload is unambiguous regardless of which
+// spec-default a given client honours.
+def annotationsForLeaf(String toolName, Set readOnlyNames) {
     def isReadOnly = readOnlyNames.contains(toolName)
     def ann = [readOnlyHint: isReadOnly]
-    if (!isReadOnly && destructiveNames.contains(toolName)) {
+    if (!isReadOnly) {
+        // destructiveHint is meaningful only when readOnlyHint=false (per spec).
+        // Every write is treated as destructive -- matches the spec default and
+        // gets clients the cautious permission prompt.
         ann.destructiveHint = true
     }
     return ann
 }
 
-// Aggregates annotations for a gateway entry based on its currently-visible
-// sub-tools. A gateway is read-only iff every visible sub-tool is read-only;
-// it is destructive iff any visible sub-tool is destructive. Caller passes
-// `visibleSubTools` so toggles (Built-in App Tools off, custom engine readonly,
-// etc.) that hide sub-tools change the gateway label too -- e.g. if the only
-// write sub-tools in a gateway are hidden, the gateway flips to read-only.
-def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set destructiveNames) {
+// Aggregates annotations for a gateway entry from its currently-visible
+// sub-tools. Read-only iff every visible sub-tool is read-only; otherwise
+// write+destructive. Callers pass `visibleSubTools` so feature-toggle hiding
+// (Built-in App Tools off, custom engine readonly) propagates into the
+// gateway label.
+def annotationsForGateway(List visibleSubTools, Set readOnlyNames) {
+    if (!visibleSubTools) {
+        throw new IllegalArgumentException(
+            "annotationsForGateway requires at least one visible sub-tool"
+        )
+    }
     def anyWrite = visibleSubTools.any { !readOnlyNames.contains(it) }
-    def anyDestructive = visibleSubTools.any { destructiveNames.contains(it) }
     def ann = [readOnlyHint: !anyWrite]
-    if (anyWrite && anyDestructive) {
+    if (anyWrite) {
         ann.destructiveHint = true
     }
     return ann
@@ -1465,11 +1457,8 @@ def getToolDefinitions() {
     }
     // customEngineMode == "full": nothing added to hideByName for custom_* tools
 
-    // MCP tool annotations source-of-truth -- read once per call, passed into the
-    // leaf and gateway annotation helpers so a single mutation to the canonical
-    // sets propagates everywhere tools/list builds entries.
+    // Hoist annotation source-of-truth once per call.
     def readOnlyNames = getReadOnlyToolNames()
-    def destructiveNames = getDestructiveToolNames()
 
     // Flat mode: every tool advertised individually under its real name; search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
@@ -1488,7 +1477,7 @@ def getToolDefinitions() {
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
-            tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, destructiveNames)]
+            tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames)]
         }
     }
 
@@ -1519,7 +1508,7 @@ def getToolDefinitions() {
                     args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
                 ]
             ],
-            annotations: annotationsForGateway(visibleSubTools, readOnlyNames, destructiveNames)
+            annotations: annotationsForGateway(visibleSubTools, readOnlyNames)
         ]]
     }
 
@@ -1530,9 +1519,11 @@ def getToolDefinitions() {
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     return transformed.collect { tool ->
         // Gateway entries already carry annotations from the collectMany above;
-        // leaf base tools get theirs from the canonical set. Don't overwrite a
-        // pre-populated annotations map.
-        tool.annotations ? tool : tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, destructiveNames)]
+        // leaf base tools get theirs from the canonical set. The presence of
+        // readOnlyHint (not just the annotations map) is the load-bearing
+        // signal -- a partial pre-populated map without readOnlyHint still
+        // needs the leaf classifier to merge in the missing key.
+        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames)]
     }
 }
 

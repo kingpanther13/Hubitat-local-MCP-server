@@ -89,6 +89,20 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             it.description instanceof String && !it.description.isEmpty() &&
             it.inputSchema instanceof Map
         }
+
+        and: 'MCP annotations survive serialization through jsonRpcResult → render'
+        // McpToolAnnotationsSpec pins the in-process map shape; this `and:`
+        // pins that the annotation keys actually land in the wire envelope
+        // (Claude.ai's catalog grouping only cares about what gets serialized).
+        // A regression in applyDescriptionTransform / JsonOutput that stripped
+        // the `annotations` key would silently undo the Read/Write split.
+        response.result.tools.every { it.annotations?.readOnlyHint instanceof Boolean }
+        def listDevices = response.result.tools.find { it.name == 'list_devices' }
+        listDevices.annotations.readOnlyHint == true
+        listDevices.annotations.containsKey('destructiveHint') == false
+        def manageDestructive = response.result.tools.find { it.name == 'manage_destructive_hub_ops' }
+        manageDestructive.annotations.readOnlyHint == false
+        manageDestructive.annotations.destructiveHint == true
     }
 
     def "tools/list with useGateways=false returns the full flat catalog in a single response (no pagination)"() {
@@ -136,6 +150,15 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'no duplicate tool names in the response'
         response.result.tools.size() == names.size()
+
+        and: 'flat-mode wire envelope also carries readOnlyHint per leaf tool'
+        response.result.tools.every { it.annotations?.readOnlyHint instanceof Boolean }
+        def listRooms = response.result.tools.find { it.name == 'list_rooms' }
+        listRooms.annotations.readOnlyHint == true
+        listRooms.annotations.containsKey('destructiveHint') == false
+        def deleteRoom = response.result.tools.find { it.name == 'delete_room' }
+        deleteRoom.annotations.readOnlyHint == false
+        deleteRoom.annotations.destructiveHint == true
     }
 
     def "tools/list gateway-mode catalog also returns in a single response with no nextCursor"() {
