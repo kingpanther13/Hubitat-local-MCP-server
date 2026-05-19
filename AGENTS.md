@@ -47,6 +47,16 @@ Use `.github/pull_request_template.md` — keep every section.
 
   Lenient match (case-insensitive, any heading level, optional trailing colon) — same shape `release_bump.py` parses with. Run on rebase/edit too; pre-#146 PRs may not satisfy the template.
 
+## Scope discipline — Boy Scout principle
+
+Leave the codebase better than you found it. When you discover a real problem during work on a PR, you do NOT get to silently defer it.
+
+- **Small or medium fix that surfaces during the work** — roll it into the current PR. A drift, dead pointer, broken test assertion, mis-scoped boundary, or systemic issue uncovered during the change you're making IS in scope. Examples that should be rolled in: a `.md` pointer that's unreachable from the runtime, a test that asserts on file presence but not runtime availability, a header comment that's stale after a related rewrite. The PR's commit messages document the extra fix; the PR body's Changes section names it.
+- **Large fix** (touches a broad surface, a separate subsystem, or would substantially expand the PR's review surface) — **ASK the user**. Present the option as: roll it in / open a follow-up PR / file a tracking issue / drop it. **The user decides scope, not the AI.**
+- **Banned phrasing** — "deferred for follow-up", "out of scope for this fix", "tracking issue", "separate concern", or any variant that defers a real problem the AI just discovered, without the user explicitly saying so. The deflection IS the antipattern; it shifts the cost of remembering onto the maintainer and lets known problems pile up.
+
+When in doubt, treat the problem as in-scope, name it, and surface the trade-off to the user. The user can always shrink the scope; only the user can grow it.
+
 ## Boundaries
 
 **🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on every PR:
