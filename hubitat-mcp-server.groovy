@@ -20200,6 +20200,139 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 }
 
 /**
+ * Low-level reveal-step primitive for RM 5.1 progressive-disclosure wizard pages.
+ *
+ * Snapshot field names on a page, execute a trigger closure (button click or
+ * setting write), re-fetch the page, then find and return the newly-revealed
+ * input field whose name matches the given Java regex pattern.
+ *
+ * Callers rely on this when RM's next field name is firmware-assigned and must
+ * be schema-discovered rather than hardcoded -- for example, the cpType<P>.N
+ * slot allocated by moreParams, the xVar<digits>.N enum revealed after a
+ * uVar toggle, or any per-capability sub-picker that appears only after the
+ * capability selector commits. Returns null for the revealed input if no new
+ * matching field appears after the trigger.
+ *
+ * @param appId    Rule Machine app ID
+ * @param page     Wizard page name (e.g. "doActPage", "STPage")
+ * @param pattern  Java regex that the newly-revealed field name must match
+ * @param trigger  Closure that causes the field to appear (write or click)
+ * @return         Map: [input: <input-Map or null>, visibleNames: <List<String>>]
+ */
+private Map _rmRevealStep(Integer appId, String page, String pattern, Closure trigger) {
+    def preCfg = _rmFetchConfigJson(appId, page)
+    def preNames = (preCfg?.configPage?.sections ?: []).collectMany { sec ->
+        (sec?.input ?: []).collect { it?.name?.toString() }
+    }.findAll { it } as Set
+    trigger.call()
+    def postCfg = _rmFetchConfigJson(appId, page)
+    def postInputs = (postCfg?.configPage?.sections ?: []).collectMany { sec ->
+        (sec?.input ?: [])
+    }
+    def revealed = postInputs.find { inp ->
+        def n = inp?.name?.toString()
+        n && n.matches(pattern) && !preNames.contains(n)
+    }
+    return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it }]
+}
+
+/**
+ * STPage condition-field writer for RM 5.1's Required Expression wizard.
+ *
+ * Handles the field-write sequence for a single plain condition after the
+ * capability index (cIdx) has been discovered from the STPage schema. Writes
+ * capability, device list, comparator chain (attribute -> RelrDev -> state),
+ * optional negation and raw-settings overrides, then clicks hasAll to seal
+ * the condition slot. The write order for the comparator chain is load-bearing:
+ * RM only reveals RelrDev_N after rCustomAttr_N commits, and state_N after
+ * RelrDev_N commits; out-of-order writes silently reject.
+ *
+ * ctx keys:
+ *   writeST              - Closure(Map params, String key, Object value, String label=null)
+ *                          that delegates to _rmWriteSubPageField and routes into
+ *                          the caller's applied/skipped accumulators.
+ *   cancelInFlightCondition - Closure() that clicks cancelCapab on failure.
+ *   condIdx              - Integer: 0-based condition position for error messages.
+ *   cap                  - String: human-readable capability name for error messages.
+ *   capCanonical         - String: capability value as returned by the STPage option list.
+ *   hrefParams           - Map passed through to writeST.
+ *
+ * Throws IllegalArgumentException or IllegalStateException on validation failure;
+ * the cancel closure is invoked before throwing so the caller's wizard is left
+ * in a clean state.
+ */
+private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cIdx) {
+    def writeST               = ctx.writeST as Closure
+    def cancelInFlightCond    = ctx.cancelInFlightCondition as Closure
+    def condIdx               = ctx.condIdx as Integer
+    def cap                   = ctx.cap?.toString()
+    def capCanonical          = ctx.capCanonical?.toString()
+    def hrefParams            = ctx.hrefParams as Map
+
+    writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
+    if (cond.deviceIds != null) {
+        writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
+    }
+    // Write order MATTERS: STPage (like doActPage) uses progressive disclosure.
+    // state_<N> does not appear in the schema until RelrDev_<N> commits --
+    // empirically confirmed live (rule 1377, 2026-04-28): after rCustomAttr_<N>
+    // the schema shows RelrDev_<N>; only after RelrDev_<N> commits does
+    // state_<N> appear. Writing state_<N> before RelrDev_<N> silently rejects.
+    // Order: rCustomAttr_<N> -> RelrDev_<N> -> state_<N>.
+    // For enum capabilities (no comparator), state_<N> appears immediately
+    // after rDev_<N>, so the comparator block is a no-op for those paths.
+    //
+    // Fail-loud validation: Custom Attribute requires BOTH attribute AND
+    // comparator. RM 5.1 silently accepts either half but renders the condition
+    // incomplete. Both directions are checked.
+    if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+    }
+    if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+    }
+    if (cond.comparator != null) {
+        if (cond.attribute != null) {
+            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
+        }
+        // Condition-wizard comparator field is RelrDev_<N> ("Relr"),
+        // not ReltDev_<N> ("Relt" = trigger-row comparator).
+        writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+    }
+    // state and value both write to state_${cIdx} -- STPage has no separate
+    // value_<N> field. state (enum string) takes priority; value (numeric
+    // threshold) is the alias for Custom Attribute and numeric comparator paths.
+    def condStateOrValue = cond.state != null ? cond.state : cond.value
+    if (condStateOrValue != null) {
+        def stateNavResp = _rmFetchConfigJson(appId, "STPage")
+        def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
+        if (stateInput?.options) {
+            def stateOptions = (stateInput.options ?: []).collect { o ->
+                (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
+            }.findAll { it }
+            def matched = stateOptions.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
+            if (!matched && stateOptions) {
+                throw new IllegalArgumentException("conditions[${condIdx}].state '${condStateOrValue}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
+            }
+            if (matched) condStateOrValue = matched
+        }
+        writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
+    }
+    if (cond.not == true) {
+        writeST(hrefParams, "not${cIdx}".toString(), true)
+    }
+    if (cond.rawSettings instanceof Map) {
+        (cond.rawSettings as Map).each { rk, rv ->
+            writeST(hrefParams, rk.toString(), rv)
+        }
+    }
+    _rmClickAppButton(appId, "hasAll", null, "STPage")
+}
+
+/**
  * High-level structured Required Expression creation for Rule Machine 5.1.
  * Replaces the 7+ manual wizard calls with one orchestrated call.
  * STPage wire-format internals and spec shape: docs/rm_wire_format.md#_rmAddRequiredExpression.
@@ -20361,13 +20494,20 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 // value, so the label IS the value here).
                 writeST(hrefParams, "oper", "end-sub-expression )", "oper(close-paren)")
             } else {
-                // Plain condition: cond=a, then walk fields, then hasAll.
+                // Plain condition: cond=a, discover the RM-assigned cIdx, validate
+                // the capability option, then delegate all field writes to
+                // _rmWalkConditionReveal (handles the rCapab->rDev->comparator->
+                // state->hasAll sequence in the correct progressive-disclosure order).
                 def cap = cond.capability?.toString()?.trim()
                 if (!cap) {
                     throw new IllegalArgumentException("conditions[${i}].capability is required")
                 }
                 writeST(hrefParams, "cond", "a", "cond")
                 try {
+                    // Step 1: re-fetch STPage to discover the RM-assigned condition
+                    // slot index (cIdx). The cond=a write above causes RM to allocate
+                    // a new rCapab_<N>/rDev_<N>/... slot; N is firmware-assigned and
+                    // must be read from the schema rather than assumed.
                     def navResp = _rmFetchConfigJson(appId, "STPage")
                     def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                     def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
@@ -20380,76 +20520,22 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                         throw new IllegalStateException("addRequiredExpression: couldn't parse condition index from '${rCapabInput.name}'")
                     }
                     conditionIndices << cIdx
+                    // Step 2: validate the capability value against the schema option list.
                     def capOptions = (rCapabInput.options ?: []) as List
                     def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
                     if (!capCanonical) {
                         throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
                     }
-                    writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
-                    if (cond.deviceIds != null) {
-                        writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
-                    }
-                    // Write order MATTERS: STPage (like doActPage) uses
-                    // progressive disclosure. state_<N> does not appear in
-                    // the schema until RelrDev_<N> commits -- empirically
-                    // confirmed live (rule 1377, 2026-04-28): after
-                    // rCustomAttr_<N> the schema shows RelrDev_<N>; only
-                    // after RelrDev_<N> commits does state_<N> appear.
-                    // Writing state_<N> before RelrDev_<N> silently rejects.
-                    // Order: rCustomAttr_<N> -> RelrDev_<N> -> state_<N>.
-                    // For enum capabilities (no comparator), state_<N> appears
-                    // immediately after rDev_<N>, so the comparator block is
-                    // a no-op and write order has no effect.
-                    //
-                    // Fail-loud validation: Custom Attribute requires BOTH attribute
-                    // AND comparator. RM 5.1 silently accepts either half but renders
-                    // the condition incomplete. Both directions are checked.
-                    if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
-                        cancelInFlightCondition()
-                        throw new IllegalArgumentException("conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-                    }
-                    if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
-                        cancelInFlightCondition()
-                        throw new IllegalArgumentException("conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-                    }
-                    if (cond.comparator != null) {
-                        if (cond.attribute != null) {
-                            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
-                        }
-                        // Condition-wizard comparator is RelrDev_<N> ("Relr"),
-                        // not ReltDev_<N> ("Relt" = trigger-row comparator).
-                        writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
-                    }
-                    // state and value both write to state_${cIdx} — STPage has
-                    // no separate value_<N> field. Mirror the doActPage fallback:
-                    // state (enum string) takes priority; value (numeric threshold)
-                    // is the alias for Custom Attribute and numeric comparator paths.
-                    def condStateOrValue = cond.state != null ? cond.state : cond.value
-                    if (condStateOrValue != null) {
-                        def stateNavResp = _rmFetchConfigJson(appId, "STPage")
-                        def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-                        def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
-                        if (stateInput?.options) {
-                            def stateOptions = (stateInput.options ?: []).collect { o ->
-                                (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
-                            }.findAll { it }
-                            def matched = stateOptions.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
-                            if (!matched && stateOptions) {
-                                throw new IllegalArgumentException("conditions[${i}].state '${condStateOrValue}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
-                            }
-                            if (matched) condStateOrValue = matched
-                        }
-                        writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
-                    }
-                    if (cond.not == true) {
-                        writeST(hrefParams, "not${cIdx}".toString(), true)
-                    }
-                    if (cond.rawSettings instanceof Map) {
-                        (cond.rawSettings as Map).each { rk, rv ->
-                            writeST(hrefParams, rk.toString(), rv)
-                        }
-                    }
-                    _rmClickAppButton(appId, "hasAll", null, "STPage")
+                    // Steps 3-N: write the capability, devices, comparator chain, and state
+                    // in the correct progressive-disclosure order, then click hasAll.
+                    _rmWalkConditionReveal(appId, [
+                        writeST: writeST,
+                        cancelInFlightCondition: cancelInFlightCondition,
+                        condIdx: i,
+                        cap: cap,
+                        capCanonical: capCanonical,
+                        hrefParams: hrefParams
+                    ], cond, cIdx)
                 } catch (Exception perCondExc) {
                     cancelInFlightCondition()
                     if (wizardCleanupFailed) {
