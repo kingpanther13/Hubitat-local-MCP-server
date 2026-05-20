@@ -1480,6 +1480,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.3.12** - feat: addAction Set-Variable, runCommand variable parameters, Set-Mode modeName. PRs: [#196](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/196)
 - **v1.3.11** - feat: MCP readOnlyHint + destructiveHint annotations on every tool. PRs: [#202](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/202)
 - **v1.3.10** - fix(get_tool_guide): expose schema-referenced reference sections + add drift lint. PRs: [#201](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/201)
 - **v1.3.9** - fix: release-notes generator was picking issue refs instead of PR numbers. PRs: [#200](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/200)
