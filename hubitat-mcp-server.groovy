@@ -18081,6 +18081,34 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 }
             }
         }
+        // writeAct: doActPage field-write closure -- same signature as writeST (STPage
+        // caller), with hrefParams accepted and ignored since _rmWriteSettingOnPage
+        // derives page context from its pageName argument. Routes into the shared
+        // applied/skipped accumulators owned by _rmAddAction's outer scope.
+        def writeAct = { Map params, String fieldKey, Object fieldValue, String label = null ->
+            _rmWriteSettingOnPage(appId, "doActPage", fieldKey, fieldValue, applied, null, skipped)
+        }
+        // cancelInFlightActCond: cancel the in-flight condition wizard on doActPage.
+        // Invoked by _rmWalkConditionReveal before throwing on validation failure so
+        // the caller does not leave the wizard half-open. Track cleanup failure so the
+        // outer error result can surface wizardStuck for the caller.
+        def actWizardCleanupFailed = false
+        def actWizardCleanupErr = null
+        def cancelInFlightActCond = {
+            try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
+            catch (Exception cancelExc) {
+                actWizardCleanupFailed = true
+                actWizardCleanupErr = cancelExc.message
+                mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits")
+            }
+        }
+        // doActPage condition-wizard walk: write cond=a, discover the firmware-assigned
+        // cIdx from the schema (the slot number RM assigns is unpredictable), validate
+        // the capability option, then delegate the per-capability reveal sequence to
+        // _rmWalkConditionReveal (handles rCapab->rDev->comparator->state->hasAll in
+        // the correct progressive-disclosure order, same invariants as STPage).
+        // The condition-wizard field names are identical on both pages (RelrDev_<N>,
+        // rCustomAttr_<N>, state_<N>, etc.) -- only the page name differs.
         conditions.eachWithIndex { condRaw, i ->
             if (!(condRaw instanceof Map)) {
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}] is not a Map")
@@ -18102,79 +18130,28 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             def capOptions = (rCapabInput.options ?: []) as List
             def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(ccap) }
             if (!capCanonical) {
-                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
+                cancelInFlightActCond()
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
             }
-            _rmWriteSettingOnPage(appId, "doActPage", "rCapab_${cIdx}", capCanonical, applied, null, skipped)
-            if (cond.deviceIds != null) {
-                _rmWriteSettingOnPage(appId, "doActPage", "rDev_${cIdx}", cond.deviceIds, applied, null, skipped)
-            }
-            // Custom Attribute / numeric comparator path:
-            // The condition-wizard comparator field is RelrDev_<N> (lowercase r
-            // in "Relr"), NOT ReltDev_<N> (which is the TRIGGER-row comparator
-            // on selectTriggers -- a different wizard context). Field naming
-            // divergence: trigger wizard = ReltDev${idx} (no underscore, "Relt");
-            // condition wizard = RelrDev_${cIdx} (underscore, "Relr"). Applies
-            // to all condition wizards regardless of page (doActPage and STPage
-            // use the same condition-wizard field names). Empirically confirmed
-            // on live hub: schema's available list shows RelrDev_<N> after
-            // rCustomAttr_<N> is written; writing the wrong name silently rejects.
-            // Canonical doActPage Custom Attribute wizard sequence:
-            //   cond=a -> rCapab_N=Custom Attribute -> rDev_N=[ids]
-            //   -> rCustomAttr_N=attrName -> RelrDev_N=comparator -> state_N=value
-            //
-            // Fail-loud validation: Custom Attribute requires BOTH attribute AND
-            // comparator. RM 5.1 silently accepts either half and renders the
-            // condition incomplete. Surface the error immediately so the caller
-            // doesn't discover a broken condition via get_app_config.
-            // Both directions are checked: attribute-only and comparator-only.
-            if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
-                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
-                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-            }
-            if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
-                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
-                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-            }
-            if (cond.comparator != null) {
-                if (cond.attribute != null) {
-                    _rmWriteSettingOnPage(appId, "doActPage", "rCustomAttr_${cIdx}", cond.attribute, applied, null, skipped)
+            try {
+                _rmWalkConditionReveal(appId, [
+                    page: "doActPage",
+                    writeST: writeAct,
+                    cancelInFlightCondition: cancelInFlightActCond,
+                    condIdx: i,
+                    cap: cap,
+                    capCanonical: capCanonical,
+                    hrefParams: [unUsed: null],
+                    skipped: skipped
+                ], cond, cIdx)
+            } catch (Exception perCondExc) {
+                if (actWizardCleanupFailed) {
+                    // Both the per-condition write AND the cancel cleanup failed --
+                    // embed the marker so the dispatcher's catch can surface wizardStuck.
+                    throw new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${actWizardCleanupErr}]")
                 }
-                _rmWriteSettingOnPage(appId, "doActPage", "RelrDev_${cIdx}", cond.comparator, applied, null, skipped)
+                throw perCondExc
             }
-            // state_<N> holds either the enum state value (Switch on/off, Motion
-            // active/inactive) or the numeric threshold (Custom Attribute,
-            // numeric capabilities). Accept `state` (preferred) or `value`
-            // (numeric-comparison alias) -- mirrors the trigger-side
-            // _rmBuildCondition fallback.
-            def condStateOrValue = cond.state != null ? cond.state : cond.value
-            if (condStateOrValue != null) {
-                // Validate against the schema's enum options if present.
-                def stateCfg = _rmFetchConfigJson(appId, "doActPage")
-                def stateInputs = (stateCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-                def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
-                if (stateInput?.options) {
-                    def opts = (stateInput.options ?: []).collect { o ->
-                        (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
-                    }.findAll { it }
-                    def matched = opts.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
-                    if (!matched && opts) {
-                        try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
-                        throw new IllegalArgumentException("${cap}.expression.conditions[${i}].state '${condStateOrValue}' is not in capability '${ccap}' domain. Valid: ${opts.sort().join(', ')}")
-                    }
-                    if (matched) condStateOrValue = matched
-                }
-                _rmWriteSettingOnPage(appId, "doActPage", "state_${cIdx}", condStateOrValue, applied, null, skipped)
-            }
-            if (cond.not == true) {
-                _rmWriteSettingOnPage(appId, "doActPage", "not${cIdx}", true, applied, "bool", skipped)
-            }
-            // Click hasAll to commit this condition.
-            _rmClickAppButton(appId, "hasAll", null, "doActPage")
             // Joining operator for non-last conditions.
             if (i < conditions.size() - 1) {
                 def gapOp = opsList ? opsList[i] : operator
@@ -20265,10 +20242,10 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
 }
 
 /**
- * STPage condition-field writer for RM 5.1's Required Expression wizard.
+ * Condition-field writer for RM 5.1's wizard pages (STPage and doActPage).
  *
  * Handles the full field-write sequence for a single plain condition after the
- * capability index (cIdx) has been discovered from the STPage schema. Dispatches
+ * capability index (cIdx) has been discovered from the page schema. Dispatches
  * to a per-capability reveal sequence (each modelled as a chain of _rmRevealStep
  * calls that expose the next field only after the preceding write commits), then
  * writes optional negation and raw-settings overrides, and clicks hasAll to seal
@@ -20286,7 +20263,7 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
  *                        RelrDev_<N> -> re-fetch -> state_<N> -> hasAll
  *                        (the re-fetch between rCustomAttr and RelrDev is the bug fix:
  *                        the old code wrote both back-to-back and RelrDev was silently
- *                        rejected because STPage had not yet revealed it)
+ *                        rejected because the page had not yet revealed it)
  *   Device-relative   -- rCapab -> rDev_<N> -> re-fetch -> RelrDev_<N> -> re-fetch ->
  *                        RHS-type reveal -> if compareToDevice: write device/attr/offset;
  *                        else: state_<N> literal -> hasAll
@@ -20295,13 +20272,15 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
  *
  * ctx keys:
  *   writeST                 - Closure(Map params, String key, Object value, String label=null)
- *                             that delegates to _rmWriteSubPageField and routes into
- *                             the caller's applied/skipped accumulators.
+ *                             that writes a field and routes into the caller's
+ *                             applied/skipped accumulators.
  *   cancelInFlightCondition - Closure() that clicks cancelCapab on failure.
  *   condIdx                 - Integer: 0-based condition position for error messages.
  *   cap                     - String: human-readable capability name for error messages.
- *   capCanonical            - String: capability value as returned by the STPage option list.
+ *   capCanonical            - String: capability value as returned by the page option list.
  *   hrefParams              - Map passed through to writeST.
+ *   page                    - String: wizard page name (STPage or doActPage); defaults to
+ *                             STPage when absent for backwards compatibility.
  *
  * Throws IllegalArgumentException or IllegalStateException on validation failure;
  * the cancel closure is invoked before throwing so the caller's wizard is left
@@ -20315,6 +20294,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     def capCanonical          = ctx.capCanonical?.toString()
     def hrefParams            = ctx.hrefParams as Map
     def skippedAccum          = ctx.skipped as List
+    def page                  = ctx.page?.toString() ?: "STPage"
 
     // ---- Mode capability ----
     // RM reveals a modes<digits>_<N> picker (e.g. modes0_1, modes1_2) after
@@ -20338,7 +20318,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // _rmRevealStep: snapshot pre-state, then write rCapab (the revealing trigger),
         // then re-fetch and return the newly-appeared modes<digits>_<N> picker.
         def capKey = "rCapab_${cIdx}".toString()
-        def modesReveal = _rmRevealStep(appId, "STPage", /modes\d+_\d+/, {
+        def modesReveal = _rmRevealStep(appId, page, /modes\d+_\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!modesReveal.input) {
@@ -20354,7 +20334,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        _rmClickAppButton(appId, "hasAll", null, page)
         return
     }
 
@@ -20399,7 +20379,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
 
         // Reveal 1: write rCapab as the trigger -> startType selector appears
         def capKey = "rCapab_${cIdx}".toString()
-        def startTypeReveal = _rmRevealStep(appId, "STPage", /startType_\d+/, {
+        def startTypeReveal = _rmRevealStep(appId, page, /startType_\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!startTypeReveal.input) {
@@ -20416,7 +20396,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def startTypeCanonical = startTypeOpts.find { it?.equalsIgnoreCase(startType) } ?: startType
 
         // Reveal 2: write startType as the trigger -> startTime or startOffset appears
-        def startValReveal = _rmRevealStep(appId, "STPage", /startTime_\d+|startOffset_\d+/, {
+        def startValReveal = _rmRevealStep(appId, page, /startTime_\d+|startOffset_\d+/, {
             writeST(hrefParams, startTypeField, startTypeCanonical)
         })
         if (!startValReveal.input) {
@@ -20428,7 +20408,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def startValToWrite = startValToWriteEarly
 
         // Reveal 3: write start value as the trigger -> stopType selector appears
-        def endTypeReveal = _rmRevealStep(appId, "STPage", /stopType_\d+|endType_\d+/, {
+        def endTypeReveal = _rmRevealStep(appId, page, /stopType_\d+|endType_\d+/, {
             writeST(hrefParams, startValField, startValToWrite)
         })
         if (!endTypeReveal.input) {
@@ -20445,7 +20425,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def endValToWrite = endValToWriteEarly
 
         // Reveal 4: write stopType as the trigger -> stop time or offset appears
-        def endValReveal = _rmRevealStep(appId, "STPage", /stopTime_\d+|endTime_\d+|stopOffset_\d+|endOffset_\d+/, {
+        def endValReveal = _rmRevealStep(appId, page, /stopTime_\d+|endTime_\d+|stopOffset_\d+|endOffset_\d+/, {
             writeST(hrefParams, endTypeField, endTypeCanonical)
         })
         if (!endValReveal.input) {
@@ -20462,7 +20442,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        _rmClickAppButton(appId, "hasAll", null, page)
         return
     }
 
@@ -20484,7 +20464,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
 
         // Reveal 1: write rCapab as the trigger -> variable-name picker appears
         // (e.g. lVar_<N> or varX_<N>; exact name is firmware-assigned)
-        def varPickerReveal = _rmRevealStep(appId, "STPage", /[a-zA-Z]+Var[a-zA-Z]*_\d+|varName_\d+|rVar_\d+/, {
+        def varPickerReveal = _rmRevealStep(appId, page, /[a-zA-Z]+Var[a-zA-Z]*_\d+|varName_\d+|rVar_\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!varPickerReveal.input) {
@@ -20508,7 +20488,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
 
         // Reveal 2: write variable name as the trigger -> RelrDev_<N> comparator appears
         def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
-        def relrReveal = _rmRevealStep(appId, "STPage", /RelrDev_\d+/, {
+        def relrReveal = _rmRevealStep(appId, page, /RelrDev_\d+/, {
             writeST(hrefParams, varPickerField, varName)
         })
         if (!relrReveal.input) {
@@ -20522,7 +20502,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // Reveal 3: write RelrDev as the trigger -> state_<N> value appears
         def condStateOrValue = cond.state != null ? cond.state : cond.value
         def stateKey = "state_${cIdx}".toString()
-        def stateReveal = _rmRevealStep(appId, "STPage", /state_\d+/, {
+        def stateReveal = _rmRevealStep(appId, page, /state_\d+/, {
             writeST(hrefParams, relrField, normalizedComparator)
         })
         if (!stateReveal.input) {
@@ -20540,7 +20520,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        _rmClickAppButton(appId, "hasAll", null, page)
         return
     }
 
@@ -20571,7 +20551,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // Pre-snapshot sees the schema without RelrDev; trigger writes rCustomAttr;
             // post-fetch confirms RelrDev appeared. Use the discovered field name (not a
             // hardcoded slot) and normalize the comparator token the same way as Variable.
-            def relrReveal = _rmRevealStep(appId, "STPage", /RelrDev_\d+/, {
+            def relrReveal = _rmRevealStep(appId, page, /RelrDev_\d+/, {
                 if (attrVal != null) {
                     writeST(hrefParams, customAttrKey, attrVal)
                 }
@@ -20587,7 +20567,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // _rmRevealStep: write RelrDev_<N> as the trigger -> state_<N> appears.
             def condStateOrValue = cond.state != null ? cond.state : cond.value
             def stateKey = "state_${cIdx}".toString()
-            def stateReveal = _rmRevealStep(appId, "STPage", /state_\d+/, {
+            def stateReveal = _rmRevealStep(appId, page, /state_\d+/, {
                 writeST(hrefParams, relrField, normalizedComparator)
             })
             if (!stateReveal.input) {
@@ -20612,7 +20592,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        _rmClickAppButton(appId, "hasAll", null, page)
         return
     }
 
@@ -20646,7 +20626,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // trigger allows checking what's already visible vs what appeared after the
         // previous writes.  Since we cannot know which write gated RelrDev_<N>, we use
         // a direct fetch to check for it and fail-loud if absent.
-        def afterBaseFields = _rmFetchConfigJson(appId, "STPage")
+        def afterBaseFields = _rmFetchConfigJson(appId, page)
         def afterBaseInputs = (afterBaseFields?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         if (cond.comparator != null) {
             def relrInput = afterBaseInputs.find { it?.name?.toString() ==~ /RelrDev_\d+/ }
@@ -20656,7 +20636,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible}")
             }
             // Reveal the RHS-type selector by writing RelrDev as the trigger.
-            def rhsTypeReveal = _rmRevealStep(appId, "STPage", /stateType_\d+|rhsType_\d+/, {
+            def rhsTypeReveal = _rmRevealStep(appId, page, /stateType_\d+|rhsType_\d+/, {
                 writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
             })
             if (!rhsTypeReveal.input) {
@@ -20687,17 +20667,17 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 }
                 writeST(hrefParams, rhsTypeField, anotherDevOption.key)
                 // After choosing "another device", the reference device and attribute fields appear.
-                def refDevReveal = _rmRevealStep(appId, "STPage", /rDev2_\d+|refDev_\d+|compareDevId_\d+/, {})
+                def refDevReveal = _rmRevealStep(appId, page, /rDev2_\d+|refDev_\d+|compareDevId_\d+/, {})
                 if (refDevReveal.input) {
                     writeST(hrefParams, refDevReveal.input.name.toString(), [ctd.deviceId.toString()])
                 }
-                def refAttrReveal = _rmRevealStep(appId, "STPage", /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/, {})
+                def refAttrReveal = _rmRevealStep(appId, page, /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/, {})
                 if (refAttrReveal.input) {
                     writeST(hrefParams, refAttrReveal.input.name.toString(), ctd.attribute.toString())
                 }
                 // Optional offset field
                 if (ctd.offset != null) {
-                    def offsetReveal = _rmRevealStep(appId, "STPage", /offset_\d+|devOffset_\d+/, {})
+                    def offsetReveal = _rmRevealStep(appId, page, /offset_\d+|devOffset_\d+/, {})
                     if (offsetReveal.input) {
                         writeST(hrefParams, offsetReveal.input.name.toString(), ctd.offset)
                     }
@@ -20710,7 +20690,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        _rmClickAppButton(appId, "hasAll", null, page)
         return
     }
 
@@ -20745,7 +20725,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // threshold) is the alias for Custom Attribute and numeric comparator paths.
     def condStateOrValue = cond.state != null ? cond.state : cond.value
     if (condStateOrValue != null) {
-        def stateNavResp = _rmFetchConfigJson(appId, "STPage")
+        def stateNavResp = _rmFetchConfigJson(appId, page)
         def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
         if (stateInput?.options) {
@@ -20768,7 +20748,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             writeST(hrefParams, rk.toString(), rv)
         }
     }
-    _rmClickAppButton(appId, "hasAll", null, "STPage")
+    _rmClickAppButton(appId, "hasAll", null, page)
 }
 
 /**
@@ -21513,7 +21493,24 @@ def toolUpdateNativeApp(args) {
             actResult = _rmAddAction(appId, addActionSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addAction failed for app ${appId}: ${e.message}")
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            // addAction needs the wizardStuck signal (and its specialized restoreHint)
+            // because mid-walk cancelCapab cleanup can fail leaving the wizard half-open.
+            // _rmBuildUpdateErrorResponse (used by sibling catch sites) returns a lean shape
+            // without the wizardStuck slot; this site inlines the specialization rather than
+            // promoting wizardStuck into the helper (helper covers preflight refusals where
+            // wizardStuck is N/A; keeping shapes scoped to their relevant call sites).
+            def msg = e.message?.toString() ?: ""
+            def wizardStuck = msg.contains("wizardStuck") || msg.contains("cancelCapab cleanup failed")
+            return [
+                success: false,
+                appId: appId,
+                error: e.message,
+                wizardStuck: wizardStuck,
+                backup: backup,
+                restoreHint: wizardStuck ?
+                    "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) to manually close the in-flight wizard." :
+                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            ]
         }
         return [
             success: actResult?.success != false,
