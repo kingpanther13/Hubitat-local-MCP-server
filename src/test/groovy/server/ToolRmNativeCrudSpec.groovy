@@ -7859,6 +7859,88 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !writtenFields.any { k, v -> k.toString().startsWith("cpVar") }
     }
 
+    def "addAction runCommand legacy bare-scalar parameter writes to cpVal<P>.<N>"() {
+        // Legacy scalar path: parameters: [75] (bare Integer, not a Map).
+        // The pre-validation loop skips non-Map entries; __runCommandExtraParams treats them
+        // as type="string" and pValue=p, then follows the literal write path.
+        // Both-ways pending (orchestrator): mutate the `if (!(p instanceof Map)) return` early-return
+        // to a throw and confirm this spec goes RED on the scalar contract.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def writtenFields = [:]
+        def moreParamsFired = false
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired = true
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        // Stage 0: no cpType; Stage 1: cpType2.1 + uVar2.1 + cpVal2.1 revealed after moreParams.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]],
+                [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
+                [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
+                [name: "devices.1", type: "capability.switch", multiple: true],
+                [name: "cCmd.1", type: "text"],
+                [name: "moreParams", type: "button"],
+                [name: "actionDone", type: "button"]
+            ]
+            if (moreParamsFired) {
+                inputs = inputs + [
+                    [name: "cpType2.1", type: "enum",
+                     options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                    [name: "uVar2.1", type: "bool"],
+                    [name: "cpVal2.1", type: "text"]
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "runCommand",
+                command: "setLevel",
+                deviceIds: [42],
+                parameters: [75]   // bare Integer scalar, not a Map
+            ],
+            confirm: true
+        ])
+
+        then: "scalar treated as literal: cpType2.1='string' and cpVal2.1='75' written; uVar absent"
+        result.success == true
+        moreParamsFired == true
+        writtenFields["cpType2.1"] == "string"
+        writtenFields["cpVal2.1"].toString() == "75"
+        !writtenFields.containsKey("uVar2.1")
+    }
+
     def "addAction runCommand variable parameter: xVar enum validation rejects unknown variable name"() {
         // If the requested variable name is not in the xVar<P>.N enum options,
         // the tool must fail with a clear error rather than silently dropping the write.
@@ -9072,11 +9154,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction mode with modeName is case-insensitive"() {
         // Resolve 'night' (lowercase) -> ID '3' for mode named 'Night'.
-        // Two modes present (Night=3, Day=1) so a first-entry bias would return '1' not '3',
-        // making the assertion load-bearing rather than vacuously satisfied by the first match.
+        // Day(id=1) is listed FIRST so a first-entry-bias bug would return '1', not '3';
+        // the assertion then fails, making this a discriminating regression guard.
         given:
         enableHubAdminWrite()
-        sharedLocation.modes = [[id: "3", name: "Night"], [id: "1", name: "Day"]]
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def fetchSeq = 0
         def writtenFields = [:]
 
@@ -9098,7 +9180,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             modeActsDoActPageJson(100, [
-                [name: "mode.1", type: "enum", options: ["3": "Night", "1": "Day"]]
+                [name: "mode.1", type: "enum", options: ["1": "Day", "3": "Night"]]
             ], { ++fetchSeq })
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
