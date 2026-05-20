@@ -3091,7 +3091,27 @@ Per-condition spec fields:
   - not — boolean (default false). Set true to invert this condition.
   - rawSettings — escape hatch dict {fieldName: value} for fields not yet mapped above.
 
-Sub-expressions (parens) — for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
+Extended per-capability spec shapes:
+
+Mode: {capability:'Mode', state:'Night'} or {capability:'Mode', modeIds:['3']}
+  The walker resolves mode names to IDs via location.modes and writes the firmware-assigned
+  modes<N>_<idx> picker discovered from the live STPage schema (not hardcoded).
+
+Between two times: {capability:'Between two times',
+  start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>},
+  end:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}}
+  time is required when type='clock'; offset is required when type='sunrise' or 'sunset'.
+
+Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
+  Writes the firmware-assigned variable-name picker discovered from the live schema.
+  Fail-loud if the variable name is not in the revealed enum.
+
+Device-relative comparison: {capability:'Temperature', deviceIds:[N], comparator:'>',
+  compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
+  Compares a device's attribute to another device's attribute (with optional numeric offset)
+  rather than a literal threshold. The RHS-type selector is discovered from the live schema.
+
+Sub-expressions (parens) -- for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
   {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
 The walker recursively handles nested sub-expressions of arbitrary depth.
 
@@ -20210,12 +20230,13 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
  * be schema-discovered rather than hardcoded -- for example, the cpType<P>.N
  * slot allocated by moreParams, the xVar<digits>.N enum revealed after a
  * uVar toggle, or any per-capability sub-picker that appears only after the
- * capability selector commits. Returns null for the revealed input if no new
- * matching field appears after the trigger.
+ * capability selector commits. Returns the newly-revealed field if one appears;
+ * falls back to any matching field in the post-fetch schema (covers static schemas
+ * and always-visible-field paths). Returns null if no matching field exists at all.
  *
  * @param appId    Rule Machine app ID
  * @param page     Wizard page name (e.g. "doActPage", "STPage")
- * @param pattern  Java regex that the newly-revealed field name must match
+ * @param pattern  Java regex the target field name must match
  * @param trigger  Closure that causes the field to appear (write or click)
  * @return         Map: [input: <input-Map or null>, visibleNames: <List<String>>]
  */
@@ -20229,33 +20250,58 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
     def postInputs = (postCfg?.configPage?.sections ?: []).collectMany { sec ->
         (sec?.input ?: [])
     }
-    def revealed = postInputs.find { inp ->
+    // Prefer newly-revealed (the typical case) but fall back to any matching field
+    // in postInputs (covers static schemas and always-visible-field paths).
+    def revealedNew = postInputs.find { inp ->
         def n = inp?.name?.toString()
         n && n.matches(pattern) && !preNames.contains(n)
     }
+    def revealedAny = postInputs.find { inp ->
+        def n = inp?.name?.toString()
+        n && n.matches(pattern)
+    }
+    def revealed = revealedNew ?: revealedAny
     return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it }]
 }
 
 /**
  * STPage condition-field writer for RM 5.1's Required Expression wizard.
  *
- * Handles the field-write sequence for a single plain condition after the
- * capability index (cIdx) has been discovered from the STPage schema. Writes
- * capability, device list, comparator chain (attribute -> RelrDev -> state),
- * optional negation and raw-settings overrides, then clicks hasAll to seal
- * the condition slot. The write order for the comparator chain is load-bearing:
- * RM only reveals RelrDev_N after rCustomAttr_N commits, and state_N after
- * RelrDev_N commits; out-of-order writes silently reject.
+ * Handles the full field-write sequence for a single plain condition after the
+ * capability index (cIdx) has been discovered from the STPage schema. Dispatches
+ * to a per-capability reveal sequence (each modelled as a chain of _rmRevealStep
+ * calls that expose the next field only after the preceding write commits), then
+ * writes optional negation and raw-settings overrides, and clicks hasAll to seal
+ * the slot.
+ *
+ * The per-capability sequences (static bounds: Mode=2, Between-two-times=4, Variable=3,
+ * Custom Attribute=2, compareToDevice=variable but bounded by firmware-revealed fields):
+ *   Mode              -- rCapab -> re-fetch -> discover modes<N> picker -> write IDs -> hasAll
+ *   Between two times -- rCapab -> re-fetch -> startType (clock|sunrise|sunset) ->
+ *                        re-fetch -> start field -> re-fetch -> endType -> re-fetch ->
+ *                        end field -> hasAll
+ *   Variable          -- rCapab -> re-fetch -> discover variable picker -> write name ->
+ *                        re-fetch -> RelrDev_<N> -> re-fetch -> state_<N> -> hasAll
+ *   Custom Attribute  -- rCapab -> rDev_<N> -> rCustomAttr_<N> -> re-fetch ->
+ *                        RelrDev_<N> -> re-fetch -> state_<N> -> hasAll
+ *                        (the re-fetch between rCustomAttr and RelrDev is the bug fix:
+ *                        the old code wrote both back-to-back and RelrDev was silently
+ *                        rejected because STPage had not yet revealed it)
+ *   Device-relative   -- rCapab -> rDev_<N> -> re-fetch -> RelrDev_<N> -> re-fetch ->
+ *                        RHS-type reveal -> if compareToDevice: write device/attr/offset;
+ *                        else: state_<N> literal -> hasAll
+ *   Enum/default      -- rCapab -> rDev_<N> -> state_<N> -> hasAll
+ *                        (unchanged direct-write path for simple enum/numeric capabilities)
  *
  * ctx keys:
- *   writeST              - Closure(Map params, String key, Object value, String label=null)
- *                          that delegates to _rmWriteSubPageField and routes into
- *                          the caller's applied/skipped accumulators.
+ *   writeST                 - Closure(Map params, String key, Object value, String label=null)
+ *                             that delegates to _rmWriteSubPageField and routes into
+ *                             the caller's applied/skipped accumulators.
  *   cancelInFlightCondition - Closure() that clicks cancelCapab on failure.
- *   condIdx              - Integer: 0-based condition position for error messages.
- *   cap                  - String: human-readable capability name for error messages.
- *   capCanonical         - String: capability value as returned by the STPage option list.
- *   hrefParams           - Map passed through to writeST.
+ *   condIdx                 - Integer: 0-based condition position for error messages.
+ *   cap                     - String: human-readable capability name for error messages.
+ *   capCanonical            - String: capability value as returned by the STPage option list.
+ *   hrefParams              - Map passed through to writeST.
  *
  * Throws IllegalArgumentException or IllegalStateException on validation failure;
  * the cancel closure is invoked before throwing so the caller's wizard is left
@@ -20268,7 +20314,412 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     def cap                   = ctx.cap?.toString()
     def capCanonical          = ctx.capCanonical?.toString()
     def hrefParams            = ctx.hrefParams as Map
+    def skippedAccum          = ctx.skipped as List
 
+    // ---- Mode capability ----
+    // RM reveals a modes<digits>_<N> picker (e.g. modes0_1, modes1_2) after
+    // rCapab is committed -- the exact name is firmware-assigned and must be
+    // discovered, not hardcoded.  Spec: {capability:'Mode', state:'Night'}
+    // (single mode by name) or {capability:'Mode', modeIds:['3']} (by ID).
+    if (capCanonical == "Mode") {
+        def modeIdsToWrite
+        if (cond.modeIds != null) {
+            modeIdsToWrite = (cond.modeIds instanceof List) ? (cond.modeIds as List).collect { it?.toString() } : [cond.modeIds.toString()]
+        } else if (cond.state != null) {
+            // Resolve name(s) to IDs via _rmResolveModeIds.
+            def stateVal = cond.state
+            def names = (stateVal instanceof List) ? (stateVal as List) : [stateVal]
+            modeIdsToWrite = _rmResolveModeIds(names)
+        }
+        if (!modeIdsToWrite) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Mode condition requires 'state' (mode name) or 'modeIds' (list of mode IDs). Neither was provided.")
+        }
+        // _rmRevealStep: snapshot pre-state, then write rCapab (the revealing trigger),
+        // then re-fetch and return the newly-appeared modes<digits>_<N> picker.
+        def capKey = "rCapab_${cIdx}".toString()
+        def modesReveal = _rmRevealStep(appId, "STPage", /modes\d+_\d+/, {
+            writeST(hrefParams, capKey, capCanonical)
+        })
+        if (!modesReveal.input) {
+            cancelInFlightCond()
+            def visible = modesReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Mode: expected modes<digits>_<N> picker after rCapab='Mode' but it did not appear. Visible fields: ${visible}")
+        }
+        def modesField = modesReveal.input.name.toString()
+        writeST(hrefParams, modesField, modeIdsToWrite)
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        return
+    }
+
+    // ---- Between two times capability ----
+    // Spec: {capability:'Between two times',
+    //        start:{type:'clock'|'sunrise'|'sunset', time:'HH:mm', offset?:N},
+    //        end:{type:'clock'|'sunrise'|'sunset', time:'HH:mm', offset?:N}}
+    // Each _rmRevealStep trigger writes the field that CAUSES the next field to appear.
+    // Chain: rCapab -> startType selector -> startTime/startOffset -> stopType -> stopTime/stopOffset
+    if (capCanonical == "Between two times") {
+        def startSpec = cond.start instanceof Map ? (cond.start as Map) : null
+        def endSpec   = cond.end   instanceof Map ? (cond.end   as Map) : null
+        if (!startSpec || !endSpec) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' requires 'start' and 'end' Maps each with {type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:N}")
+        }
+        def allowedTypes = ["clock", "sunrise", "sunset"]
+        def startType = startSpec.type?.toString()?.toLowerCase()
+        def endType   = endSpec.type?.toString()?.toLowerCase()
+        if (!startType || !(startType in allowedTypes)) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' start.type must be 'clock', 'sunrise', or 'sunset' (got '${startSpec.type}')")
+        }
+        if (!endType || !(endType in allowedTypes)) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' end.type must be 'clock', 'sunrise', or 'sunset' (got '${endSpec.type}')")
+        }
+        // Validate that the required time/offset values are present before any hub writes.
+        // Validating here (not after reveals) avoids hub round-trips on a caller error.
+        def startValToWriteEarly = (startType == "clock") ? startSpec.time : startSpec.offset
+        if (startValToWriteEarly == null) {
+            cancelInFlightCond()
+            def fieldHint = (startType == "clock") ? "'time' (HH:mm)" : "'offset' (minutes)"
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' start.${fieldHint} is required for start.type='${startType}'")
+        }
+        def endValToWriteEarly = (endType == "clock") ? endSpec.time : endSpec.offset
+        if (endValToWriteEarly == null) {
+            cancelInFlightCond()
+            def fieldHint = (endType == "clock") ? "'time' (HH:mm)" : "'offset' (minutes)"
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' end.${fieldHint} is required for end.type='${endType}'")
+        }
+
+        // Reveal 1: write rCapab as the trigger -> startType selector appears
+        def capKey = "rCapab_${cIdx}".toString()
+        def startTypeReveal = _rmRevealStep(appId, "STPage", /startType_\d+/, {
+            writeST(hrefParams, capKey, capCanonical)
+        })
+        if (!startTypeReveal.input) {
+            cancelInFlightCond()
+            def visible = startTypeReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start-type selector (startType_<N>) not revealed after rCapab write. Visible fields: ${visible}")
+        }
+        def startTypeField = startTypeReveal.input.name.toString()
+        // Validate type value against the schema's option list.
+        def startTypeRaw = startTypeReveal.input.options
+        def startTypeOpts = (startTypeRaw instanceof Map)
+            ? (startTypeRaw as Map).keySet().collect { it?.toString() }.findAll { it }
+            : (startTypeRaw ?: []).collect { it?.toString() }.findAll { it }
+        def startTypeCanonical = startTypeOpts.find { it?.equalsIgnoreCase(startType) } ?: startType
+
+        // Reveal 2: write startType as the trigger -> startTime or startOffset appears
+        def startValReveal = _rmRevealStep(appId, "STPage", /startTime_\d+|startOffset_\d+/, {
+            writeST(hrefParams, startTypeField, startTypeCanonical)
+        })
+        if (!startValReveal.input) {
+            cancelInFlightCond()
+            def visible = startValReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start value field (startTime_<N> or startOffset_<N>) not revealed after startType='${startType}'. Visible fields: ${visible}")
+        }
+        def startValField = startValReveal.input.name.toString()
+        def startValToWrite = startValToWriteEarly
+
+        // Reveal 3: write start value as the trigger -> stopType selector appears
+        def endTypeReveal = _rmRevealStep(appId, "STPage", /stopType_\d+|endType_\d+/, {
+            writeST(hrefParams, startValField, startValToWrite)
+        })
+        if (!endTypeReveal.input) {
+            cancelInFlightCond()
+            def visible = endTypeReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end-type selector (stopType_<N> or endType_<N>) not revealed after start fields. Visible fields: ${visible}")
+        }
+        def endTypeField = endTypeReveal.input.name.toString()
+        def endTypeRaw = endTypeReveal.input.options
+        def endTypeOpts = (endTypeRaw instanceof Map)
+            ? (endTypeRaw as Map).keySet().collect { it?.toString() }.findAll { it }
+            : (endTypeRaw ?: []).collect { it?.toString() }.findAll { it }
+        def endTypeCanonical = endTypeOpts.find { it?.equalsIgnoreCase(endType) } ?: endType
+        def endValToWrite = endValToWriteEarly
+
+        // Reveal 4: write stopType as the trigger -> stop time or offset appears
+        def endValReveal = _rmRevealStep(appId, "STPage", /stopTime_\d+|endTime_\d+|stopOffset_\d+|endOffset_\d+/, {
+            writeST(hrefParams, endTypeField, endTypeCanonical)
+        })
+        if (!endValReveal.input) {
+            cancelInFlightCond()
+            def visible = endValReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end value field not revealed after endType='${endType}'. Visible fields: ${visible}")
+        }
+        def endValField = endValReveal.input.name.toString()
+        writeST(hrefParams, endValField, endValToWrite)
+
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        return
+    }
+
+    // ---- Variable comparison capability ----
+    // Spec: {capability:'Variable', variable:'myVar', comparator:'=', value:<v>}
+    // Each _rmRevealStep trigger writes the field that causes the next field to appear.
+    // Chain: rCapab -> variable-name picker -> RelrDev_<N> comparator -> state_<N> value
+    if (capCanonical == "Variable") {
+        if (!cond.variable) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable condition requires 'variable' (the hub variable name) and 'comparator'. Got: ${cond}")
+        }
+        if (!cond.comparator) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable condition requires 'comparator' (e.g. '=', '!=', '<', '>'). Got: ${cond}")
+        }
+        def varName = cond.variable.toString()
+        def capKey = "rCapab_${cIdx}".toString()
+
+        // Reveal 1: write rCapab as the trigger -> variable-name picker appears
+        // (e.g. lVar_<N> or varX_<N>; exact name is firmware-assigned)
+        def varPickerReveal = _rmRevealStep(appId, "STPage", /[a-zA-Z]+Var[a-zA-Z]*_\d+|varName_\d+|rVar_\d+/, {
+            writeST(hrefParams, capKey, capCanonical)
+        })
+        if (!varPickerReveal.input) {
+            cancelInFlightCond()
+            def visible = varPickerReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Variable: variable-name picker not revealed after rCapab='Variable'. Visible fields: ${visible}")
+        }
+        def varPickerField = varPickerReveal.input.name.toString()
+        // Validate variable name against the schema's option list.
+        // Hub options for variable pickers are Maps (key=id, value=label); the written
+        // value is always the key. Use .keySet() when options is a Map to avoid
+        // Map.Entry.toString() producing "key=value" strings that never match.
+        def varOptsRaw = varPickerReveal.input.options
+        def varOpts = (varOptsRaw instanceof Map)
+            ? (varOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
+            : (varOptsRaw ?: []).collect { it?.toString() }.findAll { it }
+        if (varOpts && !varOpts.any { it == varName }) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable: hub variable '${varName}' not in the revealed picker for '${varPickerField}'. Available: ${varOpts.sort().join(', ')}")
+        }
+
+        // Reveal 2: write variable name as the trigger -> RelrDev_<N> comparator appears
+        def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
+        def relrReveal = _rmRevealStep(appId, "STPage", /RelrDev_\d+/, {
+            writeST(hrefParams, varPickerField, varName)
+        })
+        if (!relrReveal.input) {
+            cancelInFlightCond()
+            def visible = relrReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Variable: RelrDev_<N> (comparator) not revealed after variable name write. Visible fields: ${visible}")
+        }
+        // Use the firmware-assigned field name discovered from the live schema.
+        def relrField = relrReveal.input.name.toString()
+
+        // Reveal 3: write RelrDev as the trigger -> state_<N> value appears
+        def condStateOrValue = cond.state != null ? cond.state : cond.value
+        def stateKey = "state_${cIdx}".toString()
+        def stateReveal = _rmRevealStep(appId, "STPage", /state_\d+/, {
+            writeST(hrefParams, relrField, normalizedComparator)
+        })
+        if (!stateReveal.input) {
+            cancelInFlightCond()
+            def visible = stateReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Variable: state_<N> (value field) not revealed after RelrDev write. Visible fields: ${visible}")
+        }
+        if (condStateOrValue != null) {
+            writeST(hrefParams, stateKey, condStateOrValue)
+        }
+
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        return
+    }
+
+    // ---- Custom Attribute capability ----
+    // Write order: rCapab -> rDev_<N> -> rCustomAttr_<N> (as reveal trigger) ->
+    //              RelrDev_<N> (as reveal trigger) -> state_<N>
+    // Each _rmRevealStep trigger writes the field that causes the next field to appear.
+    // The key fix: RelrDev_<N> is only visible after rCustomAttr_<N> commits;
+    // the old code wrote both back-to-back with no re-fetch and RelrDev silently rejected.
+    if (capCanonical == "Custom Attribute") {
+        if (cond.attribute != null && cond.comparator == null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+        }
+        if (cond.comparator != null && cond.attribute == null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+        }
+        writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
+        if (cond.deviceIds != null) {
+            writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
+        }
+        if (cond.comparator != null) {
+            def customAttrKey = "rCustomAttr_${cIdx}".toString()
+            def attrVal = cond.attribute
+
+            // _rmRevealStep: write rCustomAttr_<N> as the trigger -> RelrDev_<N> appears.
+            // Pre-snapshot sees the schema without RelrDev; trigger writes rCustomAttr;
+            // post-fetch confirms RelrDev appeared. Use the discovered field name (not a
+            // hardcoded slot) and normalize the comparator token the same way as Variable.
+            def relrReveal = _rmRevealStep(appId, "STPage", /RelrDev_\d+/, {
+                if (attrVal != null) {
+                    writeST(hrefParams, customAttrKey, attrVal)
+                }
+            })
+            if (!relrReveal.input) {
+                cancelInFlightCond()
+                def visible = relrReveal.visibleNames?.join(', ') ?: "(none)"
+                throw new IllegalStateException("conditions[${condIdx}]: Custom Attribute: RelrDev_<N> (comparator) not revealed after rCustomAttr_<N> write. Visible fields: ${visible}")
+            }
+            def relrField = relrReveal.input.name.toString()
+            def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
+
+            // _rmRevealStep: write RelrDev_<N> as the trigger -> state_<N> appears.
+            def condStateOrValue = cond.state != null ? cond.state : cond.value
+            def stateKey = "state_${cIdx}".toString()
+            def stateReveal = _rmRevealStep(appId, "STPage", /state_\d+/, {
+                writeST(hrefParams, relrField, normalizedComparator)
+            })
+            if (!stateReveal.input) {
+                cancelInFlightCond()
+                def visible = stateReveal.visibleNames?.join(', ') ?: "(none)"
+                throw new IllegalStateException("conditions[${condIdx}]: Custom Attribute: state_<N> (value) not revealed after RelrDev write. Visible fields: ${visible}")
+            }
+            if (condStateOrValue != null) {
+                writeST(hrefParams, stateKey, condStateOrValue)
+            }
+        } else if (cond.attribute != null) {
+            // No comparator -- just write the attribute (e.g. presence-style custom attr check)
+            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
+            def condStateOrValue = cond.state != null ? cond.state : cond.value
+            if (condStateOrValue != null) {
+                writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
+            }
+        }
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        return
+    }
+
+    // ---- Device-relative numeric comparison ----
+    // When cond.compareToDevice is set, the RHS is another device's attribute
+    // (optionally with an offset) rather than a literal threshold.
+    // Spec: {capability:'Temperature', deviceIds:[N], comparator:'>',
+    //        compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
+    // Each _rmRevealStep trigger writes the field that reveals the next field.
+    if (cond.compareToDevice instanceof Map) {
+        def ctd = cond.compareToDevice as Map
+        if (!ctd.deviceId) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'deviceId' (the reference device ID). Got: ${ctd}")
+        }
+        if (!ctd.attribute) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'attribute' (the attribute to compare to, e.g. 'temperature'). Got: ${ctd}")
+        }
+        // Write rCapab and rDev as plain writes (no progressive-disclosure on these for numeric caps).
+        writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
+        if (cond.deviceIds != null) {
+            writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
+        }
+        if (cond.attribute != null) {
+            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
+        }
+        // Reveal RelrDev_<N> by writing the last of rCapab/rDev/rCustomAttr as trigger.
+        // For this path the preceding writes have already landed; the re-fetch in
+        // _rmRevealStep with an empty trigger confirms the current schema, then a no-op
+        // trigger allows checking what's already visible vs what appeared after the
+        // previous writes.  Since we cannot know which write gated RelrDev_<N>, we use
+        // a direct fetch to check for it and fail-loud if absent.
+        def afterBaseFields = _rmFetchConfigJson(appId, "STPage")
+        def afterBaseInputs = (afterBaseFields?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        if (cond.comparator != null) {
+            def relrInput = afterBaseInputs.find { it?.name?.toString() ==~ /RelrDev_\d+/ }
+            if (!relrInput) {
+                cancelInFlightCond()
+                def visible = afterBaseInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none)"
+                throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible}")
+            }
+            // Reveal the RHS-type selector by writing RelrDev as the trigger.
+            def rhsTypeReveal = _rmRevealStep(appId, "STPage", /stateType_\d+|rhsType_\d+/, {
+                writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+            })
+            if (!rhsTypeReveal.input) {
+                // RHS-type selector not revealed -- fall back to writing literal state_<N>.
+                // Some firmware versions don't expose the device-relative RHS type toggle.
+                // Surface a degradation sentinel so callers can detect the partial write.
+                mcpLog("warn", "rm-native", "conditions[${condIdx}]: compareToDevice: RHS-type selector not revealed after RelrDev write (firmware may not expose device-relative toggle); writing literal state_<N> as fallback")
+                if (skippedAccum != null) {
+                    skippedAccum << [key: "compareToDevice", reason: "rhs_type_not_revealed", condIdx: condIdx]
+                }
+                def condStateOrValue = cond.state != null ? cond.state : cond.value
+                if (condStateOrValue != null) {
+                    writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
+                }
+            } else {
+                def rhsTypeField = rhsTypeReveal.input.name.toString()
+                // Write the "another device" option value -- validated against schema.
+                // Hub options arrive as Maps (key=id, value=label); normalise to [key:,value:] pairs.
+                def rhsTypeOptsRaw = rhsTypeReveal.input.options
+                def rhsTypeOpts = (rhsTypeOptsRaw instanceof Map)
+                    ? (rhsTypeOptsRaw as Map).collect { k, v -> [key: k?.toString(), value: v?.toString()] }
+                    : (rhsTypeOptsRaw ?: []).collect { o -> [key: o?.toString(), value: o?.toString()] }
+                def anotherDevOption = rhsTypeOpts.find { it.key?.toLowerCase()?.contains("device") || it.value?.toLowerCase()?.contains("device") }
+                if (!anotherDevOption) {
+                    cancelInFlightCond()
+                    def optStrs = rhsTypeOpts.collect { it.key }.join(', ')
+                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: could not find 'another device' option in RHS-type selector '${rhsTypeField}'. Options: ${optStrs}")
+                }
+                writeST(hrefParams, rhsTypeField, anotherDevOption.key)
+                // After choosing "another device", the reference device and attribute fields appear.
+                def refDevReveal = _rmRevealStep(appId, "STPage", /rDev2_\d+|refDev_\d+|compareDevId_\d+/, {})
+                if (refDevReveal.input) {
+                    writeST(hrefParams, refDevReveal.input.name.toString(), [ctd.deviceId.toString()])
+                }
+                def refAttrReveal = _rmRevealStep(appId, "STPage", /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/, {})
+                if (refAttrReveal.input) {
+                    writeST(hrefParams, refAttrReveal.input.name.toString(), ctd.attribute.toString())
+                }
+                // Optional offset field
+                if (ctd.offset != null) {
+                    def offsetReveal = _rmRevealStep(appId, "STPage", /offset_\d+|devOffset_\d+/, {})
+                    if (offsetReveal.input) {
+                        writeST(hrefParams, offsetReveal.input.name.toString(), ctd.offset)
+                    }
+                }
+            }
+        }
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, "STPage")
+        return
+    }
+
+    // ---- Default path: enum / numeric device capabilities ----
+    // Covers Switch, Motion, Contact, Lock, Temperature, Humidity, etc.
+    // Write order: rCapab -> rDev_<N> -> rCustomAttr_<N> (if attribute set) ->
+    //              RelrDev_<N> (if comparator set; NO re-fetch needed here for non-CustomAttr
+    //              because state_<N> is already in the schema for numeric caps) ->
+    //              state_<N> -> hasAll.
     writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
     if (cond.deviceIds != null) {
         writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
@@ -20281,18 +20732,6 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // Order: rCustomAttr_<N> -> RelrDev_<N> -> state_<N>.
     // For enum capabilities (no comparator), state_<N> appears immediately
     // after rDev_<N>, so the comparator block is a no-op for those paths.
-    //
-    // Fail-loud validation: Custom Attribute requires BOTH attribute AND
-    // comparator. RM 5.1 silently accepts either half but renders the condition
-    // incomplete. Both directions are checked.
-    if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
-        cancelInFlightCond()
-        throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-    }
-    if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
-        cancelInFlightCond()
-        throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-    }
     if (cond.comparator != null) {
         if (cond.attribute != null) {
             writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
@@ -20534,7 +20973,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                         condIdx: i,
                         cap: cap,
                         capCanonical: capCanonical,
-                        hrefParams: hrefParams
+                        hrefParams: hrefParams,
+                        skipped: skipped
                     ], cond, cIdx)
                 } catch (Exception perCondExc) {
                     cancelInFlightCondition()
@@ -20719,6 +21159,17 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         ]
     }
 
+    def hasDegradation = skipped.any { it instanceof Map && it.reason != null }
+    if (hasDegradation) {
+        return [
+            success: true,
+            partial: true,
+            conditionIndices: conditionIndices,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            repairHints: ["One or more conditions used a degraded write path (see settingsSkipped entries with 'reason'). Inspect via get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."]
+        ]
+    }
     return [
         success: true,
         conditionIndices: conditionIndices,
@@ -21294,13 +21745,17 @@ def toolUpdateNativeApp(args) {
             mcpLog("warn", "rm-native", "addRequiredExpression: trailing updateRule click failed for app ${appId} -- expression may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
+        // Propagate partial/repairHints from the degradation branch so callers can
+        // detect and repair degraded writes without re-parsing settingsSkipped.
         return [
             success: (reResult?.success != false) && health.ok,
+            partial: reResult?.partial,
             appId: appId,
             backup: backup,
             conditionIndices: reResult?.conditionIndices,
             settingsApplied: reResult?.settingsApplied,
             settingsSkipped: reResult?.settingsSkipped,
+            repairHints: reResult?.repairHints,
             health: health,
             note: "Required Expression added with ${reResult?.conditionIndices?.size() ?: 0} condition(s); updateRule fired."
         ]
