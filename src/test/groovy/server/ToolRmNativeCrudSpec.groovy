@@ -5514,7 +5514,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 deviceIds: [42],
                 parameters: [
                     [type: "STRING", value: "sleep"],
-                    [type: "NUMBER", value: "5"]
+                    [type: "NUMBER", value: 5]        // numeric literal -- item-2 guard rejects string "5" for NUMBER type
                 ]
             ],
             confirm: true
@@ -8428,12 +8428,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction setVariable sourceVariable: xVar3 not revealed after numOp=variable fails loud"() {
-        // When numOp=variable is written but the hub does not reveal the xVar<digits> field in the
-        // subsequent schema re-introspect, the tool must throw rather than silently dropping the
-        // source-variable write -- a silent drop would bake an action without a source and produce
-        // a broken-looking rule with no caller-visible error.
-        // The stub never reveals xVar3.1 (simulates firmware gap or unsupported position), gated
-        // non-circularly on the production numOp.1=="variable" write.
+        // When numOp=variable is written but it does not land (silent_rejection from a static
+        // schema stub), the item-5 precise-attribution guard fires: it detects numOp in skipped
+        // and throws the numOp-failure error BEFORE attempting the schema re-introspect.
+        // This is more actionable than the old reveal-miss message, which would wrongly blame
+        // firmware when the real cause is the numOp write itself.
+        // The stub uses a constant seqProvider ({ 1 }) so before/after hashes are identical --
+        // numOp.1 routes to skipped(silent_rejection), triggering the precise-attribution path.
+        // Both-ways pending (orchestrator): stub re-routes numOp.1 to applied to prove the
+        // old reveal-miss path is still reachable when numOp lands correctly.
         given:
         enableHubAdminWrite()
         def writtenFields = [:]
@@ -8455,13 +8458,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
                 options: ["modeActs": "Set Mode / Variable"]]])
         }
-        // xVar3.1 is NEVER revealed, even after numOp=variable is written.
+        // xVar3.1 absent; static seqProvider means numOp.1 routes to skipped(silent_rejection).
+        // The item-5 check fires on numOp.1 in skipped before the reveal-miss path is reached.
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             modeActsDoActPageJson(100, [
                 [name: "xVarV.1", type: "enum", options: ["dst": "dst"]],
                 [name: "numOp.1", type: "enum", options: ["number": "Number", "variable": "From variable"]],
                 [name: "valNumber.1", type: "number"]
-                // xVar3.1 intentionally absent even after numOp=variable write
+                // xVar3.1 intentionally absent; static stub causes numOp.1 to go to skipped
             ], { 1 })
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -8473,10 +8477,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "fail loud -- source-variable field not revealed is an actionable error, not a silent drop"
+        then: "numOp write failure surfaces as the precise-attribution error, not the reveal-miss message"
         result.success == false
-        result.error?.contains("source-variable field was not revealed after writing numOp=variable")
-        result.error?.contains("Expected a field matching xVar<digits>")
+        result.error?.contains("numOp.1")
+        result.error?.contains("did not land")
+        !result.error?.contains("source-variable field was not revealed after writing numOp=variable")
     }
 
     def "addAction setVariable sourceVariable: revealed xVar3 with null options fails loud"() {
@@ -8587,6 +8592,361 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains("ghostSrc")
         result.error?.contains("is not in the revealed enum")
+    }
+
+    // setVariable value type narrowing
+
+    @spock.lang.Unroll
+    def "addAction setVariable rejects non-numeric value: #label"() {
+        // valNumber.<N> is a numeric RM field; writing a String, Boolean, or date string
+        // produces a broken action that RM silently accepts but renders incorrectly.
+        // Reject early so the caller gets a clear message rather than a broken rule.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "counter", value: badValue],
+            confirm: true
+        ])
+
+        then: "non-numeric value rejected before any hub write"
+        result.success == false
+        result.error?.contains("numeric constant")
+
+        where:
+        label            | badValue
+        "string"         | "hello"
+        "boolean true"   | true
+        "boolean false"  | false
+        "datetime string"| "2026-05-19T10:00"
+        "decimal string" | "3.14"
+    }
+
+    def "addAction setVariable with numeric value zero is accepted (truthiness guard regression)"() {
+        // value=0 is a valid numeric constant; a truthy-check would wrongly reject it.
+        // The numeric-type guard must use instanceof Number, not a truthiness test.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def writtenFields = [:]
+        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "Number", value: 0]] }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            ruleConfigJson(100, "r", [
+                [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
+                [name: "xVarV.1", type: "enum", options: ["counter": "counter"], value: ""],
+                [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
+                [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "counter", value: 0],
+            confirm: true
+        ])
+
+        then: "value=0 is accepted and written (not falsely rejected by a truthiness check)"
+        result.success == true
+        writtenFields.containsKey("valNumber.1")
+        writtenFields["valNumber.1"].toString() == "0"
+    }
+
+    def "addAction setVariable API-unavailable adds sentinel to skipped (partial=true)"() {
+        // When getAllGlobalVars() throws, variable-name validation is skipped and a
+        // sentinel entry is pushed to skipped so partial=true surfaces to the caller.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.getAllGlobalVars = { -> throw new RuntimeException("API unavailable") }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            ruleConfigJson(100, "r", [
+                [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
+                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar"], value: ""],
+                [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
+                [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "unvalidated", value: 7],
+            confirm: true
+        ])
+
+        then: "call proceeds (API-unavailable is graceful degradation) but partial=true and sentinel present"
+        result.success == true
+        result.partial == true
+        // Load-bearing discriminator: the reason-coded .any{} check below is the sole assertion
+        // that fails when the sentinel push is removed from the catch block. result.partial==true
+        // is incidentally satisfiable by unrelated stub-level skipped entries in this fixture
+        // (actType.1 not_in_schema fires independently of the sentinel), so a refactor that
+        // weakens this to a bare partial==true check would silently hollow the regression guard.
+        // Keep the reason-coded form.
+        result.settingsSkipped?.any { it?.key == "variable-validation" && it?.reason == "api_unavailable" }
+    }
+
+    // runCommand parameter validation: mutex, neither, type-mismatch guards
+
+    @spock.lang.Unroll
+    def "addAction runCommand rejects parameter slot #slot with both value and variable"() {
+        // Providing both value and variable in a single parameter Map is ambiguous;
+        // the pre-validation loop must reject it before any hub writes are attempted.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { req -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { req ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { req -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "runCommand", command: "setLevel", deviceIds: [],
+                        parameters: params],
+            confirm: true
+        ])
+
+        then: "mutex violation rejected before any hub write"
+        result.success == false
+        result.error?.contains("provide 'value' OR 'variable', not both")
+        result.error?.contains("slot ${slot}")
+
+        where:
+        slot | params
+        1    | [[type: "number", value: 75, variable: "foo"]]
+        2    | [[type: "number", value: 10], [type: "string", value: "x", variable: "bar"]]
+    }
+
+    def "addAction runCommand rejects Map parameter with neither value nor variable"() {
+        // A Map entry with no value and no variable writes only cpType<P>, leaving RM to
+        // bake a half-formed action with a type but no actual parameter content.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "runCommand", command: "setLevel", deviceIds: [],
+                        parameters: [[type: "number"]]],  // no value, no variable
+            confirm: true
+        ])
+
+        then: "rejected before any hub write with a message naming the slot"
+        result.success == false
+        result.error?.contains("slot 1")
+        result.error?.contains("'value'")
+        result.error?.contains("'variable'")
+    }
+
+    @spock.lang.Unroll
+    def "addAction runCommand rejects non-numeric value for type '#pType'"() {
+        // cpVal<P>.<N> is a numeric field when cpType is 'number' or 'decimal'; writing
+        // a string produces a silently-broken action. Reject early with a clear message.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "runCommand", command: "cmd", deviceIds: [],
+                        parameters: [[type: pType, value: badValue]]],
+            confirm: true
+        ])
+
+        then: "non-numeric value rejected before any hub write"
+        result.success == false
+        result.error?.contains("numeric")
+        result.error?.contains("slot 1")
+
+        where:
+        pType     | badValue
+        "number"  | "oops"
+        "decimal" | "3.14"    // string, not a Number instance
+        "NUMBER"  | "25"      // uppercase type alias + string value
+    }
+
+    def "addAction setVariable sourceVariable: numOp write failure causes precise error not reveal-miss blame"() {
+        // When numOp.<N> is not in the doActPage schema (not_in_schema skip), the subsequent
+        // source-variable reveal cannot happen. The error must name the numOp write failure,
+        // not the reveal-miss -- which would wrongly suggest RM/firmware is the cause.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def writtenFields = [:]
+        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // doActPage schema intentionally omits numOp.1 -- the field is never revealed,
+        // so _rmWriteSettingOnPage routes it to skipped(reason=not_in_schema).
+        // The production-observable consequence: the check before the schema re-fetch
+        // fires first and throws a numOp-specific error, not the reveal-miss error.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            modeActsDoActPageJson(100, [
+                [name: "xVarV.1", type: "enum", options: ["dst": "dst"]],
+                // numOp.1 intentionally absent from schema
+                [name: "valNumber.1", type: "number"]
+            ], { 1 })
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "dst", sourceVariable: "src"],
+            confirm: true
+        ])
+
+        then: "error blames numOp write failure, not the reveal-miss (which has a different message)"
+        result.success == false
+        result.error?.contains("numOp.1")
+        result.error?.contains("did not land")
+        !result.error?.contains("source-variable field was not revealed")
+    }
+
+    def "addAction setVariable sourceVariable: multiple xVar<digits> matches causes loud failure not silent first-pick"() {
+        // When the schema contains more than one field matching xVar<digits>.<N> at the same
+        // action slot (unexpected but possible in future firmware), the tool must fail loudly
+        // rather than silently picking the first match and producing a confusing write.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def writtenFields = [:]
+        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // Two xVar<digits>.1 fields present simultaneously (ambiguous schema).
+        // The production-observable consequence: findAll returns size>1, causing the error
+        // rather than .find returning the first and silently writing it.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def numOpWritten = writtenFields["numOp.1"] == "variable"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["dst": "dst"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable": "From variable"]],
+                [name: "valNumber.1", type: "number"]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["src": "src"]]
+                extra << [name: "xVar4.1", type: "enum", options: ["src": "src"]]  // second match -- ambiguous
+            }
+            modeActsDoActPageJson(100, extra, { 1 })
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "dst", sourceVariable: "src"],
+            confirm: true
+        ])
+
+        then: "ambiguous schema causes loud failure naming both candidates"
+        result.success == false
+        result.error?.contains("2 candidate")
+        result.error?.contains("xVar3.1")
+        result.error?.contains("xVar4.1")
     }
 
     // mode action modeName resolution
@@ -8712,9 +9072,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction mode with modeName is case-insensitive"() {
         // Resolve 'night' (lowercase) -> ID '3' for mode named 'Night'.
+        // Two modes present (Night=3, Day=1) so a first-entry bias would return '1' not '3',
+        // making the assertion load-bearing rather than vacuously satisfied by the first match.
         given:
         enableHubAdminWrite()
-        sharedLocation.modes = [[id: "3", name: "Night"]]
+        sharedLocation.modes = [[id: "3", name: "Night"], [id: "1", name: "Day"]]
         def fetchSeq = 0
         def writtenFields = [:]
 
@@ -8736,7 +9098,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             modeActsDoActPageJson(100, [
-                [name: "mode.1", type: "enum", options: ["3": "Night"]]
+                [name: "mode.1", type: "enum", options: ["3": "Night", "1": "Day"]]
             ], { ++fetchSeq })
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
@@ -8749,7 +9111,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "case-insensitive match returns the correct ID"
+        then: "case-insensitive match for 'night' resolves to Night's ID '3', not Day's ID '1'"
         writtenFields["mode.1"].toString() == "3"
         result.success == true
     }

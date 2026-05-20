@@ -16943,6 +16943,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     def actSubType = null
     def fields = [:]  // key: field name with @N placeholder, value: the value
     def deviceIds = actionSpec.deviceIds
+    // applied/skipped track what was written vs. silently bypassed.
+    // Declared here (before capability dispatch) so capability branches can
+    // push sentinel entries before the main write loop initialises them.
+    def applied = []
+    def skipped = []
 
     if (cap == "switch") {
         actType = "switchActs"
@@ -17294,6 +17299,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (actionSpec.value == null && actionSpec.sourceVariable == null) {
             throw new IllegalArgumentException("setVariable action requires 'value' (numeric constant) or 'sourceVariable' (hub variable name to copy from)")
         }
+        // valNumber.<N> is a numeric field; writing a non-numeric value produces a broken action
+        // that RM silently accepts but renders incorrectly. Reject early so the caller gets a
+        // clear message rather than a broken rule.
+        if (actionSpec.value != null && !(actionSpec.value instanceof Number)) {
+            throw new IllegalArgumentException("setVariable: 'value' must be a numeric constant (Integer, Long, BigDecimal, etc.); got '${actionSpec.value}' -- use a number literal, not a string")
+        }
         // Validate target variable and sourceVariable exist in the hub's variable enum.
         // Fail loud: an unknown variable name causes the hub to silently reject the write,
         // producing a broken-looking action with no caller-visible error.
@@ -17302,6 +17313,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         def allVars = null
         try { allVars = getAllGlobalVars() } catch (Exception e) {
             mcpLog("warn", "rm-native", "setVariable: getAllGlobalVars() unavailable (${e.class.simpleName}: ${e.message ?: e.toString()}) -- variable-name validation skipped; write will proceed unvalidated")
+            // Signal to the caller that validation was bypassed. The partial=true plumbing at
+            // result assembly treats any non-empty skipped list as "incomplete"; the sentinel key
+            // is distinct from field-write skips so the caller can distinguish the two.
+            skipped << [key: "variable-validation", reason: "api_unavailable"]
         }
         if (allVars != null) {
             def allVarNames = (allVars.keySet() ?: []) as List<String>
@@ -17382,18 +17397,43 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // (P is RM-assigned, starts at 2; P=1 is never used). Full live-verified
         // sequence in the __runCommandExtraParams block below.
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
-            // Validate types up-front so a bad type fails fast.
+            // Validate all parameters up-front so bad inputs fail fast before any hub writes.
             // Parameter entries: {type, value} for literal, {type, variable} for hub-variable.
+            // Legacy scalar entries (bare String/Number) are passed through unchanged.
             // The actual per-parameter write is driven by the moreParams/P-discovery sequence
             // in the __runCommandExtraParams block after all base fields are written.
-            actionSpec.parameters.each { p ->
-                def pType = p instanceof Map ? p.type : "string"
+            actionSpec.parameters.eachWithIndex { p, paramIdx ->
+                if (!(p instanceof Map)) return  // scalar (legacy) entries skip Map-level guards
+                def pType = p.type
+                def pValue = p.value
+                def pVariable = p.variable
+                // value/variable mutex: providing both is ambiguous. Mirrors the setVariable guard.
+                if (pValue != null && pVariable != null) {
+                    throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: provide 'value' OR 'variable', not both")
+                }
+                // A Map entry with neither value nor variable writes only cpType<P>; RM bakes a
+                // half-formed action with no actual parameter content.
+                if (pValue == null && pVariable == null) {
+                    throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: Map entry must include 'value' (literal) or 'variable' (hub variable name)")
+                }
                 if (pType != null) {
                     def t = pType.toString().toLowerCase()
                     if (!(t in ["string", "number", "decimal"])) {
                         throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid -- must be 'string', 'number', or 'decimal'")
                     }
+                    // A non-numeric value for a numeric type produces cpVal<P> written with the
+                    // wrong type, which RM silently accepts but renders incorrectly.
+                    if (pValue != null && t in ["number", "decimal"] && !(pValue instanceof Number)) {
+                        throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: type '${t}' requires a numeric 'value' (Integer, Long, BigDecimal, etc.); got '${pValue}' -- use a number literal, not a string")
+                    }
                 }
+                // Variable name is NOT pre-checked against getAllGlobalVars() here.
+                // Validation happens post-reveal against the live xVar<P>.<N> enum in the
+                // __runCommandExtraParams block, which is the authoritative constraint (RM
+                // controls the scope). A pre-check would add a full hub API round-trip before
+                // the moreParams/P-discovery sequence and still defer to the enum post-reveal,
+                // buying only an earlier failure for obviously-unknown names at the cost of
+                // additional complexity and an extra hub call per parameter.
             }
             actionSpec.__runCommandExtraParams = actionSpec.parameters
         }
@@ -17756,9 +17796,6 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             }
         }
     }
-
-    def applied = []
-    def skipped = []
 
     // Set actType + actSubType. Each write re-fetches the schema, so the
     // subsequent fields appear as the wizard expands.
@@ -18199,17 +18236,34 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // would silently be skipped, leaving an action that bakes without a source variable.
     if (actionSpec.__setVariableSourceVar != null) {
         def srcVar = actionSpec.__setVariableSourceVar.toString()
+        // numOp=variable must have landed for the schema-gated source-variable field to appear.
+        // If the numOp write was skipped (not_in_schema, silent_rejection, or verify failure),
+        // the subsequent reveal-miss is caused by the numOp failure, not by a firmware gap.
+        // Fail here with a precise error rather than letting the reveal-miss fire and blame RM.
+        def numOpKey = "numOp.${idx}".toString()
+        if (!applied.contains(numOpKey) && skipped.any { it?.key?.toString() == numOpKey }) {
+            def numOpSkip = skipped.find { it?.key?.toString() == numOpKey }
+            throw new IllegalArgumentException("setVariable: numOp.${idx} write did not land (reason: ${numOpSkip?.reason}) -- source-variable reveal cannot proceed. Verify the doActPage schema includes numOp.${idx} at this action position.")
+        }
         def srcCfg = _rmFetchConfigJson(appId, "doActPage")
         def srcInputs = (srcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
         // Match xVar<digits>.<N> -- the source-variable enum for getSetVariable.
-        // Exclude xVarV.<N> (the target field already written) and xVarD.<N> (delay-variable).
-        def xVar3Input = srcInputs.find { inp ->
+        // xVarV.<N> (target field, already written) and xVarD.<N> (delay-variable) don't match
+        // \d+ because 'V' and 'D' are not digits, so the pattern naturally excludes them.
+        def xVarMatches = srcInputs.findAll { inp ->
             inp?.name?.toString()?.matches("xVar\\d+\\.${idx}")
         }
-        if (!xVar3Input) {
+        if (!xVarMatches) {
             def visibleNames = srcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
             throw new IllegalArgumentException("setVariable: source-variable field was not revealed after writing numOp=variable for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
         }
+        if (xVarMatches.size() > 1) {
+            // More than one numeric xVar at this action slot is unexpected. Surface it loudly
+            // so the caller can inspect the schema rather than silently picking the first.
+            def allNames = xVarMatches.collect { it?.name?.toString() }.join(', ')
+            throw new IllegalArgumentException("setVariable: schema contains ${xVarMatches.size()} candidate source-variable fields for action ${idx} (${allNames}); expected exactly one. Use rawSettings to write the correct field explicitly.")
+        }
+        def xVar3Input = xVarMatches[0]
         def xVar3Field = xVar3Input.name.toString()
         def xVar3Opts = (xVar3Input.options instanceof Map) ? xVar3Input.options.keySet().collect { it?.toString() } :
                         (xVar3Input.options instanceof List) ? xVar3Input.options.collect { it?.toString() } : null
