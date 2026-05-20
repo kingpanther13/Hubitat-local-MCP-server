@@ -39,13 +39,13 @@ actSubType → set type-specific fields → wait for actionDone → click action
 
 Use `addAction({discover: true})` to get the live schema from the code. Key
 families: `switch`, `dimmer`, `color`, `colorTemp`, `lock`, `thermostat`,
-`shade`, `fan`, `button`, `runCommand`, `mode`, `log`, `notification`,
-`httpGet`, `httpPost`, `ping`, `volume`, `mute`, `chime`, `siren`,
-`privateBoolean`, `runRule`, `cancelTimers`, `pauseRule`, `capture`, `restore`,
-`refresh`, `poll`, `disableDevice`, `delay`, `delayPerMode`, `cancelDelay`,
-`exitRule`, `comment`, `repeat`, `stopRepeat`, `repeatWhile`, `waitExpression`,
-`waitEvents`, `ifThen`, `elseIf`, `else`, `endIf`, `fileWrite`, `fileAppend`,
-`fileDelete`, `zwavePoll`.
+`shade`, `fan`, `button`, `runCommand`, `mode`, `setVariable` (alias: `variable`),
+`log`, `notification`, `httpGet`, `httpPost`, `ping`, `volume`, `mute`, `chime`,
+`siren`, `privateBoolean`, `runRule`, `cancelTimers`, `pauseRule`, `capture`,
+`restore`, `refresh`, `poll`, `disableDevice`, `delay`, `delayPerMode`,
+`cancelDelay`, `exitRule`, `comment`, `repeat`, `stopRepeat`, `repeatWhile`,
+`waitExpression`, `waitEvents`, `ifThen`, `elseIf`, `else`, `endIf`, `fileWrite`,
+`fileAppend`, `fileDelete`, `zwavePoll`.
 
 ### Optional modifiers (every action)
 
@@ -128,3 +128,78 @@ discards the slot before it bakes.
 
 See `_rmClearPredCapabsViaGhostIfThen` source comment for the full probe-matrix
 evidence.
+
+---
+
+## setVariable wire format
+
+Live-verified wire format for `addAction(capability='setVariable')`.
+Maps to `actType=modeActs`, `actSubType=getSetVariable`.
+
+**Fields written to doActPage (action index N):**
+
+| Field | Value | Notes |
+|---|---|---|
+| `xVarV.<N>` | hub variable name | Target variable (enum from hub variables list). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. |
+| `numOp.<N>` | `"number"` or `"variable"` | `"number"` = constant-value form; `"variable"` (full word) = copy-from-variable form. Live-verified: the short form `"var"` is NOT accepted by RM 5.1 and causes the action to bake without a source variable. |
+| `valNumber.<N>` | numeric constant | Written when `numOp=number`. Only numeric constants are supported; string/boolean/datetime targets require `sourceVariable` or `rawSettings`. |
+| `xVar3.<N>` | source variable name | Written when `numOp=variable` (the `sourceVariable` form). Schema-gated: this field is only revealed by RM after `numOp=variable` is written. The field name `xVar3` is live-verified for RM 5.1; the implementation discovers it from the live schema rather than hardcoding. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. |
+
+`value` and `sourceVariable` are mutually exclusive; providing both is rejected.
+The `value` path always writes `numOp=number` + `valNumber` -- the hub's wire
+format does not expose separate type-specific constant slots for string/boolean/datetime
+at this subtype. Use `sourceVariable` to copy from a variable of any type, or
+`rawSettings` to supply advanced wire fields directly.
+
+---
+
+## runCommand extra parameters -- moreParams / P-discovery wire sequence
+
+Live-verified wire format for `addAction(capability='runCommand', parameters=[...])`.
+P is RM-assigned (starts at 2, never computed by the caller).
+
+**Per-parameter sequence (repeat for each parameter):**
+
+1. Click the `moreParams` button (`_rmClickAppButton`). RM allocates the next
+   parameter slot and reveals `cpType<P>.<N>` in the doActPage schema.
+
+2. Re-introspect doActPage. Find the newly-revealed `cpType<P>.<N>` field by
+   diffing against the pre-click schema snapshot. P is extracted from the field
+   name (e.g. `cpType2.1` -> P=2). This P-discovery step is mandatory -- P is
+   never 1 and is never derivable from parameter index.
+
+3. Write `cpType<P>.<N> = type` (lowercase: `number`, `decimal`, `string`).
+   This reveals `uVar<P>.<N>` (bool toggle) and `cpVal<P>.<N>` (literal text
+   input) in the schema.
+
+4a. **Literal value path**: write `cpVal<P>.<N> = value`. Done.
+
+4b. **Variable-sourced path**: write `uVar<P>.<N> = "true"`. Re-introspect.
+    `xVar<P>.<N>` (an enum of live hub variable names) appears; `cpVal<P>.<N>`
+    disappears. If `xVar<P>.<N>` is NOT revealed after the uVar write (firmware
+    gap, unsupported command), fail loud with `IllegalArgumentException` -- a silent
+    fall-through would produce a rule that renders broken with no caller-visible
+    error. Validate the target variable name is present in the enum options; fail
+    loud with the available list if not. Write `xVar<P>.<N> = variableName`.
+
+**Persisted state (live-verified, firmware 2.5.0.123):**
+
+- Literal param: `cpType<P>.N = type`, `cpVal<P>.N = value`
+- Variable param: `cpType<P>.N = type`, `uVar<P>.N = "true"`, `xVar<P>.N = varName`
+
+`cpVar` does NOT exist in the RM 5.1 schema. Writing it is silently ignored.
+
+Two parameter shapes exist because RM 5.1 exposes separate literal (`cpVal<P>`) and
+variable (`uVar<P>`+`xVar<P>`) reveal paths that cannot be unified into a single write
+sequence -- the hub shows or hides `cpVal<P>` vs `xVar<P>` based on the current value
+of `uVar<P>`, so they are mutually exclusive at the schema level.
+
+**moreParams_no_reveal (consumer-actionable):**
+
+If the `moreParams` button click does not reveal a new `cpType<P>.<N>` field in the
+re-introspected schema, the parameter cannot be wired. The implementation records the
+skipped parameter in `settingsSkipped` with `reason='moreParams_no_reveal'` and sets
+`partial=true` on the action result rather than silently dropping the parameter. Callers
+should inspect `settingsSkipped` for entries with this reason and consult `repairHints`
+for next steps. Common causes: firmware version does not support parameters for this
+command, or the command name is invalid and RM did not allocate a slot.

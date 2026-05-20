@@ -3177,7 +3177,7 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". For the live per-capability schema (action enums, required fields, optional fields, per-action notes), pass `addAction: {discover: true}` -- that returns the same structured Map that docs/rm_action_subtype_schemas.md is generated from. Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
+                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -3221,7 +3221,9 @@ Capability families and the spec fields each accepts:
       action='choosePerMode'  + buttonNumber + perMode={modeIdOrName: [deviceIds], ...}
 
   - Run Custom Action (capability='runCommand'):
-      command + deviceIds + capabilityFilter (default 'Switch') + optional parameters=[{type:'NUMBER',value:75},...] + optional useLastEventDevice
+      command + deviceIds + capabilityFilter (default 'Switch') + optional useLastEventDevice
+      parameters: literal value    -> [{type:'number', value:75}, ...]
+                  hub variable ref -> [{type:'number', variable:'myHubVar'}, ...]  (RM wire: uVar<P>.N=true, xVar<P>.N=varName; P is RM-assigned per moreParams click)
       Calls any device-driver command (off/on/setLevel/flashOff/refresh/etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings (e.g. flashOff to stop a flash, custom-driver verbs).
 
   - File IO (capability='fileWrite' / 'fileAppend' / 'fileDelete'):
@@ -3248,7 +3250,13 @@ Capability families and the spec fields each accepts:
       action='cycle'    + deviceIds
 
   - Mode (capability='mode'):
-      action='setMode' + modeId (Integer) or modeName (String)
+      action='setMode' + modeId (Integer) OR modeName (String, case-insensitive, resolved to ID)
+      Note: modeName is resolved to a numeric mode ID before submission -- unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, error reads "(none -- hub returned no modes; verify hub state via get_modes)".
+      Note: addAction uses 'modeName' for name-based resolution; addTrigger uses a generic 'state' field for the mode name instead, because triggers represent a superset of device-state events where a single field covers mode, switch, presence, and similar state values.
+
+  - Hub Variable (capability='setVariable', also accepted as 'variable'):
+      variable=<hubVarName> + value=<numericConstant>  (Set variable to a numeric constant; string/boolean/datetime targets not supported via 'value' -- use sourceVariable or rawSettings)
+      variable=<hubVarName> + sourceVariable=<varName> (Copy from another variable)
 
   - Logging / Messaging:
       capability='log' + message
@@ -15563,7 +15571,7 @@ private Map _rmActionSchemaForDiscover() {
                 ],
                 optionalFields: [
                     [name: "capabilityFilter", type: "String", description: "Default 'Switch'"],
-                    [name: "parameters", type: "List", description: "e.g. [{type: 'NUMBER', value: 75}]"],
+                    [name: "parameters", type: "List", description: "Parameter list. Each entry is {type, value} for a literal (e.g. {type: 'number', value: 75}) or {type, variable} for a hub-variable-sourced value (e.g. {type: 'number', variable: 'myVar'}). Type is lowercase: 'number', 'decimal', or 'string'. Variable-sourced params wire via uVar<P>/xVar<P> -- see docs/rm_wire_format.md for the wire sequence. Fails loud if the hub does not reveal the xVar<P> enum after enabling variable mode (returns success=false with a descriptive error)."],
                     [name: "useLastEventDevice", type: "Boolean"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
@@ -15574,10 +15582,24 @@ private Map _rmActionSchemaForDiscover() {
                 family: "hub",
                 requiredFields: [],
                 optionalFields: [
-                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both)"],
-                    [name: "modeName", type: "String", description: "Mode name -- provide this OR modeId (not both)"]
+                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both). When modeName is given, it is resolved to its ID before submission; unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, the error lists '(none -- hub returned no modes; verify hub state via get_modes)'."],
+                    [name: "modeName", type: "String", description: "Mode name (case-insensitive) -- provide this OR modeId (not both). Resolved to mode ID automatically. Use get_modes to confirm available names."]
                 ],
                 notes: "Exactly one of modeId or modeName is required at call time."
+            ],
+            [
+                name: "setVariable",
+                family: "hub",
+                notes: "Set a hub variable to a constant value or copy it from another hub variable. Also accepted as capability='variable'.",
+                requiredFields: [
+                    [name: "variable", type: "String", description: "Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
+                ],
+                optionalFields: [
+                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide this OR sourceVariable (not both). String, boolean, and datetime hub-variable targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
+                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide this OR value (not both). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Schema-gated: the source-variable field is only revealed by RM after the numOp=variable write; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
             ],
             [
                 name: "log",
@@ -16839,7 +16861,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     }
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
+    if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
     // 'action' is required only for capabilities that have multiple action
     // variants (e.g. switch needs on/off/toggle/flash). Single-action
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
@@ -16921,6 +16943,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     def actSubType = null
     def fields = [:]  // key: field name with @N placeholder, value: the value
     def deviceIds = actionSpec.deviceIds
+    // applied/skipped track what was written vs. silently bypassed.
+    // Declared here (before capability dispatch) so capability branches can
+    // push sentinel entries before the main write loop initialises them.
+    def applied = []
+    def skipped = []
 
     if (cap == "switch") {
         actType = "switchActs"
@@ -17229,7 +17256,96 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (actionSpec.modeId == null && actionSpec.modeName == null) {
             throw new IllegalArgumentException("mode action requires modeId (Integer) or modeName (String)")
         }
-        fields = ["mode.@N": (actionSpec.modeId != null ? actionSpec.modeId : actionSpec.modeName)]
+        def modeValue
+        if (actionSpec.modeId != null) {
+            modeValue = actionSpec.modeId
+        } else {
+            // Resolve modeName -> mode ID. Writing the name literal produces Mode: null
+            // in the RM render because the mode.<N> input expects an integer ID.
+            def name = actionSpec.modeName.toString()
+            def hubModes = location?.modes ?: []
+            def matched = hubModes.find { it?.name?.toString()?.equalsIgnoreCase(name) }
+            if (!matched) {
+                def available = hubModes.collect { it?.name }.findAll { it }.sort().join(', ')
+                def availableDisplay = available ?: "(none -- hub returned no modes; verify hub state via get_modes)"
+                throw new IllegalArgumentException("mode action: modeName '${name}' not found. Available modes: ${availableDisplay}")
+            }
+            modeValue = matched.id
+        }
+        fields = ["mode.@N": modeValue]
+    } else if (cap == "variable" || cap == "setVariable") {
+        // modeActs/getSetVariable -- Set Hub Variable to a value.
+        // Verified wire format (RM 5.1, actType=modeActs, actSubType=getSetVariable):
+        //   xVarV.<N>       = hub variable name (enum from hub variables list)
+        //   numOp.<N>       = source mode enum: "number" (constant), "variable" (from variable),
+        //                     "date" (current date/time string), etc. Default: "number"
+        //   valNumber.<N>   = value when numOp=number (constant form)
+        //   xVar3.<N>       = source variable name when numOp=variable (copy-from-variable form)
+        //                     The field is schema-gated: RM only reveals xVar3.<N> AFTER
+        //                     numOp.<N>="variable" is written. The exact field name (xVar3 vs
+        //                     a future incarnation) is always discovered from the live schema,
+        //                     not hardcoded. Uses the __setVariableSourceVar post-write block.
+        // Constant-number form (Set <var> to <value>) is the primary supported path.
+        // Variable-from-variable (numOp=variable) is also wired when `sourceVariable` is given.
+        actType = "modeActs"
+        actSubType = "getSetVariable"
+        if (!actionSpec.variable) {
+            throw new IllegalArgumentException("setVariable action requires 'variable' (hub variable name)")
+        }
+        // != null (not truthiness): value=0 is a valid numeric constant that a truthy-check would wrongly reject.
+        if (actionSpec.value != null && actionSpec.sourceVariable != null) {
+            throw new IllegalArgumentException("setVariable action: provide 'value' OR 'sourceVariable', not both")
+        }
+        if (actionSpec.value == null && actionSpec.sourceVariable == null) {
+            throw new IllegalArgumentException("setVariable action requires 'value' (numeric constant) or 'sourceVariable' (hub variable name to copy from)")
+        }
+        // valNumber.<N> is a numeric field; writing a non-numeric value produces a broken action
+        // that RM silently accepts but renders incorrectly. Reject early so the caller gets a
+        // clear message rather than a broken rule.
+        if (actionSpec.value != null && !(actionSpec.value instanceof Number)) {
+            throw new IllegalArgumentException("setVariable: 'value' must be a numeric constant (Integer, Long, BigDecimal, etc.); got '${actionSpec.value}' -- use a number literal, not a string")
+        }
+        // Validate target variable and sourceVariable exist in the hub's variable enum.
+        // Fail loud: an unknown variable name causes the hub to silently reject the write,
+        // producing a broken-looking action with no caller-visible error.
+        // API throws (unavailable) -> skip validation and log warn (null sentinel).
+        // API returns [:] (hub has no variables) -> every name is invalid -> validate and fail.
+        def allVars = null
+        try { allVars = getAllGlobalVars() } catch (Exception e) {
+            mcpLog("warn", "rm-native", "setVariable: getAllGlobalVars() unavailable (${e.class.simpleName}: ${e.message ?: e.toString()}) -- variable-name validation skipped; write will proceed unvalidated")
+            // Signal to the caller that validation was bypassed. The partial=true plumbing at
+            // result assembly treats any non-empty skipped list as "incomplete"; the sentinel key
+            // is distinct from field-write skips so the caller can distinguish the two.
+            skipped << [key: "variable-validation", reason: "api_unavailable"]
+        }
+        if (allVars != null) {
+            def allVarNames = (allVars.keySet() ?: []) as List<String>
+            def emptyDisplay = "(none -- hub has no variables defined)"
+            def targetVar = actionSpec.variable.toString()
+            if (!allVarNames.any { it?.toString() == targetVar }) {
+                def available = allVarNames.isEmpty() ? emptyDisplay : allVarNames.sort().join(', ')
+                throw new IllegalArgumentException("setVariable: variable '${targetVar}' not found. Available hub variables: ${available}")
+            }
+            if (actionSpec.sourceVariable != null) {
+                def srcVar = actionSpec.sourceVariable.toString()
+                if (!allVarNames.any { it?.toString() == srcVar }) {
+                    def available = allVarNames.isEmpty() ? emptyDisplay : allVarNames.sort().join(', ')
+                    throw new IllegalArgumentException("setVariable: sourceVariable '${srcVar}' not found. Available hub variables: ${available}")
+                }
+            }
+        }
+        fields = ["xVarV.@N": actionSpec.variable.toString()]
+        if (actionSpec.sourceVariable != null) {
+            // Write numOp=variable (the full word -- "var" is rejected by RM 5.1 live).
+            // The source-variable field (xVar3.<N>) is schema-gated and only revealed
+            // after numOp=variable is written. Discovery and write happen in the
+            // __setVariableSourceVar post-write block below (after fields.each).
+            fields["numOp.@N"] = "variable"
+            actionSpec.__setVariableSourceVar = actionSpec.sourceVariable.toString()
+        } else {
+            fields["numOp.@N"] = "number"
+            fields["valNumber.@N"] = actionSpec.value
+        }
     } else if (cap == "runCommand") {
         // modeActs/getDefinedAction — Run Custom Action. Multi-step:
         //   useLastDev.<N>  = false (use selected devices, not the trigger device)
@@ -17242,10 +17358,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         //                     'Lock', 'Thermostat', 'Tone', 'SpeechSynthesis', etc.
         //   devices.<N>     = device list (capability.<key-lowercased>)
         //   cCmd.<N>        = command name (one of the device driver's commands)
-        //   cpType<i>.<N>   = parameter type (LOWERCASE: 'string', 'number', 'decimal') — optional
-        //   cpVal<i>.<N>    = value for parameter i — optional
-        // Verified live: no-arg commands (off/on/refresh) need only useLastDev+
-        // myCapab+devices+cCmd. Parameterized commands need cpType/cpVal pairs.
+        // Per-parameter wire sequence (live-verified, see __runCommandExtraParams block):
+        //   moreParams button click  -> reveals cpType<P>.<N> (P = RM-assigned, starts at 2)
+        //   cpType<P>.<N>            = type (number/decimal/string) -> reveals uVar<P>+cpVal<P>
+        //   literal value:  cpVal<P>.<N> = value
+        //   hub variable:   uVar<P>.<N> = "true" -> reveals xVar<P>.<N> (enum) -> write varName
         actType = "modeActs"
         actSubType = "getDefinedAction"
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
@@ -17276,24 +17393,47 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             "devices.@N": deviceIds,
             "cCmd.@N": actionSpec.command
         ]
-        // Parameter slot allocation (verified live):
-        // cpType1/cpVal1 are present in the schema after cCmd is written
-        // (or are always present). The FIRST parameter must be written
-        // directly to cpType1/cpVal1 -- do NOT click moreParams first or
-        // the write lands at cpType2 and cpType1 stays empty, causing RM
-        // to wrap the action in "IF (**Broken Condition**)". For the SECOND
-        // and subsequent parameters, click moreParams to allocate the next
-        // cpType<N>/cpVal<N> slot, then write to the newly-revealed field.
+        // Parameter slot allocation: moreParams click is required for ALL params
+        // (P is RM-assigned, starts at 2; P=1 is never used). Full live-verified
+        // sequence in the __runCommandExtraParams block below.
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
-            // Validate types up-front so a bad type fails fast.
-            actionSpec.parameters.each { p ->
-                def pType = p instanceof Map ? p.type : "string"
+            // Validate all parameters up-front so bad inputs fail fast before any hub writes.
+            // Parameter entries: {type, value} for literal, {type, variable} for hub-variable.
+            // Legacy scalar entries (bare String/Number) are passed through unchanged.
+            // The actual per-parameter write is driven by the moreParams/P-discovery sequence
+            // in the __runCommandExtraParams block after all base fields are written.
+            actionSpec.parameters.eachWithIndex { p, paramIdx ->
+                if (!(p instanceof Map)) return  // scalar (legacy) entries skip Map-level guards
+                def pType = p.type
+                def pValue = p.value
+                def pVariable = p.variable
+                // value/variable mutex: providing both is ambiguous. Mirrors the setVariable guard.
+                if (pValue != null && pVariable != null) {
+                    throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: provide 'value' OR 'variable', not both")
+                }
+                // A Map entry with neither value nor variable writes only cpType<P>; RM bakes a
+                // half-formed action with no actual parameter content.
+                if (pValue == null && pVariable == null) {
+                    throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: Map entry must include 'value' (literal) or 'variable' (hub variable name)")
+                }
                 if (pType != null) {
                     def t = pType.toString().toLowerCase()
                     if (!(t in ["string", "number", "decimal"])) {
                         throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid -- must be 'string', 'number', or 'decimal'")
                     }
+                    // A non-numeric value for a numeric type produces cpVal<P> written with the
+                    // wrong type, which RM silently accepts but renders incorrectly.
+                    if (pValue != null && t in ["number", "decimal"] && !(pValue instanceof Number)) {
+                        throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: type '${t}' requires a numeric 'value' (Integer, Long, BigDecimal, etc.); got '${pValue}' -- use a number literal, not a string")
+                    }
                 }
+                // Variable name is NOT pre-checked against getAllGlobalVars() here.
+                // Validation happens post-reveal against the live xVar<P>.<N> enum in the
+                // __runCommandExtraParams block, which is the authoritative constraint (RM
+                // controls the scope). A pre-check would add a full hub API round-trip before
+                // the moreParams/P-discovery sequence and still defer to the enum post-reveal,
+                // buying only an earlier failure for obviously-unknown names at the cost of
+                // additional complexity and an extra hub call per parameter.
             }
             actionSpec.__runCommandExtraParams = actionSpec.parameters
         }
@@ -17625,7 +17765,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         actSubType = "getEndIf"
         fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/Run-Custom-Action/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, setVariable, runCommand, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
     }
 
     // Open the new-action editor.
@@ -17656,9 +17796,6 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             }
         }
     }
-
-    def applied = []
-    def skipped = []
 
     // Set actType + actSubType. Each write re-fetches the schema, so the
     // subsequent fields appear as the wizard expands.
@@ -17989,19 +18126,33 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied, null, skipped)
     }
 
-    // runCommand parameters. For the FIRST action's first parameter, cpType1/cpVal1
-    // auto-expose in the doActPage schema after cCmd is written (no moreParams click
-    // needed). For SUBSEQUENT actions (action 2, 3...), only the moreParams button
-    // appears after cCmd -- cpType1.N is absent. The code below checks schema first
-    // and falls through to the moreParams-click path if cpType1.N is missing.
-    // Verified live: always clicking moreParams first causes the first
-    // param to land at cpType2, leaving cpType1 empty and producing
-    // "IF (**Broken Condition**)" in RM.
+    // runCommand parameters. Live-verified wire sequence (RM 5.1):
+    //   For each parameter (including the first):
+    //   1. Click the "moreParams" button -- this allocates the next param slot.
+    //      RM assigns a param-number P starting at 2 for the first param; P is
+    //      NOT predictable -- always discover it from the schema (see step 2).
+    //   2. Re-introspect doActPage. Find the newly-revealed cpType<P>.<N> field
+    //      by scanning for names matching /^cpType(\d+)\.N$/. P is RM-assigned.
+    //   3. Write cpType<P>.<N> = type (lowercase: number/decimal/string).
+    //      This reveals uVar<P>.<N> (bool toggle) and cpVal<P>.<N> (literal text).
+    //   4. Variable-sourced param: write uVar<P>.<N>="true" -> re-introspect ->
+    //      xVar<P>.<N> appears (an ENUM of live hub-variable names) and cpVal<P>.<N>
+    //      disappears. Validate the target var is among xVar's options; fail loud if absent.
+    //      Write xVar<P>.<N> = variableName.
+    //      Literal-value param: write cpVal<P>.<N> = value directly.
+    //   5. Repeat steps 1-4 for each subsequent parameter.
+    //   Persisted result for a variable param: cpType<P>.N=type, uVar<P>.N="true",
+    //   xVar<P>.N=varName -- renders "setLevel(<varName>) on <device>".
     if (actionSpec.__runCommandExtraParams instanceof List && !actionSpec.__runCommandExtraParams.isEmpty()) {
         actionSpec.__runCommandExtraParams.eachWithIndex { p, paramIdx ->
-            def pType, pValue
-            if (p instanceof Map) { pType = p.type; pValue = p.value }
-            else { pType = "string"; pValue = p }
+            def pType, pValue, pVariable
+            if (p instanceof Map) {
+                pType = p.type
+                pValue = p.value
+                pVariable = p.variable
+            } else {
+                pType = "string"; pValue = p
+            }
             if (pType != null) {
                 def t = pType.toString().toLowerCase()
                 if (!(t in ["string", "number", "decimal"])) {
@@ -18012,52 +18163,119 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 pType = "string"
             }
 
-            def slotName  // base field name, e.g. "cpType1" or "cpType2"
-
-            // For the first parameter, cpType1/cpVal1 auto-expose after cCmd is
-            // written on ACTION 1 only.  On subsequent actions (action 2, 3, ...)
-            // only the "moreParams" button appears in the doActPage schema after
-            // cCmd is written -- cpType1.N is NOT present.  Check the schema
-            // before assuming cpType1 is available; if it is missing, use the
-            // same moreParams-click + discovery path as for later parameters.
-            def checkCurCfg = _rmFetchConfigJson(appId, "doActPage")
-            def checkCurNames = (checkCurCfg?.configPage?.sections ?: []).collectMany { sec ->
+            // Step 1: snapshot existing cpType<P>.N names, then click moreParams
+            // to allocate the next param slot. P is always schema-discovered (step 2).
+            def preCfg = _rmFetchConfigJson(appId, "doActPage")
+            def preNames = (preCfg?.configPage?.sections ?: []).collectMany { sec ->
                 (sec?.input ?: []).collect { it?.name?.toString() }
             }
-            if (checkCurNames.contains("cpType1.${idx}".toString())) {
-                // cpType1.N is already in schema (typical for the first action's
-                // first parameter) -- write directly without moreParams click.
-                slotName = "cpType1"
-            } else {
-                // cpType1.N absent -- click moreParams to allocate the next slot,
-                // then discover which new cpType<N> field appeared.
-                // This is the normal path for:
-                //   - any action > 1's first parameter
-                //   - any parameter beyond the first on any action
-                def beforeCpTypes = checkCurNames.findAll { it?.startsWith("cpType") && it?.endsWith(".${idx}") } as Set
-                _rmClickAppButton(appId, "moreParams", null, "doActPage")
-                def afterCfg = _rmFetchConfigJson(appId, "doActPage")
-                def afterNames = (afterCfg?.configPage?.sections ?: []).collectMany { sec ->
-                    (sec?.input ?: []).collect { it?.name?.toString() }
-                }
-                def newCpType = afterNames.find { it?.startsWith("cpType") && it?.endsWith(".${idx}") && !beforeCpTypes.contains(it) }
-                if (!newCpType) {
-                    mcpLog("warn", "rm-native", "runCommand: moreParams click did not reveal a new cpType<N> field for action ${idx}; param skipped")
-                    return
-                }
-                // newCpType is e.g. "cpType2.1" -- strip the action-index suffix.
-                def m = newCpType.toString() =~ /^(cpType\d+)\.\d+$/
-                slotName = m ? m[0][1] : null
-                if (!slotName) {
-                    mcpLog("warn", "rm-native", "runCommand: couldn't parse cpType slot from '${newCpType}'; param skipped")
-                    return
-                }
-            }
+            def preCpTypeNames = preNames.findAll { it?.matches("cpType\\d+\\.${idx}") } as Set
+            _rmClickAppButton(appId, "moreParams", null, "doActPage")
 
-            _rmWriteSettingOnPage(appId, "doActPage", "${slotName}.${idx}".toString(), pType, applied, null, skipped)
-            def valFieldName = slotName.replace("cpType", "cpVal")
-            if (pValue != null) _rmWriteSettingOnPage(appId, "doActPage", "${valFieldName}.${idx}".toString(), pValue, applied, null, skipped)
+            // Step 2: re-introspect and identify the newly-revealed cpType<P>.N field.
+            def postCfg = _rmFetchConfigJson(appId, "doActPage")
+            def postInputs = (postCfg?.configPage?.sections ?: []).collectMany { sec ->
+                (sec?.input ?: [])
+            }
+            def postNames = postInputs.collect { it?.name?.toString() }
+            def newCpTypeField = postNames.find { it?.matches("cpType\\d+\\.${idx}") && !preCpTypeNames.contains(it) }
+            if (!newCpTypeField) {
+                mcpLog("warn", "rm-native", "runCommand[${actionSpec.command}]: moreParams click did not reveal a new cpType<P> field for action ${idx} param ${paramIdx + 1}; param skipped")
+                // Add a sentinel so skipped is non-empty, which drives partial=true at result assembly.
+                skipped << [key: "param${paramIdx + 1}", reason: "moreParams_no_reveal"]
+                return
+            }
+            // Extract the cpType<P> base name (e.g. "cpType2" from "cpType2.1").
+            def cpTypeBase = newCpTypeField.toString().replaceAll("\\.\\d+\$", "")
+            // Extract P (the RM-assigned param number, e.g. 2 from "cpType2").
+            def pNumStr = cpTypeBase.replaceAll("^cpType", "")
+
+            // Step 3: write cpType<P>.N = type. This reveals uVar<P>.N and cpVal<P>.N.
+            _rmWriteSettingOnPage(appId, "doActPage", "${cpTypeBase}.${idx}".toString(), pType, applied, null, skipped)
+
+            if (pVariable != null) {
+                // Step 4 (variable path): write uVar<P>.N="true" to switch the param
+                // slot into variable-source mode, then discover and write xVar<P>.N.
+                // uVar<P>.N stores as the string "true" (bool fields echo-match OK this way).
+                def uVarField = "uVar${pNumStr}.${idx}".toString()
+                _rmWriteSettingOnPage(appId, "doActPage", uVarField, "true", applied, "bool", skipped)
+                // Re-introspect: xVar<P>.N (an enum of hub variable names) now appears;
+                // cpVal<P>.N disappears. Validate the target variable is in the enum options.
+                def xVarCfg = _rmFetchConfigJson(appId, "doActPage")
+                def xVarField = "xVar${pNumStr}.${idx}".toString()
+                def xVarInput = (xVarCfg?.configPage?.sections ?: []).collectMany { sec ->
+                    (sec?.input ?: [])
+                }.find { it?.name?.toString() == xVarField }
+                if (!xVarInput) {
+                    throw new IllegalArgumentException("runCommand: xVar field not revealed after enabling variable mode for param slot ${pNumStr} (expected '${xVarField}') -- hub may not support variable-sourced parameters for command '${actionSpec.command}'")
+                }
+                def xVarOpts = (xVarInput.options instanceof Map) ? xVarInput.options.keySet().collect { it?.toString() } :
+                               (xVarInput.options instanceof List) ? xVarInput.options.collect { it?.toString() } : null
+                // Fail loud when options are absent or unreadable: writing an unvalidated
+                // variable name would produce a silently-broken action.
+                if (xVarOpts == null || xVarOpts.isEmpty()) {
+                    throw new IllegalArgumentException("runCommand: xVar${pNumStr}.${idx} revealed but has no enumerable options -- cannot validate variable name '${pVariable}'. Hub may not expose variable list for command '${actionSpec.command}'")
+                }
+                if (!xVarOpts.any { it == pVariable.toString() }) {
+                    throw new IllegalArgumentException("runCommand parameter variable '${pVariable}' is not in the hub variable enum for param slot ${pNumStr}. Available: ${xVarOpts.sort().join(', ')}")
+                }
+                _rmWriteSettingOnPage(appId, "doActPage", xVarField, pVariable.toString(), applied, null, skipped)
+            } else if (pValue != null) {
+                // Step 4 (literal path): write cpVal<P>.N directly.
+                def cpValField = "cpVal${pNumStr}.${idx}".toString()
+                _rmWriteSettingOnPage(appId, "doActPage", cpValField, pValue, applied, null, skipped)
+            }
         }
+    }
+
+    // setVariable copy-from-variable: source-variable field is schema-gated.
+    // RM 5.1 reveals the source-variable enum ONLY after numOp.<N>="variable" is written.
+    // Discover the actual field name from the live schema (observed as xVar3.<N>) rather
+    // than hardcoding it -- RM's field naming is firmware-version-specific.
+    // Fail loud if the reveal does not materialise: a missing field means the write
+    // would silently be skipped, leaving an action that bakes without a source variable.
+    if (actionSpec.__setVariableSourceVar != null) {
+        def srcVar = actionSpec.__setVariableSourceVar.toString()
+        // numOp=variable must have landed for the schema-gated source-variable field to appear.
+        // If the numOp write was skipped (not_in_schema, silent_rejection, or verify failure),
+        // the subsequent reveal-miss is caused by the numOp failure, not by a firmware gap.
+        // Fail here with a precise error rather than letting the reveal-miss fire and blame RM.
+        def numOpKey = "numOp.${idx}".toString()
+        if (!applied.contains(numOpKey) && skipped.any { it?.key?.toString() == numOpKey }) {
+            def numOpSkip = skipped.find { it?.key?.toString() == numOpKey }
+            throw new IllegalArgumentException("setVariable: numOp.${idx} write did not land (reason: ${numOpSkip?.reason}) -- source-variable reveal cannot proceed. Verify the doActPage schema includes numOp.${idx} at this action position.")
+        }
+        def srcCfg = _rmFetchConfigJson(appId, "doActPage")
+        def srcInputs = (srcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+        // Match xVar<digits>.<N> -- the source-variable enum for getSetVariable.
+        // xVarV.<N> (target field, already written) and xVarD.<N> (delay-variable) don't match
+        // \d+ because 'V' and 'D' are not digits, so the pattern naturally excludes them.
+        def xVarMatches = srcInputs.findAll { inp ->
+            inp?.name?.toString()?.matches("xVar\\d+\\.${idx}")
+        }
+        if (!xVarMatches) {
+            def visibleNames = srcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+            throw new IllegalArgumentException("setVariable: source-variable field was not revealed after writing numOp=variable for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
+        }
+        if (xVarMatches.size() > 1) {
+            // More than one numeric xVar at this action slot is unexpected. Surface it loudly
+            // so the caller can inspect the schema rather than silently picking the first.
+            def allNames = xVarMatches.collect { it?.name?.toString() }.join(', ')
+            throw new IllegalArgumentException("setVariable: schema contains ${xVarMatches.size()} candidate source-variable fields for action ${idx} (${allNames}); expected exactly one. Use rawSettings to write the correct field explicitly.")
+        }
+        def xVar3Input = xVarMatches[0]
+        def xVar3Field = xVar3Input.name.toString()
+        def xVar3Opts = (xVar3Input.options instanceof Map) ? xVar3Input.options.keySet().collect { it?.toString() } :
+                        (xVar3Input.options instanceof List) ? xVar3Input.options.collect { it?.toString() } : null
+        // Fail loud when the revealed enum is empty: an unvalidated write would produce a
+        // silently-broken action with no source variable persisted.
+        if (xVar3Opts == null || xVar3Opts.isEmpty()) {
+            throw new IllegalArgumentException("setVariable: revealed field '${xVar3Field}' has no enumerable options -- cannot validate sourceVariable '${srcVar}'. Hub may not expose the variable list at this action position.")
+        }
+        if (!xVar3Opts.any { it == srcVar }) {
+            throw new IllegalArgumentException("setVariable: sourceVariable '${srcVar}' is not in the revealed enum for '${xVar3Field}'. Available: ${xVar3Opts.sort().join(', ')}")
+        }
+        _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, srcVar, applied, null, skipped)
     }
 
     // Caller escape hatch.
@@ -18489,7 +18707,12 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
     if (!responseText) {
         throw new IllegalArgumentException("Empty response from ${path} -- app ${appId} may not exist")
     }
-    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception pe) {
+        throw new IllegalArgumentException("Failed to parse ${path} response: ${pe.message}", pe)
+    }
     if (!(parsed instanceof Map) || !parsed.app) {
         throw new IllegalArgumentException("Unexpected response shape from ${path}: missing app object")
     }
