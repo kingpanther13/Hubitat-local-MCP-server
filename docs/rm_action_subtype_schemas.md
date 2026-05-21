@@ -490,7 +490,7 @@ Exactly one of `operator` or `operators` must be supplied when `conditions.size(
 | Field | Type | Notes |
 |---|---|---|
 | `capability` | String | Required. See STPage capability list in TOOL_GUIDE.md. |
-| `deviceIds` | List\<Integer\> | Required for device-backed capabilities (Switch, Motion, Temperature, etc.). Omit for Mode, Private Boolean, time-based capabilities. |
+| `deviceIds` | List\<Integer\> | Required for device-backed capabilities (Switch, Motion, Temperature, etc.). Omit for Mode, Private Boolean, Last Event Device, time-based capabilities. |
 | `state` | String | Enum value for the capability (e.g. `'on'`/`'off'` for Switch, `'active'`/`'inactive'` for Motion, `'open'`/`'closed'` for Contact, `'locked'`/`'unlocked'` for Lock, `'present'`/`'not present'` for Presence). Omit for numeric comparator path. |
 | `comparator` | String | For numeric capabilities: `'='`, `'<'`, `'>'`, `'<='`, `'>='`, `'!='`. Required together with `attribute` for Custom Attribute conditions. |
 | `value` | Number | Numeric threshold paired with `comparator`. |
