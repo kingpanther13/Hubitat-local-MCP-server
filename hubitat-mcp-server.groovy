@@ -3117,8 +3117,11 @@ The walker recursively handles nested sub-expressions of arbitrary depth.
 
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, the expression was constructed but some condition fields didn't land. The result includes settingsSkipped with the available-options list at the time of the failed write. Common repair: pass the missing field via rawSettings on the affected condition spec, or rebuild the expression."""
+PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, the expression was constructed but some condition fields didn't land. The result includes settingsSkipped with the available-options list at the time of the failed write. Common repair: pass the missing field via rawSettings on the affected condition spec.
+
+Note: some sensor capabilities (Water sensor, Carbon monoxide detector, Smoke detector) report discrete events rather than a continuous enum state. For these, use the capability-specific state names from the capability schema (e.g. 'wet'/'dry' for Water sensor, 'detected'/'clear' for Smoke detector) rather than expecting a numeric or comparator-based condition."""
                     ],
+
                     addActions: [
                         type: "array",
                         description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so the actions[] map and subscriptions bake atomically. Pairs naturally with addTriggers — pass both to add many triggers + many actions in a single tool call.",
@@ -3135,7 +3138,7 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     patches: [
                         type: "array",
-                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Useful for combined "change RE + add action + edit local var" patterns. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
+                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Useful for combined "add RE + add action + edit local var" patterns. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -18248,22 +18251,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 pType = "string"
             }
 
-            // Step 1: snapshot existing cpType<P>.N names, then click moreParams
-            // to allocate the next param slot. P is always schema-discovered (step 2).
-            def preCfg = _rmFetchConfigJson(appId, "doActPage")
-            def preNames = (preCfg?.configPage?.sections ?: []).collectMany { sec ->
-                (sec?.input ?: []).collect { it?.name?.toString() }
-            }
-            def preCpTypeNames = preNames.findAll { it?.matches("cpType\\d+\\.${idx}") } as Set
-            _rmClickAppButton(appId, "moreParams", null, "doActPage")
-
-            // Step 2: re-introspect and identify the newly-revealed cpType<P>.N field.
-            def postCfg = _rmFetchConfigJson(appId, "doActPage")
-            def postInputs = (postCfg?.configPage?.sections ?: []).collectMany { sec ->
-                (sec?.input ?: [])
-            }
-            def postNames = postInputs.collect { it?.name?.toString() }
-            def newCpTypeField = postNames.find { it?.matches("cpType\\d+\\.${idx}") && !preCpTypeNames.contains(it) }
+            // Step 1+2: snapshot doActPage schema, click moreParams to allocate the next
+            // param slot, re-fetch and identify the newly-revealed cpType<P>.N field.
+            // _rmRevealStep encapsulates the pre-snapshot/trigger/post-fetch/diff sequence.
+            def cpTypeReveal = _rmRevealStep(appId, "doActPage", "cpType\\d+\\.${idx}".toString(), {
+                _rmClickAppButton(appId, "moreParams", null, "doActPage")
+            })
+            def newCpTypeField = cpTypeReveal.input?.name?.toString()
             if (!newCpTypeField) {
                 mcpLog("warn", "rm-native", "runCommand[${actionSpec.command}]: moreParams click did not reveal a new cpType<P> field for action ${idx} param ${paramIdx + 1}; param skipped")
                 // Add a sentinel so skipped is non-empty, which drives partial=true at result assembly.
@@ -21157,6 +21151,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         settingsSkipped: skipped
     ]
 }
+
 
 /**
  * update_native_app — two modes, caller picks one (settings OR button):

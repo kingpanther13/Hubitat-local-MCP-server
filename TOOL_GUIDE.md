@@ -558,7 +558,7 @@ For Room Lighting / Button Controllers / Basic Rules: `update_native_app` and `d
 
 #### `update_native_app` capability reference
 
-Reference for the three `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
+Reference for the `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap; gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` -- both return live structured Maps from the running code.
 
 ##### `addTrigger` capability families
 
@@ -651,7 +651,9 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 - **Hub state**: `Mode`, `Private Boolean`
 - **Custom / other**: `Custom Attribute`, `Last Event Device`, `Lock codes`
 
-Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+
+Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types -- NOT a comparator-based numeric condition. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
 
 #### `create_native_app` reference
 

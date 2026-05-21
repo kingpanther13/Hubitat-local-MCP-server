@@ -470,3 +470,53 @@ File must already exist.
 |---|---|---|
 | `fileName` | String | Required |
 | `rawSettings` | Map | |
+
+---
+
+## addRequiredExpression spec shape
+
+### Top-level spec
+
+| Field | Type | Notes |
+|---|---|---|
+| `conditions` | List\<Map\> | Required. Non-empty list of per-condition Maps (see below). |
+| `operator` | String | `'AND'` / `'OR'` / `'XOR'`. Applied to every gap between conditions. |
+| `operators` | List\<String\> | Per-gap operators; length = `conditions.size()-1`. Use for mixed-operator expressions like "P1 AND P2 OR P3". |
+
+Exactly one of `operator` or `operators` must be supplied when `conditions.size() > 1`.
+
+### Per-condition spec
+
+| Field | Type | Notes |
+|---|---|---|
+| `capability` | String | Required. See STPage capability list in TOOL_GUIDE.md. |
+| `deviceIds` | List\<Integer\> | Required for device-backed capabilities (Switch, Motion, Temperature, etc.). Omit for Mode, Private Boolean, time-based capabilities. |
+| `state` | String | Enum value for the capability (e.g. `'on'`/`'off'` for Switch, `'active'`/`'inactive'` for Motion, `'open'`/`'closed'` for Contact, `'locked'`/`'unlocked'` for Lock, `'present'`/`'not present'` for Presence). Omit for numeric comparator path. |
+| `comparator` | String | For numeric capabilities: `'='`, `'<'`, `'>'`, `'<='`, `'>='`, `'!='`. Required together with `attribute` for Custom Attribute conditions. |
+| `value` | Number | Numeric threshold paired with `comparator`. |
+| `attribute` | String | For `capability='Custom Attribute'`: the attribute name (e.g. `'humidity'`). Required together with `comparator`. |
+| `variable` | String | For `capability='Variable'`: the hub variable name. The walker validates against the live schema's enum options. |
+| `modeIds` | List\<String\> | For `capability='Mode'`: list of mode IDs. Alternative to `state` (mode name). |
+| `start` | Map | For `capability='Between two times'`: `{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}`. |
+| `end` | Map | For `capability='Between two times'`: same shape as `start`. |
+| `compareToDevice` | Map | For numeric caps: `{deviceId:<N>, attribute:'<attr>', offset?:<N>}`. Compares against another device's attribute. |
+| `subExpression` | Map | Nested paren group: `{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}`. |
+| `not` | Boolean | `true` to invert this condition (NOT). Default false. |
+| `rawSettings` | Map | Escape hatch: `{fieldName: value}` for fields not yet mapped above. |
+
+### Sensor capabilities with discrete event states
+
+Some sensor capabilities report discrete events rather than a continuous enum state.
+Use the capability-specific state names below rather than expecting a numeric or
+comparator-based condition:
+
+| Capability | State values |
+|---|---|
+| `Water sensor` | `'wet'`, `'dry'` |
+| `Smoke detector` | `'detected'`, `'clear'`, `'tested'` |
+| `Carbon monoxide detector` | `'detected'`, `'clear'`, `'tested'` |
+| `Carbon dioxide sensor` | `'detected'`, `'clear'` |
+| `Tamper alert` | `'detected'`, `'clear'` |
+| `Acceleration` | `'active'`, `'inactive'` |
+
+For these capabilities, pass `state: 'wet'` (not `comparator: '=' / value: ...`).
