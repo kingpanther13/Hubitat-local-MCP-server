@@ -3095,12 +3095,15 @@ Extended per-capability spec shapes:
 
 Mode: {capability:'Mode', state:'Night'} or {capability:'Mode', modeIds:['3']}
   The walker resolves mode names to IDs via location.modes and writes the firmware-assigned
-  modes<N>_<idx> picker discovered from the live STPage schema (not hardcoded).
+  modes<N> picker (e.g. modes1) discovered from the live schema (not hardcoded).
+  Note: triggers use modesX<N>; STPage/doActPage conditions use modes<N> (no X prefix).
 
 Between two times: {capability:'Between two times',
   start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>},
   end:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}}
-  time is required when type='clock'; offset is required when type='sunrise' or 'sunset'.
+  time is required when type='clock' (walker converts HH:mm to ISO datetime with hub-local TZ offset internally);
+  offset is required when type='sunrise' or 'sunset'.
+  Firmware fields: starting<N> (type enum), startingA<N> (clock time), ending<N>, endingA<N>/endSunriseOffset<N>.
 
 Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
   Writes the firmware-assigned variable-name picker discovered from the live schema.
@@ -20295,10 +20298,11 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     def page                  = ctx.page?.toString() ?: "STPage"
 
     // ---- Mode capability ----
-    // RM reveals a modes<digits>_<N> picker (e.g. modes0_1, modes1_2) after
-    // rCapab is committed -- the exact name is firmware-assigned and must be
-    // discovered, not hardcoded.  Spec: {capability:'Mode', state:'Night'}
-    // (single mode by name) or {capability:'Mode', modeIds:['3']} (by ID).
+    // RM reveals a modes<cIdx> picker (e.g. modes6) after rCapab is committed --
+    // the exact name is firmware-assigned and must be discovered, not hardcoded.
+    // Note: triggers use modesX<N>; STPage conditions use modes<N> (no X prefix).
+    // Spec: {capability:'Mode', state:'Night'} (single mode by name) or
+    // {capability:'Mode', modeIds:['3']} (by ID).
     if (capCanonical == "Mode") {
         def modeIdsToWrite
         if (cond.modeIds != null) {
@@ -20314,15 +20318,15 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             throw new IllegalArgumentException("conditions[${condIdx}]: Mode condition requires 'state' (mode name) or 'modeIds' (list of mode IDs). Neither was provided.")
         }
         // _rmRevealStep: snapshot pre-state, then write rCapab (the revealing trigger),
-        // then re-fetch and return the newly-appeared modes<digits>_<N> picker.
+        // then re-fetch and return the newly-appeared modes<cIdx> picker.
         def capKey = "rCapab_${cIdx}".toString()
-        def modesReveal = _rmRevealStep(appId, page, /modes\d+_\d+/, {
+        def modesReveal = _rmRevealStep(appId, page, /modes\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!modesReveal.input) {
             cancelInFlightCond()
             def visible = modesReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: Mode: expected modes<digits>_<N> picker after rCapab='Mode' but it did not appear. Visible fields: ${visible}")
+            throw new IllegalStateException("conditions[${condIdx}]: Mode: expected modes<N> picker after rCapab='Mode' but it did not appear. Visible fields: ${visible}")
         }
         def modesField = modesReveal.input.name.toString()
         writeST(hrefParams, modesField, modeIdsToWrite)
@@ -20340,8 +20344,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // Spec: {capability:'Between two times',
     //        start:{type:'clock'|'sunrise'|'sunset', time:'HH:mm', offset?:N},
     //        end:{type:'clock'|'sunrise'|'sunset', time:'HH:mm', offset?:N}}
-    // Each _rmRevealStep trigger writes the field that CAUSES the next field to appear.
-    // Chain: rCapab -> startType selector -> startTime/startOffset -> stopType -> stopTime/stopOffset
+    // Firmware field names (verified live on RM 5.1.8):
+    //   starting<cIdx>  -- start-type enum ('A specific time'|'Sunrise'|'Sunset')
+    //   startingA<cIdx> -- start clock-time (ISO datetime with hub-local TZ offset: 2000-01-01THH:mm:00.000±HHMM)
+    //   ending<cIdx>    -- end-type enum ('A specific time'|'Sunrise'|'Sunset')
+    //   endingA<cIdx>   -- end clock-time (ISO datetime)
+    //   endSunriseOffset<cIdx> -- end sunrise/sunset offset (minutes, number)
+    // Chain: rCapab -> starting<N> selector -> startingA<N> -> ending<N> -> endingA<N>/endSunriseOffset<N>
     if (capCanonical == "Between two times") {
         def startSpec = cond.start instanceof Map ? (cond.start as Map) : null
         def endSpec   = cond.end   instanceof Map ? (cond.end   as Map) : null
@@ -20360,76 +20369,88 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' end.type must be 'clock', 'sunrise', or 'sunset' (got '${endSpec.type}')")
         }
+        // Map caller-facing type names to firmware enum values.
+        def typeToWire = [clock: "A specific time", sunrise: "Sunrise", sunset: "Sunset"]
+        def startTypeWire = typeToWire[startType]
+        def endTypeWire   = typeToWire[endType]
+
         // Validate that the required time/offset values are present before any hub writes.
         // Validating here (not after reveals) avoids hub round-trips on a caller error.
-        def startValToWriteEarly = (startType == "clock") ? startSpec.time : startSpec.offset
-        if (startValToWriteEarly == null) {
+        def startValRaw = (startType == "clock") ? startSpec.time : startSpec.offset
+        if (startValRaw == null) {
             cancelInFlightCond()
             def fieldHint = (startType == "clock") ? "'time' (HH:mm)" : "'offset' (minutes)"
             throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' start.${fieldHint} is required for start.type='${startType}'")
         }
-        def endValToWriteEarly = (endType == "clock") ? endSpec.time : endSpec.offset
-        if (endValToWriteEarly == null) {
+        def endValRaw = (endType == "clock") ? endSpec.time : endSpec.offset
+        if (endValRaw == null) {
             cancelInFlightCond()
             def fieldHint = (endType == "clock") ? "'time' (HH:mm)" : "'offset' (minutes)"
             throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' end.${fieldHint} is required for end.type='${endType}'")
         }
+        // Convert HH:mm clock times to the ISO datetime format RM's wizard expects.
+        // The date component is a fixed dummy (2000-01-01); RM only uses the time portion.
+        // The TZ offset must be computed for the ANCHOR DATE (2000-01-01), not for today,
+        // because DST may differ between now and January. Example: a Denver hub in May is
+        // MDT (-0600), but 2000-01-01 in Denver is MST (-0700). Using getOffset(now()) would
+        // embed -0600; the hub interprets the datetime with the January offset, shifting the
+        // display by 1 hour. anchorMs = 2000-01-01T00:00:00.000Z epoch.
+        def toIsoTime = { String hhmm ->
+            long anchorMs = 946684800000L  // 2000-01-01T00:00:00.000Z
+            long offsetMs = location.timeZone.getOffset(anchorMs)
+            long offsetMinutes = offsetMs / 60000L
+            String sign = (offsetMinutes >= 0) ? "+" : "-"
+            long absMin = Math.abs(offsetMinutes)
+            String hh = "${(absMin / 60 as long)}".padLeft(2, '0')
+            String mm = "${(absMin % 60 as long)}".padLeft(2, '0')
+            "2000-01-01T${hhmm}:00.000${sign}${hh}${mm}".toString()
+        }
+        def startValToWrite = (startType == "clock") ? toIsoTime(startValRaw.toString()) : startValRaw
+        def endValToWrite   = (endType   == "clock") ? toIsoTime(endValRaw.toString())   : endValRaw
 
-        // Reveal 1: write rCapab as the trigger -> startType selector appears
+        // Reveal 1: write rCapab as the trigger -> starting<cIdx> type selector appears
         def capKey = "rCapab_${cIdx}".toString()
-        def startTypeReveal = _rmRevealStep(appId, page, /startType_\d+/, {
+        def startTypeReveal = _rmRevealStep(appId, page, /starting\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!startTypeReveal.input) {
             cancelInFlightCond()
             def visible = startTypeReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start-type selector (startType_<N>) not revealed after rCapab write. Visible fields: ${visible}")
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start-type selector (starting<N>) not revealed after rCapab write. Visible fields: ${visible}")
         }
         def startTypeField = startTypeReveal.input.name.toString()
-        // Validate type value against the schema's option list.
-        def startTypeRaw = startTypeReveal.input.options
-        def startTypeOpts = (startTypeRaw instanceof Map)
-            ? (startTypeRaw as Map).keySet().collect { it?.toString() }.findAll { it }
-            : (startTypeRaw ?: []).collect { it?.toString() }.findAll { it }
-        def startTypeCanonical = startTypeOpts.find { it?.equalsIgnoreCase(startType) } ?: startType
 
-        // Reveal 2: write startType as the trigger -> startTime or startOffset appears
-        def startValReveal = _rmRevealStep(appId, page, /startTime_\d+|startOffset_\d+/, {
-            writeST(hrefParams, startTypeField, startTypeCanonical)
+        // Reveal 2: write start type as the trigger -> startingA<cIdx> value field appears
+        def startValReveal = _rmRevealStep(appId, page, /startingA\d+/, {
+            writeST(hrefParams, startTypeField, startTypeWire)
         })
         if (!startValReveal.input) {
             cancelInFlightCond()
             def visible = startValReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start value field (startTime_<N> or startOffset_<N>) not revealed after startType='${startType}'. Visible fields: ${visible}")
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start.'time' field (startingA<N>) not revealed after start-type='${startType}'. Visible fields: ${visible}")
         }
         def startValField = startValReveal.input.name.toString()
-        def startValToWrite = startValToWriteEarly
 
-        // Reveal 3: write start value as the trigger -> stopType selector appears
-        def endTypeReveal = _rmRevealStep(appId, page, /stopType_\d+|endType_\d+/, {
+        // Reveal 3: write start value as the trigger -> ending<cIdx> end-type selector appears
+        def endTypeReveal = _rmRevealStep(appId, page, /ending\d+/, {
             writeST(hrefParams, startValField, startValToWrite)
         })
         if (!endTypeReveal.input) {
             cancelInFlightCond()
             def visible = endTypeReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end-type selector (stopType_<N> or endType_<N>) not revealed after start fields. Visible fields: ${visible}")
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end-type selector (ending<N>) not revealed after start fields. Visible fields: ${visible}")
         }
         def endTypeField = endTypeReveal.input.name.toString()
-        def endTypeRaw = endTypeReveal.input.options
-        def endTypeOpts = (endTypeRaw instanceof Map)
-            ? (endTypeRaw as Map).keySet().collect { it?.toString() }.findAll { it }
-            : (endTypeRaw ?: []).collect { it?.toString() }.findAll { it }
-        def endTypeCanonical = endTypeOpts.find { it?.equalsIgnoreCase(endType) } ?: endType
-        def endValToWrite = endValToWriteEarly
 
-        // Reveal 4: write stopType as the trigger -> stop time or offset appears
-        def endValReveal = _rmRevealStep(appId, page, /stopTime_\d+|endTime_\d+|stopOffset_\d+|endOffset_\d+/, {
-            writeST(hrefParams, endTypeField, endTypeCanonical)
+        // Reveal 4: write end type as the trigger -> endingA<cIdx> or endSunriseOffset<cIdx> appears
+        // Clock: endingA<cIdx>; sunrise/sunset: endSunriseOffset<cIdx> for offset minutes.
+        def endValReveal = _rmRevealStep(appId, page, /endingA\d+|endSunriseOffset\d+/, {
+            writeST(hrefParams, endTypeField, endTypeWire)
         })
         if (!endValReveal.input) {
             cancelInFlightCond()
             def visible = endValReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end value field not revealed after endType='${endType}'. Visible fields: ${visible}")
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end.'offset' field (endingA<N> or endSunriseOffset<N>) not revealed after end-type='${endType}'. Visible fields: ${visible}")
         }
         def endValField = endValReveal.input.name.toString()
         writeST(hrefParams, endValField, endValToWrite)

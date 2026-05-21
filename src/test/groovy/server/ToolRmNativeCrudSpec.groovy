@@ -10102,10 +10102,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode condition: discovers modes picker via regex, writes resolved IDs"() {
         // Regression guard: Mode was Broken Condition because the old walker wrote
         // rCapab only and then wrote state_<N> -- but RM's Mode path reveals a
-        // modes<digits>_<N> picker (not state_<N>) after rCapab='Mode'.
+        // modes<N> picker (not state_<N>) after rCapab='Mode'.
         // The fix discovers the picker name from the live schema and writes IDs.
-        // Consequence-gated: modes0_1 appears in the schema only after the stub
-        // sees rCapab_1='Mode' in the POST body.
+        // Consequence-gated: modes1 appears in the schema only after the stub
+        // sees rCapab_1='Mode' in the POST body. Firmware field name: modes<cIdx>.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
@@ -10143,7 +10143,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def stFetchSeq = 0
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             stFetchSeq++
-            // After rCapab_1='Mode' lands, modes0_1 appears. Before that, only the base fields.
+            // After rCapab_1='Mode' lands, modes1 appears (firmware field: modes<cIdx>). Before that, only the base fields.
             def inputs = [
                 [name: "cond", type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1", type: "enum", options: ["Mode", "Switch", "Motion"]],
@@ -10151,8 +10151,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "doneST", type: "button"]
             ]
             if (rCapabWritten) {
-                // modes0_1 revealed only after Mode is committed.
-                inputs = inputs + [[name: "modes0_1", type: "enum",
+                // modes1 revealed only after Mode is committed (firmware field: modes<cIdx>).
+                inputs = inputs + [[name: "modes1", type: "enum",
                     options: ["1": "Day", "3": "Night"]]]
             }
             JsonOutput.toJson([
@@ -10186,9 +10186,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "result is successful"
         result.success == true
 
-        and: "modes0_1 was written with the resolved ID for 'Night' (consequence-gated: appeared only after rCapab_1 landed)"
+        and: "modes1 was written with the resolved ID for 'Night' (consequence-gated: appeared only after rCapab_1 landed)"
         // 'Night' resolves to ID '3'; walker serializes as a JSON-string on the wire.
-        writtenFields["modes0_1"] == '["3"]'
+        // Firmware field name is modes<cIdx> (e.g. modes1) -- NOT modes0_1 or modesX1.
+        writtenFields["modes1"] == '["3"]'
 
         and: "rCapab_1 was set to the canonical 'Mode' value"
         writtenFields["rCapab_1"] == "Mode"
@@ -10242,7 +10243,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "doneST", type: "button"]
             ]
             if (rCapabWritten) {
-                inputs = inputs + [[name: "modes0_1", type: "enum", options: ["1": "Day", "3": "Night"]]]
+                inputs = inputs + [[name: "modes1", type: "enum", options: ["1": "Day", "3": "Night"]]]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -10273,7 +10274,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "success with the provided ID written directly (serialized as JSON-string on the wire)"
         result.success == true
-        writtenFields["modes0_1"] == '["1"]'
+        writtenFields["modes1"] == '["1"]'
     }
 
     def "addRequiredExpression Mode condition: fail-loud when modes picker not revealed"() {
@@ -10293,7 +10294,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
-        // STPage never reveals modes<digits>_1 -- static schema simulates firmware gap.
+        // STPage never reveals modes1 -- static schema simulates firmware gap.
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -10369,18 +10370,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: clock start + sunrise end -- reveal sequence produces all four fields"() {
         // Regression guard: 'Between two times' was Broken Condition because the
-        // old walker had no sub-field handling. The new walker performs four
-        // sequential _rmRevealStep calls. This stub models the progressive
-        // disclosure: startType_1 appears after rCapab, startTime_1 after
-        // startType, stopType_1 after startTime, stopOffset_1 after stopType.
-        // Each appearance is gated on the preceding write being observed.
+        // old walker used wrong field names (startType_N, startTime_N, stopType_N,
+        // stopOffset_N). Firmware uses: starting<N> (type enum), startingA<N> (clock time
+        // ISO datetime), ending<N> (end-type enum), endSunriseOffset<N> (offset minutes).
+        // Type wire values: 'A specific time' (not 'clock'), 'Sunrise', 'Sunset'.
+        // Clock time wire format: ISO datetime '2000-01-01THH:mm:00.000+HHMM' with hub-local TZ offset.
+        // sharedLocation defaults to UTC so the fixture produces '+0000' for the assertion.
+        // Consequence-gated: each field appears only after the preceding write lands.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
         def rCapabWritten = false
-        def startTypeWritten = false
-        def startTimeWritten = false
-        def stopTypeWritten = false
+        def startingWritten = false
+        def startingAWritten = false
+        def endingWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -10391,10 +10394,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                     if (m) {
                         def fieldName = m[0][1]
                         writtenFields[fieldName] = v
-                        if (fieldName == "rCapab_1") rCapabWritten = true
-                        if (fieldName == "startType_1") startTypeWritten = true
-                        if (fieldName == "startTime_1") startTimeWritten = true
-                        if (fieldName == "stopType_1") stopTypeWritten = true
+                        if (fieldName == "rCapab_1")  rCapabWritten = true
+                        if (fieldName == "starting1") startingWritten = true
+                        if (fieldName == "startingA1") startingAWritten = true
+                        if (fieldName == "ending1")   endingWritten = true
                     }
                 }
             }
@@ -10422,19 +10425,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "hasAll", type: "button"],
                 [name: "doneST", type: "button"]
             ]
+            // Firmware field names: starting<cIdx>, startingA<cIdx>, ending<cIdx>, endSunriseOffset<cIdx>
             if (rCapabWritten) {
-                inputs = inputs + [[name: "startType_1", type: "enum",
-                    options: ["clock": "Specific time", "sunrise": "Sunrise", "sunset": "Sunset"]]]
+                inputs = inputs + [[name: "starting1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
             }
-            if (startTypeWritten) {
-                inputs = inputs + [[name: "startTime_1", type: "time"]]
+            if (startingWritten) {
+                inputs = inputs + [[name: "startingA1", type: "time"]]
             }
-            if (startTimeWritten) {
-                inputs = inputs + [[name: "stopType_1", type: "enum",
-                    options: ["clock": "Specific time", "sunrise": "Sunrise", "sunset": "Sunset"]]]
+            if (startingAWritten) {
+                inputs = inputs + [[name: "ending1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
             }
-            if (stopTypeWritten) {
-                inputs = inputs + [[name: "stopOffset_1", type: "number"]]
+            if (endingWritten) {
+                inputs = inputs + [[name: "endSunriseOffset1", type: "number"]]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -10470,17 +10474,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "result is successful"
         result.success == true
 
-        and: "startType_1 written with the clock option value (consequence-gated: appeared only after rCapab)"
-        writtenFields["startType_1"] == "clock"
+        and: "starting1 written with the wire value for clock (consequence-gated: appeared only after rCapab)"
+        // Firmware enum value for clock is 'A specific time' (not 'clock')
+        writtenFields["starting1"] == "A specific time"
 
-        and: "startTime_1 written with the clock time (consequence-gated: appeared only after startType)"
-        writtenFields["startTime_1"] == "22:00"
+        and: "startingA1 written with ISO datetime with hub-local TZ offset (consequence-gated: appeared only after starting1)"
+        // sharedLocation.timeZone defaults to UTC -> offset=0 -> '+0000'. On a UTC-5 hub this
+        // would be '-0500', keeping the wall-clock time correct in the hub's local display.
+        writtenFields["startingA1"] == "2000-01-01T22:00:00.000+0000"
 
-        and: "stopType_1 written with sunrise (consequence-gated: appeared only after startTime)"
-        writtenFields["stopType_1"] == "sunrise"
+        and: "ending1 written with Sunrise (consequence-gated: appeared only after startingA1)"
+        writtenFields["ending1"] == "Sunrise"
 
-        and: "stopOffset_1 written with 30 (consequence-gated: appeared only after stopType)"
-        writtenFields["stopOffset_1"].toString() == "30"
+        and: "endSunriseOffset1 written with 30 (consequence-gated: appeared only after ending1)"
+        writtenFields["endSunriseOffset1"].toString() == "30"
     }
 
     def "addRequiredExpression Between two times: fail-loud when start-type selector not revealed"() {
@@ -10498,7 +10505,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
-        // STPage never reveals startType_1 (simulates firmware that doesn't support this path).
+        // STPage never reveals starting1 (simulates firmware that doesn't support this path).
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -11592,12 +11599,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction ifThen: Mode condition discovers modes picker via regex, writes resolved IDs"() {
-        // Mode on doActPage: rCapab='Mode' causes modes<digits>_<N> picker to appear.
+        // Mode on doActPage: rCapab='Mode' causes modes<N> picker to appear.
         // The walker discovers the picker name from the live schema (not hardcoded) and
         // writes the resolved mode IDs. Without the walker, no modes picker was written
         // (the old code wrote rCapab and then tried state_N which does not exist for Mode).
-        // Consequence-gated: modes0_1 appears only after rCapab_1='Mode' POST lands.
-        // Both-ways pending (orchestrator).
+        // Consequence-gated: modes1 appears only after rCapab_1='Mode' POST lands.
+        // Firmware field name: modes<cIdx> (e.g. modes1). Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -11631,9 +11638,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "rCapab_1", type: "enum", options: ["Mode", "Switch"]],
                 [name: "hasAll", type: "button"]
             ]
-            // modes0_1 only appears AFTER rCapab_1='Mode' commits (consequence gate).
+            // modes1 only appears AFTER rCapab_1='Mode' commits (firmware field: modes<cIdx>).
             if (rCapabWritten) {
-                inputs = inputs + [[name: "modes0_1", type: "enum", options: ["1": "Day", "3": "Night"]]]
+                inputs = inputs + [[name: "modes1", type: "enum", options: ["1": "Day", "3": "Night"]]]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -11662,8 +11669,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "result is successful"
         result.success == true
 
-        and: "modes0_1 was written with the resolved ID for 'Night' (consequence-gated)"
-        writtenFields["modes0_1"] == '["3"]'
+        and: "modes1 was written with the resolved ID for 'Night' (consequence-gated)"
+        // Firmware field name is modes<cIdx> (e.g. modes1) -- NOT modes0_1 or modesX1.
+        writtenFields["modes1"] == '["3"]'
 
         and: "rCapab_1 was set to 'Mode'"
         writtenFields["rCapab_1"] == "Mode"
@@ -11768,16 +11776,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction ifThen: Between two times reveals start/end chain"() {
-        // Between two times on doActPage: rCapab reveal chain must fire in order:
-        // rCapab -> startType_N -> startTime_N -> stopType_N -> stopTime_N.
+        // Between two times on doActPage: rCapab reveal chain uses firmware field names
+        // starting<N> (type enum), startingA<N> (ISO datetime with hub-local TZ offset),
+        // ending<N> (end-type), endSunriseOffset<N> (offset minutes).
+        // Type wire values: 'A specific time', 'Sunrise', 'Sunset'.
+        // Clock time: ISO datetime '2000-01-01THH:mm:00.000+HHMM' with hub-local TZ offset.
+        // sharedLocation defaults to UTC so the fixture produces '+0000' for the assertion.
         // Consequence-gated: each field only appears after the preceding one is committed.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
         def rCapabWritten = false
-        def startTypeWritten = false
-        def startTimeWritten = false
-        def stopTypeWritten = false
+        def startingWritten = false
+        def startingAWritten = false
+        def endingWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -11787,10 +11799,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                     if (m) {
                         def fn = m[0][1]
                         writtenFields[fn] = v
-                        if (fn == "rCapab_1") rCapabWritten = true
-                        if (fn == "startType_1") startTypeWritten = true
-                        if (fn == "startTime_1") startTimeWritten = true
-                        if (fn == "stopType_1") stopTypeWritten = true
+                        if (fn == "rCapab_1")   rCapabWritten = true
+                        if (fn == "starting1")  startingWritten = true
+                        if (fn == "startingA1") startingAWritten = true
+                        if (fn == "ending1")    endingWritten = true
                     }
                 }
             }
@@ -11810,19 +11822,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "rCapab_1", type: "enum", options: ["Between two times", "Switch"]],
                 [name: "hasAll", type: "button"]
             ]
+            // Firmware field names: starting<cIdx>, startingA<cIdx>, ending<cIdx>, endSunriseOffset<cIdx>
             if (rCapabWritten) {
-                inputs = inputs + [[name: "startType_1", type: "enum",
-                    options: ["clock": "Time", "sunrise": "Sunrise", "sunset": "Sunset"]]]
+                inputs = inputs + [[name: "starting1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
             }
-            if (startTypeWritten) {
-                inputs = inputs + [[name: "startTime_1", type: "time"]]
+            if (startingWritten) {
+                inputs = inputs + [[name: "startingA1", type: "time"]]
             }
-            if (startTimeWritten) {
-                inputs = inputs + [[name: "stopType_1", type: "enum",
-                    options: ["clock": "Time", "sunrise": "Sunrise", "sunset": "Sunset"]]]
+            if (startingAWritten) {
+                inputs = inputs + [[name: "ending1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
             }
-            if (stopTypeWritten) {
-                inputs = inputs + [[name: "stopTime_1", type: "time"]]
+            if (endingWritten) {
+                inputs = inputs + [[name: "endSunriseOffset1", type: "number"]]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -11855,17 +11868,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "result is successful"
         result.success == true
 
-        and: "startType_1 written with clock value"
-        writtenFields["startType_1"] == "clock"
+        and: "starting1 written with wire value for clock (consequence-gated: appeared only after rCapab)"
+        // Firmware enum value for clock is 'A specific time' (not 'clock')
+        writtenFields["starting1"] == "A specific time"
 
-        and: "startTime_1 written with 22:00 (consequence-gated: appeared only after startType_1)"
-        writtenFields["startTime_1"] == "22:00"
+        and: "startingA1 written with ISO datetime with hub-local TZ offset (consequence-gated: appeared only after starting1)"
+        // sharedLocation.timeZone defaults to UTC -> offset=0 -> '+0000'. On a UTC-5 hub this
+        // would be '-0500', keeping the wall-clock time correct in the hub's local display.
+        writtenFields["startingA1"] == "2000-01-01T22:00:00.000+0000"
 
-        and: "stopType_1 written with sunrise (consequence-gated: appeared only after startTime_1)"
-        writtenFields["stopType_1"] == "sunrise"
+        and: "ending1 written with Sunrise (consequence-gated: appeared only after startingA1)"
+        writtenFields["ending1"] == "Sunrise"
 
-        and: "stopTime_1 written with 30 (consequence-gated: appeared only after stopType_1)"
-        writtenFields["stopTime_1"]?.toString() == "30"
+        and: "endSunriseOffset1 written with 30 (consequence-gated: appeared only after ending1)"
+        writtenFields["endSunriseOffset1"]?.toString() == "30"
     }
 
     def "addAction ifThen: compareToDevice writes rhsType/refDev/refAttr"() {
@@ -12225,7 +12241,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "hasAll",       type: "button"]
             ]
             if (rCapabWritten) {
-                inputs = inputs + [[name: "modes0_1", type: "enum", options: ["1": "Day", "3": "Night"]]]
+                inputs = inputs + [[name: "modes1", type: "enum", options: ["1": "Day", "3": "Night"]]]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -12252,7 +12268,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "success with the provided ID written directly (serialized as JSON-string on the wire)"
         result.success == true
-        writtenFields["modes0_1"] == '["1"]'
+        // Firmware field name is modes<cIdx> (e.g. modes1) -- NOT modes0_1 or modesX1.
+        writtenFields["modes1"] == '["1"]'
 
         and: "state_1 was NOT written for Mode-by-modeIds (picker write, not state_N)"
         !writtenFields.containsKey("state_1")
