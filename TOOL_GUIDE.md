@@ -641,6 +641,10 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
   - `else` (no fields; needs preceding `ifThen` or `elseIf`)
   - `endIf` (no fields; closes the IF block)
 
+  Per-condition shape for `expression.conditions[]` (same as `addRequiredExpression`): `{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}`. The same per-capability extended shapes apply -- Mode `modeIds`, Between two times `start`/`end`, Variable `variable`+`comparator`, Custom Attribute `attribute`+`comparator`, compareToDevice `compareToDevice` Map. The shared walker `_rmWalkConditionReveal` handles all per-capability reveal sequences identically for both `ifThen`/`elseIf`/`repeatWhile`/`waitExpression` (doActPage) and `addRequiredExpression` (STPage). See the "Extended per-capability spec shapes" in the `addRequiredExpression` section below.
+
+  Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert, Acceleration) report discrete events -- use capability-specific state names (e.g. `'wet'`/`'dry'`, `'detected'`/`'clear'`, `'active'`/`'inactive'`) rather than numeric comparator conditions.
+
 ##### `addRequiredExpression` STPage capability list
 
 RM 5.1 Required Expression conditions accept these `capability` values (per-condition):
@@ -649,6 +653,7 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 - **Numeric**: `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`
 - **Time-based**: `Days of week`, `Between two dates`, `Between two times`, `On a Day`
 - **Hub state**: `Mode`, `Private Boolean`
+- **Variable comparison**: `Variable`
 - **Custom / other**: `Custom Attribute`, `Last Event Device`, `Lock codes`
 
 Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.

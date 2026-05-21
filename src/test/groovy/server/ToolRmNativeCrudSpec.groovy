@@ -10319,9 +10319,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("mode") ||
-            result.error?.toString()?.toLowerCase()?.contains("modes") ||
-            result.error?.toString()?.toLowerCase()?.contains("picker")
+        result.error?.toString()?.contains("expected modes") &&
+            result.error?.toString()?.contains("picker after rCapab='Mode'")
     }
 
     def "addRequiredExpression Mode condition: fail-loud when neither state nor modeIds is provided"() {
@@ -10528,8 +10527,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("start") ||
-            result.error?.toString()?.contains("startType")
+        result.error?.toString()?.contains("start-type selector")
     }
 
     // ---- Variable comparison capability ----
@@ -10684,8 +10682,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("variable") ||
-            result.error?.toString()?.toLowerCase()?.contains("picker")
+        result.error?.toString()?.contains("variable-name picker not revealed")
     }
 
     def "addRequiredExpression Variable: fail-loud when variable name not in revealed enum"() {
@@ -10907,8 +10904,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("relrdev") ||
-            result.error?.toString()?.toLowerCase()?.contains("comparator")
+        result.error?.toString()?.contains("RelrDev_<N> (comparator) not revealed after rCustomAttr_<N>")
     }
 
     // ---- Between two times: additional negative pins (W2) ----
@@ -10956,7 +10952,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.contains("time") || result.error?.toString()?.contains("start")
+        result.error?.toString()?.contains("start.'time'")
     }
 
     def "addRequiredExpression Between two times: fail-loud when end.offset missing for sunrise type"() {
@@ -11002,7 +10998,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.contains("offset") || result.error?.toString()?.contains("end")
+        result.error?.toString()?.contains("end.'offset'")
     }
 
     // ---- Variable: additional negative pins (W2) ----
@@ -11060,8 +11056,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("relrdev") ||
-            result.error?.toString()?.toLowerCase()?.contains("comparator")
+        result.error?.toString()?.contains("RelrDev_<N> (comparator) not revealed after variable name write")
     }
 
     def "addRequiredExpression Variable: fail-loud when state field not revealed after RelrDev write"() {
@@ -11128,8 +11123,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("state") ||
-            result.error?.toString()?.toLowerCase()?.contains("value")
+        result.error?.toString()?.contains("state_<N> (value field) not revealed after RelrDev write")
     }
 
     // ---- Custom Attribute: additional negative pin (W2) ----
@@ -11193,8 +11187,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("state") ||
-            result.error?.toString()?.toLowerCase()?.contains("value")
+        result.error?.toString()?.contains("state_<N> (value) not revealed after RelrDev write")
     }
 
     // ---- compareToDevice capability (B3) ----
@@ -11363,8 +11356,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("relrdev") ||
-            result.error?.toString()?.toLowerCase()?.contains("comparator")
+        result.error?.toString()?.contains("RelrDev_<N> not visible after rCapab/rDev")
     }
 
     def "addRequiredExpression compareToDevice: firmware fallback -- RHS-type not revealed, partial=true sentinel"() {
@@ -11872,9 +11864,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "stopType_1 written with sunrise (consequence-gated: appeared only after startTime_1)"
         writtenFields["stopType_1"] == "sunrise"
 
-        and: "stopTime_1 or stopOffset_1 written with 30 (consequence-gated: appeared only after stopType_1)"
-        writtenFields.any { k, v -> (k.toString().startsWith("stop") || k.toString().startsWith("end")) &&
-                                      !k.toString().contains("Type") && v?.toString() == "30" }
+        and: "stopTime_1 written with 30 (consequence-gated: appeared only after stopType_1)"
+        writtenFields["stopTime_1"]?.toString() == "30"
     }
 
     def "addAction ifThen: compareToDevice writes rhsType/refDev/refAttr"() {
@@ -11968,8 +11959,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "stateType_1 set to the 'another device' option key (exact match)"
         writtenFields["stateType_1"] == "another device"
 
-        and: "reference device written with device ID 9"
-        writtenFields.any { k, v -> k.toString().matches(/rDev2_\d+|refDev_\d+|compareDevId_\d+/) && v?.toString()?.contains("9") }
+        and: "reference device written with device ID 9 (scalar enum on the wire)"
+        writtenFields.any { k, v -> k.toString().matches(/rDev2_\d+|refDev_\d+|compareDevId_\d+/) && v?.toString() == "9" }
 
         and: "reference attribute written with 'temperature'"
         writtenFields.any { k, v -> k.toString().matches(/rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/) && v == "temperature" }
@@ -12018,9 +12009,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "fail-loud: success=false with diagnostic referencing the modes picker not appearing"
+        then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.contains("picker after rCapab")
+        result.error?.toString()?.contains("expected modes") &&
+            result.error?.toString()?.contains("picker after rCapab='Mode'")
     }
 
     def "addAction ifThen: fail-loud when variable name not in revealed enum on doActPage"() {
@@ -12132,10 +12124,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "fail-loud: success=false with diagnostic referencing RelrDev or comparator"
+        then: "fail-loud: success=false with diagnostic referencing RelrDev not revealed after rCustomAttr"
         result.success == false
-        result.error?.toString()?.toLowerCase()?.contains("relrdev") ||
-            result.error?.toString()?.toLowerCase()?.contains("comparator")
+        result.error?.toString()?.contains("RelrDev_<N> (comparator) not revealed after rCustomAttr_<N>")
     }
 
     def "addAction ifThen: fail-loud surfaces wizardStuck when cancelCapab cleanup also fails"() {
@@ -12195,6 +12186,229 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.restoreHint?.contains("cancelCapab")
         result.restoreHint?.contains("doActPage")
         result.error?.contains("wizardStuck")
+    }
+
+    def "addAction ifThen: Mode condition by modeIds -- IDs written directly, no name resolution"() {
+        // Parity with addRequiredExpression Mode-by-modeIds spec: when modeIds is
+        // provided instead of state, the walker writes the IDs directly without
+        // attempting name->ID resolution via location.modes.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
+        def rCapabWritten = false
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) {
+                        def fn = m[0][1]
+                        writtenFields[fn] = v
+                        if (fn == "rCapab_1") rCapabWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            actSelectActionsJson(100)
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def inputs = [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",         type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",     type: "enum", options: ["Mode", "Switch"]],
+                [name: "hasAll",       type: "button"]
+            ]
+            if (rCapabWritten) {
+                inputs = inputs + [[name: "modes0_1", type: "enum", options: ["1": "Day", "3": "Night"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            actMainPageBakedJson(100, "IF Mode is Day THEN")
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[capability: "Mode", modeIds: ["1"]]]]
+            ],
+            confirm: true
+        ])
+
+        then: "success with the provided ID written directly (serialized as JSON-string on the wire)"
+        result.success == true
+        writtenFields["modes0_1"] == '["1"]'
+
+        and: "state_1 was NOT written for Mode-by-modeIds (picker write, not state_N)"
+        !writtenFields.containsKey("state_1")
+    }
+
+    def "addAction ifThen: compareToDevice firmware fallback -- RHS-type not revealed, partial=true sentinel"() {
+        // Parity with addRequiredExpression firmware-fallback spec: when the RHS-type
+        // selector does not appear after RelrDev write, the walker falls back to writing
+        // literal state_<N> and pushes a sentinel to skipped. result.partial must be true.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def actTypeWritten  = false
+        def actSubTypeWritten = false
+        def rCapabWritten   = false
+        def relrWritten     = false
+        def writtenFields   = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) {
+                        def fn = m[0][1]
+                        writtenFields[fn] = v
+                        if (fn == "actType.1")    actTypeWritten = true
+                        if (fn == "actSubType.1") actSubTypeWritten = true
+                        if (fn == "rCapab_1")     rCapabWritten = true
+                        if (fn == "RelrDev_1")    relrWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            actSelectActionsJson(100)
+        }
+        // doActPage: schema grows progressively so each pre-condition write looks accepted.
+        // RelrDev_1 and state_1 appear after rCapab is written; stateType_1 / rhsType_1
+        // intentionally never appear (old firmware -- no device-relative RHS-type toggle).
+        def doActFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            doActFetchSeq++
+            def inputs = [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",         type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",     type: "enum", options: ["Temperature"]],
+                [name: "hasAll",       type: "button"]
+            ]
+            if (rCapabWritten) {
+                inputs = inputs + [
+                    [name: "rDev_1",    type: "capability.sensor", multiple: true],
+                    [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
+                    [name: "state_1",   type: "number"]
+                    // stateType_1 / rhsType_1 intentionally absent (firmware fallback)
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${doActFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            actMainPageBakedJson(100, "IF Temperature > 20 THEN")
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Temperature",
+                    deviceIds: [8],
+                    comparator: ">",
+                    compareToDevice: [deviceId: 99, attribute: "temperature"]
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "result is successful (action committed)"
+        result.success == true
+
+        and: "partial=true signals that the compareToDevice was not fully written (fallback path)"
+        result.partial == true
+
+        and: "settingsSkipped contains the compareToDevice sentinel with rhs_type_not_revealed reason"
+        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
+        sentinel != null
+        sentinel.reason == "rhs_type_not_revealed"
+    }
+
+    def "addAction ifThen: fail-loud when compareToDevice RelrDev not visible after base writes"() {
+        // Parity with addRequiredExpression compareToDevice fail-loud spec: when RelrDev_<N>
+        // is absent from the schema after rCapab/rDev writes, the walker must fail loud.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            actSelectActionsJson(100)
+        }
+        // RelrDev_1 intentionally absent -- simulates firmware gap.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                                 [name: "cond",         type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1",     type: "enum", options: ["Temperature"]],
+                                 [name: "rDev_1",       type: "capability.sensor", multiple: true],
+                                 [name: "hasAll",       type: "button"]
+                                 // RelrDev_1 intentionally absent
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Temperature",
+                    deviceIds: [8],
+                    comparator: ">",
+                    compareToDevice: [deviceId: 99, attribute: "temperature"]
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "fail-loud surfaces as success:false with the diagnostic in result.error"
+        result.success == false
+        result.error?.toString()?.contains("RelrDev_<N> not visible after rCapab/rDev")
     }
 
     // ---------- runtime-exception envelope (isError) coverage ----------

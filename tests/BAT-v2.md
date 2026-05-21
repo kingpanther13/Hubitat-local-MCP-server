@@ -3039,6 +3039,20 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Action renders as "Set bat_sv_dst to null" (numOp=number written instead of variable). xVar3 not written (sourceVariable dropped). Unknown variable name accepted silently and produces a broken action.
 
+### T611 — addRequiredExpression + addAction ifThen: Mode and Variable conditions in a single rule (walker parity)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create hub variable 'bat_re_walker_var' (numeric, value 0). Note the hub's modes via get_modes -- pick one valid mode name and the hub variable name. Create RM rule 'BAT Walker Parity Test'.",
+  "test_prompt": "First, add a Required Expression to 'BAT Walker Parity Test' using addRequiredExpression: conditions=[{capability:'Mode', state:'<valid mode name>'}, {capability:'Variable', variable:'bat_re_walker_var', comparator:'>', value:0}], operator='AND'. Then add an ifThen action: capability='ifThen', expression={conditions:[{capability:'Mode', state:'<valid mode name>'}]}. Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT Walker Parity Test'. Delete hub variable bat_re_walker_var."
+}
+```
+
+**Expected**: Both `addRequiredExpression` and `addAction ifThen` complete with `success=true`, `partial!=true`. `check_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders both conditions (Mode + Variable), not the bare "Define Required Expression" placeholder. The ifThen action appears in the actions list with the Mode condition baked correctly (not as "BROKEN"). Demonstrates that `_rmWalkConditionReveal` fires correctly from both STPage and doActPage entry points.
+
+**Failure modes**: Required Expression placeholder remains ("Define Required Expression" on mainPage), indicating the expression did not bake. Mode condition in ifThen renders as Broken Condition (modes picker not written). Variable comparator/value silently dropped (RelrDev or state_N not revealed after picker write).
+
 ---
 
 ## Changes from BAT v1
@@ -3054,7 +3068,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total)
 
 ---
 

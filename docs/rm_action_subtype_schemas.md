@@ -398,7 +398,7 @@ No fields required.
 
 | Field | Type | Notes |
 |---|---|---|
-| `expression` | Map | Required. `{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}` |
+| `expression` | Map | Required. `{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}`. `expression.conditions[]` follow the addRequiredExpression per-condition spec -- see "Per-condition spec" section below. |
 | `hours` | Integer | |
 | `minutes` | Integer | |
 | `seconds` | Integer | |
@@ -409,7 +409,7 @@ No fields required.
 
 | Field | Type | Notes |
 |---|---|---|
-| `expression` | Map | Required. `{conditions: [...], operator?, operators?}` |
+| `expression` | Map | Required. `{conditions: [...], operator?, operators?}`. `expression.conditions[]` follow the addRequiredExpression per-condition spec -- see "Per-condition spec" section below. |
 | `delay` | Map | `{hours?, minutes?, seconds?}` |
 | `useDuration` | Boolean | |
 
@@ -429,12 +429,14 @@ Opens an IF block. Close with `capability='endIf'`. Use `elseIf`/`else` for bran
 | `expression` | Map | Required. `{conditions: [...], operator?, operators?}` |
 | `rawSettings` | Map | |
 
+`expression.conditions[]` follow the addRequiredExpression per-condition spec shape -- see "Per-condition spec" section below. The same per-capability extended fields apply: Mode `modeIds`, Between two times `start`/`end`, Variable `variable`+`comparator`, Custom Attribute `attribute`+`comparator`, compareToDevice `compareToDevice` Map. The shared walker `_rmWalkConditionReveal` handles all per-capability reveal sequences identically for ifThen / elseIf / repeatWhile / waitExpression (doActPage) and addRequiredExpression (STPage).
+
 ### elseIf
 Continues an IF block. Needs a preceding `ifThen`.
 
 | Field | Type | Notes |
 |---|---|---|
-| `expression` | Map | Required |
+| `expression` | Map | Required. Same `{conditions, operator?, operators?}` shape as ifThen. `expression.conditions[]` follow the addRequiredExpression per-condition spec. |
 | `rawSettings` | Map | |
 
 ### else
