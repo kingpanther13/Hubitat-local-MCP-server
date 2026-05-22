@@ -440,6 +440,46 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [shared_var: 'in-use']
     }
 
+    // W-spec-delete_variable-plural: the singular spec above only pins "1 rule:"; the
+    // count-aware ternary must also be exercised on the plural side or a regression
+    // that drops the discrimination (always emits "rule:") would pass on 1 consumer
+    // and silently break the 2+ case.
+    // Both-ways pending (orchestrator).
+    def "delete_variable refuses when 2 child rule apps reference the variable (plural)"() {
+        given:
+        enableHubAdminWrite()
+        stateMap.ruleVariables = [shared_var: 'in-use']
+
+        and: 'two child rules each referencing shared_var'
+        def c1 = new support.TestChildApp(id: 101L, label: 'Rule One')
+        c1.ruleData = [
+            triggers: [],
+            conditions: [[type: 'variable', name: 'shared_var', operator: '=', value: 'on']],
+            actions: []
+        ]
+        def c2 = new support.TestChildApp(id: 102L, label: 'Rule Two')
+        c2.ruleData = [
+            triggers: [[type: 'variable_change', variable: 'shared_var']],
+            conditions: [],
+            actions: []
+        ]
+        childAppsList << c1
+        childAppsList << c2
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared_var', confirm: true])
+
+        then: 'refused with the plural form ("2 rules:") and both consumer IDs surfaced'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'shared_var'")
+        ex.message.contains('2 rules:')
+        !ex.message.contains('2 rule:')
+        ex.message.contains('id=101')
+        ex.message.contains('id=102')
+        // And the count-aware "those rules" phrase on the breakage hint too.
+        ex.message.contains('those rules')
+    }
+
     def "delete_variable proceeds with force=true and reports brokenConsumers"() {
         given:
         enableHubAdminWrite()

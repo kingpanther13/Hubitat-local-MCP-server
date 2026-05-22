@@ -1334,9 +1334,10 @@ def handleGateway(gatewayName, toolName, toolArgs) {
                 else if (pDef.description) hint += " — ${pDef.description}"
                 hint
             }.join("\n")
+            def paramWord = (missing.size() == 1) ? "parameter" : "parameters"
             return [
                 isError: true,
-                error: "Missing required parameter(s): ${missing.join(', ')}",
+                error: "Missing required ${paramWord}: ${missing.join(', ')}",
                 tool: toolName,
                 parameters: paramList
             ]
@@ -12069,7 +12070,7 @@ def toolListVirtualDevices(args) {
     def result = [
         devices: paged.page,
         count: paged.page.size(),
-        message: "Found ${devices.size()} MCP-managed virtual device(s). These are automatically accessible to all MCP device tools."
+        message: "Found ${devices.size()} MCP-managed virtual ${devices.size() == 1 ? 'device' : 'devices'}. These are automatically accessible to all MCP device tools."
     ]
     if (cursor != null) {
         result.total = devices.size()
@@ -12470,8 +12471,8 @@ def toolUpdateDevice(args) {
         changes: changes,
         errors: errors.isEmpty() ? null : errors,
         message: errors.isEmpty()
-            ? "Successfully updated ${changes.size()} property/properties on device '${deviceLabel}'."
-            : "Updated ${changes.size()} property/properties with ${errors.size()} error(s) on device '${deviceLabel}'."
+            ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}'."
+            : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}'."
     ]
 }
 
@@ -14680,10 +14681,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     _rmValidateDeviceIdsExist("addTrigger.deviceIds", triggerSpec.deviceIds)
     if (triggerSpec.condition instanceof Map) {
         // Normalize singular deviceId -> deviceIds on the trigger.condition Map BEFORE
-        // pre-validation runs. _rmBuildCondition does this internally for its own writes,
-        // but the validator above takes the raw .deviceIds list; without this
-        // normalization a singular deviceId silently bypasses the device-exist check
-        // (deviceIds==null -> validator early-returns) and the bogus ID surfaces only
+        // pre-validation runs **because** _rmBuildCondition's internal normalization runs
+        // too late to protect _rmValidateDeviceIdsExist: validator sees the raw .deviceIds
+        // list, an absent value early-returns, and the bogus singular ID surfaces only
         // as a "Broken Trigger" render later.
         def cm = triggerSpec.condition as Map
         if (cm.deviceIds == null && cm.deviceId != null) {
@@ -17034,7 +17034,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         def exprConds = (actionSpec.expression as Map).conditions
         if (exprConds instanceof List) {
             // Normalize singular deviceId -> deviceIds before pre-validation (same
-            // pattern as _rmAddRequiredExpression). Covers nested subExpression conditions.
+            // pattern as _rmAddRequiredExpression) **because** _rmBuildCondition's internal
+            // normalization runs too late to protect _rmValidateDeviceIdsExist; the validator
+            // below sees the raw deviceIds list and would silently skip a singular deviceId.
+            // Covers nested subExpression conditions.
             def normExprCondList
             normExprCondList = { List cl ->
                 cl.each { entry ->
@@ -19364,7 +19367,8 @@ private Map _rmWalkStep(Integer appId, Map spec) {
             def values = (writtenValue instanceof List) ? writtenValue.collect { it?.toString() } : [writtenStr]
             def invalid = values.findAll { v -> v != null && !validValues.contains(v) }
             if (invalid) {
-                throw new IllegalArgumentException("walkStep.write enum validation failed: value(s) ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
+                def valueWord = (invalid.size() == 1) ? "value" : "values"
+                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
             }
         }
         // Build the schema map _rmUpdateAppSettings expects.
@@ -19714,8 +19718,9 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
         }
     }
     if (poisoned) {
+        def settingWord = (poisoned.size() == 1) ? "setting" : "settings"
         throw new IllegalStateException(
-            "MarshalFlagDivergenceException: multiple=true flag flipped to false on setting(s) ${poisoned} " +
+            "MarshalFlagDivergenceException: multiple=true flag flipped to false on ${settingWord} ${poisoned} " +
             "for app ${appId}. This corrupts RM's device-list rendering. Caller should re-POST with the full " +
             "3-field group (settings[name], name.type, name.multiple=true) to recover.")
     }
@@ -20466,7 +20471,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def toIsoTime = { String hhmm ->
             long anchorMs = 946684800000L  // 2000-01-01T00:00:00.000Z
             def tz = location.timeZone
-            if (!tz) throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': location.timeZone is null -- set hub timezone in Settings > Location and Modes before using clock-based conditions.")
+            if (!tz) {
+                // Every other throw in _rmWalkConditionReveal precedes itself with
+                // cancelInFlightCond() so the wizard does not stay half-open. This
+                // path inside the toIsoTime closure must do the same.
+                cancelInFlightCond()
+                throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': location.timeZone is null -- set hub timezone in Settings > Location and Modes before using clock-based conditions.")
+            }
             long offsetMs = tz.getOffset(anchorMs)
             long offsetMinutes = offsetMs / 60000L
             String sign = (offsetMinutes >= 0) ? "+" : "-"
@@ -20521,7 +20532,11 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (!endValReveal.input) {
             cancelInFlightCond()
             def visible = endValReveal.visibleNames?.join(', ') ?: "(none)"
-            def endFieldHint = (endType == "clock") ? "'time' field (endingA<N>)" : "'offset' field (endSunriseOffset<N>)"
+            // Symmetric phrasing with the start-side hint above. The walker's regex
+            // /endingA\d+|endSunriseOffset\d+/ captures both shapes; naming a single
+            // candidate would mislead callers when the firmware variant of the field
+            // is the other branch. Mirror startFieldHint exactly.
+            def endFieldHint = (endType == "clock") ? "'time' field (endingA<N>)" : "'offset' field (firmware-assigned)"
             throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end ${endFieldHint} not revealed after end-type='${endType}'. Visible fields: ${visible}")
         }
         def endValField = endValReveal.input.name.toString()
@@ -22034,7 +22049,9 @@ def toolUpdateNativeApp(args) {
             result.settingsApplied = knownSettings.keySet().toList()
             if (unknownSettings) {
                 result.settingsSkipped = unknownSettings
-                result.unknownSettingsWarning = "Setting(s) ${unknownSettings} are not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental — e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
+                def settingWord = (unknownSettings.size() == 1) ? "Setting" : "Settings"
+                def beVerb = (unknownSettings.size() == 1) ? "is" : "are"
+                result.unknownSettingsWarning = "${settingWord} ${unknownSettings} ${beVerb} not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental — e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
             }
             if (!isMainPage) {
                 result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call update_native_app(button='updateRule') to commit."
@@ -22122,8 +22139,12 @@ def toolUpdateNativeApp(args) {
                 settleStatus = _rmCheckSubscriptionSettle(appId)
                 def trigCount = settleStatus.triggerCount
                 def trigWord = trigCount == 1 ? "trigger" : "triggers"
+                // Discriminate on count, not on stringified word: trigWord=="trigger"
+                // could in theory drift if the assignment above changed, and at count==0
+                // ("triggers", plural by default) the "triggers are" verb is correct anyway.
+                def trigVerb = (trigCount == 1) ? "trigger is" : "triggers are"
                 result.subscriptionSettle = settleStatus?.unsettled ?
-                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigWord == 'trigger' ? 'trigger is' : 'triggers are'} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
+                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigVerb} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
                     "OK after auto-retry"
             } else if (settleStatus != null) {
                 result.subscriptionSettle = "OK"

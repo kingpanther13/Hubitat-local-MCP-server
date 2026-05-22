@@ -1700,6 +1700,68 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.toLowerCase()?.contains("trashacts")
     }
 
+    // W-spec-clearActions-text (singular): the stillThereWord ternary at L16398 (production)
+    // routes the recovery-phrase "if the <action|actions> really did get clobbered". Pin
+    // the singular form when exactly 1 action stays stuck.
+    // Both-ways pending (orchestrator).
+    def "clearActions error text says 'if the action really did get clobbered' singular for one stuck action"() {
+        given:
+        enableHubAdminWrite()
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "error message uses singular form 'if the action really did get clobbered'"
+        result.success == false
+        result.error?.contains("if the action really did get clobbered")
+        !result.error?.contains("if the actions really did get clobbered")
+    }
+
+    // W-spec-clearActions-text (plural): pin the plural form when multiple actions stay stuck.
+    // Both-ways pending (orchestrator).
+    def "clearActions error text says 'if the actions really did get clobbered' plural for two stuck actions"() {
+        given:
+        enableHubAdminWrite()
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "actType.2", type: "enum", options: ["switchActs"]],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [
+                [name: "actType.1", value: "switchActs"],
+                [name: "actType.2", value: "switchActs"]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "error message uses plural 'if the actions really did get clobbered'"
+        result.success == false
+        result.error?.contains("if the actions really did get clobbered")
+        result.error?.contains("actions [1, 2] still present")
+    }
+
     def "replaceActions atomically clears then bulk-adds, rolling per-item failures into addedResults"() {
         given:
         enableHubAdminWrite()
@@ -4758,9 +4820,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it.body["settings[rCapab_1]"]?.toString() == "Motion"
         }
         // rDev_1 carries the condition's device ID (CSV per multiple=true contract).
+        // Exact-equality wire-value check (W-N.34): bare CSV scalar "9". A substring
+        // .contains("9") would also match "9999"/"19"/"99" by coincidence.
         posts.any {
             it.path == "/installedapp/update/json" &&
-            it.body["settings[rDev_1]"]?.toString()?.contains("9")
+            it.body["settings[rDev_1]"]?.toString() == "9"
         }
         // state_1=active is the condition's compared state.
         posts.any {
@@ -4779,9 +4843,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The bound trigger's device + state must also reach the schema —
         // without these the trigger row commits as "Broken Trigger" and the
         // earlier condition write is wasted work.
+        // Exact-equality wire-value check (W-N.34): bare CSV scalar "8".
         posts.any {
             it.path == "/installedapp/update/json" &&
-            it.body["settings[tDev2]"]?.toString()?.contains("8")
+            it.body["settings[tDev2]"]?.toString() == "8"
         }
         posts.any {
             it.path == "/installedapp/update/json" &&
@@ -7151,7 +7216,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
 
         then: "modesX1 was written with the resolved mode ID -- not tstate1"
-        modesXWritten.any { it.value?.contains("3") }
+        // Exact-equality wire-value check (W-N.34): production writes modesX1 as
+        // a JSON-encoded list ['3'] (multi=true contract). A loose .contains("3")
+        // would also match "30"/"31"/"13" if firmware drift renumbered modes.
+        modesXWritten.any { it.value?.toString() == '["3"]' }
 
         and: "tstate was never written for a Mode trigger"
         tstateWritten.isEmpty()
@@ -7233,7 +7301,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
 
         then: "modesX1 was written with the supplied IDs -- no name resolution needed"
-        modesXWritten.any { it.value?.contains("3") && it.value?.contains("5") }
+        // Exact-equality wire-value check (W-N.34): production writes modesX1 as
+        // a JSON-encoded list ['3','5'] (multi=true contract). Loose .contains("3")
+        // + .contains("5") would also match "53"/"35"/"3,15" by coincidence.
+        modesXWritten.any { it.value?.toString() == '["3","5"]' }
     }
 
     def "addTrigger Mode with unknown state name throws with clear error listing valid modes"() {
@@ -7669,7 +7740,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "returns success: false with a descriptive error listing existing indices"
         result.success == false
         result.error?.contains("removeTrigger.index 5 not found")
-        result.error?.contains("2")
+        // Exact phrase pinned (W-N.34): a loose .contains("2") would match the "2" in the
+        // request's index 5 message or coincidental digit overlap. The distinctive
+        // "Existing indices: 2" comes from L16198's sort().join(', ') formatter.
+        result.error?.contains("Existing indices: 2")
     }
 
     def "removeTrigger retry path: trigger disappears on second check after race recovery"() {
@@ -7826,7 +7900,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "returns success: false with descriptive error listing existing indices"
         result.success == false
         result.error?.contains("modifyTrigger.index 7 not found")
-        result.error?.contains("2")
+        // Exact phrase pinned (W-N.34): the distinctive "Existing indices: 2" comes
+        // from L16277's sort().join(', ') formatter; a loose .contains("2") would also
+        // match coincidental digit overlap (e.g. modifyTrigger.index 7 -> two-digit hits).
+        result.error?.contains("Existing indices: 2")
     }
 
     def "modifyTrigger returns success: false on unsupported mods fields (capability or deviceIds) with workaround hint"() {
@@ -10704,9 +10781,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "fail-loud: success=false mentioning 'offset' field (not 'time' field or 'startingA<N>')"
+        then: "fail-loud: success=false mentioning 'offset' field (firmware-assigned) (not 'time' field or 'startingA<N>')"
         result.success == false
         result.error?.toString()?.contains("'offset' field")
+        // Pinned to the symmetric 'firmware-assigned' phrasing (W-N.34-endFieldHint-symmetric).
+        // Start and end sides emit the same hint for sunrise/sunset because the live field
+        // name is firmware-version-dependent (startingA<N> vs startSunriseOffset<N>).
+        result.error?.toString()?.contains("'offset' field (firmware-assigned)")
         !result.error?.toString()?.contains("'time' field")
         !result.error?.toString()?.contains("startingA")
     }
@@ -10772,11 +10853,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "fail-loud: success=false mentioning 'offset' field (not 'time' field or 'endingA<N>')"
+        then: "fail-loud: success=false mentioning 'offset' field (firmware-assigned) (not 'time' field or endingA<N>)"
         result.success == false
         result.error?.toString()?.contains("'offset' field")
+        // End and start sides emit the SAME 'firmware-assigned' hint for the
+        // sunrise/sunset branch (W-N.34-endFieldHint-symmetric). A regression that
+        // names a single candidate ('endSunriseOffset<N>' OR 'endingA<N>') would
+        // mislead callers when firmware uses the other variant.
+        result.error?.toString()?.contains("'offset' field (firmware-assigned)")
         !result.error?.toString()?.contains("'time' field")
-        !result.error?.toString()?.contains("endingA")
+        !result.error?.toString()?.contains("endingA<N>")
+        !result.error?.toString()?.contains("endSunriseOffset<N>")
     }
 
     // ---- Variable comparison capability ----
@@ -13676,6 +13763,132 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.toString()?.contains("start-type selector (starting<N>) not revealed")
     }
 
+    // When location.timeZone is null on a doActPage Between-two-times condition the
+    // toIsoTime closure must cancel the in-flight wizard before throwing. Without that
+    // cancel, the wizard stays half-open and the next write inherits it. The fix point
+    // is _rmWalkConditionReveal's toIsoTime closure (Round 12 B1).
+    // Both-ways pending (orchestrator).
+    def "addAction ifThen: fail-loud when Between two times location.timeZone is null on doActPage"() {
+        given:
+        enableHubAdminWrite()
+        sharedLocation.timeZone = null   // simulate unconfigured hub timezone
+        def cancelCapabClicks = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[cancelCapab]"] == "clicked") {
+                cancelCapabClicks++
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            actSelectActionsJson(100)
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                                 [name: "cond",         type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1",     type: "enum", options: ["Between two times"]],
+                                 [name: "hasAll",       type: "button"],
+                                 [name: "cancelCapab",  type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Between two times",
+                    start: [type: "clock", time: "22:00"],
+                    end: [type: "clock", time: "07:00"]
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "fail-loud with timezone hint and cancelled wizard (wizardStuck false)"
+        result.success == false
+        result.error?.toString()?.contains("location.timeZone is null")
+        result.error?.toString()?.contains("Settings > Location and Modes")
+        // The walker cancelled the in-flight wizard before throwing; cleanup succeeded
+        // so the dispatcher must NOT flag wizardStuck (the cleanup-failed contract).
+        result.wizardStuck != true
+        cancelCapabClicks >= 1
+    }
+
+    // The cancelledByWalker guard in _rmAddRequiredExpression's outer catch prevents
+    // the outer catch from issuing a redundant second cancelCapab click after the
+    // walker has already cancelled. Without the guard the second click fails (nothing
+    // to cancel) and flips wizardStuck to true erroneously. The fix point is the
+    // !cancelledByWalker conditional at L20800 (Round 11) -- this spec pins it
+    // (Round 12 B2).
+    // Both-ways pending (orchestrator).
+    def "addRequiredExpression Mode: walker cancel succeeds -- outer catch does not issue a second cancelCapab"() {
+        given:
+        enableHubAdminWrite()
+        sharedLocation.modes = [[id: "3", name: "Night"]]
+        def cancelCapabClicks = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[cancelCapab]"] == "clicked") {
+                cancelCapabClicks++
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        // Static STPage schema: modes<N> never reveals after rCapab='Mode'.
+        // The walker enters its 'modesReveal.input == null' branch, calls
+        // cancelInFlightCondition() (sets cancelledByWalker=true), then throws.
+        // The outer catch must observe cancelledByWalker and skip the redundant cancel.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",        type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1",    type: "enum", options: ["Mode"]],
+                                 [name: "hasAll",      type: "button"],
+                                 [name: "cancelCapab", type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
+            confirm: true
+        ])
+
+        then: "walker cancelled once; outer catch did not re-cancel; wizardStuck stays false"
+        result.success == false
+        result.error?.toString()?.contains("expected modes<N> picker")
+        result.wizardStuck != true
+        // The walker issued exactly one cancelCapab. A regression that drops the
+        // cancelledByWalker guard would produce 2 clicks (walker + outer catch),
+        // the second of which would still succeed in this stub but in production
+        // throws because there is nothing to cancel.
+        cancelCapabClicks == 1
+    }
+
     def "addAction ifThen: fail-loud when Variable lVar picker not revealed on doActPage"() {
         // When rCapab='Variable' does not cause the variable-name picker (lVar_<N>) to
         // appear, the walker must cancel and throw. Parity with addRequiredExpression guard.
@@ -15359,6 +15572,135 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         writtenFields["rDev_1"] == "73"
     }
 
+    // _rmAddAction recursive subExpression normalization spec — limited form.
+    //
+    // L16953-16967 defines a recursive normExprCondList closure that walks into
+    // subExpression.conditions[] and rewrites singular deviceId -> deviceIds: [N].
+    // However the SIBLING pre-validator at L16968-16972 is FLAT: it iterates the
+    // outer conditions only and never recurses. So a singular deviceId nested in
+    // a subExpression gets normalized but NOT pre-validated. (The downstream
+    // wizard write at L18085+ does not yet emit cond=b open-paren writes for
+    // addAction subExpressions, so the rule would fail at the write stage anyway.)
+    //
+    // This spec pins the limited contract that ACTUALLY exists today: the
+    // recursive normalization MUST run without crashing the dispatcher, and the
+    // failure mode must be the write-stage Unstubbed/missing-page error rather
+    // than a Groovy null-pointer crash inside the closure. When the addAction
+    // path gains real subExpression-write support (cond=b open-paren walk), a
+    // companion spec should be added asserting the recursive validation also
+    // throws on non-existent ids; that companion belongs in the same PR as the
+    // write-side feature work.
+    // Both-ways pending (orchestrator).
+    def "addAction ifThen: recursive normExprCondList walks subExpression without crashing the dispatcher"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            actSelectActionsJson(100)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // Device 73 exists so flat pre-validation passes (the outer condition has
+        // null deviceIds because only subExpression is set, so the flat validator
+        // early-returns regardless).
+        hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
+
+        when: "addAction ifThen with subExpression carrying singular deviceId"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    subExpression: [conditions: [[
+                        capability: "Motion",
+                        deviceId: 73,
+                        state: "active"
+                    ]]]
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "dispatcher reaches the wizard write stage cleanly (no closure crash from recursive call)"
+        // The reachable failure mode is the missing doActPage stub for the write
+        // phase (or any other site-specific Unstubbed message), NOT a Groovy
+        // MissingMethodException / NullPointerException inside normExprCondList.
+        // If the recursive closure had a structural bug (e.g. mishandled null
+        // entries / non-Map sub-entries), it would crash BEFORE reaching the
+        // write stage and the error would mention the closure's call site.
+        result.success == false
+        !result.error?.toString()?.contains("MissingMethodException")
+        !result.error?.toString()?.contains("NullPointerException")
+        !result.error?.toString()?.contains("normExprCondList")
+    }
+
+    // _rmValidateDeviceIdsExist must run AFTER normalization for addTrigger.condition.
+    // A singular non-existent deviceId in trigger.condition gets normalized to
+    // deviceIds: [9999], then validated, then the validator must throw with the
+    // distinctive 'does not exist on the hub' phrase. Without the order, the
+    // un-normalized singular deviceId would bypass validation entirely.
+    // Both-ways pending (orchestrator).
+    def "addTrigger: singular non-existent deviceId in trigger.condition fails the existence check"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "trig",      type: "enum", options: ["c": "Conditional trigger"]],
+                                 [name: "tCapab1",   type: "enum", options: ["Motion"]],
+                                 [name: "hasTrig",   type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // The outer Switch trigger references device 8 (registered, passes the existence
+        // check). The gating condition Map carries 9999, lookup returns empty body
+        // (length 0). _rmValidateDeviceIdsExist treats empty body as exists=false and
+        // throws the distinctive 'does not exist on the hub' phrase. (An unstubbed
+        // path raises a non-404 error which the validator treats as "transient".)
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Switch"}' }
+        hubGet.register('/device/fullJson/9999') { params -> '' }
+
+        when: "addTrigger.condition with singular non-existent deviceId"
+        // The outer Switch trigger references an existing device; the gating
+        // condition Map carries the singular non-existent deviceId that must
+        // be normalized then caught by _rmValidateDeviceIdsExist on the
+        // trigger.condition path.
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [8],
+                state: "on",
+                condition: [
+                    capability: "Motion",
+                    deviceId: 9999,    // singular non-existent inside the condition Map
+                    state: "active"
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "fail-loud with the existence-check phrase, not a silent rule write"
+        result.success == false
+        // Pin the distinctive 12-char phrase from _rmValidateDeviceIdsExist; loose ".contains('9999')"
+        // would match the unrelated 'rule-id 9999' or numeric overlap (W-N.34).
+        result.error?.toString()?.contains("does not exist on the hub")
+        result.error?.toString()?.contains("9999")
+    }
+
     def "addRequiredExpression: explicit deviceIds wins over singular deviceId when both provided"() {
         // Both-ways pending (orchestrator).
         // Precedence: if both deviceId: 5 and deviceIds: [99] are given, deviceIds wins.
@@ -15478,7 +15820,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "pre-validation throws (not a silent pass-through): success=false mentioning the device ID"
         result.success == false
-        result.error?.toString()?.contains("9999") || result.error?.toString()?.contains("not found")
+        // Pin the distinctive 12-char phrase from _rmValidateDeviceIdsExist; a loose
+        // .contains("9999") || .contains("not found") OR-chain would tolerate a
+        // generic "9999" leak elsewhere (W-N.34-OR-chain).
+        result.error?.toString()?.contains("does not exist on the hub")
+        result.error?.toString()?.contains("9999")
     }
 
     // ---------- B2: subExpression recursive deviceId normalization ----------
@@ -15632,7 +15978,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "success even though modes1 was already visible before rCapab write (revealedAny fallback fired)"
         result.success == true
-        writtenFields["modes1"]?.toString()?.contains("2")
+        // Exact-equality wire-value check (W-N.34): bare JSON array '["2"]'. A substring
+        // .contains("2") would also match "20"/"21"/"32" by coincidence.
+        writtenFields["modes1"] == '["2"]'
     }
 
     // ---------- B3: location.timeZone null guard ----------
@@ -15849,6 +16197,319 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hint.contains("1 condition ")      // singular space-terminated
         !hint.contains("1 conditions")     // plural must NOT appear
         !hint.contains("condition(s)")     // parenthetical form must NOT appear
+    }
+
+    // ---------- W-multi-entry-condition: single condition producing multiple skipped entries
+    //
+    // Regression guard for the unique-condIdx discrimination logic at L21006-21007.
+    // The buggy entry-count code would inflate "1 condition with 3 skipped fields" to
+    // "3 conditions"; the fixed unique-count logic must report "1 condition". The
+    // existing singular-degradation spec at L15069 produces exactly 1 skipped entry,
+    // so it cannot distinguish entry-count from unique-count. This spec forces 3
+    // skipped entries that all carry condIdx=0 (via rawSettings keys absent from
+    // the static schema) and pins the singular wording.
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression: repairHints says '1 condition' when one condition produces multiple skipped entries"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        // Schema has the basic Switch chain but lacks three fields that the spec writes
+        // via rawSettings (notSchemaA, notSchemaB, notSchemaC). _rmWriteSettingOnPage
+        // records each as a separate skipped entry with reason='not_in_schema'.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",      type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1",  type: "enum", options: ["Switch"]],
+                                 [name: "rDev_1",    type: "capability.switch", multiple: true],
+                                 [name: "RelrDev_1", type: "enum", options: ["="]],
+                                 [name: "state_1",   type: "enum", options: ["on", "off"]],
+                                 [name: "hasAll",    type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Sw1"}' }
+
+        when: "one condition where every write is silent-rejected (static-schema stub yields no progressive disclosure)"
+        // Static-schema stubs make _rmWriteSettingOnPage flag each write as
+        // reason='silent_rejection' (the schema didn't grow / shrink after the
+        // write -- characteristic of a static fixture). The hint's count must
+        // reflect distinct condIdx values, not entry count.
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Switch",
+                deviceIds: [8],
+                comparator: "=",
+                state: "on",
+                rawSettings: [notSchemaA: 1, notSchemaB: 2, notSchemaC: 3]
+            ]]],
+            confirm: true
+        ])
+
+        then: "partial=true with repairHints saying '1 condition' (unique-condIdx count), NOT '7+ conditions' (entry-count)"
+        result.partial == true
+        def skip = result.settingsSkipped as List
+        // Multiple skipped entries all carry condIdx=0 (production stamps every
+        // walker-side skipped entry with the in-flight condition index). The
+        // unique-count discrimination must collapse them to "1 condition".
+        def walkerEntries = skip.findAll { it instanceof Map && it.condIdx == 0 }
+        walkerEntries.size() >= 3   // proves multiple skipped entries share condIdx=0
+        def hint = result.repairHints?.toString() ?: ""
+        hint.contains("1 condition ")    // singular -- unique-count discrimination
+        // Entry-count would have produced "${walkerEntries.size()} conditions"
+        // (e.g. "5 conditions"); pin it cannot leak.
+        !hint.contains("${walkerEntries.size()} conditions")
+        !hint.contains("condition(s)")
+    }
+
+    // ---------- W-spec-addRE-note-text: count-aware Required Expression note ----------
+    //
+    // L21617 emits "Required Expression added with N condition(s); updateRule fired."
+    // with a count-aware ternary on condition/conditions. Pin both forms so a regression
+    // that drops the discrimination is caught.
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression note says '1 condition' singular for one condition"() {
+        given:
+        enableHubAdminWrite()
+        def rCapabWritten = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
+                body.each { k, v ->
+                    def mm = k.toString() =~ /^settings\[(.+)\]$/
+                    if (mm && mm[0][1] == "rCapab_1") rCapabWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Motion active"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Motion"]],
+                [name: "hasAll",   type: "button"], [name: "doneST", type: "button"]
+            ]
+            if (rCapabWritten) {
+                inputs = inputs + [
+                    [name: "rDev_1",  type: "capability.sensor", multiple: true],
+                    [name: "state_1", type: "enum", options: ["active", "inactive"]]
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Motion"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Motion", deviceIds: [8], state: "active"]]],
+            confirm: true
+        ])
+
+        then: "note uses 'with 1 condition;' singular"
+        result.success == true
+        result.note?.toString()?.contains("Required Expression added with 1 condition;")
+        !result.note?.toString()?.contains("with 1 conditions")
+    }
+
+    def "addRequiredExpression note says '2 conditions' plural for two conditions"() {
+        given:
+        enableHubAdminWrite()
+        def rCapabWrittenForSlot = [1: false, 2: false]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
+                body.each { k, v ->
+                    def mm = k.toString() =~ /^settings\[rCapab_(\d+)\]$/
+                    if (mm) {
+                        def s = (mm[0][1] as Integer)
+                        rCapabWrittenForSlot[s] = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Motion active AND Switch on"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // STPage exposes 2 sibling Motion slots; the walker advances cond=a -> walks
+        // slot 1 -> writes oper -> cond=a -> walks slot 2. Same capability on both
+        // slots keeps the state-domain stub simple and exercises the count-aware
+        // 'with 2 conditions;' branch without colliding on slot-specific state enums.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                [name: "oper",     type: "enum", options: ["AND": "AND", "OR": "OR"]],
+                [name: "rCapab_1", type: "enum", options: ["Motion"]],
+                [name: "hasAll",   type: "button"], [name: "doneST", type: "button"]
+            ]
+            if (rCapabWrittenForSlot[1]) {
+                inputs = inputs + [
+                    [name: "rDev_1",  type: "capability.sensor", multiple: true],
+                    [name: "state_1", type: "enum", options: ["active", "inactive"]],
+                    [name: "rCapab_2", type: "enum", options: ["Motion"]]
+                ]
+            }
+            if (rCapabWrittenForSlot[2]) {
+                inputs = inputs + [
+                    [name: "rDev_2",  type: "capability.sensor", multiple: true],
+                    [name: "state_2", type: "enum", options: ["active", "inactive"]]
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${rCapabWrittenForSlot[1]}-${rCapabWrittenForSlot[2]}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"MotionA"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"MotionB"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [
+                conditions: [
+                    [capability: "Motion", deviceIds: [8], state: "active"],
+                    [capability: "Motion", deviceIds: [9], state: "inactive"]
+                ],
+                operator: "AND"
+            ],
+            confirm: true
+        ])
+
+        then: "note uses 'with 2 conditions;' plural"
+        result.success == true
+        result.note?.toString()?.contains("Required Expression added with 2 conditions;")
+        !result.note?.toString()?.contains("with 2 condition;")
+    }
+
+    // ---------- W-spec-subscriptionSettle: count-aware helper output (precursor) ----------
+    //
+    // The subscription-settle WARN message at L21824 uses two count-aware phrasings
+    // for "trigger is" / "triggers are". The helper _rmCheckSubscriptionSettle
+    // determines the count via tDev<N> setting introspection. Pin both forms via the
+    // helper output: triggerCount=1 (singular path) and triggerCount=2 (plural).
+    // Both-ways pending (orchestrator).
+    def "subscriptionSettle WARN message: singular 'trigger is' when triggerCount=1"() {
+        // Drive the count-aware trigVerb ternary at L21834 via a real statusJson
+        // stub returning one tDev entry + zero subscriptions. _rmCheckSubscriptionSettle
+        // reports unsettled=true twice (initial + post-retry), so the WARN string fires.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        // statusJson direct (helper's subs:0 yields (1..0).collect = 2 entries, not 0).
+        // Force eventSubscriptions: [] so _rmCheckSubscriptionSettle returns unsettled=true.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [[name: "tDev1", deviceIdsForDeviceList: [8]]],
+                eventSubscriptions: [],
+                scheduledJobs: [], appState: [:], childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, button: "updateRule", confirm: true])
+
+        then: "WARN string says 'trigger is' singular (count-aware, not the stringified-word ternary)"
+        result.subscriptionSettle?.contains("rule has 1 trigger but")
+        result.subscriptionSettle?.contains("The trigger is likely incomplete")
+        !result.subscriptionSettle?.contains("The triggers are likely incomplete")
+    }
+
+    def "subscriptionSettle WARN message: plural 'triggers are' when triggerCount=2"() {
+        // Plural-side regression pin for the trigVerb ternary at L21834.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        // statusJson direct (same rationale as singular spec above).
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "tDev1", deviceIdsForDeviceList: [8]],
+                    [name: "tDev2", deviceIdsForDeviceList: [9]]
+                ],
+                eventSubscriptions: [],
+                scheduledJobs: [], appState: [:], childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, button: "updateRule", confirm: true])
+
+        then: "WARN string says 'triggers are' plural"
+        result.subscriptionSettle?.contains("rule has 2 triggers but")
+        result.subscriptionSettle?.contains("The triggers are likely incomplete")
+        !result.subscriptionSettle?.contains("The trigger is likely incomplete")
     }
 
     // ---------- W-spec-addTrigger-deviceId-silent: addTrigger.condition singular deviceId ----------

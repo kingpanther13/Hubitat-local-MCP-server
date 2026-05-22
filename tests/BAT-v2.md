@@ -3085,6 +3085,54 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ---
 
+### T614 — addTrigger.condition singular deviceId: conditional trigger normalizes deviceId:N inline
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT AddTrigger Cond DeviceId'. Identify one Switch deviceId and one Motion sensor deviceId on the hub.",
+  "test_prompt": "Add a conditional trigger to 'BAT AddTrigger Cond DeviceId' using addTrigger: {capability:'Switch', deviceIds:[<switchId>], state:'on', condition:{capability:'Motion', deviceId:<motionId>, state:'active'}} -- the condition Map uses singular integer deviceId. Then check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT AddTrigger Cond DeviceId'."
+}
+```
+
+**Expected**: `addTrigger` completes with `success=true`. `check_rule_health` reports no broken markers. The trigger paragraph renders the gating condition (e.g. "Switch on -- ONLY IF Motion is active"). Demonstrates the dispatcher normalizes singular `condition.deviceId` BEFORE pre-validation runs, so the existence check fires.
+
+**Failure modes**: "Broken Trigger" marker (rDev_<N> for the condition slot stored {N: null}). The pre-validation existence check skipped (deviceIds was null in the un-normalized form). condTrig.<N> set but the condition row renders as a placeholder.
+
+---
+
+### T615 — addAction ifThen singular deviceId in expression.conditions[]: addAction normalizes inline
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT AddAction Cond DeviceId'. Identify one Custom Attribute capable device on the hub (humidity sensor preferred).",
+  "test_prompt": "Add an ifThen action to 'BAT AddAction Cond DeviceId' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Custom Attribute', deviceId:<humidityDeviceId>, attribute:'humidity', comparator:'<', value:40}]}} -- the expression condition uses singular integer deviceId. Verify the IF action bakes without broken markers.",
+  "teardown_prompt": "Delete 'BAT AddAction Cond DeviceId'."
+}
+```
+
+**Expected**: `addAction` completes with `success=true`. `check_rule_health` reports no broken markers. The IF paragraph on mainPage renders the comparator-on-attribute condition (e.g. "IF Humidity < 40 THEN"). Mirrors T613 for the doActPage walker side.
+
+**Failure modes**: IF paragraph renders the bare "Define IF" placeholder. Broken Condition marker (rDev_<N> not written). settingsSkipped shows rDev_1 as silent_rejection in the doActPage walk.
+
+---
+
+### T616 — addAction ifThen nested subExpression singular deviceId: recursive normalization
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT NestedCond DeviceId'. Identify two Motion sensor deviceIds (motionA, motionB) on the hub.",
+  "test_prompt": "Add an ifThen action to 'BAT NestedCond DeviceId' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Motion', deviceId:<motionA>, state:'active'}, {subExpression:{conditions:[{capability:'Motion', deviceId:<motionB>, state:'inactive'}]}}], operator:'OR'}} -- both the outer condition AND the inner subExpression carry singular integer deviceIds. Verify the rule bakes without broken markers.",
+  "teardown_prompt": "Delete 'BAT NestedCond DeviceId'."
+}
+```
+
+**Expected**: `addAction` completes with `success=true`. `check_rule_health` reports no broken markers. The IF paragraph renders both branches of the OR expression (outer Motion-active and inner Motion-inactive in parens). Exercises the recursive normCondList walking into subExpression.conditions[] of arbitrary depth.
+
+**Failure modes**: Either the outer or the inner condition renders as Broken Condition. The recursive normalization missed the inner deviceId, so the inner rDev_<N> stored a singular integer that the wizard silently dropped. Health shows a "Broken Condition" marker on the inner-paren slot only.
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
@@ -3098,7 +3146,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) + T616 (recursive subExpression) (182 total)
 
 ---
 

@@ -72,9 +72,28 @@ class HandleGatewaySpec extends ToolSpecBase {
         notThrown(IllegalArgumentException)
         result.isError == true
         result.tool == 'get_room'
-        result.error.contains('Missing required parameter')
+        // Pin the singular form (W-missingRequired-singular): a regression that drops
+        // the count-aware ternary at L1337 would emit "parameters" for 1 missing arg.
+        result.error.contains('Missing required parameter:')
+        !result.error.contains('Missing required parameters:')
         result.error.contains('room')
         result.parameters.contains('room')
+    }
+
+    // Both-ways pending (orchestrator).
+    def "missing two required parameters reports 'parameters' plural (count-aware)"() {
+        when:
+        // create_room requires both `name` and `confirm`; omit both.
+        def result = script.handleGateway('manage_rooms', 'create_room', [:])
+
+        then: 'plural form fired by the count-aware ternary at L1337'
+        notThrown(IllegalArgumentException)
+        result.isError == true
+        result.tool == 'create_room'
+        result.error.contains('Missing required parameters:')
+        !result.error.contains('Missing required parameter:')
+        result.error.contains('name')
+        result.error.contains('confirm')
     }
 
     def "valid dispatch delegates to executeTool"() {
