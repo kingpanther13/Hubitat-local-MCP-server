@@ -2320,7 +2320,7 @@ All 103 tools are covered by at least one test, excluding the destructive operat
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 206 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 1 reveal-walker coverage) plus 13 excluded destructive operations documented for manual testing
+**Total: 207 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3069,6 +3069,22 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ---
 
+### T613 — addRequiredExpression singular deviceId normalization: passes deviceId:N (not deviceIds:[N]) and verifies condition bakes
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT DeviceId Norm Test'. Identify one motion sensor deviceId on the hub.",
+  "test_prompt": "Add a Required Expression to 'BAT DeviceId Norm Test' using addRequiredExpression: conditions=[{capability:'Motion', deviceId:<motionSensorId>, state:'active'}] -- pass the integer deviceId directly (not deviceIds:[N]). Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT DeviceId Norm Test'."
+}
+```
+
+**Expected**: `addRequiredExpression` completes with `success=true`. `check_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a motion-sensor condition (e.g. "MotionSensor is active"), not the bare "Define Required Expression" placeholder. Demonstrates that the dispatcher normalizes singular `deviceId: N` to `deviceIds: [N]` before the STPage walker fires so agents don't need to know the array form.
+
+**Failure modes**: Required Expression placeholder remains, indicating normalization did not happen. Broken Condition marker (rDev_<N> not written because singular deviceId was ignored). `partial=true` with `settingsSkipped` showing rDev_1 as silent_rejection.
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
@@ -3082,7 +3098,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total)
 
 ---
 

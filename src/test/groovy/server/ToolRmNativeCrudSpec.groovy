@@ -5843,6 +5843,105 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("compareCond") } }
     }
 
+    // ---------- Custom Attribute mutual-field validation (W-N.34-custattr-symmetry) ----------
+    //
+    // attribute WITHOUT comparator and comparator WITHOUT attribute produce distinct,
+    // differentiating error messages. Both paths must fail-loud and the error text
+    // must name the missing sibling field so agents know exactly what to add.
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression: Custom Attribute attribute-without-comparator fails with differentiating error"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
+                                 [name: "hasAll",   type: "button"]
+                             ], paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "attribute is supplied but comparator is missing"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "humidity"
+                // comparator intentionally omitted
+            ]]],
+            confirm: true
+        ])
+
+        then: "fails with an error mentioning attribute AND the missing comparator"
+        result.success == false
+        result.error?.toString()?.contains("attribute='humidity'")
+        result.error?.toString()?.contains("comparator was not provided")
+    }
+
+    def "addRequiredExpression: Custom Attribute comparator-without-attribute fails with differentiating error"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
+                                 [name: "hasAll",   type: "button"]
+                             ], paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "comparator is supplied but attribute is missing"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                comparator: "="
+                // attribute intentionally omitted
+            ]]],
+            confirm: true
+        ])
+
+        then: "fails with an error mentioning comparator AND the missing attribute"
+        result.success == false
+        result.error?.toString()?.contains("comparator='='")
+        result.error?.toString()?.contains("attribute was not provided")
+    }
+
     // ---------- addRequiredExpression STPage value/state unification ----------
 
     /**
@@ -10549,6 +10648,137 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.toString()?.contains("start-type selector")
     }
 
+    def "addRequiredExpression Between two times: fail-loud with 'offset' field hint when sunrise start value not revealed"() {
+        // W-spec-clock-aware-error-sunrise (start side): when type='sunrise' and the
+        // start-value reveal fails, the error must mention "'offset' field" not "'time' field"
+        // or the wrong field name "'offset' field (startingA<N>)". Verifies the
+        // startFieldHint fix (non-clock types say "'offset' field (firmware-assigned)").
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        // Track rCapab write so the STPage stub can reveal starting1 progressively.
+        def rCapabWritten = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
+                if (body.toString().contains("rCapab_1")) rCapabWritten = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        // After rCapab write: starting1 appears but startSunriseOffset1 never appears.
+        // This simulates the "start-value reveal failed" path for sunrise type.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Between two times"]],
+                [name: "hasAll",   type: "button"]
+            ]
+            if (rCapabWritten) {
+                inputs = inputs + [[name: "starting1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: [rCapabWritten ? "post-cap" : "pre-cap"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "start.type='sunrise' but the offset field (startSunriseOffset<N>) never appears"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Between two times",
+                start: [type: "sunrise", offset: 30],
+                end: [type: "clock", time: "07:00"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "fail-loud: success=false mentioning 'offset' field (not 'time' field or 'startingA<N>')"
+        result.success == false
+        result.error?.toString()?.contains("'offset' field")
+        !result.error?.toString()?.contains("'time' field")
+        !result.error?.toString()?.contains("startingA")
+    }
+
+    def "addRequiredExpression Between two times: fail-loud with 'offset' field hint when sunset end value not revealed"() {
+        // W-spec-clock-aware-error-sunrise (end side): when type='sunset' and the
+        // end-value reveal fails, the error must mention "'offset' field".
+        // Mirrors the start-side spec above. Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def startingWritten = false
+        def endingWritten = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
+                def bodyStr = body.toString()
+                if (bodyStr.contains('"rCapab_1"') || bodyStr.contains('[rCapab_1]')) startingWritten = true
+                if (bodyStr.contains('"starting1"') || bodyStr.contains('[starting1]')) endingWritten = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Between two times"]],
+                [name: "hasAll",   type: "button"]
+            ]
+            if (startingWritten) {
+                inputs = inputs + [
+                    [name: "starting1",  type: "enum", options: ["A specific time": "A specific time"]],
+                    [name: "startingA1", type: "text"]
+                ]
+            }
+            if (endingWritten) {
+                // ending1 appears after start fields, but endSunriseOffset1 never appears.
+                inputs = inputs + [[name: "ending1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunset": "Sunset"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["${inputs.size()}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "end.type='sunset' but endSunriseOffset<N> never appears"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Between two times",
+                start: [type: "clock", time: "08:00"],
+                end: [type: "sunset", offset: 0]
+            ]]],
+            confirm: true
+        ])
+
+        then: "fail-loud: success=false mentioning 'offset' field (not 'time' field or 'endingA<N>')"
+        result.success == false
+        result.error?.toString()?.contains("'offset' field")
+        !result.error?.toString()?.contains("'time' field")
+        !result.error?.toString()?.contains("endingA")
+    }
+
     // ---- Variable comparison capability ----
 
     def "addRequiredExpression Variable: discovers variable picker, validates name, writes comparator chain"() {
@@ -13339,6 +13569,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud before or during wizard walk: success=false with diagnostic"
         result.success == false
+        result.error?.toString()?.contains("start.'time' (HH:mm)")
+
     }
 
     def "addAction ifThen: fail-loud when Between two times end.time missing for clock type"() {
@@ -13388,6 +13620,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud before or during wizard walk: success=false with diagnostic"
         result.success == false
+        result.error?.toString()?.contains("end.'time' (HH:mm)")
+
     }
 
     def "addAction ifThen: fail-loud when Between two times starting<N> not revealed after rCapab write"() {
@@ -13438,7 +13672,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud: success=false with message referencing starting<N> not revealed"
         result.success == false
-        result.error?.toString()?.contains("starting")
+        // Pin the full production phrase: loose "starting" could match other contexts (W-N.34-loose-starting).
+        result.error?.toString()?.contains("start-type selector (starting<N>) not revealed")
     }
 
     def "addAction ifThen: fail-loud when Variable lVar picker not revealed on doActPage"() {
@@ -14808,6 +15043,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "success and modes1 was written (walker fired on elseIf subtype)"
         result.success == true
         writtenFields["modes1"] == '["1"]'
+        // actSubType pin: confirms the elseIf wire value was written to the hub (W-N.34-subtype-routing).
+        writtenFields["actSubType.1"] == "getElseIf"
+
     }
 
     def "addAction repeatWhile: Mode condition writes modes picker -- walker fires on repeatWhile subtype"() {
@@ -14872,6 +15110,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "success and modes1 was written (walker fired on repeatWhile subtype)"
         result.success == true
         writtenFields["modes1"] == '["1"]'
+        // actSubType pin: confirms the repeatWhile wire value was written to the hub (W-N.34-subtype-routing).
+        writtenFields["actSubType.1"] == "getWhile"
+
     }
 
     def "addAction waitExpression: Mode condition writes modes picker -- walker fires on waitExpression subtype"() {
@@ -14936,6 +15177,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "success and modes1 was written (walker fired on waitExpression subtype)"
         result.success == true
         writtenFields["modes1"] == '["1"]'
+        // actSubType pin: confirms the waitExpression wire value was written to the hub (W-N.34-subtype-routing).
+        writtenFields["actSubType.1"] == "getWaitRule"
+
     }
 
     // ---------- singular deviceId normalization ----------
@@ -15025,9 +15269,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "result succeeds and rDev_1 was written with the normalized device ID"
         result.success == true
-        // rDev_1 carries the device ID as a Hubitat multi-device map key.
-        // The written value includes "73" (the normalized form of singular deviceId).
-        writtenFields["rDev_1"]?.toString()?.contains("73")
+        // _rmBuildSettingsBody serializes a single-element List for a capability.* field
+        // by CSV-joining the toString'd entries; for [73] that produces the bare string
+        // "73" on the wire (no JSON-array wrapping). Exact equality so a wire value like
+        // "7300" or "73,99" cannot produce a false-positive match (W-N.34-short-substring).
+        writtenFields["rDev_1"] == "73"
     }
 
     def "addAction ifThen: singular deviceId normalized to deviceIds array before doActPage walk"() {
@@ -15107,7 +15353,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "result succeeds and rDev_1 was written with the normalized device ID"
         result.success == true
-        writtenFields["rDev_1"]?.toString()?.contains("73")
+        // Exact-equality wire-value check: capability.* single-device serializes as the
+        // bare CSV scalar (e.g. "73"), not the JSON array form. A substring match on "73"
+        // or '"73"' would risk false positives on "7300" / "73,99" (W-N.34-short-substring).
+        writtenFields["rDev_1"] == "73"
     }
 
     def "addRequiredExpression: explicit deviceIds wins over singular deviceId when both provided"() {
@@ -15184,11 +15433,511 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "result succeeds and rDev_1 contains 99 (not 5)"
+        then: "result succeeds and rDev_1 is exactly '99' (the singular deviceId 5 was ignored)"
         result.success == true
-        def rDev = writtenFields["rDev_1"]?.toString() ?: ""
-        rDev.contains("99")
-        !rDev.contains("5") || rDev.indexOf("99") < rDev.indexOf("5")  // 99 present; 5 only as part of a larger id or absent
+        // Exact-equality wire-value check: when deviceIds: [99] wins, the wire value is
+        // the bare CSV scalar "99". The singular deviceId: 5 must not leak into either
+        // the wire value or the pre-validation path (no hub stub registered for /5).
+        writtenFields["rDev_1"] == "99"
+    }
+
+    // ---------- W-spec-norm-before-validation: normalization runs before _rmValidateDeviceIdsExist ----------
+    //
+    // When caller passes singular deviceId: <nonexistent>, the normalization converts it
+    // to deviceIds: [<nonexistent>], and then _rmValidateDeviceIdsExist catches the bad ID.
+    // If normalization didn't run, deviceIds would be null and the validator would skip.
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression: singular deviceId for nonexistent device triggers pre-validation throw"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // Device 9999 is NOT registered -- lookup returns empty body (length 0),
+        // which the validator treats as "device does not exist" (exists=false).
+        hubGet.register('/device/fullJson/9999') { params -> '' }
+
+        when: "singular deviceId: 9999 for a device that does not exist"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Switch",
+                deviceId: 9999      // singular nonexistent device -- normalized then caught
+            ]]],
+            confirm: true
+        ])
+
+        then: "pre-validation throws (not a silent pass-through): success=false mentioning the device ID"
+        result.success == false
+        result.error?.toString()?.contains("9999") || result.error?.toString()?.contains("not found")
+    }
+
+    // ---------- B2: subExpression recursive deviceId normalization ----------
+    //
+    // When a condition has a subExpression, the deviceId-normalization closure
+    // must recurse into subExpression.conditions[] so that singular deviceId
+    // entries inside nested parens are also normalized.
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression: singular deviceId inside nested subExpression.conditions is normalized"() {
+        given:
+        enableHubAdminWrite()
+        def rCapabWritten = false
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) {
+                        writtenFields[m[0][1]] = v
+                        if (m[0][1] =~ /rCapab_\d+/) rCapabWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition", "b": "( sub-expression"]],
+                [name: "oper",     type: "enum", options: ["AND": "AND", "OR": "OR"]],
+                [name: "rCapab_1", type: "enum", options: ["Motion"]],
+                [name: "hasAll",   type: "button"]
+            ]
+            if (rCapabWritten) {
+                inputs = inputs + [
+                    [name: "rDev_1",   type: "capability.sensor", multiple: true],
+                    [name: "state_1",  type: "enum", options: ["active", "inactive"]]
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Motion active"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
+
+        when: "singular deviceId inside nested subExpression.conditions"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                subExpression: [conditions: [[
+                    capability: "Motion",
+                    deviceId: 73,      // singular inside sub-expression -- must be normalized
+                    state: "active"
+                ]]]
+            ]]],
+            confirm: true
+        ])
+
+        then: "result succeeds and rDev_1 contains device 73"
+        result.success == true
+        // Exact-equality wire-value check (same rationale as F1/F2 above); the recursive
+        // subExpression normalization must produce the same wire value as a top-level
+        // singular deviceId would.
+        writtenFields["rDev_1"] == "73"
+    }
+
+    // ---------- W-N.35-revealedAny-fallback: static-schema always-visible spec ----------
+    //
+    // _rmRevealStep falls back to revealedAny when the field is already visible before the
+    // trigger write (no new appearance detected). This path fires on hubs where the schema
+    // is static (all fields always visible regardless of prior writes). A simple Mode
+    // condition with a static STPage schema verifies the fallback keeps success=true.
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression Mode: static-schema (all fields always visible) succeeds via revealedAny fallback"() {
+        given:
+        enableHubAdminWrite()
+        sharedLocation.modes = [[id: "2", name: "Night"]]
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        // Static: modes2 is ALWAYS visible (no progressive reveal needed).
+        // _rmRevealStep sees modes2 in both pre and post -- revealedNew is null but
+        // revealedAny returns modes2, so the fallback path keeps the walker alive.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",   type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Mode"]],
+                                 [name: "modes1", type: "enum", options: ["2": "Night"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Mode is Night"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
+            confirm: true
+        ])
+
+        then: "success even though modes1 was already visible before rCapab write (revealedAny fallback fired)"
+        result.success == true
+        writtenFields["modes1"]?.toString()?.contains("2")
+    }
+
+    // ---------- B3: location.timeZone null guard ----------
+    //
+    // When location.timeZone is null, the Between two times walker must fail-loud
+    // before touching the wizard (throw with message naming the Settings path).
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression Between two times: fail-loud when location.timeZone is null"() {
+        given:
+        enableHubAdminWrite()
+        sharedLocation.timeZone = null   // simulate unconfigured hub timezone
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Between two times"]],
+                                 [name: "hasAll",   type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Between two times",
+                start: [type: "clock", time: "22:00"],
+                end: [type: "clock", time: "07:00"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "fail-loud mentioning location.timeZone is null and the Settings path"
+        result.success == false
+        result.error?.toString()?.contains("location.timeZone is null")
+        result.error?.toString()?.contains("Settings > Location and Modes")
+    }
+
+    // ---------- W-N.34-seasonal-tz: non-UTC timezone ISO datetime ----------
+    //
+    // The Between two times clock-time conversion must produce the correct TZ offset
+    // for non-UTC hubs. Verify with Australia/Sydney (+11 or +10 depending on DST;
+    // using a fixed-offset timezone to keep the test deterministic).
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression Between two times: clock time ISO datetime uses hub timezone offset (non-UTC zone)"() {
+        given:
+        enableHubAdminWrite()
+        // Use a fixed-offset zone (UTC+10) to avoid DST ambiguity in the assertion.
+        sharedLocation.timeZone = TimeZone.getTimeZone("GMT+10")
+        def startingWritten = false
+        def endingWritten = false
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) {
+                        writtenFields[m[0][1]] = v
+                        if (m[0][1] == "starting1") startingWritten = true
+                        if (m[0][1] == "ending1")   endingWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Between two times"]],
+                [name: "hasAll",   type: "button"]
+            ]
+            // Progressive reveal mirrors the production walker's expected chain:
+            // rCapab -> starting<N> -> startingA<N> + ending<N> -> endSunriseOffset<N>
+            // (the end branch picks endSunriseOffset for sunrise/sunset, endingA for clock).
+            if (startingWritten) {
+                inputs = inputs + [
+                    [name: "startingA1", type: "text"],
+                    [name: "ending1",    type: "enum", options: ["A specific time": "A specific time", "Sunrise": "Sunrise"]],
+                ]
+            } else {
+                inputs = inputs + [
+                    [name: "starting1", type: "enum", options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]
+                ]
+            }
+            if (endingWritten) {
+                inputs = inputs + [[name: "endSunriseOffset1", type: "number"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${inputs.size()}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Between 22:00 and sunrise"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Between two times",
+                start: [type: "clock", time: "22:00"],
+                end: [type: "sunrise", offset: 0]
+            ]]],
+            confirm: true
+        ])
+
+        then: "startingA1 carries +1000 offset (GMT+10), not +0000"
+        result.success == true
+        // The ISO datetime must encode the hub's TZ offset (+10:00 = +1000).
+        writtenFields["startingA1"]?.toString()?.contains("+1000")
+        // Wall-clock time must be preserved -- 22:00 in local time.
+        writtenFields["startingA1"]?.toString()?.contains("T22:00:00")
+    }
+
+    // ---------- W-spec-repairHints-singular: single-degraded repairHints says "1 condition" ----------
+    //
+    // When exactly one condition degrades (compareToDevice fallback), the repairHints
+    // string must say "1 condition" (not "1 conditions" or "1 condition(s)").
+    // Both-ways pending (orchestrator).
+
+    def "addRequiredExpression: repairHints says '1 condition' (singular) for exactly one degraded condition"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        // Static schema -- RelrDev_1 (RHS type selector) never appears so compareToDevice degrades.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+                                 [name: "rDev_1",   type: "capability.sensor", multiple: true],
+                                 [name: "RelrDev_1", type: "enum", options: ["<", ">", "="]],
+                                 [name: "state_1",  type: "number"],
+                                 [name: "hasAll",   type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Temperature > 72"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"TempSensor"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"RefSensor"}' }
+
+        when: "one condition with compareToDevice (static schema, RHS-type toggle never appears)"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                compareToDevice: [deviceId: 99, attribute: "temperature"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "partial=true with repairHints saying '1 condition' not '1 conditions'"
+        result.partial == true
+        def hint = result.repairHints?.toString() ?: ""
+        hint.contains("1 condition ")      // singular space-terminated
+        !hint.contains("1 conditions")     // plural must NOT appear
+        !hint.contains("condition(s)")     // parenthetical form must NOT appear
+    }
+
+    // ---------- W-spec-addTrigger-deviceId-silent: addTrigger.condition singular deviceId ----------
+    //
+    // _rmBuildCondition now normalizes singular deviceId -> deviceIds for trigger.condition.
+    // Both-ways pending (orchestrator).
+
+    def "addTrigger: singular deviceId in trigger.condition is normalized before wizard write"() {
+        given:
+        enableHubAdminWrite()
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "selectTriggers") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // The conditional-trigger path consumes idx=1 for the inline condition wizard
+        // (_rmBuildCondition writes rCapab_1/rDev_1/state_1) then bumps to idx=2 for the
+        // actual trigger (tCapab2/tDev2/tstate2/isCondTrig.2/condTrig.2). Both slots must
+        // be visible in the static stub or _rmAddTrigger errors on the missing tCapab2.
+        // Mirrors the working "addTrigger.condition Map drives the inline condition
+        // sub-wizard" spec's stub layout.
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            stFetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "Triggers", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 // Condition wizard slot at idx 1 (consumed by _rmBuildCondition)
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "condTrig.1", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1",   type: "enum", options: ["Motion", "Switch"]],
+                                 [name: "rDev_1",     type: "capability.sensor", multiple: true],
+                                 [name: "state_1",    type: "enum", options: ["active", "inactive"]],
+                                 // Bound trigger at idx 2 (post-condition bump)
+                                 [name: "tCapab2",    type: "enum", options: ["Schedule", "Switch", "Mode"]],
+                                 [name: "tDev2",      type: "capability.sensor", multiple: true],
+                                 [name: "tstate2",    type: "enum", options: ["on", "off"]],
+                                 [name: "isCondTrig.2", type: "bool"],
+                                 [name: "condTrig.2", type: "enum", options: ["1"]],
+                                 [name: "hasAll",     type: "button"]
+                             ], paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["When Switch changes"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/7')  { params -> '{"id":"7","name":"Switch"}' }
+        hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
+
+        when: "trigger with conditional whose condition uses singular deviceId: 73"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [7],
+                conditional: true,
+                condition: [
+                    capability: "Motion",
+                    deviceId: 73,     // singular -- should be normalized to rDev_1=[73]
+                    state: "active"
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "rDev_1 was written (condition device was normalized)"
+        result.success == true
+        // Exact-equality wire-value check: _rmBuildSettingsBody serializes a
+        // single-element capability.* list as the bare CSV scalar "73" (no JSON-array
+        // wrapping). The trigger.condition.deviceId singular form must produce the
+        // same wire value as the deviceIds: [73] array form.
+        writtenFields["rDev_1"] == "73"
     }
 
     // ---------- runtime-exception envelope (isError) coverage ----------

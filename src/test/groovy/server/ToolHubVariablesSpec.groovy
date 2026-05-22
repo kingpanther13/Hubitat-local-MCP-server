@@ -430,7 +430,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then: 'refused with consumer details so the caller knows what would break'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("'shared_var'")
-        ex.message.contains('1 rule(s)')
+        // Count-aware singular/plural: 1 consumer renders as "1 rule" (no parenthetical).
+        ex.message.contains('1 rule:')
         ex.message.contains('Rule Using Shared Var')
         ex.message.contains('id=99')
         ex.message.contains('force=true')

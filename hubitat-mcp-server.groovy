@@ -3052,7 +3052,7 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`). Note: addRequiredExpression supports the same Variable comparison shape -- see "Extended per-capability spec shapes" below.
+  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Note: addRequiredExpression supports a Variable LHS with a literal numeric RHS via `value`; `compareToVariable` (variable-vs-variable) is currently only available on `addTrigger.condition`.[[/FLAT_TRIM]]
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
@@ -3083,7 +3083,7 @@ Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR 
 
 Per-condition spec fields:
   - capability — required. Call `get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
-  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N]. If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence.[[/FLAT_TRIM]]
+  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N] because RM 5.1 expects the array form in rDev_<N> -- passing a bare integer bypasses the pre-validation device-exist check and silently stores {N: null} in the setting (rule renders but never fires). If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
   - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).
   - value — numeric threshold paired with comparator.
@@ -3105,7 +3105,8 @@ Between two times: {capability:'Between two times',
   offset is required when type='sunrise' or 'sunset'.
   User-supplied HH:mm is interpreted as hub-local wall-clock time; the walker constructs ISO datetime with the
   anchor-date timezone offset internally so DST shifts between now and the January anchor do not affect rendering.
-  Firmware fields: starting<N> (type enum), startingA<N> (clock time), ending<N>, endingA<N>/endSunriseOffset<N>.
+  Firmware fields: starting<N> (type enum), startingA<N> (clock time), ending<N>, endingA<N>/endSunriseOffset<N>.[[FLAT_TRIM]]
+  Precondition: hub timezone must be configured (Settings > Location and Modes). If location.timeZone is null, the walker throws before touching the wizard -- set hub timezone first.[[/FLAT_TRIM]]
 
 Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
   Writes the firmware-assigned variable-name picker discovered from the live schema.
@@ -3122,7 +3123,7 @@ The walker recursively handles nested sub-expressions of arbitrary depth.
 
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.
+PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent (some firmware versions), the entry also carries fallbackApplied: true if a literal state_<N> fallback was written, or fallbackApplied: false if neither state nor value was available and the condition will be incomplete.[[/FLAT_TRIM]]
 
 On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.
 
@@ -3333,7 +3334,7 @@ Capability families and the spec fields each accepts:
 
   Per-condition shape inside any expression:
     {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
-    Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes. If both are provided, deviceIds wins.[[/FLAT_TRIM]]
+    Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes because RM 5.1 expects the array form in rDev_<N> (bare integer bypasses pre-validation and silently stores {N: null}, rule renders but never fires). If both are provided, deviceIds wins. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
     Extended per-capability shapes (Mode modeIds, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: see addRequiredExpression's "Extended per-capability spec shapes" above -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ (see PARTIAL-SUCCESS HANDLING for each tool's specific response shape). Full discrete-event state-value table in TOOL_GUIDE.md.
 
 Variable-sourced values (works on dimmer.setLevel, delay):
@@ -3358,7 +3359,7 @@ Wire-format quirks the helper handles for you (so callers don't need to know):
   2. doActPage's schema is incremental: actionDone only appears AFTER all required type-specific fields are set. The helper re-fetches the schema before each write.
   3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST.
 
-PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.
+PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent in an expression condition, settingsSkipped entries carry fallbackApplied: true/false (true = literal state_<N> was written as fallback; false = no fallback available, condition is incomplete).[[/FLAT_TRIM]]
 
 On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
                     ],
@@ -5830,12 +5831,14 @@ def toolDeleteHubVariable(args) {
         logDebug("delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
     }
     if (consumers && !force) {
+        def consumerCount = consumers.size()
+        def consumerWord = consumerCount == 1 ? "rule" : "rules"
         throw new IllegalArgumentException(
-            "Variable '${varName}' is referenced by ${consumers.size()} rule(s): " +
+            "Variable '${varName}' is referenced by ${consumerCount} ${consumerWord}: " +
             "${consumers.collect { "${it.label} (id=${it.id})" }.join(', ')}. " +
-            "Deleting will silently break those rules (null lookups, false conditions, " +
+            "Deleting will silently break ${consumerCount == 1 ? 'that rule' : 'those rules'} (null lookups, false conditions, " +
             "literal %${varName}% in substitutions). Pass force=true to proceed anyway, " +
-            "or update/remove the consuming rules first."
+            "or update/remove the consuming ${consumerWord} first."
         )
     }
 
@@ -5875,7 +5878,11 @@ def toolDeleteHubVariable(args) {
         def prevStr = previousValue?.toString()
         def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
         def connectorNote = hadConnector ? " (connector deviceId=${hubVar.deviceId} also deleted)" : ""
-        def consumerNote  = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
+        def consumerNote = ""
+        if (consumers) {
+            def cc = consumers.size()
+            consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
+        }
         mcpLog("warn", "developer-mode", "delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
         return [
             success: true,
@@ -5899,7 +5906,11 @@ def toolDeleteHubVariable(args) {
 
     def prevStr = previousValue?.toString()
     def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
-    def consumerNote = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
+    def consumerNote = ""
+    if (consumers) {
+        def cc = consumers.size()
+        consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
+    }
     mcpLog("warn", "developer-mode", "delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
@@ -5986,10 +5997,12 @@ def toolUpdateMcpSettings(args) {
 
     mcpLog("warn", "developer-mode", "update_mcp_settings: applied=${updates}")
 
+    def updateCount = updates.size()
+    def settingWord = updateCount == 1 ? "setting" : "settings"
     return [
         success: true,
         updated: updates,
-        message: "Updated ${updates.size()} setting(s). MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
+        message: "Updated ${updateCount} ${settingWord}. MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
     ]
 }
 
@@ -12689,11 +12702,13 @@ def toolDeleteRoom(args) {
     }
 
     mcpLog("info", "room", "Deleted room '${roomName}' (ID: ${roomId}), ${deviceCount} devices unassigned")
+    def deviceWord = deviceCount == 1 ? "device" : "devices"
+    def verbForm = deviceCount == 1 ? "is" : "are"
     return [
         success: true,
         deletedRoom: [id: roomId.toString(), name: roomName],
         devicesUnassigned: deviceCount,
-        message: "Room '${roomName}' deleted. ${deviceCount} device(s) are now unassigned."
+        message: "Room '${roomName}' deleted. ${deviceCount} ${deviceWord} ${verbForm} now unassigned."
     ]
 }
 
@@ -14664,7 +14679,17 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // trigger renders as "Broken Trigger" with no event subscriptions.
     _rmValidateDeviceIdsExist("addTrigger.deviceIds", triggerSpec.deviceIds)
     if (triggerSpec.condition instanceof Map) {
-        _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", (triggerSpec.condition as Map).deviceIds)
+        // Normalize singular deviceId -> deviceIds on the trigger.condition Map BEFORE
+        // pre-validation runs. _rmBuildCondition does this internally for its own writes,
+        // but the validator above takes the raw .deviceIds list; without this
+        // normalization a singular deviceId silently bypasses the device-exist check
+        // (deviceIds==null -> validator early-returns) and the bogus ID surfaces only
+        // as a "Broken Trigger" render later.
+        def cm = triggerSpec.condition as Map
+        if (cm.deviceIds == null && cm.deviceId != null) {
+            cm.deviceIds = [cm.deviceId]
+        }
+        _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds)
     }
 
     // Snapshot committed trigger indices (settings) BEFORE clicking moreCond.
@@ -16399,7 +16424,8 @@ private List _rmClearActions(Integer appId) {
         // RM didn't enter trash mode after the trashAll click. Don't pretend
         // success — caller (patches handler, replaceActions, etc.) needs to
         // know nothing was deleted so success aggregation is correct.
-        throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} -- RM didn't enter trash mode. The rule has ${indices.size()} action(s) at indices ${indices.sort()} that were NOT deleted.")
+        def actCountMsg = "${indices.size()} ${indices.size() == 1 ? 'action' : 'actions'}"
+        throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} -- RM didn't enter trash mode. The rule has ${actCountMsg} at indices ${indices.sort()} that were NOT deleted.")
     }
     // Write trashActs with the indices as a multi-enum value. RM applies
     // the deletion immediately (submitOnChange).
@@ -16428,7 +16454,9 @@ private List _rmClearActions(Integer appId) {
         stillThere = remaining.intersect(indices)
         if (!stillThere) return indices
     }
-    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the action(s) really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
+    def stillThereCount = stillThere.size()
+    def stillThereWord = stillThereCount == 1 ? "action" : "actions"
+    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
 }
 
 /**
@@ -18550,8 +18578,14 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     // tDev<N> / tstate<N> without).
     _rmWriteSettingOnPage(appId, "selectTriggers", "rCapab_${idx}", condCap, applied, null, skipped)
 
-    if (condSpec.deviceIds != null) {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condSpec.deviceIds, applied, null, skipped)
+    // Normalize singular deviceId -> deviceIds so callers that pass
+    // deviceId: N (integer) get the same behaviour as deviceIds: [N].
+    def condDevIds = condSpec.deviceIds
+    if (condDevIds == null && condSpec.deviceId != null) {
+        condDevIds = [condSpec.deviceId]
+    }
+    if (condDevIds != null) {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condDevIds, applied, null, skipped)
     }
     // Hub Variable condition: rCapab_<N>=Variable exposes xVar_<N>
     // (variable picker, no device IDs). Verified live 2026-05-17.
@@ -20463,7 +20497,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (!startValReveal.input) {
             cancelInFlightCond()
             def visible = startValReveal.visibleNames?.join(', ') ?: "(none)"
-            def startFieldHint = (startType == "clock") ? "'time' field (startingA<N>)" : "'offset' field (startingA<N>)"
+            def startFieldHint = (startType == "clock") ? "'time' field (startingA<N>)" : "'offset' field (firmware-assigned)"
             throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start ${startFieldHint} not revealed after start-type='${startType}'. Visible fields: ${visible}")
         }
         def startValField = startValReveal.input.name.toString()
@@ -20797,6 +20831,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             }.findAll { it }
             def matched = stateOptions.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
             if (!matched && stateOptions) {
+                cancelInFlightCond()
                 throw new IllegalArgumentException("conditions[${condIdx}].state '${condStateOrValue}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
             }
             if (matched) condStateOrValue = matched
@@ -20929,7 +20964,13 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // pageName='STPage') before issuing the next write.
     def wizardCleanupFailed = false
     def wizardCleanupErr = null
+    // cancelledByWalker is reset to false before each per-condition try block
+    // (see below). _rmWalkConditionReveal calls cancelInFlightCondition before
+    // every throw; the outer catch checks this flag so it does not issue a
+    // redundant second cancelCapab click.
+    def cancelledByWalker = false
     def cancelInFlightCondition = {
+        cancelledByWalker = true
         try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") }
         catch (Exception cancelExc) {
             wizardCleanupFailed = true
@@ -21006,6 +21047,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                     throw new IllegalArgumentException("conditions[${i}].capability is required")
                 }
                 writeST(hrefParams, "cond", "a", "cond")
+                cancelledByWalker = false
                 try {
                     // Step 1: re-fetch STPage to discover the RM-assigned condition
                     // slot index (cIdx). The cond=a write above causes RM to allocate
@@ -21031,6 +21073,14 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                     }
                     // Steps 3-N: write the capability, devices, comparator chain, and state
                     // in the correct progressive-disclosure order, then click hasAll.
+                    // Snapshot the skipped list size so we can stamp condIdx onto every
+                    // walker-side skipped entry after the walk returns. _rmRevealStep and
+                    // writeST do not carry condIdx themselves; without this stamping,
+                    // multi-field-per-condition degradations (e.g. static-schema test
+                    // stubs or firmware-version mismatches) inflate the per-condition
+                    // count reported in repairHints (e.g. "7 conditions" for 7 skipped
+                    // entries that all belonged to the same in-flight condition).
+                    def skippedBefore = skipped.size()
                     _rmWalkConditionReveal(appId, [
                         writeST: writeST,
                         cancelInFlightCondition: cancelInFlightCondition,
@@ -21040,8 +21090,23 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                         hrefParams: hrefParams,
                         skipped: skipped
                     ], cond, cIdx)
+                    for (int sIdx = skippedBefore; sIdx < skipped.size(); sIdx++) {
+                        def sEntry = skipped[sIdx]
+                        if (sEntry instanceof Map && sEntry.condIdx == null) {
+                            sEntry.condIdx = i
+                        }
+                    }
                 } catch (Exception perCondExc) {
-                    cancelInFlightCondition()
+                    // Only cancel if the walker did not already do so before throwing.
+                    // _rmWalkConditionReveal calls cancelInFlightCondition() before every
+                    // throw it raises; cancelledByWalker is set true inside that closure.
+                    // Without this guard a walker-initiated throw would issue two
+                    // back-to-back cancelCapab clicks, the second of which always fails
+                    // (nothing to cancel), setting wizardCleanupFailed=true and surfacing
+                    // a false wizardStuck=true in the result.
+                    if (!cancelledByWalker) {
+                        cancelInFlightCondition()
+                    }
                     if (wizardCleanupFailed) {
                         // Both the per-condition write AND the cancel cleanup
                         // failed — the wizard is still open. Embed the marker
@@ -21232,7 +21297,15 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             settingsApplied: applied,
             settingsSkipped: skipped,
             repairHints: [{
-                def deg = skipped.findAll { it instanceof Map && it.reason != null }.size()
+                // Count UNIQUE conditions that had any degraded write, not raw entry
+                // count -- a single condition can produce many skipped entries (one per
+                // walker field that hit silent_rejection / verification_fetch_failed /
+                // not_in_schema). Per-condition stamping (condIdx) happens in the
+                // walkConds loop above; entries that still lack condIdx came from
+                // outside any per-condition walk (e.g. the useST=true mainPage write).
+                def degEntries = skipped.findAll { it instanceof Map && it.reason != null }
+                def uniqueCondIdxs = degEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
+                def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : degEntries.size()
                 def cw = (deg == 1) ? "condition" : "conditions"
                 "${deg} ${cw} used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."
             }()]
@@ -21831,6 +21904,7 @@ def toolUpdateNativeApp(args) {
             mcpLog("warn", "rm-native", "addRequiredExpression: trailing updateRule click failed for app ${appId} -- expression may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
+        def reCondCount = reResult?.conditionIndices?.size() ?: 0
         // Propagate partial/repairHints and all failure fields from the underlying
         // result so callers can detect degraded writes and verification failures
         // without re-parsing settingsSkipped. Mirrors the addAction branch at L21194.
@@ -21847,7 +21921,7 @@ def toolUpdateNativeApp(args) {
             hubRenderError: reResult?.hubRenderError,
             repairHints: reResult?.repairHints,
             health: health,
-            note: "Required Expression added with ${reResult?.conditionIndices?.size() ?: 0} condition(s); updateRule fired."
+            note: "Required Expression added with ${reCondCount} ${reCondCount == 1 ? 'condition' : 'conditions'}; updateRule fired."
         ]
     }
 
@@ -22046,8 +22120,10 @@ def toolUpdateNativeApp(args) {
                 mcpLog("info", "rm-native", "updateRule subscription settle lag on app ${appId} -- retrying")
                 _rmClickAppButton(appId, "updateRule")
                 settleStatus = _rmCheckSubscriptionSettle(appId)
+                def trigCount = settleStatus.triggerCount
+                def trigWord = trigCount == 1 ? "trigger" : "triggers"
                 result.subscriptionSettle = settleStatus?.unsettled ?
-                    "WARN: rule has ${settleStatus.triggerCount} trigger(s) but eventSubscriptions=0 after two updateRule clicks. The trigger is likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
+                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigWord == 'trigger' ? 'trigger is' : 'triggers are'} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
                     "OK after auto-retry"
             } else if (settleStatus != null) {
                 result.subscriptionSettle = "OK"
