@@ -2320,7 +2320,7 @@ All 103 tools are covered by at least one test, excluding the destructive operat
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 207 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage) plus 13 excluded destructive operations documented for manual testing
+**Total: 211 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 4 deviceId normalization) plus 13 excluded destructive operations documented for manual testing
 
 ---
 

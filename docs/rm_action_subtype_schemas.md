@@ -429,7 +429,7 @@ Opens an IF block. Close with `capability='endIf'`. Use `elseIf`/`else` for bran
 | `expression` | Map | Required. `{conditions: [...], operator?, operators?}` |
 | `rawSettings` | Map | |
 
-`expression.conditions[]` follow the addRequiredExpression per-condition spec shape -- see "Per-condition spec" section below. The same per-capability extended fields apply: Mode `modeIds`, Between two times `start`/`end`, Variable `variable`+`comparator`, Custom Attribute `attribute`+`comparator`, compareToDevice `compareToDevice` Map. The shared walker `_rmWalkConditionReveal` handles all per-capability reveal sequences for ifThen / elseIf / repeatWhile / waitExpression (doActPage) and addRequiredExpression (STPage).
+`expression.conditions[]` follow the addRequiredExpression per-condition spec shape -- see "Per-condition spec" section below. The same per-capability extended fields apply: Mode `modeIds`, Between two times `start`/`end`, Variable `variable`+`comparator`, Custom Attribute `attribute`+`comparator`, compareToDevice Map. The shared walker `_rmWalkConditionReveal` handles all per-capability reveal sequences for ifThen / elseIf / repeatWhile / waitExpression (doActPage) and addRequiredExpression (STPage).
 
 ### elseIf
 Continues an IF block. Needs a preceding `ifThen`.
@@ -494,10 +494,10 @@ Exactly one of `operator` or `operators` must be supplied when `conditions.size(
 | `capability` | String | Required. See STPage capability list in TOOL_GUIDE.md. |
 | `deviceIds` | List\<Integer\> | Required for device-backed capabilities (Switch, Motion, Temperature, etc.). Omit for Mode, Private Boolean, Last Event Device, time-based capabilities. Convenience: pass singular `deviceId: N` (integer) instead -- the dispatcher normalizes to `deviceIds: [N]`. If both `deviceId` and `deviceIds` are provided, `deviceIds` wins. Applies recursively inside nested `subExpression.conditions[]`. |
 | `state` | String | Enum value for the capability (e.g. `'on'`/`'off'` for Switch, `'active'`/`'inactive'` for Motion, `'open'`/`'closed'` for Contact, `'locked'`/`'unlocked'` for Lock, `'present'`/`'not present'` for Presence). Omit for numeric comparator path. |
-| `comparator` | String | For numeric capabilities: `'='`, `'<'`, `'>'`, `'<='`, `'>='`, `'!='`. Required together with `attribute` for Custom Attribute conditions. |
+| `comparator` | String | For numeric, Variable, and Custom Attribute capabilities: `'='`, `'<'`, `'>'`, `'<='`, `'>='`, `'!='`. Required together with `attribute` for Custom Attribute conditions; required together with `variable` and `value` for Variable conditions. |
 | `value` | Number | Numeric threshold paired with `comparator`. |
 | `attribute` | String | For `capability='Custom Attribute'`: the attribute name (e.g. `'humidity'`). Required together with `comparator`. |
-| `variable` | String | For `capability='Variable'`: the hub variable name. The walker validates against the live schema's enum options. |
+| `variable` | String | For `capability='Variable'`: the hub variable name. Required together with `comparator` and `value`. The walker validates against the live schema's enum options. |
 | `modeIds` | List\<String\> | For `capability='Mode'`: list of mode IDs. Alternative to `state` (mode name). |
 | `start` | Map | For `capability='Between two times'`: `{type:'clock'\|'sunrise'\|'sunset', time?:'HH:mm', offset?:<minutes>}`. `time` is required when `type='clock'`; pass hub-local wall-clock (e.g. `'08:00'`), the walker converts to ISO datetime internally. `offset` (minutes) is required when `type='sunrise'` or `'sunset'`. |
 | `end` | Map | For `capability='Between two times'`: same shape as `start`. |
