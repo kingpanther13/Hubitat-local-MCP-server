@@ -3083,7 +3083,7 @@ Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR 
 
 Per-condition spec fields:
   - capability — required. Call `get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
-  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).
+  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N]. If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence.[[/FLAT_TRIM]]
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
   - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).
   - value — numeric threshold paired with comparator.
@@ -3103,6 +3103,8 @@ Between two times: {capability:'Between two times',
   end:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}}
   time is required when type='clock' (walker converts HH:mm to ISO datetime with hub-local TZ offset internally);
   offset is required when type='sunrise' or 'sunset'.
+  User-supplied HH:mm is interpreted as hub-local wall-clock time; the walker constructs ISO datetime with the
+  anchor-date timezone offset internally so DST shifts between now and the January anchor do not affect rendering.
   Firmware fields: starting<N> (type enum), startingA<N> (clock time), ending<N>, endingA<N>/endSunriseOffset<N>.
 
 Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
@@ -3330,8 +3332,9 @@ Capability families and the spec fields each accepts:
 [[/FLAT_TRIM]]
 
   Per-condition shape inside any expression:
-    {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}
-    Extended per-capability shapes (Mode modeIds, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: see addRequiredExpression's "Extended per-capability spec shapes" above -- the shared walker _rmWalkConditionReveal applies identically here. Full discrete-event state-value table in TOOL_GUIDE.md.
+    {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
+    Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes. If both are provided, deviceIds wins.[[/FLAT_TRIM]]
+    Extended per-capability shapes (Mode modeIds, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: see addRequiredExpression's "Extended per-capability spec shapes" above -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ (see PARTIAL-SUCCESS HANDLING for each tool's specific response shape). Full discrete-event state-value table in TOOL_GUIDE.md.
 
 Variable-sourced values (works on dimmer.setLevel, delay):
   - dimmer.setLevel: pass `levelVariable: '<hubVarName>'` instead of `level`
@@ -17002,6 +17005,23 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     if (actionSpec.expression instanceof Map) {
         def exprConds = (actionSpec.expression as Map).conditions
         if (exprConds instanceof List) {
+            // Normalize singular deviceId -> deviceIds before pre-validation (same
+            // pattern as _rmAddRequiredExpression). Covers nested subExpression conditions.
+            def normExprCondList
+            normExprCondList = { List cl ->
+                cl.each { entry ->
+                    if (!(entry instanceof Map)) return
+                    def em = entry as Map
+                    if (em.deviceIds == null && em.deviceId != null) {
+                        em.deviceIds = [em.deviceId]
+                    }
+                    if (em.subExpression instanceof Map) {
+                        def sub = (em.subExpression as Map).conditions
+                        if (sub instanceof List) normExprCondList.call(sub as List)
+                    }
+                }
+            }
+            normExprCondList.call(exprConds as List)
             exprConds.eachWithIndex { c, cIdx ->
                 if (c instanceof Map) {
                     _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
@@ -18494,6 +18514,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
  * → click hasAll (Done with this Condition). After hasAll, the wizard
  * advances state.moreCond by one index — _rmAddTrigger then re-opens the
  * trigger editor at idx+1 to actually build the conditional trigger.
+ *
+ * Uses static direct-write order (no _rmRevealStep) **because** the
+ * selectTriggers condition sub-wizard exposes a narrower capability set than
+ * the expression-wizard pages (STPage/doActPage) and all supported fields
+ * are reliably schema-visible without progressive disclosure. Migrate to
+ * _rmRevealStep if Mode/Between two times/compareToDevice support is added here.
  *
  * Returns the condition's auto-assigned ID (currently equal to the index
  * passed in, since RM allocates condition IDs sequentially starting at 1).
@@ -20212,6 +20238,14 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
  * falls back to any matching field in the post-fetch schema (covers static schemas
  * and always-visible-field paths). Returns null if no matching field exists at all.
  *
+ * The fallback path (revealedNew ?: revealedAny) exists **because** some firmware
+ * versions expose fields unconditionally in the schema regardless of preceding writes
+ * (e.g. firmware that does not use progressive disclosure for a given capability).
+ * Without the fallback, a hub where the field is always visible would return null and
+ * fail-loud even though the field is present and writable. The primary path (revealedNew)
+ * handles the normal progressive-disclosure case; the fallback keeps the walker
+ * functional on static-schema firmware paths.
+ *
  * @param appId    Rule Machine app ID
  * @param page     Wizard page name (e.g. "doActPage", "STPage")
  * @param pattern  Java regex the target field name must match
@@ -20397,7 +20431,9 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // display by 1 hour. anchorMs = 2000-01-01T00:00:00.000Z epoch.
         def toIsoTime = { String hhmm ->
             long anchorMs = 946684800000L  // 2000-01-01T00:00:00.000Z
-            long offsetMs = location.timeZone.getOffset(anchorMs)
+            def tz = location.timeZone
+            if (!tz) throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': location.timeZone is null -- set hub timezone in Settings > Location and Modes before using clock-based conditions.")
+            long offsetMs = tz.getOffset(anchorMs)
             long offsetMinutes = offsetMs / 60000L
             String sign = (offsetMinutes >= 0) ? "+" : "-"
             long absMin = Math.abs(offsetMinutes)
@@ -20427,7 +20463,8 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (!startValReveal.input) {
             cancelInFlightCond()
             def visible = startValReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start.'time' field (startingA<N>) not revealed after start-type='${startType}'. Visible fields: ${visible}")
+            def startFieldHint = (startType == "clock") ? "'time' field (startingA<N>)" : "'offset' field (startingA<N>)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start ${startFieldHint} not revealed after start-type='${startType}'. Visible fields: ${visible}")
         }
         def startValField = startValReveal.input.name.toString()
 
@@ -20450,7 +20487,8 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (!endValReveal.input) {
             cancelInFlightCond()
             def visible = endValReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end.'offset' field (endingA<N> or endSunriseOffset<N>) not revealed after end-type='${endType}'. Visible fields: ${visible}")
+            def endFieldHint = (endType == "clock") ? "'time' field (endingA<N>)" : "'offset' field (endSunriseOffset<N>)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end ${endFieldHint} not revealed after end-type='${endType}'. Visible fields: ${visible}")
         }
         def endValField = endValReveal.input.name.toString()
         writeST(hrefParams, endValField, endValToWrite)
@@ -20667,7 +20705,10 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                     : "no state/value to fall back to -- condition will be incomplete"
                 mcpLog("warn", "rm-native", "conditions[${condIdx}]: compareToDevice: RHS-type selector not revealed after RelrDev write (firmware may not expose device-relative toggle); ${fallbackNote}")
                 if (skippedAccum != null) {
-                    skippedAccum << [key: "compareToDevice", reason: "rhs_type_not_revealed", condIdx: condIdx]
+                    // fallbackApplied=true: state/value was available and written as literal state_<N>.
+                    // fallbackApplied=false: no state/value provided -- condition will be incomplete.
+                    skippedAccum << [key: "compareToDevice", reason: "rhs_type_not_revealed", condIdx: condIdx,
+                                     fallbackApplied: (cond.state != null || cond.value != null)]
                 }
                 def condStateOrValue = cond.state != null ? cond.state : cond.value
                 if (condStateOrValue != null) {
@@ -20817,6 +20858,27 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
 
     def applied = []
     def skipped = []
+
+    // Normalize singular deviceId -> deviceIds array for every plain condition in the
+    // tree (including inner conditions of subExpressions). Agents occasionally pass
+    // deviceId: N (singular) when the contract is deviceIds: [N] (array). Normalizing
+    // before the pre-validation loop means validation also covers the normalized form.
+    // If both deviceId and deviceIds are provided, deviceIds (explicit array) wins.
+    def normCondList
+    normCondList = { List cl ->
+        cl.eachWithIndex { entry, idx ->
+            if (!(entry instanceof Map)) return
+            def m = entry as Map
+            if (m.deviceIds == null && m.deviceId != null) {
+                m.deviceIds = [m.deviceId]
+            }
+            if (m.subExpression instanceof Map) {
+                def sub = (m.subExpression as Map).conditions
+                if (sub instanceof List) normCondList.call(sub as List)
+            }
+        }
+    }
+    normCondList.call(conditions as List)
 
     // Pre-validate every condition's deviceIds exist on the hub. RM 5.1
     // silently accepts unknown device IDs at the field-write level (stores
@@ -21169,7 +21231,11 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             conditionIndices: conditionIndices,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            repairHints: ["${skipped.findAll { it instanceof Map && it.reason != null }.size()} condition(s) used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."]
+            repairHints: [{
+                def deg = skipped.findAll { it instanceof Map && it.reason != null }.size()
+                def cw = (deg == 1) ? "condition" : "conditions"
+                "${deg} ${cw} used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."
+            }()]
         ]
     }
     return [

@@ -2320,7 +2320,7 @@ All 103 tools are covered by at least one test, excluding the destructive operat
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 205 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management) plus 13 excluded destructive operations documented for manual testing
+**Total: 206 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 1 reveal-walker coverage) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3053,6 +3053,20 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Required Expression placeholder remains ("Define Required Expression" on mainPage), indicating the expression did not bake. Mode condition in ifThen renders as Broken Condition (modes picker not written). Variable comparator/value silently dropped (RelrDev or state_N not revealed after picker write).
 
+### T612 — addRequiredExpression Between two times: clock start/end lands on STPage (reveal walker coverage)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Between Two Times Test'.",
+  "test_prompt": "Add a Required Expression to 'BAT Between Two Times Test' using addRequiredExpression: conditions=[{capability:'Between two times', start:{type:'clock', time:'08:00'}, end:{type:'clock', time:'22:00'}}]. Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT Between Two Times Test'."
+}
+```
+
+**Expected**: `addRequiredExpression` completes with `success=true`, `partial!=true`. `check_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a time-range condition (e.g. references 8:00 or 22:00), not the bare "Define Required Expression" placeholder. Demonstrates that `_rmWalkConditionReveal` correctly writes the Between two times clock fields (starting<N> type enum + startingA<N> ISO datetime + ending<N> + endingA<N>) via the STPage reveal sequence.
+
+**Failure modes**: Required Expression placeholder remains ("Define Required Expression" on mainPage), indicating the expression did not bake. Broken Condition marker on the Required Expression row (starting/ending type not written, or startingA/endingA ISO datetime rejected). `partial=true` with `settingsSkipped` entries showing the clock fields as silent rejections.
+
 ---
 
 ## Changes from BAT v1
@@ -3068,7 +3082,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total)
 
 ---
 
