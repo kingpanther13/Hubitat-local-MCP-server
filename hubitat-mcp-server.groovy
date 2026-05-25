@@ -3015,7 +3015,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed (unless updateRule itself is rejected -- see PARTIAL-SUCCESS HANDLING for the `subscriptionsNotLive` recovery). (Bulk addTriggers[] fires updateRule once at the end of the batch.)
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -3053,7 +3053,7 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`). Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead.[[FLAT_TRIM]] Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) is currently only available on `addTrigger.condition` **because** the `selectTriggers` sub-wizard exposes the `xVarR_<N>` field for variable-vs-variable comparison, while the STPage and doActPage wizard schemas do not expose an equivalent field in tested firmware versions. `addRequiredExpression` and `addAction` IF-expressions support a Variable LHS with a literal numeric RHS via `value` only.[[/FLAT_TRIM]]
+  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) is currently only available on `addTrigger.condition` **because** the `selectTriggers` sub-wizard exposes the `xVarR_<N>` field for variable-vs-variable comparison, while the STPage and doActPage wizard schemas do not expose an equivalent field in tested firmware versions. `addRequiredExpression` and `addAction` IF-expressions support a Variable LHS with a literal numeric RHS via `value` only.[[/FLAT_TRIM]]
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
@@ -19080,19 +19080,30 @@ private Map _rmFetchSettingsByName(Integer appId) {
  * structural issues that motivated the refusal.
  */
 private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup) {
-    def isPreflightRefusal = msg?.contains("RM is not touched")
+    def msgStr = msg?.toString() ?: ""
+    def isPreflightRefusal = msgStr.contains("RM is not touched")
+    // wizardStuck: mid-walk cancelCapab cleanup may have failed leaving the wizard
+    // half-open. Independent of preflight refusal (preflight never opens the wizard).
+    def wizardStuck = msgStr.contains("wizardStuck") || msgStr.contains("cancelCapab cleanup failed")
     def healthOnRefusal = null
     if (isPreflightRefusal) {
         try { healthOnRefusal = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort */ }
+    }
+    def restoreHint
+    if (isPreflightRefusal) {
+        restoreHint = "Pre-flight refusal — RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
+    } else if (wizardStuck) {
+        restoreHint = "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) to manually close the in-flight wizard."
+    } else {
+        restoreHint = "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
     }
     def result = [
         success: false,
         appId: appId,
         error: msg,
+        wizardStuck: wizardStuck,
         backup: backup,
-        restoreHint: isPreflightRefusal ?
-            "Pre-flight refusal — RM was not touched; the saved backup is identical to the current rule and does not need to be restored." :
-            "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+        restoreHint: restoreHint
     ]
     if (healthOnRefusal != null) result.health = healthOnRefusal
     result
@@ -21816,24 +21827,7 @@ def toolUpdateNativeApp(args) {
             actResult = _rmAddAction(appId, addActionSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addAction failed for app ${appId}: ${e.message}")
-            // addAction needs the wizardStuck signal (and its specialized restoreHint)
-            // because mid-walk cancelCapab cleanup can fail leaving the wizard half-open.
-            // _rmBuildUpdateErrorResponse (used by sibling catch sites) returns a lean shape
-            // without the wizardStuck slot; this site inlines the specialization rather than
-            // promoting wizardStuck into the helper (helper covers preflight refusals where
-            // wizardStuck is N/A; keeping shapes scoped to their relevant call sites).
-            def msg = e.message?.toString() ?: ""
-            def wizardStuck = msg.contains("wizardStuck") || msg.contains("cancelCapab cleanup failed")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message,
-                wizardStuck: wizardStuck,
-                backup: backup,
-                restoreHint: wizardStuck ?
-                    "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) to manually close the in-flight wizard." :
-                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
         return [
             success: actResult?.success != false,

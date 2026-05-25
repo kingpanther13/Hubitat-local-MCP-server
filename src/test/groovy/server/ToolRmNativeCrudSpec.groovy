@@ -15195,6 +15195,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction elseIf: Mode condition writes modes picker -- walker fires on elseIf subtype"() {
         // Both-ways pending (orchestrator).
+        //
+        // Setup includes an existing open ifThen action (actType.1=condActs +
+        // actSubType.1=getIfThen) so the new elseIf has a parent IF block --
+        // without it the structural-balance pre-flight at L17005 refuses the
+        // call before the walker fires ("would introduce a new structural-balance
+        // issue ... orphaned branch keyword"). The walker under test sits BEHIND
+        // the pre-flight; this seed simulates a real caller building up
+        // ifThen -> elseIf incrementally.
         given:
         enableHubAdminWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -15241,7 +15249,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
             actMainPageBakedJson(100, "ELSE IF Mode is Day THEN")
         }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // statusJson seed: appSettings carries an existing open ifThen at action index 1
+        // so the structural-balance pre-flight sees a parent IF block for the new elseIf.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "condActs"],
+                             [name: "actSubType.1", value: "getIfThen"]])
+        }
 
         when:
         def result = script.toolUpdateNativeApp([
