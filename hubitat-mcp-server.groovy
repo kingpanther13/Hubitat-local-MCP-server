@@ -3371,13 +3371,12 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
                     newName: [type: "string", description: "Label for the imported app. If omitted, the cloner default ('<original-label> import') is kept."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
-                required: ["parentHintAppId", "confirm"],
-                // anyOf (not oneOf) — the impl accepts either field and prefers
-                // jsonContent if both are present; oneOf would reject that.
-                anyOf: [
-                    [required: ["jsonContent"]],
-                    [required: ["fromFile"]]
-                ]
+                required: ["parentHintAppId", "confirm"]
+                // "jsonContent OR fromFile" is enforced at runtime in
+                // toolImportNativeApp (throws IllegalArgumentException). A
+                // top-level anyOf used to encode this here, but Haiku 4.5's
+                // input_schema validator rejects top-level anyOf/oneOf/allOf
+                // with HTTP 400, breaking every Hubitat tools/list dispatch.
             ]
         ],
         [
