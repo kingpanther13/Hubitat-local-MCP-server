@@ -3390,10 +3390,11 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
   - label markers: '*BROKEN*' suffix RM appends when a rule has a malformed trigger or action
   - paragraph markers: '**Broken Trigger**', '**Broken Action**', '**Broken Condition**'
   - multiple-flag corruption: lists settings whose statusJson .multiple flag has been flipped to false despite the schema declaring multiple=true
+  - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation (issue #172/#178 class); RM does NOT surface this via the paragraph markers above
 
 Run after every mutation to confirm the change didn't leave the rule in a broken state. update_native_app already attaches this report automatically as `health` on every response, but you can call it explicitly any time.
 
-Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoison: [...], issues: [...]}. ok=false means at least one issue was found; the issues list explains what.""",
+Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoison: [...], structuralIssues: [...], issues: [...]}. ok=false means at least one issue was found; the issues list explains what.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -18758,6 +18759,13 @@ private Map _rmFetchStatusJson(Integer appId) {
  *   - statusJson.appSettings carries per-setting marshal flags including
  *     `multiple` — comparing it to the schema's declared multiple
  *     reveals DB flag corruption that will crash the rule on next event.
+ *   - Walking actType.<N> / actSubType.<N> in numerical order reveals
+ *     IF/ELSE-IF/ELSE/END-IF and Repeat/End-Repeat block imbalance that
+ *     the paragraph-marker scan does not surface — a removeAction or
+ *     replaceActions false-fail (issue #172 class) can commit
+ *     post-response and silently drop a structural action, leaving the
+ *     rule rendered with three IFs and two END-IFs while RM declines to
+ *     flag it. Issue #178 asked for this detection in `check_rule_health`.
  *
  * Callers (toolUpdateNativeApp, toolCheckRuleHealth) attach this report
  * to mutation responses so an LLM sees broken state immediately.
@@ -18768,6 +18776,7 @@ private Map _rmCheckRuleHealth(Integer appId) {
     def configPageError = null
     def brokenMarkers = []
     def multipleFlagPoison = []
+    def structuralIssues = []
     try {
         def cfg = _rmFetchConfigJson(appId)
         label = cfg?.app?.label?.toString()
@@ -18808,6 +18817,75 @@ private Map _rmCheckRuleHealth(Integer appId) {
         if (multipleFlagPoison) {
             issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
         }
+        // Structural balance check for IF/ELSE-IF/ELSE/END-IF and Repeat/End-Repeat blocks.
+        //
+        // Collect every actType.<N>/actSubType.<N> pair from settings and walk
+        // them in numerical order, tracking a stack of open blocks. The pair
+        // (actType=condActs, actSubType=getIfThen) opens an IF block; getElseIf
+        // and getElse continue a block (and require an open IF on top of the
+        // stack); getEndIf closes the IF block. repeatActs/getRepeat and
+        // repeatActs/getWhile open a Repeat block; repeatActs/getStopRepeat
+        // closes it. Anything else is a leaf action and doesn't change depth.
+        //
+        // At the end, the stack must be empty. A non-empty stack means at
+        // least one open block has no closer; a pop attempt with an empty
+        // stack means an orphaned END-IF or End-Repeat. Cross-kind closes
+        // (END-IF closing a Repeat or vice-versa) are also flagged.
+        def actIndices = [] as TreeSet
+        settingsByName.each { name, _ ->
+            def m = name =~ /^actType\.(\d+)$/
+            if (m.matches()) actIndices << ((m[0] as List)[1] as Integer)
+        }
+        // Use end-of-list as the stack top: `<<` appends, and the top is
+        // `blockStack[-1]`. Groovy's `List.pop()` removes from the FRONT
+        // (push/pop operate on the head), which would mismatch with `<<`
+        // and report the wrong un-closed index — so pop the tail explicitly
+        // via removeAt(size-1).
+        def blockStack = []
+        actIndices.each { idx ->
+            def aType = settingsByName["actType.${idx}".toString()]?.value?.toString()
+            def sType = settingsByName["actSubType.${idx}".toString()]?.value?.toString()
+            if (aType == "condActs") {
+                if (sType == "getIfThen") {
+                    blockStack << [kind: "if", openIdx: idx]
+                } else if (sType == "getElseIf" || sType == "getElse") {
+                    if (blockStack.isEmpty() || blockStack[-1].kind != "if") {
+                        structuralIssues << ("action ${idx} (${sType == 'getElse' ? 'ELSE' : 'ELSE-IF'}) is outside any IF block — orphaned branch keyword".toString())
+                    }
+                } else if (sType == "getEndIf") {
+                    if (blockStack.isEmpty()) {
+                        structuralIssues << ("action ${idx} (END-IF) has no matching IF — orphaned closer (too many END-IFs)".toString())
+                    } else if (blockStack[-1].kind != "if") {
+                        def open = blockStack[-1]
+                        structuralIssues << ("action ${idx} (END-IF) closes a Repeat block opened at action ${open.openIdx} — mismatched block closer".toString())
+                        blockStack.removeAt(blockStack.size() - 1)
+                    } else {
+                        blockStack.removeAt(blockStack.size() - 1)
+                    }
+                }
+            } else if (aType == "repeatActs") {
+                if (sType == "getRepeat" || sType == "getWhile") {
+                    blockStack << [kind: "repeat", openIdx: idx]
+                } else if (sType == "getStopRepeat") {
+                    if (blockStack.isEmpty()) {
+                        structuralIssues << ("action ${idx} (End Repeat) has no matching Repeat — orphaned closer".toString())
+                    } else if (blockStack[-1].kind != "repeat") {
+                        def open = blockStack[-1]
+                        structuralIssues << ("action ${idx} (End Repeat) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
+                        blockStack.removeAt(blockStack.size() - 1)
+                    } else {
+                        blockStack.removeAt(blockStack.size() - 1)
+                    }
+                }
+            }
+        }
+        blockStack.each { open ->
+            def kindLabel = open.kind == "if" ? "IF" : "Repeat"
+            structuralIssues << ("action ${open.openIdx} (${kindLabel}) opened a block that was never closed — rule is missing an ${open.kind == 'if' ? 'END-IF' : 'End-Repeat'}".toString())
+        }
+        if (structuralIssues) {
+            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a removeAction or replaceActions that false-failed mid-flow (issue #172/#178). Use restore_item_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
+        }
     } catch (Exception e) {
         issues << "health check failed: ${e.message}".toString()
     }
@@ -18817,6 +18895,7 @@ private Map _rmCheckRuleHealth(Integer appId) {
         configPageError: configPageError,
         brokenMarkers: brokenMarkers.unique(),
         multipleFlagPoison: multipleFlagPoison,
+        structuralIssues: structuralIssues,
         issues: issues
     ]
 }
@@ -22567,7 +22646,7 @@ Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
 - **clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner. Args: sourceAppId, newName (opt), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
 - **export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through import_native_app.
 - **import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId, newName (opt), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
-- **check_rule_health** — read-only health check on any installed app. Args: appId. Returns ok / configPageError / brokenMarkers / multipleFlagPoison / issues.
+- **check_rule_health** — read-only health check on any installed app. Args: appId. Returns ok / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / issues.
 
 For READING an RM rule's current state, use **get_app_config** in the manage_installed_apps gateway — it works on any installed app including RM rules and returns the same configPage shape that update_native_app expects to see.
 

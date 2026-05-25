@@ -2477,6 +2477,195 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.issues.any { it.toString().toLowerCase().contains("broken") }
     }
 
+    // Issue #178: removeAction / replaceActions can false-fail and post-commit, leaving
+    // the rule with three IFs and two END-IFs (or any other unbalanced nesting) while
+    // RM's paragraph render and label remain clean. The structural-balance walker on
+    // actType.<N>/actSubType.<N> is the only signal that catches this class of damage.
+
+    private List ifStructureSettings(List<Map> rows) {
+        // rows = [[idx: N, actType: "condActs", actSubType: "getIfThen"], ...]
+        def out = []
+        rows.each { r ->
+            out << [name: "actType.${r.idx}".toString(), value: r.actType]
+            out << [name: "actSubType.${r.idx}".toString(), value: r.actSubType]
+        }
+        out
+    }
+
+    def "check_rule_health flags structural imbalance when an IF has no closing END-IF (issue #178)"() {
+        given:
+        enableReadOnly()
+        // Three IFs + two END-IFs — reproduces the live state observed on the test hub
+        // after removeAction(<inner-END-IF>) false-failed but committed post-response.
+        def settings = ifStructureSettings([
+            [idx: 9,  actType: "condActs", actSubType: "getIfThen"],
+            [idx: 10, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 11, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 13, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 14, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 15, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 16, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Unbalanced Rule", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues instanceof List
+        result.structuralIssues.size() == 1
+        result.structuralIssues[0].toString().contains("action 9")
+        result.structuralIssues[0].toString().contains("never closed")
+        result.issues.any { it.toString().contains("structural imbalance") }
+    }
+
+    def "check_rule_health flags an orphaned END-IF (more END-IFs than IFs)"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 4, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Extra EndIf", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("orphaned closer") }
+        result.structuralIssues.any { it.toString().contains("action 4") }
+    }
+
+    def "check_rule_health flags an orphaned End-Repeat closing nothing"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 2, actType: "repeatActs", actSubType: "getStopRepeat"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Orphan Stop", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("End Repeat") }
+        result.structuralIssues.any { it.toString().contains("orphaned closer") }
+    }
+
+    def "check_rule_health flags ELSE-IF outside any IF block"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getElseIf"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Stray ElseIf", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("ELSE-IF") }
+        result.structuralIssues.any { it.toString().contains("outside any IF block") }
+    }
+
+    def "check_rule_health flags END-IF closing a Repeat block (mismatched closer)"() {
+        given:
+        enableReadOnly()
+        // Repeat opens at action 1, but the closer at action 3 is END-IF (wrong kind).
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Mismatched", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("END-IF") && it.toString().contains("closes a Repeat block") }
+    }
+
+    def "check_rule_health reports ok on a balanced nested IF / IF / END-IF / IF / END-IF / END-IF"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 3, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 4, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 5, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 6, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 7, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 8, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Balanced Nested", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "check_rule_health reports ok on IF / ELSE-IF / ELSE / END-IF sequence"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getElseIf"],
+            [idx: 4, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 5, actType: "condActs", actSubType: "getElse"],
+            [idx: 6, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 7, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "If Else Chain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "check_rule_health reports ok on Repeat / End-Repeat sequence"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "repeatActs", actSubType: "getStopRepeat"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
     // ---------- clone / export / import_native_app (appCloner trio) ----------
     // These three tools share the appCloner system app's wire format. Wire
     // format captured live via Chrome XHR sniffing on firmware 2.5.0.x:
