@@ -3390,7 +3390,7 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
   - label markers: '*BROKEN*' suffix RM appends when a rule has a malformed trigger or action
   - paragraph markers: '**Broken Trigger**', '**Broken Action**', '**Broken Condition**'
   - multiple-flag corruption: lists settings whose statusJson .multiple flag has been flipped to false despite the schema declaring multiple=true
-  - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation (issue #172/#178 class); RM does NOT surface this via the paragraph markers above
+  - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation that committed post-response; RM does NOT surface this via the paragraph markers above
 
 Run after every mutation to confirm the change didn't leave the rule in a broken state. update_native_app already attaches this report automatically as `health` on every response, but you can call it explicitly any time.
 
@@ -16064,6 +16064,17 @@ private List _rmCollectActionIndices(Integer appId) {
  * preserved with gaps. Subsequent addAction picks the next free index
  * via _rmCollectActionIndices' max+1 logic.
  *
+ * Pre-flight refuses three things before the delAct click goes out:
+ *   (a) the requested index does not exist on the rule,
+ *   (b) the rule has a stuck state.editAct from a prior interrupted
+ *       edit (RM silently no-ops delAct clicks in that state), and
+ *   (c) the action is a structural opener/closer (IF / ELSE-IF / ELSE /
+ *       END-IF / Repeat / While / End-Repeat) and removing it would
+ *       introduce a new structural-balance issue (compared as a set diff
+ *       so deletions that merely improve an already-broken rule are
+ *       still allowed). All three throw IllegalArgumentException /
+ *       IllegalStateException — no RM mutation is sent.
+ *
  * Post-click verification uses a retry loop to absorb RM 5.1's
  * asynchronous button-handler dispatch. The click returns HTTP 200 before
  * the deletion has propagated to appSettings, so a single immediate fetch
@@ -16077,36 +16088,51 @@ private List _rmCollectActionIndices(Integer appId) {
  * post-response. See source comment below for the original race description.
  */
 private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
-    def beforeIndices = _rmCollectActionIndices(appId)
+    // Single statusJson fetch shared by all three pre-flight checks below;
+    // before the refactor each helper (_rmCollectActionIndices,
+    // _rmGetStateEditAct, structural pre-flight) called _rmFetchStatusJson
+    // independently, tripling the per-delete read load on the hub.
+    def status = _rmFetchStatusJson(appId)
+    def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    def beforeIndices = []
+    def actionsMap = status?.actions
+    if (actionsMap instanceof Map && !actionsMap.isEmpty()) {
+        actionsMap.keySet().each { k ->
+            try { beforeIndices << k.toString().toInteger() } catch (NumberFormatException ignored) {}
+        }
+    } else {
+        settingsByName.keySet().each { n ->
+            def m = (n =~ /^actType\.(\d+)$/)
+            if (m.matches()) beforeIndices << (m[0][1] as Integer)
+        }
+    }
     if (!beforeIndices.contains(actionIdx)) {
         throw new IllegalArgumentException("removeAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
     }
     // Pre-flight: if state.editAct is set, RM will silently no-op the delAct
     // click. Detect and fail immediately with a descriptive error rather than
     // burning 10s of retries and surfacing a confusing timeout message.
-    def stuckEditAct = _rmGetStateEditAct(appId)
+    def editActEntry = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }
+    def stuckEditAct = editActEntry?.value
     if (stuckEditAct != null) {
         throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) restore_item_backup with a recent snapshot.")
     }
-    // Pre-flight (issue #178): if the action being deleted is a structural
-    // element (IF / ELSE-IF / ELSE / END-IF / Repeat / While / End-Repeat),
-    // simulate the deletion and refuse if it would make a currently-balanced
-    // rule worse — comparing counts catches the case where the rule is
-    // already imbalanced and the deletion would happen to FIX it (still
-    // allowed). This blocks the #178 trigger at the source: no delAct click
-    // is sent if the deletion would break the structure, so there is no
-    // post-response-commit race to leak through.
-    def status = _rmFetchStatusJson(appId)
-    def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    // Structural pre-flight: refuse if the deleted index is a block
+    // opener/closer AND removing it would introduce a new imbalance not
+    // present in the current rule. Set-diff (projected MINUS current)
+    // rather than size-only — size comparison allows damage-shuffling on
+    // already-broken rules (e.g. swapping "Repeat never closed" for
+    // "END-IF closes a Repeat — mismatched" keeps the count flat). The
+    // set diff still allows deletions that strictly improve a broken
+    // rule, because every projected issue is also in current.
     def aType = settingsByName["actType.${actionIdx}".toString()]?.value?.toString()
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
     def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
     if (aType in ["condActs", "repeatActs"] && sType in structuralSubTypes) {
-        def currentSeq = _rmStructuralSequenceFromSettings(settingsByName)
-        def projectedSeq = _rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set))
-        def currentIssues = _rmStructuralIssuesFromSequence(currentSeq)
-        def projectedIssues = _rmStructuralIssuesFromSequence(projectedSeq)
-        if (projectedIssues.size() > currentIssues.size()) {
+        def currentIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName))
+        def projectedIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set)))
+        def newIssues = projectedIssues - currentIssues
+        if (newIssues) {
             def humanKind = [
                 "getIfThen": "IF",
                 "getElseIf": "ELSE-IF",
@@ -16115,8 +16141,8 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
                 "getRepeat": "Repeat",
                 "getWhile": "Repeat-While",
                 "getStopRepeat": "End-Repeat"
-            ][sType]
-            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would leave the rule imbalanced (${projectedIssues.first()}). Remove the matching opener/closer first, or use replaceActions to rebuild the action list atomically. This refusal is a #178 pre-flight check — RM is not touched.")
+            ][sType] ?: sType
+            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Remove the matching opener/closer first, or use replaceActions to rebuild the action list atomically. RM is not touched.")
         }
     }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
@@ -16902,29 +16928,31 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
     // action — each capability's branch validates as needed.
 
-    // Pre-flight (issue #178): adding a bare closer (endIf / stopRepeat)
-    // when there is no matching opener leaves the rule with an orphaned
-    // closer. Asymmetric on purpose: adding an opener (ifThen / repeat /
-    // repeatWhile) without a closer is a normal multi-step build, so we
-    // do NOT refuse those — the caller will add the matching closer in a
-    // follow-up call. Only refuse closers that have nothing to close.
-    if (cap?.toLowerCase() in ["endif", "stoprepeat"]) {
-        def status = _rmFetchStatusJson(appId)
-        def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
+    // keywords (elseIf / else) that would render as orphaned because they
+    // have no matching opener / containing IF block. Asymmetric on purpose:
+    // openers (ifThen / repeat / repeatWhile) added alone are allowed —
+    // they're a normal multi-step build state and the caller will add the
+    // matching closer in a follow-up call. Set-diff (projected MINUS
+    // current) catches the case where the new action would introduce a
+    // new structural-balance issue without flagging deletions that
+    // merely improve an already-broken rule.
+    def preflightCap = _rmStructuralPairForCapability(cap)
+    def closerOrBranchKeywords = ["endIf", "stopRepeat", "elseIf", "else"]
+    if (cap in closerOrBranchKeywords && preflightCap != null) {
+        def settingsByName = _rmFetchSettingsByName(appId)
         def currentSeq = _rmStructuralSequenceFromSettings(settingsByName)
-        def maxExistingIdx = currentSeq.collect { it.idx as Integer }.max() ?: 0
-        def projectedPair = _rmStructuralPairForCapability(cap)
-        def projectedSeq = currentSeq + [[
-            idx: (maxExistingIdx + 1),
-            actType: projectedPair[0],
-            actSubType: projectedPair[1]
-        ]]
+        // The projected idx only matters for issue-message construction;
+        // any value not in current works for the walker.
+        def projectedSeq = currentSeq + [[idx: -1, actType: preflightCap[0], actSubType: preflightCap[1]]]
         def currentIssues = _rmStructuralIssuesFromSequence(currentSeq)
         def projectedIssues = _rmStructuralIssuesFromSequence(projectedSeq)
-        if (projectedIssues.size() > currentIssues.size()) {
-            def openerCap = cap.equalsIgnoreCase("endIf") ? "ifThen" : "repeat"
-            def openerKind = cap.equalsIgnoreCase("endIf") ? "IF" : "Repeat"
-            throw new IllegalArgumentException("addAction(${cap}) blocked: rule ${appId} has no matching open ${openerKind} block on the action stack; this ${cap} would render as an orphaned closer. Add an addAction(capability='${openerCap}', ...) first (and its body), then this closer. This refusal is a #178 pre-flight check — RM is not touched.")
+        def newIssues = projectedIssues - currentIssues
+        if (newIssues) {
+            def hint = (cap == "endIf") ? "Add an addAction(capability='ifThen', ...) first (and its body), then this closer." :
+                       (cap == "stopRepeat") ? "Add an addAction(capability='repeat', ...) first (and its body), then this closer." :
+                       "Open an IF block with addAction(capability='ifThen', ...) before adding ${cap}."
+            throw new IllegalArgumentException("addAction(${cap}) blocked: would introduce a new structural-balance issue (${newIssues.first()}). ${hint} RM is not touched.")
         }
     }
 
@@ -18797,21 +18825,34 @@ private Map _rmFetchStatusJson(Integer appId) {
 }
 
 /**
- * Collect input schema from a configPage's sections[].input[] into a
- * name → metadata map. Used to decide which settings need the .type +
- * .multiple sidecar fields.
- */
-/**
  * Walk a sequence of [idx, actType, actSubType] entries (in numerical
  * order) tracking IF / Repeat block depth via a stack. Returns the list
- * of structural issues (empty list = balanced).
+ * of structural issue strings (empty list = balanced).
  *
  * Used by _rmCheckRuleHealth for post-mutation detection AND by the
  * pre-flight refusal paths in _rmDeleteAction / _rmAddAction /
  * toolUpdateNativeApp's replaceActions handler — they all build a
- * projected sequence (current state minus removals plus additions) and
- * compare projected-issues vs current-issues to decide whether to refuse
- * the mutation before it touches RM.
+ * projected sequence (current minus removals plus additions) and compare
+ * projected against current with `projected - current` set diff. Any
+ * NEW issue not present in current means the mutation introduces damage
+ * and is refused. (Size-only comparison would allow damage-shuffling on
+ * already-broken rules — e.g. adding an END-IF to a rule with an open
+ * Repeat keeps the issue count flat but swaps "Repeat never closed" for
+ * "END-IF closes a Repeat block — mismatched closer".)
+ *
+ * Asymmetric refusal at the call sites: openers (ifThen / repeat /
+ * repeatWhile) added alone are allowed (normal multi-step build state).
+ * Branch keywords (elseIf / else) and bare closers (endIf / stopRepeat)
+ * are refused if they would render orphaned, because they have no valid
+ * follow-up step the caller would naturally do next.
+ *
+ * Partial-commit handling: an entry with `actType` set but `actSubType`
+ * null is treated as a leaf (skipped from the walk), and a `partial:
+ * true` flag on the entry is also accepted as a hint that the writer
+ * knew the entry is incomplete. The intent is to keep the walker silent
+ * on the actType-only halfway state that the #172 false-fail race can
+ * leave behind, rather than treating it as a leaf and silently masking
+ * the imbalance.
  *
  * Groovy's List.pop() removes from the FRONT of a List; the walker uses
  * `<<` for append and `removeAt(size-1)` for tail-pop to preserve the
@@ -18824,6 +18865,10 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
         def idx = entry?.idx
         def aType = entry?.actType?.toString()
         def sType = entry?.actSubType?.toString()
+        if (entry?.partial == true || (aType in ["condActs", "repeatActs"] && (sType == null || sType == ""))) {
+            issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or finish the wizard via update_native_app(walkStep=...).".toString())
+            return
+        }
         if (aType == "condActs") {
             if (sType == "getIfThen") {
                 stack << [kind: "if", openIdx: idx]
@@ -18869,26 +18914,89 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
 /**
  * Build the structural-balance sequence from a rule's live appSettings
  * map (keyed by name). Collects actType.<N>/actSubType.<N> pairs in
- * numerical order. Optional excludeIndices (used by removeAction
- * pre-flight) skip listed action indices so the walker sees the
- * post-deletion state.
+ * numerical order and marks any actType-without-actSubType entry with
+ * `partial: true` so the walker can surface it as a #172-class
+ * half-commit rather than silently treating it as a leaf. Optional
+ * excludeIndices (used by removeAction pre-flight) skip listed action
+ * indices so the walker sees the post-deletion state.
  */
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set)) {
     def indices = [] as TreeSet
-    settingsByName.each { name, recIgnored ->
+    settingsByName.keySet().each { name ->
         def m = name?.toString() =~ /^actType\.(\d+)$/
         if (m.matches()) indices << ((m[0] as List)[1] as Integer)
     }
     def sequence = []
     indices.each { idx ->
         if (excludeIndices.contains(idx)) return
-        sequence << [
-            idx: idx,
-            actType: settingsByName["actType.${idx}".toString()]?.value?.toString(),
-            actSubType: settingsByName["actSubType.${idx}".toString()]?.value?.toString()
-        ]
+        def aType = settingsByName["actType.${idx}".toString()]?.value?.toString()
+        def sType = settingsByName["actSubType.${idx}".toString()]?.value?.toString()
+        def entry = [idx: idx, actType: aType, actSubType: sType]
+        if (aType in ["condActs", "repeatActs"] && (sType == null || sType == "")) {
+            entry.partial = true
+        }
+        sequence << entry
     }
     sequence
+}
+
+/**
+ * Walk a list of caller-supplied addAction / replaceActions specs and
+ * project them as a structural sequence the walker can consume.
+ * Leaf-action specs (those whose capability has no block role) are
+ * skipped — they don't affect block balance. The pre-flight in
+ * toolUpdateNativeApp's replaceActions handler and the patches[]
+ * replaceActions branch both call this to validate the proposed list
+ * before any clearActions click.
+ */
+private List _rmStructuralSequenceFromSpecList(List specList) {
+    def out = []
+    specList.eachWithIndex { spec, i ->
+        if (!(spec instanceof Map)) return
+        def pair = _rmStructuralPairForCapability(((spec as Map).capability)?.toString())
+        if (pair) out << [idx: (i + 1), actType: pair[0], actSubType: pair[1]]
+    }
+    out
+}
+
+/**
+ * Fetch the rule's appSettings and return it keyed by setting name.
+ * Shared by every site that needs to read the rule's current state
+ * (the structural-balance walker, the multiple-flag-poison check, and
+ * the pre-flight refusal paths in _rmDeleteAction / _rmAddAction). One
+ * statusJson GET per call site instead of three back-to-back.
+ */
+private Map _rmFetchSettingsByName(Integer appId) {
+    def status = _rmFetchStatusJson(appId)
+    (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+}
+
+/**
+ * Build the standard error response shape for toolUpdateNativeApp catch
+ * blocks. Detects pre-flight refusals (signalled by the "RM is not
+ * touched" sentinel that every pre-flight refusal throw includes) and
+ * adjusts the restoreHint to make clear that nothing was mutated — so
+ * the caller doesn't waste a restore_item_backup call. On pre-flight
+ * refusal, also attaches the current health so the caller sees existing
+ * structural issues that motivated the refusal.
+ */
+private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup) {
+    def isPreflightRefusal = msg?.contains("RM is not touched")
+    def healthOnRefusal = null
+    if (isPreflightRefusal) {
+        try { healthOnRefusal = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort */ }
+    }
+    def result = [
+        success: false,
+        appId: appId,
+        error: msg,
+        backup: backup,
+        restoreHint: isPreflightRefusal ?
+            "Pre-flight refusal — RM was not touched; the saved backup is identical to the current rule and does not need to be restored." :
+            "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+    ]
+    if (healthOnRefusal != null) result.health = healthOnRefusal
+    result
 }
 
 /**
@@ -18896,17 +19004,25 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
  * its [actType, actSubType] pair for the block-aware capabilities only.
  * Returns null for leaf actions (switch, lock, log, …) — they don't
  * affect structural balance and the pre-flight walker can ignore them.
+ *
+ * CASE-SENSITIVE on purpose: must match _rmAddAction's dispatch
+ * (`cap == "ifThen"` etc.). A case-insensitive match here would let
+ * mis-cased structural caps like "endIF" pass the replaceActions
+ * pre-flight as "balanced" (walker treats them as endIf) and then fail
+ * at the per-item dispatch step after clearActions has already wiped
+ * the rule — exactly the #178 damage class the pre-flight is meant to
+ * prevent.
  */
 private List _rmStructuralPairForCapability(String cap) {
     if (cap == null) return null
-    switch (cap.toString().toLowerCase()) {
-        case "ifthen":      return ["condActs", "getIfThen"]
-        case "elseif":      return ["condActs", "getElseIf"]
+    switch (cap.toString()) {
+        case "ifThen":      return ["condActs", "getIfThen"]
+        case "elseIf":      return ["condActs", "getElseIf"]
         case "else":        return ["condActs", "getElse"]
-        case "endif":       return ["condActs", "getEndIf"]
+        case "endIf":       return ["condActs", "getEndIf"]
         case "repeat":      return ["repeatActs", "getRepeat"]
-        case "repeatwhile": return ["repeatActs", "getWhile"]
-        case "stoprepeat":  return ["repeatActs", "getStopRepeat"]
+        case "repeatWhile": return ["repeatActs", "getWhile"]
+        case "stopRepeat":  return ["repeatActs", "getStopRepeat"]
         default: return null
     }
 }
@@ -18970,9 +19086,8 @@ private Map _rmCheckRuleHealth(Integer appId) {
         // Multiple-flag corruption check. Compare schema declaration vs
         // statusJson appSettings record for each setting that the schema
         // says is multi.
-        def status = _rmFetchStatusJson(appId)
+        def settingsByName = _rmFetchSettingsByName(appId)
         def schema = _rmCollectInputSchema(cfg?.configPage)
-        def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
         schema.each { name, meta ->
             if (meta?.multiple == true) {
                 def rec = settingsByName[name]
@@ -18984,16 +19099,13 @@ private Map _rmCheckRuleHealth(Integer appId) {
         if (multipleFlagPoison) {
             issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
         }
-        // Structural balance check for IF/ELSE-IF/ELSE/END-IF and Repeat/End-Repeat
-        // blocks — see _rmStructuralIssuesFromSequence for the walker semantics.
-        // Most imbalance is now blocked at the pre-flight refusal in
-        // _rmDeleteAction / _rmAddAction / the replaceActions handler before
-        // it lands; this defense-in-depth catch covers raw settings writes
-        // and the #172 post-response-commit race that can slip past those.
-        def structuralSequence = _rmStructuralSequenceFromSettings(settingsByName)
-        structuralIssues.addAll(_rmStructuralIssuesFromSequence(structuralSequence))
+        // Structural balance check (defense in depth — the pre-flight refusals
+        // in _rmDeleteAction / _rmAddAction / replaceActions block most
+        // imbalance at the source; this catches raw settings writes and the
+        // post-response-commit race for non-structural deletes).
+        structuralIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName))
         if (structuralIssues) {
-            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a raw settings write or a #172-class mutation that committed post-response. Use restore_item_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
+            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a raw settings write or a mutation that committed post-response. Use restore_item_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
         }
     } catch (Exception e) {
         issues << "health check failed: ${e.message}".toString()
@@ -19411,6 +19523,11 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     ]
 }
 
+/**
+ * Collect input schema from a configPage's sections[].input[] into a
+ * name → metadata map. Used to decide which settings need the .type +
+ * .multiple sidecar fields.
+ */
 private Map _rmCollectInputSchema(Map configPage) {
     def schema = [:]
     for (s in (configPage?.sections ?: [])) {
@@ -20655,28 +20772,18 @@ def toolUpdateNativeApp(args) {
         def removed = []
         def addedResults = []
         try {
-            // Pre-flight (issue #178): walk the replaceActions spec list's
-            // capability sequence and refuse the call before clearActions
-            // runs if the proposed list is itself structurally imbalanced.
-            // This catches the LLM-error case where the caller forgot an
-            // end-if / stop-repeat (or stacked an extra one) — better to
-            // surface the mistake than wipe the rule and then re-add a
-            // broken structure on top. The new sequence is walked against
-            // an empty current state (clearActions runs first, so the
-            // rule's existing actions don't factor in).
+            // Pre-flight: walk the replaceActions spec list's capability
+            // sequence and refuse the call before clearActions runs if the
+            // proposed list is itself structurally imbalanced. Catches the
+            // LLM-error case where the caller forgot an endIf / stopRepeat
+            // (or stacked an extra one) — better to surface the mistake
+            // than wipe the rule and then re-add a broken structure.
+            // (Walked against an empty current state because clearActions
+            // runs first; the rule's existing actions don't factor in.)
             if (replaceActionsList != null) {
-                def projectedSeq = []
-                replaceActionsList.eachWithIndex { spec, i ->
-                    if (!(spec instanceof Map)) return
-                    def specCap = (spec as Map).capability?.toString()
-                    def pair = _rmStructuralPairForCapability(specCap)
-                    if (pair) {
-                        projectedSeq << [idx: (i + 1), actType: pair[0], actSubType: pair[1]]
-                    }
-                }
-                def specIssues = _rmStructuralIssuesFromSequence(projectedSeq)
+                def specIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSpecList(replaceActionsList))
                 if (specIssues) {
-                    throw new IllegalArgumentException("replaceActions blocked: the proposed action list is structurally imbalanced — ${specIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. This refusal is a #178 pre-flight check — RM is not touched and no actions are cleared.")
+                    throw new IllegalArgumentException("replaceActions blocked: the proposed action list is structurally imbalanced — ${specIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. RM is not touched and no actions are cleared.")
                 }
             }
             if (removeActionSpec) {
@@ -20725,17 +20832,12 @@ def toolUpdateNativeApp(args) {
             _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${e.message}")
+            def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            // The "deletion may commit post-response" exhaustion path needs
+            // an extra hint that the helper doesn't know about.
             def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
-            def result = [
-                success: false,
-                appId: appId,
-                error: e.message,
-                backup: backup,
-                restoreHint: isRetryExhaustion ?
-                    "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}')." :
-                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
             if (isRetryExhaustion) {
+                result.restoreHint = "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}')."
                 result.verifyHint = "Call get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call restore_item_backup."
             }
             return result
@@ -20831,13 +20933,7 @@ def toolUpdateNativeApp(args) {
             trigResult = _rmAddTrigger(appId, addTriggerSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addTrigger failed for app ${appId}: ${e.message}")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message,
-                backup: backup,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
         // Auto-fire updateRule after a successful commit so eventSubscriptions
         // populate without a separate tool call. Skip on hard failure
@@ -20880,13 +20976,7 @@ def toolUpdateNativeApp(args) {
             actResult = _rmAddAction(appId, addActionSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addAction failed for app ${appId}: ${e.message}")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message,
-                backup: backup,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
         return [
             success: actResult?.success != false,
@@ -20986,17 +21076,11 @@ def toolUpdateNativeApp(args) {
                         }
                         patchResults << [success: true, op: "clearActions", removedIndices: cleared]
                     } else if (pm.containsKey("replaceActions")) {
-                        // Issue #178 pre-flight: validate the proposed list's
-                        // structural balance before clearActions touches RM.
-                        def patchSeq = []
-                        (pm.replaceActions as List).eachWithIndex { aspec, ai ->
-                            if (!(aspec instanceof Map)) return
-                            def pair = _rmStructuralPairForCapability(((aspec as Map).capability)?.toString())
-                            if (pair) patchSeq << [idx: (ai + 1), actType: pair[0], actSubType: pair[1]]
-                        }
-                        def patchSpecIssues = _rmStructuralIssuesFromSequence(patchSeq)
+                        // Pre-flight: validate the proposed list's structural
+                        // balance before clearActions touches RM.
+                        def patchSpecIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSpecList(pm.replaceActions as List))
                         if (patchSpecIssues) {
-                            throw new IllegalArgumentException("patches[${pi}].replaceActions blocked: the proposed action list is structurally imbalanced — ${patchSpecIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. This refusal is a #178 pre-flight check — RM is not touched and no actions are cleared.")
+                            throw new IllegalArgumentException("patches[${pi}].replaceActions blocked: the proposed action list is structurally imbalanced — ${patchSpecIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. RM is not touched and no actions are cleared.")
                         }
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
@@ -21060,13 +21144,7 @@ def toolUpdateNativeApp(args) {
             varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addLocalVariable failed for app ${appId}: ${e.message}")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message,
-                backup: backup,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
         try { _rmClickAppButton(appId, "updateRule") }
         catch (Exception updateExc) {
@@ -21181,15 +21259,10 @@ def toolUpdateNativeApp(args) {
             _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addTriggers/addActions bulk failed for app ${appId}: ${e.message}")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message,
-                backup: backup,
-                triggerResults: triggerResults,
-                actionResults: actionResults,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
+            def bulkResult = _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            bulkResult.triggerResults = triggerResults
+            bulkResult.actionResults = actionResults
+            return bulkResult
         }
         def trigOk = triggerResults.count { it?.success != false }
         def actOk = actionResults.count { it?.success != false }
@@ -21363,13 +21436,7 @@ def toolUpdateNativeApp(args) {
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
         mcpLog("error", "rm-native", "update_native_app failed for ${appId}: ${msg}")
-        return [
-            success: false,
-            appId: appId,
-            error: msg,
-            backup: backup,
-            restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-        ]
+        return _rmBuildUpdateErrorResponse(appId, msg, backup)
     }
 }
 
