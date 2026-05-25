@@ -3371,12 +3371,15 @@ PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at le
                     newName: [type: "string", description: "Label for the imported app. If omitted, the cloner default ('<original-label> import') is kept."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
-                required: ["parentHintAppId", "confirm"]
                 // "jsonContent OR fromFile" is enforced at runtime in
-                // toolImportNativeApp (throws IllegalArgumentException). A
-                // top-level anyOf used to encode this here, but Haiku 4.5's
-                // input_schema validator rejects top-level anyOf/oneOf/allOf
-                // with HTTP 400, breaking every Hubitat tools/list dispatch.
+                // toolImportNativeApp (throws IllegalArgumentException) rather
+                // than via a schema-level anyOf: Anthropic's MCP input_schema
+                // validator rejects top-level anyOf/oneOf/allOf with HTTP 400
+                // (first surfaced via Haiku 4.5; Sonnet/Opus accept the same
+                // shape, but the constraint applies to every model going
+                // forward). Tool + property descriptions document the OR for
+                // LLM tool-selection.
+                required: ["parentHintAppId", "confirm"]
             ]
         ],
         [
@@ -21583,15 +21586,25 @@ def toolCloneNativeApp(args) {
 
     Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
 
-    return [
+    String note = newAppId
+        ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
+        : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+    def result = [
         success: newAppId != null,
         sourceAppId: sourceAppId,
         clonerAppId: clonerAppId,
         newAppId: newAppId,
-        note: newAppId
-            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
-            : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+        note: note
     ]
+    if (newAppId == null) {
+        // Cloner fired but child discovery returned no match. Surface the
+        // structured isError/error fields callers branching on the
+        // file-wide error contract expect (handleToolsCall flags isError
+        // on the JSON-RPC envelope; LLM clients use it to route retries).
+        result.isError = true
+        result.error = note
+    }
+    return result
 }
 
 /**
@@ -21824,17 +21837,25 @@ def toolImportNativeApp(args) {
 
     Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
 
-    return [
+    String note = newAppId
+        ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
+        : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+    def result = [
         success: newAppId != null,
         clonerAppId: clonerAppId,
         newAppId: newAppId,
         originalSourceId: originalSourceId,
         originalLabel: originalLabel,
         contentLength: jsonContent.length(),
-        note: newAppId
-            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
-            : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+        note: note
     ]
+    if (newAppId == null) {
+        // Wizard fired but child discovery returned no match. Same shape as
+        // toolCloneNativeApp on the soft-failure path — see comment there.
+        result.isError = true
+        result.error = note
+    }
+    return result
 }
 
 /**

@@ -2587,6 +2587,43 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         navPost != null
     }
 
+    def "clone_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
+        // Cloner fires but _appClonerDiscoverNewChild can't find the new
+        // child (race, parent re-fetch lag, etc.). Pre-fix the return was
+        // {success: false, newAppId: null, note: "..."} with no isError/error
+        // — divergent from the rest of the file's error contract and
+        // invisible to LLM callers that branch on isError.
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        // Parent NEVER acquires the new child — simulates discovery failure.
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, confirm: true])
+
+        then: "soft-failure carries the isError + error envelope, not just success: false + note"
+        result.success == false
+        result.newAppId == null
+        result.isError == true
+        result.error instanceof String
+        result.error.toLowerCase().contains("no new child appeared")
+        result.note == result.error
+    }
+
     def "clone_native_app rename writes settings[newName<sourceId>] before importNow"() {
         given:
         enableHubAdminWrite()
@@ -2729,6 +2766,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains("appreplacements")
     }
 
+    def "import_native_app throws when neither jsonContent nor fromFile is provided"() {
+        // Pre-issue-#204, a top-level anyOf in the inputSchema rejected the
+        // no-payload call at the MCP boundary. The anyOf was removed because
+        // Anthropic's input_schema validator HTTP-400s on top-level
+        // anyOf/oneOf/allOf (first surfaced via Haiku 4.5), so the runtime
+        // throw in toolImportNativeApp is now the sole guard for this case.
+        given: enableHubAdminWrite()
+
+        when:
+        script.toolImportNativeApp([parentHintAppId: 100, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains("jsoncontent or fromfile")
+    }
+
     def "import_native_app drives the cloner with settings[ruleUpload]= and finds the new appId"() {
         given:
         enableHubAdminWrite()
@@ -2789,6 +2842,44 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         importRulePosts.any { it.body?.containsKey("settings[newName42]") }
         importRulePosts.every { it.body?["settings[newName42]"] == "" }
         !importRulePosts.any { it.body?.containsKey("settings[newName100]") }
+    }
+
+    def "import_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
+        // Wizard fires but _appClonerDiscoverNewChild can't diff a new child
+        // under the parent. Pre-fix this returned {success: false, newAppId:
+        // null, note: "..."} with no isError/error fields. LLM callers that
+        // branch on isError saw nothing actionable. Mirrors the clone test
+        // immediately above — same contract, same enforcement.
+        given:
+        enableHubAdminWrite()
+        def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 55) }
+        // Parent NEVER acquires the new child — simulates discovery failure.
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentConfigJson(21, [[id: 100, label: "ExistingRule"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolImportNativeApp([jsonContent: importJson, parentHintAppId: 100, confirm: true])
+
+        then: "soft-failure carries the isError + error envelope, not just success: false + note"
+        result.success == false
+        result.newAppId == null
+        result.isError == true
+        result.error instanceof String
+        result.error.toLowerCase().contains("no new child appeared")
+        result.note == result.error
     }
 
     def "import_native_app preserves backslash-escapes in settings[ruleUpload] (HTTPBuilder Map encoder mangles them)"() {

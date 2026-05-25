@@ -90,6 +90,20 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             it.inputSchema instanceof Map
         }
 
+        and: 'no inputSchema carries a top-level anyOf/oneOf/allOf (issue #204 regression guard — Anthropic input_schema validator HTTP-400s on these; first surfaced via Haiku 4.5)'
+        // Iterates the full catalog so this guard catches a new tool added
+        // anywhere in getToolDefinitions(), not just the one that originally
+        // tripped it (import_native_app). Both modes carry this assertion
+        // because the flat catalog is what Anthropic-validator clients
+        // actually see (gateway-mode hides sub-tool schemas under the
+        // gateway entry's catalog payload, but the catch-all here still
+        // pins the gateway entries themselves).
+        response.result.tools.every { tool ->
+            !tool.inputSchema.containsKey('anyOf') &&
+            !tool.inputSchema.containsKey('oneOf') &&
+            !tool.inputSchema.containsKey('allOf')
+        }
+
         and: 'MCP annotations survive serialization through jsonRpcResult → render'
         // McpToolAnnotationsSpec pins the in-process map shape; this `and:`
         // pins that the annotation keys actually land in the wire envelope
@@ -150,6 +164,18 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'no duplicate tool names in the response'
         response.result.tools.size() == names.size()
+
+        and: 'no flat-mode inputSchema carries a top-level anyOf/oneOf/allOf (issue #204 regression guard)'
+        // Flat mode is the catalog Anthropic-validator clients (Claude.ai
+        // connector, Claude Code haiku subagent) actually walk. Top-level
+        // anyOf/oneOf/allOf in any tool here HTTP-400s the entire tools/list
+        // dispatch, so this guard catches a regression in any of the
+        // ~80 flat-catalog tools, not just the one being patched.
+        response.result.tools.every { tool ->
+            !tool.inputSchema.containsKey('anyOf') &&
+            !tool.inputSchema.containsKey('oneOf') &&
+            !tool.inputSchema.containsKey('allOf')
+        }
 
         and: 'flat-mode wire envelope also carries readOnlyHint per leaf tool'
         response.result.tools.every { it.annotations?.readOnlyHint instanceof Boolean }
