@@ -16623,13 +16623,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     // =========================================================================
-    // R5 maintainer-review fixes -- pinning the round-5 critical / important
-    // findings on the rm-reveal-walker PR. Each spec targets ONE
-    // specific behavioural change introduced in the corresponding fix.
+    // Reveal-walker fail-loud + cancel-symmetry pins
+    // (compareToDevice silent-write guards, trailing-updateRule failure
+    // propagation, Variable picker degradation sentinel, subExpression rejection
+    // on doActPage, Tamper/CO2 description vocabulary). Each spec carries a
+    // "Load-bearing discriminator" note naming the regression class it pins.
     // Both-ways pending (orchestrator).
     // =========================================================================
 
-    // ---------- Finding 1: compareToDevice silent writes on null reveal ----------
+    // ---------- compareToDevice silent writes on null reveal ----------
 
     def "addRequiredExpression compareToDevice: refDev reveal returning null fails loud with cancel"() {
         // After rhsType_1 selects 'another device', the rDev2/refDev/compareDevId picker
@@ -16813,7 +16815,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         offsetSentinel.offset == -2
     }
 
-    // ---------- Finding 2: trailing updateRule failure surfaces via dedicated response slots ----------
+    // ---------- addRequiredExpression trailing updateRule failure surfaces via dedicated response slots ----------
 
     def "addRequiredExpression: trailing updateRule failure surfaces updateRuleFailed + expressionNotLive"() {
         // _rmCheckRuleHealth does not detect an updateRule click rejection. The dispatcher
@@ -16905,7 +16907,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.repairHints?.any { it?.toString()?.contains("updateRule") }
     }
 
-    // ---------- Finding 4: doActPage walker-cancel symmetry with STPage ----------
+    // ---------- doActPage walker-cancel symmetry with STPage ----------
 
     def "addAction ifThen: walker-thrown exception triggers exactly one cancelCapab via outer-catch fallback"() {
         // When _rmFetchConfigJson throws from inside _rmRevealStep (the post-trigger
@@ -17011,7 +17013,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         cancelCapabClicks == 1
     }
 
-    // ---------- Finding 5: Variable picker validation -- empty varOpts pushes sentinel ----------
+    // ---------- Variable picker validation -- empty varOpts pushes sentinel ----------
 
     def "addRequiredExpression Variable: empty option list pushes api_unavailable sentinel + partial"() {
         // When the schema's variable-picker option list is empty (e.g. firmware lazily
@@ -17073,7 +17075,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         sentinel.varName == "myVar"
     }
 
-    // ---------- Finding 6: Variable condition missing RHS fails loud ----------
+    // ---------- Variable condition missing RHS fails loud ----------
 
     def "addRequiredExpression Variable: comparator '=' without state or value fails loud"() {
         // When the comparator requires RHS but neither state nor value is supplied, the
@@ -17189,7 +17191,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error == null
     }
 
-    // ---------- Finding 7: subExpression on doActPage rejected with targeted error ----------
+    // ---------- subExpression on doActPage rejected with targeted error ----------
 
     def "addAction ifThen: nested subExpression in expression.conditions rejected with targeted error"() {
         // The normalize pre-pass recurses through subExpression (justified for the shared
@@ -17235,9 +17237,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // lets the walker handle the shape would surface a different error string.
         result.error?.toString()?.contains("nested subExpression")
         result.error?.toString()?.contains("not yet supported")
+        // Pre-pass-distinctive substring: the addAction pre-pass throw at L16962 says
+        // "on this action type", while the in-walker throw at L18119 says "on this row".
+        // Pinning the pre-pass-specific phrase ensures the spec catches a regression
+        // that moves the pre-pass reject (so the in-walker reject fires instead, AFTER
+        // a partial wizard write has already landed). Both throws share the "nested
+        // subExpression ... not yet supported" pair above; this is the disambiguating
+        // discriminator that distinguishes which path actually fired.
+        result.error?.toString()?.contains("on this action type")
     }
 
-    // ---------- Finding 9: _rmRevealStep reveal-fallback sentinel ----------
+    // ---------- _rmRevealStep reveal-fallback sentinel ----------
 
     def "addRequiredExpression: walker pushes reveal_fallback_to_existing_field sentinel when only revealedAny matches"() {
         // Static-schema firmware exposes always-visible fields; the walker's revealStep
@@ -17378,7 +17388,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         fallbackSentinel == null
     }
 
-    // ---------- Finding 3: tools/list inline schema description -- detected not tampered ----------
+    // ---------- tools/list inline schema description -- detected not tampered ----------
 
     def "tools/list update_native_app description aligns Tamper + CO2 with detected/clear vocabulary"() {
         // The inline schema description served via tools/list pointed at 'tampered' for
@@ -17405,5 +17415,691 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the correct values appear in the relevant context"
         fullText.contains("'detected'")
         fullText.contains("'clear'")
+    }
+
+    // ---------- Variable picker validation -- non-empty varOpts containing varName: no sentinel ----------
+
+    def "addRequiredExpression Variable: non-empty option list containing varName does NOT push variable-validation sentinel"() {
+        // Negative pin paired with the existing empty-varOpts spec. When the picker
+        // returns a non-empty option list that includes the caller's variable name,
+        // the walker MUST validate successfully (no warn log, no sentinel push) and
+        // result.partial MUST remain falsy. Catches a regression that flips the
+        // `!varOpts` gate to `if (true)` or otherwise unconditionally pushes the
+        // sentinel.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // lVar_1 reveal succeeds with options including "myVar" (the caller's choice).
+            def inputs = [
+                [name: "cond",      type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",  type: "enum", options: ["Variable"]],
+                [name: "lVar_1",    type: "enum", options: ["myVar": "myVar", "otherVar": "otherVar"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "!="]],
+                [name: "state_1",   type: "text"],
+                [name: "hasAll",    type: "button"],
+                [name: "doneST",    type: "button"]
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Variable", variable: "myVar", comparator: "=", value: 42
+            ]]],
+            confirm: true
+        ])
+
+        then: "call did not hard-fail"
+        result.success != false
+
+        and: "NO variable-validation sentinel surfaced -- validation path was happy"
+        // Load-bearing discriminator: paired with the positive-pin empty-varOpts spec
+        // above ("empty option list pushes api_unavailable sentinel"). Together the
+        // pair pins the walker to fire the sentinel ONLY on the empty-enum path, not
+        // on every Variable condition. This fixture is a static-schema stub so other
+        // skipped entries (silent_rejection, reveal_fallback_to_existing_field) are
+        // expected; the assertion is specifically scoped to the variable-validation
+        // sentinel key.
+        def varValidationEntry = (result.settingsSkipped as List)?.find {
+            it instanceof Map && it.key == "variable-validation"
+        }
+        varValidationEntry == null
+    }
+
+    // ---------- compareToDevice golden-path success (negative pin for all three compareToDevice failure-mode specs) ----------
+
+    def "addRequiredExpression compareToDevice: golden path -- refDev + refAttr + offset all revealed, no sentinel"() {
+        // Negative pin paired with the three compareToDevice failure-mode specs
+        // (refDev null fails loud, refAttr null fails loud, offset null degrades).
+        // When all three fields reveal correctly, the walker writes them all and
+        // surfaces NO compareToDevice-related sentinels in settingsSkipped. A
+        // regression to any of the three guards (e.g. one branch always pushes a
+        // sentinel) would surface here.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Static schema with ALL device-relative fields present so every reveal
+            // succeeds. revealStep + discoverField each match revealedNew=false /
+            // revealedAny=true (fallbackToExisting=true), BUT discoverField does
+            // NOT push the reveal-fallback sentinel; revealStep does NOT push it
+            // for empty-trigger calls (the compareToDevice refDev/refAttr/offset
+            // sites use discoverField).
+            def inputs = [
+                [name: "cond",       type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",     type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1",  type: "enum", options: [">", "<", "="]],
+                [name: "rhsType_1",  type: "enum", options: ["aValue": "a value", "aDevice": "another device"]],
+                [name: "refDev_1",   type: "capability.sensor", multiple: true],
+                [name: "refAttr_1",  type: "enum", options: ["temperature"]],
+                [name: "offset_1",   type: "number"],
+                [name: "hasAll",     type: "button"],
+                [name: "doneST",     type: "button"]
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                compareToDevice: [deviceId: 99, attribute: "temperature", offset: -2]
+            ]]],
+            confirm: true
+        ])
+
+        then: "golden path does not hard-fail"
+        result.success != false
+
+        and: "no compareToDevice-related sentinels surfaced (negative pin for the three failure-mode specs)"
+        // Load-bearing discriminator: triples as the negative pin for refDev-null /
+        // refAttr-null / offset-null specs above. Any regression that always pushes
+        // any of those sentinels would surface here. discoverField suppresses the
+        // reveal-fallback sentinel for the three compareToDevice empty-trigger sites,
+        // so even on this static-schema fixture no fallback sentinel fires for them.
+        // The fixture is static so partial=true is expected (silent_rejection on every
+        // write); the assertion is specifically scoped to the compareToDevice sentinel
+        // reasons that the three guards under test produce.
+        def skip = (result.settingsSkipped as List) ?: []
+        !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "rhs_type_not_revealed" }
+        !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "offset_field_not_revealed" }
+
+        and: "all three writes happened with correct values"
+        writtenFields["refDev_1"] != null
+        writtenFields["refAttr_1"] == "temperature"
+        writtenFields["offset_1"]?.toString() == "-2"
+    }
+
+    // ---------- addRequiredExpression updateRule happy-path negative pin ----------
+
+    def "addRequiredExpression: trailing updateRule SUCCESS leaves updateRuleFailed + expressionNotLive falsy"() {
+        // Negative pin paired with the existing trailing-updateRule failure spec.
+        // When updateRule clicks successfully, the new response slots MUST stay
+        // falsy AND repairHints MUST NOT carry the "updateRule click was rejected"
+        // recovery line. Catches a regression that flips the flag init values
+        // (e.g. `def updateRuleFailed = true` instead of `false`) or always
+        // appends the repairHint regardless of failure.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // Trailing updateRule click succeeds (does NOT throw).
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            fetchSeq++
+            stPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Switch", deviceIds: [8], state: "on"
+            ]]],
+            confirm: true
+        ])
+
+        then: "updateRule click happened -- precondition"
+        updateRuleClicked == true
+
+        and: "all three new failure slots stay falsy on the success path"
+        // Load-bearing discriminators: each of the three flags MUST NOT be set on the
+        // happy path. A regression flipping init values (e.g. updateRuleFailed=true
+        // by default) would surface here. updateRuleError MUST stay null.
+        result.updateRuleFailed != true
+        result.expressionNotLive != true
+        result.updateRuleError == null
+
+        and: "success reflects the happy path"
+        // partial may still be true due to fixture-level silent_rejection on useST
+        // (incidental to the stub, not load-bearing here). The load-bearing pins are
+        // the three failure-flag falsy checks above + the repairHints assertion below.
+        result.success == true
+
+        and: "repairHints does NOT carry the updateRule-rejected recovery line"
+        // The recovery line "updateRule click was rejected" is appended ONLY when
+        // updateRuleFailed flips true. A regression that always appends would surface here.
+        def hints = (result.repairHints as List) ?: []
+        !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+    }
+
+    // ---------- addTrigger trailing updateRule failure: parity with addRequiredExpression ----------
+
+    def "addTrigger: trailing updateRule failure surfaces updateRuleFailed + subscriptionsNotLive"() {
+        // Symmetric with the addRequiredExpression trailing-updateRule failure spec.
+        // When the trailing updateRule click is rejected, the trigger row IS in the
+        // rule's appSettings but the running rule instance never subscribed to its
+        // device events. Surface this via dedicated response slots so callers can
+        // detect without log-grep, and flip success=false + partial=true so they do
+        // not treat the response as fully baked.
+        // Uses the proven selectTriggersSchemaJson + mainPageJson helpers (same as
+        // the addTrigger full-success spec at L3521) so the call actually reaches the
+        // trailing updateRule click.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleAttempted = false
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleAttempted = true
+                throw new RuntimeException("simulated updateRule rejection (firmware refused the click)")
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        // mainPage shows trigger IS baked so addTrigger reaches the trailing updateRule click.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "trailing updateRule click attempted -- precondition"
+        // Without this check, an earlier-throw regression (e.g. trigger commit
+        // throws before reaching updateRule) would silently make the rest of the
+        // assertions vacuous. Pin the path was exercised.
+        updateRuleAttempted == true
+
+        and: "envelope carries dedicated failure slots, not just a warn log"
+        // Load-bearing discriminators: the three flag keys are the only way callers
+        // can detect this failure mode without log-grep. A regression that reverts
+        // the B5 propagation (warn-log-only) would leave updateRuleFailed=null and
+        // subscriptionsNotLive=null. subscriptionsNotLive is the trigger-specific
+        // semantic name (vs expressionNotLive on addRequiredExpression).
+        result.updateRuleFailed == true
+        result.subscriptionsNotLive == true
+        result.updateRuleError?.toString()?.contains("simulated updateRule rejection")
+
+        and: "success flips false and partial flips true"
+        result.success == false
+        result.partial == true
+
+        and: "repairHints names the retry path"
+        result.repairHints?.any { it?.toString()?.contains("updateRule click was rejected") }
+
+        and: "note text reflects the FAILED outcome (consumer-visible response field)"
+        // Load-bearing discriminator: the note ternary at L21487 selects between
+        // "FAILED -- subscriptions may not be live" (failure branch) and "fired
+        // (subscriptions populated)" (success branch). A typo regression on either
+        // branch would pass the success/failure flag checks above but ship a
+        // mis-labelled note to the consumer. Pin the failure-branch wording here;
+        // the SUCCESS spec below pins the success-branch wording.
+        result.note?.contains("FAILED -- subscriptions may not be live")
+    }
+
+    def "addTrigger: trailing updateRule SUCCESS leaves updateRuleFailed + subscriptionsNotLive falsy"() {
+        // Negative pin paired with the addTrigger updateRule failure spec above.
+        // When the trailing updateRule click succeeds, the new B5 response slots
+        // MUST stay falsy and repairHints MUST NOT carry the recovery line.
+        // Uses the same proven helpers as the failure spec above for symmetry.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            confirm: true
+        ])
+
+        then: "trailing updateRule click happened -- precondition"
+        updateRuleClicked == true
+
+        and: "new failure slots stay falsy on the success path"
+        // Load-bearing discriminators: each of the three flags MUST NOT be set on the
+        // happy path. A regression flipping init values would surface here.
+        result.updateRuleFailed != true
+        result.subscriptionsNotLive != true
+        result.updateRuleError == null
+
+        and: "success reflects the happy path"
+        // partial may remain true incidentally due to fixture-level skipped entries
+        // (silent_rejection on stubbed writes); the load-bearing pins are the three
+        // failure-flag falsy checks above + the repairHints assertion below.
+        result.success == true
+
+        and: "repairHints does NOT carry the updateRule-rejected recovery line"
+        def hints = (result.repairHints as List) ?: []
+        !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+
+        and: "note text reflects the success outcome (consumer-visible response field)"
+        // Load-bearing discriminator: paired with the failure-spec note assertion above.
+        // The note ternary selects "fired (subscriptions populated)" on the success
+        // branch; a typo regression on this branch would still satisfy the success/
+        // failure flag checks above but ship a mis-labelled note to the consumer.
+        result.note?.contains("fired (subscriptions populated)")
+    }
+
+    // ---------- _rmBuildCondition deviceId normalize-before-validate ----------
+
+    def "_rmBuildCondition via addTrigger.condition: singular deviceId normalized to deviceIds list before wire write"() {
+        // W10: unit-level coverage for _rmBuildCondition's singular deviceId normalize.
+        // Previously only T614 (BAT, live-only) covered this path. Asserts the wire
+        // write for the conditional-trigger rDev_<N> field carries the array form, not
+        // a singular integer. A regression to the helper's normalize ordering would
+        // surface as a singular-integer write that RM 5.1 silently stores as {N: null}.
+        //
+        // Schema layout for the conditional-trigger path: _rmBuildCondition writes to
+        // rCapab_1/rDev_1/state_1 at idx=1, then idx advances to 2 and the actual
+        // trigger needs tCapab2/tDev2/tstate2/isCondTrig.2/condTrig.2.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                // Condition wizard fields (idx=1; _rmBuildCondition writes here)
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "condTrig.1", type: "enum", options: ["a"]],
+                [name: "rCapab_1", type: "enum", options: ["Motion"]],
+                [name: "rDev_1",   type: "capability.motionSensor", multiple: true],
+                [name: "state_1",  type: "enum", options: ["active", "inactive"]],
+                // Actual trigger fields (idx=2; addTrigger writes here after condition commits)
+                [name: "tCapab2",  type: "enum", options: ["Switch"]],
+                [name: "tDev2",    type: "capability.switch", multiple: true],
+                [name: "tstate2",  type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.2", type: "bool"],
+                [name: "condTrig.2", type: "enum", options: ["1"]],
+                [name: "hasAll",   type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/7')  { params -> '{"id":"7","name":"Switch"}' }
+        hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
+
+        when: "trigger.condition uses singular integer deviceId"
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [7],
+                condition: [
+                    capability: "Motion",
+                    deviceId: 73,   // singular form; _rmBuildCondition must normalize
+                    state: "active"
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "rDev_1 written as the bare CSV scalar '73' (single-element array form)"
+        // Load-bearing discriminator: a regression to the normalize ordering would
+        // store the bare integer 73 -- RM 5.1 silently turns that into {73: null}
+        // and renders "Broken Condition". The exact-equality check pins the wire
+        // value to the array-derived CSV form. Result-shape assertions are skipped
+        // because the static-schema stub does not actually advance the wizard; the
+        // wire-write check is the only load-bearing assertion here.
+        writtenFields["rDev_1"] == "73"
+    }
+
+    def "_rmBuildCondition via addTrigger.condition: multi-device deviceIds list writes the full CSV (catches bracket-wrap regression)"() {
+        // Companion to the singular-deviceId spec above. The original single-element
+        // assertion `writtenFields["rDev_1"] == "73"` catches the `normalize-not-running`
+        // regression (field null) but does NOT distinguish a `normalize forgets to wrap`
+        // regression: bare 73.toString() yields "73", and [73].joinedCSV also yields "73"
+        // -- both serialize identically to the wire. Multi-device defeats the collision:
+        // bare [73, 8] without normalize-wrap would yield "[73, 8]" or similar, while the
+        // proper deviceIds-list path serializes to "73,8" CSV.
+        //
+        // This spec asserts the multi-device list path produces the CSV form directly,
+        // pinning the serialization invariant that any regression to the wrap step (or
+        // the _rmBuildSettingsBody CSV builder) would surface here.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "condTrig.1", type: "enum", options: ["a"]],
+                [name: "rCapab_1", type: "enum", options: ["Motion"]],
+                [name: "rDev_1",   type: "capability.motionSensor", multiple: true],
+                [name: "state_1",  type: "enum", options: ["active", "inactive"]],
+                [name: "tCapab2",  type: "enum", options: ["Switch"]],
+                [name: "tDev2",    type: "capability.switch", multiple: true],
+                [name: "tstate2",  type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.2", type: "bool"],
+                [name: "condTrig.2", type: "enum", options: ["1"]],
+                [name: "hasAll",   type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/7')  { params -> '{"id":"7","name":"Switch"}' }
+        hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"MotionSensor2"}' }
+
+        when: "trigger.condition uses multi-device deviceIds list directly (no normalize needed)"
+        script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [7],
+                condition: [
+                    capability: "Motion",
+                    deviceIds: [73, 8],   // multi-device list -- bypasses singular normalize
+                    state: "active"
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "rDev_1 written as the CSV form '73,8' (preserves array semantics on the wire)"
+        // Load-bearing discriminator: pins the SERIALIZATION invariant for multi-device
+        // condition lists. A regression in the wrap step (e.g. normalize that wraps the
+        // singular case but forgets to pass-through the list case, or a settings-body
+        // builder that emits "[73, 8]" / "73 8" instead of "73,8") would surface here
+        // while the singular-deviceId spec above (which only asserts "73") would still
+        // pass. The pair catches the bracket-wrap-typo regression class that a single
+        // value cannot distinguish.
+        writtenFields["rDev_1"] == "73,8"
+    }
+
+    // ---------- _rmAddTrigger.condition deviceId normalize-before-validate (A1) ----------
+
+    def "_rmAddTrigger pre-validation observes deviceIds list when trigger.condition uses singular deviceId"() {
+        // A1: covers the wrapper call site at L14682-14689 (pre-validation MUST happen
+        // AFTER the normalize). Production comment: "validator sees the raw .deviceIds
+        // list, an absent value early-returns, and the bogus singular ID surfaces only
+        // as a 'Broken Trigger' render later." Catches a regression to the call ordering
+        // (normalize-after-validate) that would silently accept a non-existent singular
+        // deviceId since the validator early-returns on null .deviceIds.
+        //
+        // _rmValidateDeviceIdsExist queries /device/fullJson/<id>. The pre-validation
+        // throws IllegalArgumentException BEFORE any wizard write fires, so no
+        // selectTriggers schema is needed -- the throw propagates up to the
+        // toolUpdateNativeApp catch and surfaces as result.success=false.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // Switch device 7 exists; condition device 99999 returns empty (not on hub).
+        hubGet.register('/device/fullJson/7')     { params -> '{"id":"7","name":"Switch"}' }
+        hubGet.register('/device/fullJson/99999') { params -> '' }  // empty -- not on hub
+
+        when: "trigger.condition uses singular deviceId pointing at a non-existent device"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [7],
+                condition: [
+                    capability: "Motion",
+                    deviceId: 99999,  // singular, non-existent
+                    state: "active"
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "pre-validation rejected the non-existent device"
+        result.success == false
+        // Load-bearing discriminator: this assertion is ONLY satisfied when the
+        // validator ran AFTER the normalize -- the validator early-returns on a null
+        // deviceIds list (`if (!(ids instanceof List)) return`), so the only way the
+        // error message names device '99999' is if the normalize fed the validator a
+        // [99999] list. A regression to normalize-after-validate would early-return
+        // on the un-normalized null .deviceIds list and the call would proceed past
+        // pre-validation. The error message must name both the device ID AND the
+        // addTrigger.condition.deviceIds context (proves it came from the
+        // trigger.condition validator at L14691, not the top-level deviceIds validator).
+        result.error?.toString()?.contains("99999")
+        result.error?.toString()?.contains("addTrigger.condition.deviceIds")
+    }
+
+    // ---------- STPage walker-cancel symmetry with doActPage (A3) ----------
+
+    def "addRequiredExpression: STPage walker-thrown exception triggers exactly one cancelCapab via outer-catch fallback"() {
+        // A3: STPage analog of the doActPage F4 spec at L16153. When _rmFetchConfigJson
+        // throws from inside _rmRevealStep (the post-trigger re-fetch) during STPage
+        // walk, the walker never invokes its cancel closure -- the exception comes
+        // from inside the reveal step's plumbing, not from a guarded validation path.
+        // The outer catch in _rmAddRequiredExpression must observe that
+        // cancelledByWalker is still false and issue cancelCapab itself. Mirrors F4
+        // structurally (sibling-pattern fidelity per N.13).
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def cancelCapabClicks = 0
+        def rCapabWritten = false
+        def stFetchesAfterRCapab = 0
+        def stThrowArmed = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[cancelCapab]"] == "clicked") {
+                cancelCapabClicks++
+            }
+            if (path == "/installedapp/update/json" && body["settings[rCapab_1]"] != null) {
+                rCapabWritten = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Throw on the SECOND post-rCapab fetch -- the revealStep post-trigger fetch
+            // (the first post-rCapab fetch is _rmWriteSettingOnPage's verify-fetch,
+            // which is wrapped in its own try/catch and would swallow the exception).
+            // Mirrors F4's doActPage throw pattern.
+            if (rCapabWritten) {
+                stFetchesAfterRCapab++
+                if (stFetchesAfterRCapab == 2 && !stThrowArmed) {
+                    stThrowArmed = true
+                    throw new RuntimeException("simulated mid-walk fetch error on STPage (revealStep post-trigger fetch)")
+                }
+            }
+            def inputs = [
+                [name: "cond",       type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",   type: "enum", options: ["Mode"]],
+                [name: "hasAll",     type: "button"],
+                [name: "cancelCapab", type: "button"],
+                [name: "doneST",     type: "button"]
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        sharedLocation.modes = [[id: "3", name: "Night"]]
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Mode", state: "Night"
+            ]]],
+            confirm: true
+        ])
+
+        then: "addRequiredExpression surfaced the failure -- precondition"
+        result.success == false
+
+        and: "the throw injection actually fired -- pinning we exercised the right path"
+        stThrowArmed == true
+
+        and: "outer-catch fallback issued EXACTLY ONE cancelCapab click"
+        // Load-bearing discriminator pinning TWO regression classes (same shape as F4):
+        //   (a) cancelCapabClicks == 0: outer-catch fallback removed -> wizard leaks
+        //   (b) cancelCapabClicks == 2: cancelledByWalker flag broken -> double-cancel,
+        //       second click fails, surfaces false wizardStuck=true
+        // Sibling-pattern fidelity per N.13: same tightening as the doActPage F4 spec.
+        cancelCapabClicks == 1
     }
 }

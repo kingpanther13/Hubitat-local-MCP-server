@@ -3015,7 +3015,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed. (Bulk addTriggers[] fires updateRule once at the end of the batch.)
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed (unless updateRule itself is rejected -- see PARTIAL-SUCCESS HANDLING for the `subscriptionsNotLive` recovery). (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -3053,12 +3053,12 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Note: addRequiredExpression supports a Variable LHS with a literal numeric RHS via `value`; `compareToVariable` (variable-vs-variable) is currently only available on `addTrigger.condition`.[[/FLAT_TRIM]]
+  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`). Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead.[[FLAT_TRIM]] Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) is currently only available on `addTrigger.condition` **because** the `selectTriggers` sub-wizard exposes the `xVarR_<N>` field for variable-vs-variable comparison, while the STPage and doActPage wizard schemas do not expose an equivalent field in tested firmware versions. `addRequiredExpression` and `addAction` IF-expressions support a Variable LHS with a literal numeric RHS via `value` only.[[/FLAT_TRIM]]
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure."""
+PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]"""
                     ],
                     addTriggers: [
                         type: "array",
@@ -3116,7 +3116,8 @@ Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator
 Device-relative comparison: {capability:'Temperature', deviceIds:[N], comparator:'>',
   compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
   Compares a device's attribute to another device's attribute (with optional numeric offset)
-  rather than a literal threshold. The RHS-type selector is discovered from the live schema.
+  rather than a literal threshold. The RHS-type selector is discovered from the live schema.[[FLAT_TRIM]]
+  (Firmware-variant field names the walker discovers between: rDev2_<N>/refDev_<N>/compareDevId_<N> for reference-device, rCustomAttr2_<N>/refAttr_<N>/compareAttr_<N> for reference-attribute, offset_<N>/devOffset_<N> for optional offset; the walker fails loud if reference-device or reference-attribute is absent post-rhsType, and degrades with `offset_field_not_revealed` sentinel if offset is absent.)[[/FLAT_TRIM]]
 
 Sub-expressions (parens) -- for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
   {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
@@ -3124,9 +3125,11 @@ The walker recursively handles nested sub-expressions of arbitrary depth.
 
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent (some firmware versions), the entry also carries fallbackApplied: true if a literal state_<N> fallback was written, or fallbackApplied: false if neither state nor value was available and the condition will be incomplete.[[/FLAT_TRIM]]
+PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.[[FLAT_TRIM]] Sentinel reasons callers may see in settingsSkipped: `rhs_type_not_revealed` (compareToDevice RHS-type toggle absent on firmware; entry also carries fallbackApplied: true if a literal state_<N> fallback was written, or false if neither state nor value was available and the condition will be incomplete), `offset_field_not_revealed` (compareToDevice optional offset field absent; degrades partial:true with the offset value preserved on the entry), `api_unavailable` paired with `key: "variable-validation"` (Variable picker returned an empty option list so the schema-side name validation was skipped; write still proceeds), `reveal_fallback_to_existing_field` (walker matched an already-visible field instead of a newly-revealed one -- INFORMATIONAL, does NOT flip partial by itself).[[/FLAT_TRIM]]
 
-On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.
+On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.[[FLAT_TRIM]]
+
+Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]
 
 Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'detected'/'clear' for CO2, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper). Full table in TOOL_GUIDE.md."""
                     ],
@@ -3335,7 +3338,8 @@ Capability families and the spec fields each accepts:
 
   Per-condition shape inside any expression:
     {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
-    Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes because RM 5.1 expects the array form in rDev_<N> (bare integer bypasses pre-validation and silently stores {N: null}, rule renders but never fires). If both are provided, deviceIds wins. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
+    Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes because RM 5.1 expects the array form in rDev_<N> (bare integer bypasses pre-validation and silently stores {N: null}, rule renders but never fires). If both are provided, deviceIds wins.[[/FLAT_TRIM]]
+    [[FLAT_TRIM]]Nested subExpression: NOT supported on addAction -- rejected with a targeted error. Use addRequiredExpression for nested expressions, or flatten. The doActPage walker rejects nested subExpression with the message "nested subExpression on this row is not yet supported"; the addAction pre-pass also rejects to surface a clear error before any wizard write. addRequiredExpression supports nesting of arbitrary depth today.[[/FLAT_TRIM]]
     Extended per-capability shapes (Mode modeIds, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: see addRequiredExpression's "Extended per-capability spec shapes" above -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ (see PARTIAL-SUCCESS HANDLING for each tool's specific response shape). Full discrete-event state-value table in TOOL_GUIDE.md.
 
 Variable-sourced values (works on dimmer.setLevel, delay):
@@ -3360,7 +3364,7 @@ Wire-format quirks the helper handles for you (so callers don't need to know):
   2. doActPage's schema is incremental: actionDone only appears AFTER all required type-specific fields are set. The helper re-fetches the schema before each write.
   3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST.
 
-PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent in an expression condition, settingsSkipped entries carry fallbackApplied: true/false (true = literal state_<N> was written as fallback; false = no fallback available, condition is incomplete).[[/FLAT_TRIM]]
+PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent in an expression condition, settingsSkipped entries carry fallbackApplied: true/false (true = literal state_<N> was written as fallback; false = no fallback available, condition is incomplete). For expression-action conditions (ifThen/elseIf/repeatWhile/waitExpression), settingsSkipped sentinel reasons are the same set the shared `_rmWalkConditionReveal` walker emits on the addRequiredExpression side -- see addRequiredExpression PARTIAL-SUCCESS HANDLING above for the full enumeration (`rhs_type_not_revealed`, `offset_field_not_revealed`, `api_unavailable` paired with `variable-validation`, `reveal_fallback_to_existing_field`). Naming-divergence rationale: `addRequiredExpression` uses `expressionNotLive` **because** the failure prevents the rule's gate evaluator from picking up the new expression (expression-side consequence), while `addTrigger` uses `subscriptionsNotLive` because the failure prevents device-event subscription from firing (trigger-side consequence). Both share `updateRuleFailed` and `updateRuleError` for the common facts.[[/FLAT_TRIM]]
 
 On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
                     ],
@@ -17047,24 +17051,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             // Normalize singular deviceId -> deviceIds before pre-validation **because**
             // _rmBuildCondition's internal normalization runs too late to protect
             // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
-            // and would silently skip a singular deviceId. The recursion guards against
-            // future subExpression-on-doActPage support without re-introducing a normalize
-            // gap (the reject above will catch unsupported shapes today).
-            def normExprCondList
-            normExprCondList = { List cl ->
-                cl.each { entry ->
-                    if (!(entry instanceof Map)) return
-                    def em = entry as Map
-                    if (em.deviceIds == null && em.deviceId != null) {
-                        em.deviceIds = [em.deviceId]
-                    }
-                    if (em.subExpression instanceof Map) {
-                        def sub = (em.subExpression as Map).conditions
-                        if (sub instanceof List) normExprCondList.call(sub as List)
-                    }
+            // and would silently skip a singular deviceId.
+            // Flat-only normalization; subExpression is rejected at the pre-pass above --
+            // if that gate is ever relaxed, restore a recursive walk-in here.
+            exprConds.each { entry ->
+                if (!(entry instanceof Map)) return
+                def em = entry as Map
+                if (em.deviceIds == null && em.deviceId != null) {
+                    em.deviceIds = [em.deviceId]
                 }
             }
-            normExprCondList.call(exprConds as List)
             exprConds.eachWithIndex { c, cIdx ->
                 if (c instanceof Map) {
                     _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
@@ -18170,16 +18166,20 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // back-to-back (the walker's own call inside cancelInFlightActCond, then the
         // outer catch's redundant call). The second always fails (nothing to cancel),
         // setting actWizardCleanupFailed=true and surfacing a false wizardStuck=true.
+        // currentActCondIdx is updated by the per-condition loop below so cancel-cleanup
+        // warn messages name the in-flight condition index -- without it, N back-to-back
+        // failures produce N indistinguishable log entries.
         def actWizardCleanupFailed = false
         def actWizardCleanupErr = null
         def actCancelledByWalker = false
+        def currentActCondIdx = -1
         def cancelInFlightActCond = {
             actCancelledByWalker = true
             try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
             catch (Exception cancelExc) {
                 actWizardCleanupFailed = true
                 actWizardCleanupErr = cancelExc.message
-                mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
+                mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage at conditions[${currentActCondIdx}]: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
             }
         }
         // doActPage condition-wizard walk: write cond=a, discover the firmware-assigned
@@ -18190,16 +18190,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // The condition-wizard field names are identical on both pages (RelrDev_<N>,
         // rCustomAttr_<N>, state_<N>, etc.) -- only the page name differs.
         conditions.eachWithIndex { condRaw, i ->
+            currentActCondIdx = i
             if (!(condRaw instanceof Map)) {
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}] is not a Map")
             }
             def cond = condRaw as Map
             // Reject subExpression on this path until the recursive walker lands -- the
-            // pre-pass at L16953 already recurses through subExpression.conditions[] for
-            // device-ID normalization (so callers naturally assume nesting works), but the
-            // walker only handles the flat condition shape on doActPage. Surface a targeted
-            // message rather than the generic "capability is required" that the next check
-            // would produce. The recursive doActPage walker is tracked as a follow-up;
+            // doActPage walker only handles the flat condition shape today (the pre-pass at
+            // L16956 also rejects subExpression before reaching here, but this in-walker check
+            // is the defense-in-depth half of the gate). Surface a targeted message rather
+            // than the generic "capability is required" that the next check would produce.
             // _rmAddRequiredExpression (STPage) supports nested subExpression today.
             if (cond.subExpression != null) {
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: nested subExpression on this row is not yet supported. _rmAddRequiredExpression (addRequiredExpression) supports nested expressions; on ${cap} rows, either flatten the condition list, or capture the sub-expression as a Required Expression instead.")
@@ -21100,14 +21100,19 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // (see below). _rmWalkConditionReveal calls cancelInFlightCondition before
     // every throw; the outer catch checks this flag so it does not issue a
     // redundant second cancelCapab click.
+    // currentCondIdx is updated by the walkConds per-condition loop so cancel-cleanup
+    // warn messages name the in-flight condition index -- without it, N back-to-back
+    // failures produce N indistinguishable log entries. Mirrors doActPage's
+    // currentActCondIdx at L18091.
     def cancelledByWalker = false
+    def currentCondIdx = -1
     def cancelInFlightCondition = {
         cancelledByWalker = true
         try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") }
         catch (Exception cancelExc) {
             wizardCleanupFailed = true
             wizardCleanupErr = cancelExc.message
-            mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
+            mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage at conditions[${currentCondIdx}]: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
         }
     }
 
@@ -21123,6 +21128,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     def walkConds
     walkConds = { List condList, String outerOp, List outerOpsList ->
         condList.eachWithIndex { condRaw, i ->
+            currentCondIdx = i
             if (!(condRaw instanceof Map)) {
                 throw new IllegalArgumentException("conditions[${i}] is not a Map")
             }
@@ -21753,15 +21759,35 @@ def toolUpdateNativeApp(args) {
         // (trigger row exists but some fields didn't land) fire updateRule
         // anyway -- the trigger IS in the rule and subscriptions should bake
         // from whatever committed, matching the addAction pattern.
+        //
+        // Symmetric with addRequiredExpression: if the trigger row commits but
+        // updateRule is rejected, eventSubscriptions never populate -- the trigger
+        // is in the rule's appSettings but the running rule instance never
+        // re-subscribes to the device events that fire it. Surface this via
+        // dedicated response slots (updateRuleFailed / subscriptionsNotLive /
+        // updateRuleError) so callers can detect without log-grep, and flip
+        // success=false + partial=true so they do not treat the response as
+        // fully baked. Mirrors the propagation pattern at L21731 for
+        // addRequiredExpression's trailing updateRule.
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
         if (trigResult?.success != false) {
             try { _rmClickAppButton(appId, "updateRule") }
             catch (Exception updateExc) {
+                updateRuleFailed = true
+                subscriptionsNotLive = true
+                updateRuleError = updateExc.message
                 mcpLog("warn", "rm-native", "addTrigger: trailing updateRule click failed for app ${appId} -- trigger committed but subscriptions may not populate until the next updateRule: ${updateExc.message}")
             }
         }
+        def trigRepairHints = (trigResult?.repairHints as List) ?: []
+        if (updateRuleFailed) {
+            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+        }
         return [
-            success: trigResult?.success != false,
-            partial: trigResult?.partial,
+            success: (trigResult?.success != false) && !updateRuleFailed,
+            partial: (trigResult?.partial == true) || updateRuleFailed,
             appId: appId,
             backup: backup,
             triggerIndex: trigResult?.triggerIndex,
@@ -21769,10 +21795,13 @@ def toolUpdateNativeApp(args) {
             settingsSkipped: trigResult?.settingsSkipped,
             configPageError: trigResult?.configPageError,
             hubRenderError: trigResult?.hubRenderError,
-            repairHints: trigResult?.repairHints,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: trigRepairHints,
             health: trigResult?.health,
             verificationFetchFailed: trigResult?.verificationFetchFailed,
-            note: "Trigger added + updateRule fired (subscriptions populated). Successive addTrigger calls now self-contain their re-init -- no manual updateRule needed."
+            note: "Trigger added + updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired (subscriptions populated). Successive addTrigger calls now self-contain their re-init -- no manual updateRule needed'}."
         ]
     }
 
@@ -22187,7 +22216,7 @@ def toolUpdateNativeApp(args) {
                 result.settingsSkipped = unknownSettings
                 def settingWord = (unknownSettings.size() == 1) ? "Setting" : "Settings"
                 def beVerb = (unknownSettings.size() == 1) ? "is" : "are"
-                result.unknownSettingsWarning = "${settingWord} ${unknownSettings} ${beVerb} not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental — e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
+                result.unknownSettingsWarning = "${settingWord} ${unknownSettings} ${beVerb} not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental -- e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
             }
             if (!isMainPage) {
                 result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call update_native_app(button='updateRule') to commit."
@@ -23840,7 +23869,31 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 
 Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
 
-Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types (Smoke, CO, CO2, Tamper), `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. See `docs/rm_action_subtype_schemas.md` for the full state-value table.''',
+Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types (Smoke, CO, CO2, Tamper), `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
+
+### Extended per-capability spec shapes
+
+Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expression.conditions[]` (doActPage); the shared walker `_rmWalkConditionReveal` handles every per-capability reveal sequence below. `addTrigger.condition` has a narrower support list (see selectTriggers note below).
+
+- **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema.
+- **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
+- **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}`. Fail-loud when name is not in the schema enum AND the option list is non-empty; degrades with `variable-validation` / `api_unavailable` sentinel when the enum is empty.
+- **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}`. Firmware-variant field names: `rDev2_<N>`/`refDev_<N>`/`compareDevId_<N>`, `rCustomAttr2_<N>`/`refAttr_<N>`/`compareAttr_<N>`, `offset_<N>`/`devOffset_<N>`.
+- **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
+
+`addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker.
+
+### Partial-success and trailing-updateRule response slots
+
+`settingsSkipped[]` sentinel reasons callers may see:
+- `rhs_type_not_revealed` -- compareToDevice RHS-type toggle absent on firmware. Entry also carries `fallbackApplied: true|false` (literal state_<N> fallback applied vs none available).
+- `offset_field_not_revealed` -- compareToDevice optional offset field absent. Flips `partial:true`.
+- `api_unavailable` paired with `key: "variable-validation"` -- Variable picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
+- `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
+
+Trailing-updateRule failure slots (`addRequiredExpression` and `addTrigger`):
+- `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. `repairHints` adds a recovery line pointing at `update_native_app(button='updateRule', confirm=true)`.
+- `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to its device events -- retry `updateRule` to populate subscriptions.''',
 
         create_native_app_reference: '''## `create_native_app` reference
 

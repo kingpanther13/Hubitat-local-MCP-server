@@ -2320,7 +2320,7 @@ All 103 tools are covered by at least one test, excluding the destructive operat
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 211 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 4 deviceId normalization) plus 13 excluded destructive operations documented for manual testing
+**Total: 212 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3117,19 +3117,40 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ---
 
-### T616 — addAction ifThen nested subExpression singular deviceId: recursive normalization
+### T616 — addAction ifThen rejects nested subExpression with actionable recovery message
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT NestedCond DeviceId'. Identify two Motion sensor deviceIds (motionA, motionB) on the hub.",
-  "test_prompt": "Add an ifThen action to 'BAT NestedCond DeviceId' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Motion', deviceId:<motionA>, state:'active'}, {subExpression:{conditions:[{capability:'Motion', deviceId:<motionB>, state:'inactive'}]}}], operator:'OR'}} -- both the outer condition AND the inner subExpression carry singular integer deviceIds. Verify the rule bakes without broken markers.",
-  "teardown_prompt": "Delete 'BAT NestedCond DeviceId'."
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT NestedCond Reject'. Identify one Motion sensor deviceId on the hub.",
+  "test_prompt": "Add an ifThen action to 'BAT NestedCond Reject' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'active'}, {subExpression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'inactive'}]}}], operator:'OR'}} -- the second condition is a nested subExpression. Verify the call rejects WITHOUT writing anything to the rule.",
+  "teardown_prompt": "Delete 'BAT NestedCond Reject'."
 }
 ```
 
-**Expected**: `addAction` completes with `success=true`. `check_rule_health` reports no broken markers. The IF paragraph renders both branches of the OR expression (outer Motion-active and inner Motion-inactive in parens). Exercises the recursive normCondList walking into subExpression.conditions[] of arbitrary depth.
+**Expected**: `addAction` returns `success=false`. The `error` message contains the phrase `nested subExpression is not yet supported` (the production reject text -- broad phrasing matches both the pre-pass at `_rmAddAction` and the in-walker reject at `_rmWalkConditionReveal`; the pre-pass is the path that actually fires for this input). `check_rule_health` reports no actions on the rule and no broken markers (the pre-pass rejection fires BEFORE any wizard write). The rejection guides the agent toward `addRequiredExpression` (which DOES support nested subExpression) or flattening the conditions list.
 
-**Failure modes**: Either the outer or the inner condition renders as Broken Condition. The recursive normalization missed the inner deviceId, so the inner rDev_<N> stored a singular integer that the wizard silently dropped. Health shows a "Broken Condition" marker on the inner-paren slot only.
+**Failure modes**: Call returns `success=true` (recursive walker support quietly landed without doc updates -- in which case the docs that ship today need to advertise it). Call returns `success=false` but the error message lacks the targeted recovery hint (regression to the generic "capability is required" pre-fix behaviour, leaving the agent without an actionable next step). A broken action row gets written to the rule (the in-walker reject at `_rmWalkConditionReveal` fired AFTER a partial write; outer pre-pass should have rejected first).
+
+---
+
+### T617 — addRequiredExpression Mode condition on static-schema fixture: reveal_fallback informational sentinel
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Reveal Fallback'. Identify one mode name (e.g. 'Night') on the hub.",
+  "test_prompt": "Add a Required Expression to 'BAT Reveal Fallback' using addRequiredExpression: {conditions:[{capability:'Mode', state:'Night'}]}. After it commits, inspect result.settingsSkipped -- if the firmware exposes modes<N> always-visible (static schema rather than progressive disclosure), the entry should include {key: '<pattern>', reason: 'reveal_fallback_to_existing_field', condIdx: 0}. If the firmware exposes modes<N> only after the rCapab='Mode' write (progressive disclosure -- typical on current firmware), no sentinel fires and the entry is absent. Confirm result.success=true and result.partial!=true in BOTH cases -- the sentinel is informational and does NOT degrade.",
+  "teardown_prompt": "Delete 'BAT Reveal Fallback'."
+}
+```
+
+**Expected**: `addRequiredExpression` completes with `success=true` and `partial!=true`. The Required Expression paragraph renders correctly (e.g. "Mode is Night"). On firmware where modes<N> is always-visible, `settingsSkipped` contains a `reveal_fallback_to_existing_field` entry stamped with `condIdx=0` -- informational diagnostic that the walker fell back to matching an already-visible field rather than a newly-revealed one. On firmware where modes<N> reveals progressively, the entry is absent (revealedNew matched). The presence of the sentinel does NOT flip partial -- this is the load-bearing contract.
+
+**Firmware dependence -- which assertion is load-bearing here depends on which firmware the hub is running**:
+- On **progressive-disclosure firmware** (the default for modern Hubitat hubs), the sentinel's ABSENCE is load-bearing. A regression that emits the sentinel on every reveal (rather than only when `fallbackToExisting=true`) would produce a false-positive `reveal_fallback_to_existing_field` entry here even though the schema advanced normally.
+- On **static-schema firmware**, the sentinel's PRESENCE is load-bearing. A regression that reverts the wrapper's push (or breaks the `fallbackToExisting` detection) would leave settingsSkipped without the entry on the static-schema path.
+- The Spock spec pair (`addRequiredExpression: walker pushes reveal_fallback_to_existing_field sentinel when only revealedAny matches` + `addRequiredExpression: progressive-disclosure reveal does NOT push reveal_fallback sentinel`) covers BOTH firmware classes deterministically via stubbed fixtures. T617 is the live-hub smoke-check for whichever path the hub-under-test actually exposes.
+
+**Failure modes**: `partial=true` set when the only finding is the `reveal_fallback_to_existing_field` sentinel (regression in the wrapper's "informational does not flip partial" contract). Sentinel pushed on every reveal even when the schema legitimately advanced (the wrapper stopped distinguishing `fallbackToExisting=true` from `false`; every progressive-disclosure write would emit false-positive sentinels). Sentinel never pushed even on a static-schema fixture (the wrapper's push was reverted).
 
 ---
 
@@ -3146,7 +3167,8 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) + T616 (recursive subExpression) (182 total)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total)
+11. **Spec-only coverage by necessity**: the trailing-updateRule failure paths on `addTrigger` and `addRequiredExpression` (response slots `updateRuleFailed`, `subscriptionsNotLive` / `expressionNotLive`, `updateRuleError`) are covered exclusively by Spock specs in `src/test/groovy/server/ToolRmNativeCrudSpec.groovy` (the `addTrigger: trailing updateRule failure` / `SUCCESS` pair + the corresponding addRequiredExpression pair). Live-hub BAT coverage was considered but skipped: deterministically forcing the trailing `_rmClickAppButton(updateRule)` to throw against a real hub requires hub-side disruption (firmware downgrade / network partition mid-call / hub-config corruption) that is not realistically scriptable from an agent prompt. The Spock specs exercise the production response-shape contract directly via stub injection and constitute the regression gate.
 
 ---
 

@@ -1344,16 +1344,30 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #    API endpoint slug, etc.).
     default_anchors = {
         "update_native_app_reference": [
-            # setVariable / Hub Variable addAction family (TOOL_GUIDE.md:628)
+            # setVariable / Hub Variable addAction family
             "setVariable",
-            # Mode action's modeName-resolution behavior (TOOL_GUIDE.md:627)
+            # Mode action's modeName-resolution behavior
             "modeName",
-            # Discrete-event sensor note for STPage capability list (TOOL_GUIDE.md:664)
+            # Discrete-event sensor note for STPage capability list
             "discrete events",
-            # Variable comparison capability for STPage (TOOL_GUIDE.md:659)
+            # Variable comparison capability for STPage
             "Variable comparison",
             # Lowercase parameter type validator only accepts these
             "lowercase",
+            # Extended per-capability shapes heading (was a dangling cross-reference
+            # before -- pin both surfaces now so future drift fires the anchor lint).
+            "Extended per-capability spec shapes",
+            # addTrigger.condition narrowness vs the wider expression conditions.
+            # The selectTriggers narrowness phrasing was overclaimed before; pin both
+            # surfaces so a future "all extended shapes apply here" regression fires.
+            "selectTriggers",
+            # Nested subExpression rejection on addAction (F7 scope-document).
+            # The reject is in production today; both surfaces must keep advertising it.
+            "nested subExpression",
+            # Trailing-updateRule failure response slots (F2 addRequiredExpression
+            # + B5 addTrigger parity). Pin one slot name per side.
+            "expressionNotLive",
+            "subscriptionsNotLive",
         ],
     }
     key_to_content_anchors = anchors_override if anchors_override is not None else default_anchors

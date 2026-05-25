@@ -431,12 +431,14 @@ Opens an IF block. Close with `capability='endIf'`. Use `elseIf`/`else` for bran
 
 `expression.conditions[]` follow the addRequiredExpression per-condition spec shape -- see "Per-condition spec" section below. The same per-capability extended fields apply: Mode `modeIds`, Between two times `start`/`end`, Variable `variable`+`comparator`, Custom Attribute `attribute`+`comparator`, compareToDevice Map. The shared walker `_rmWalkConditionReveal` handles all per-capability reveal sequences for ifThen / elseIf / repeatWhile / waitExpression (doActPage) and addRequiredExpression (STPage).
 
+**Note: nested `subExpression` is REQUIRED-EXPRESSION-ONLY today.** `ifThen` (and its siblings `elseIf` / `repeatWhile` / `waitExpression`) rejects nested `subExpression` in `expression.conditions[]` with `"nested subExpression on this row is not yet supported"`. Either flatten the conditions list, or move the nested expression into a Required Expression -- `addRequiredExpression` supports nesting. See the `subExpression` row in the per-condition field table below.
+
 ### elseIf
 Continues an IF block. Needs a preceding `ifThen`.
 
 | Field | Type | Notes |
 |---|---|---|
-| `expression` | Map | Required. Same `{conditions, operator?, operators?}` shape as ifThen. `expression.conditions[]` follow the addRequiredExpression per-condition spec. |
+| `expression` | Map | Required. Same `{conditions, operator?, operators?}` shape as ifThen. `expression.conditions[]` follow the addRequiredExpression per-condition spec. Nested `subExpression` is REQUIRED-EXPRESSION-ONLY -- see ifThen note above. |
 | `rawSettings` | Map | |
 
 ### else
@@ -502,7 +504,7 @@ Exactly one of `operator` or `operators` must be supplied when `conditions.size(
 | `start` | Map | For `capability='Between two times'`: `{type:'clock'\|'sunrise'\|'sunset', time?:'HH:mm', offset?:<minutes>}`. `time` is required when `type='clock'`; pass hub-local wall-clock (e.g. `'08:00'`), the walker converts to ISO datetime internally. `offset` (minutes) is required when `type='sunrise'` or `'sunset'`. |
 | `end` | Map | For `capability='Between two times'`: same shape as `start`. |
 | `compareToDevice` | Map | For numeric caps: `{deviceId:<N>, attribute:'<attr>', offset?:<N>}`. Compares against another device's attribute. |
-| `subExpression` | Map | Nested paren group: `{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}`. |
+| `subExpression` | Map | **`addRequiredExpression`-only.** Nested paren group: `{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}`. The STPage walker recursively handles nested sub-expressions of arbitrary depth. `addAction` / `ifThen` / `elseIf` / `repeatWhile` / `waitExpression` reject this field with a targeted error -- flatten the conditions list or move the nested expression to a Required Expression. |
 | `not` | Boolean | `true` to invert this condition (NOT). Default false. |
 | `rawSettings` | Map | Escape hatch: `{fieldName: value}` for fields not yet mapped above. |
 
