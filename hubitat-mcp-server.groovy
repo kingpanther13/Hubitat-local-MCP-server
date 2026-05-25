@@ -16088,6 +16088,37 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     if (stuckEditAct != null) {
         throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) restore_item_backup with a recent snapshot.")
     }
+    // Pre-flight (issue #178): if the action being deleted is a structural
+    // element (IF / ELSE-IF / ELSE / END-IF / Repeat / While / End-Repeat),
+    // simulate the deletion and refuse if it would make a currently-balanced
+    // rule worse — comparing counts catches the case where the rule is
+    // already imbalanced and the deletion would happen to FIX it (still
+    // allowed). This blocks the #178 trigger at the source: no delAct click
+    // is sent if the deletion would break the structure, so there is no
+    // post-response-commit race to leak through.
+    def status = _rmFetchStatusJson(appId)
+    def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    def aType = settingsByName["actType.${actionIdx}".toString()]?.value?.toString()
+    def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
+    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
+    if (aType in ["condActs", "repeatActs"] && sType in structuralSubTypes) {
+        def currentSeq = _rmStructuralSequenceFromSettings(settingsByName)
+        def projectedSeq = _rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set))
+        def currentIssues = _rmStructuralIssuesFromSequence(currentSeq)
+        def projectedIssues = _rmStructuralIssuesFromSequence(projectedSeq)
+        if (projectedIssues.size() > currentIssues.size()) {
+            def humanKind = [
+                "getIfThen": "IF",
+                "getElseIf": "ELSE-IF",
+                "getElse": "ELSE",
+                "getEndIf": "END-IF",
+                "getRepeat": "Repeat",
+                "getWhile": "Repeat-While",
+                "getStopRepeat": "End-Repeat"
+            ][sType]
+            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would leave the rule imbalanced (${projectedIssues.first()}). Remove the matching opener/closer first, or use replaceActions to rebuild the action list atomically. This refusal is a #178 pre-flight check — RM is not touched.")
+        }
+    }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
     // Verify the action actually disappeared. RM 5.1 silently no-ops the
     // delAct click if the button-handler dispatch races with another edit.
@@ -16870,6 +16901,32 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
     // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
     // action — each capability's branch validates as needed.
+
+    // Pre-flight (issue #178): adding a bare closer (endIf / stopRepeat)
+    // when there is no matching opener leaves the rule with an orphaned
+    // closer. Asymmetric on purpose: adding an opener (ifThen / repeat /
+    // repeatWhile) without a closer is a normal multi-step build, so we
+    // do NOT refuse those — the caller will add the matching closer in a
+    // follow-up call. Only refuse closers that have nothing to close.
+    if (cap?.toLowerCase() in ["endif", "stoprepeat"]) {
+        def status = _rmFetchStatusJson(appId)
+        def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+        def currentSeq = _rmStructuralSequenceFromSettings(settingsByName)
+        def maxExistingIdx = currentSeq.collect { it.idx as Integer }.max() ?: 0
+        def projectedPair = _rmStructuralPairForCapability(cap)
+        def projectedSeq = currentSeq + [[
+            idx: (maxExistingIdx + 1),
+            actType: projectedPair[0],
+            actSubType: projectedPair[1]
+        ]]
+        def currentIssues = _rmStructuralIssuesFromSequence(currentSeq)
+        def projectedIssues = _rmStructuralIssuesFromSequence(projectedSeq)
+        if (projectedIssues.size() > currentIssues.size()) {
+            def openerCap = cap.equalsIgnoreCase("endIf") ? "ifThen" : "repeat"
+            def openerKind = cap.equalsIgnoreCase("endIf") ? "IF" : "Repeat"
+            throw new IllegalArgumentException("addAction(${cap}) blocked: rule ${appId} has no matching open ${openerKind} block on the action stack; this ${cap} would render as an orphaned closer. Add an addAction(capability='${openerCap}', ...) first (and its body), then this closer. This refusal is a #178 pre-flight check — RM is not touched.")
+        }
+    }
 
     // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
     // {<bogusId>: null} for unknown IDs in any device-bearing setting and
@@ -18745,6 +18802,116 @@ private Map _rmFetchStatusJson(Integer appId) {
  * .multiple sidecar fields.
  */
 /**
+ * Walk a sequence of [idx, actType, actSubType] entries (in numerical
+ * order) tracking IF / Repeat block depth via a stack. Returns the list
+ * of structural issues (empty list = balanced).
+ *
+ * Used by _rmCheckRuleHealth for post-mutation detection AND by the
+ * pre-flight refusal paths in _rmDeleteAction / _rmAddAction /
+ * toolUpdateNativeApp's replaceActions handler — they all build a
+ * projected sequence (current state minus removals plus additions) and
+ * compare projected-issues vs current-issues to decide whether to refuse
+ * the mutation before it touches RM.
+ *
+ * Groovy's List.pop() removes from the FRONT of a List; the walker uses
+ * `<<` for append and `removeAt(size-1)` for tail-pop to preserve the
+ * conventional stack semantics.
+ */
+private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
+    def issues = []
+    def stack = []
+    sequence.each { entry ->
+        def idx = entry?.idx
+        def aType = entry?.actType?.toString()
+        def sType = entry?.actSubType?.toString()
+        if (aType == "condActs") {
+            if (sType == "getIfThen") {
+                stack << [kind: "if", openIdx: idx]
+            } else if (sType == "getElseIf" || sType == "getElse") {
+                if (stack.isEmpty() || stack[-1].kind != "if") {
+                    issues << ("action ${idx} (${sType == 'getElse' ? 'ELSE' : 'ELSE-IF'}) is outside any IF block — orphaned branch keyword".toString())
+                }
+            } else if (sType == "getEndIf") {
+                if (stack.isEmpty()) {
+                    issues << ("action ${idx} (END-IF) has no matching IF — orphaned closer (too many END-IFs)".toString())
+                } else if (stack[-1].kind != "if") {
+                    def open = stack[-1]
+                    issues << ("action ${idx} (END-IF) closes a Repeat block opened at action ${open.openIdx} — mismatched block closer".toString())
+                    stack.removeAt(stack.size() - 1)
+                } else {
+                    stack.removeAt(stack.size() - 1)
+                }
+            }
+        } else if (aType == "repeatActs") {
+            if (sType == "getRepeat" || sType == "getWhile") {
+                stack << [kind: "repeat", openIdx: idx]
+            } else if (sType == "getStopRepeat") {
+                if (stack.isEmpty()) {
+                    issues << ("action ${idx} (End Repeat) has no matching Repeat — orphaned closer".toString())
+                } else if (stack[-1].kind != "repeat") {
+                    def open = stack[-1]
+                    issues << ("action ${idx} (End Repeat) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
+                    stack.removeAt(stack.size() - 1)
+                } else {
+                    stack.removeAt(stack.size() - 1)
+                }
+            }
+        }
+    }
+    stack.each { open ->
+        def label = open.kind == "if" ? "IF" : "Repeat"
+        def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
+        issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
+    }
+    issues
+}
+
+/**
+ * Build the structural-balance sequence from a rule's live appSettings
+ * map (keyed by name). Collects actType.<N>/actSubType.<N> pairs in
+ * numerical order. Optional excludeIndices (used by removeAction
+ * pre-flight) skip listed action indices so the walker sees the
+ * post-deletion state.
+ */
+private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set)) {
+    def indices = [] as TreeSet
+    settingsByName.each { name, recIgnored ->
+        def m = name?.toString() =~ /^actType\.(\d+)$/
+        if (m.matches()) indices << ((m[0] as List)[1] as Integer)
+    }
+    def sequence = []
+    indices.each { idx ->
+        if (excludeIndices.contains(idx)) return
+        sequence << [
+            idx: idx,
+            actType: settingsByName["actType.${idx}".toString()]?.value?.toString(),
+            actSubType: settingsByName["actSubType.${idx}".toString()]?.value?.toString()
+        ]
+    }
+    sequence
+}
+
+/**
+ * Map a high-level addAction / replaceActions capability spec string to
+ * its [actType, actSubType] pair for the block-aware capabilities only.
+ * Returns null for leaf actions (switch, lock, log, …) — they don't
+ * affect structural balance and the pre-flight walker can ignore them.
+ */
+private List _rmStructuralPairForCapability(String cap) {
+    if (cap == null) return null
+    switch (cap.toString().toLowerCase()) {
+        case "ifthen":      return ["condActs", "getIfThen"]
+        case "elseif":      return ["condActs", "getElseIf"]
+        case "else":        return ["condActs", "getElse"]
+        case "endif":       return ["condActs", "getEndIf"]
+        case "repeat":      return ["repeatActs", "getRepeat"]
+        case "repeatwhile": return ["repeatActs", "getWhile"]
+        case "stoprepeat":  return ["repeatActs", "getStopRepeat"]
+        default: return null
+    }
+}
+
+/**
  * Inspect a rule's current state and return a structured health report.
  * Surfaces problems an LLM caller needs to see and act on without having
  * to re-investigate via curl. Verified live:
@@ -18761,11 +18928,11 @@ private Map _rmFetchStatusJson(Integer appId) {
  *     reveals DB flag corruption that will crash the rule on next event.
  *   - Walking actType.<N> / actSubType.<N> in numerical order reveals
  *     IF/ELSE-IF/ELSE/END-IF and Repeat/End-Repeat block imbalance that
- *     the paragraph-marker scan does not surface — a removeAction or
- *     replaceActions false-fail (issue #172 class) can commit
- *     post-response and silently drop a structural action, leaving the
- *     rule rendered with three IFs and two END-IFs while RM declines to
- *     flag it. Issue #178 asked for this detection in `check_rule_health`.
+ *     the paragraph-marker scan does not surface — the pre-flight
+ *     refusals in _rmDeleteAction / _rmAddAction / replaceActions
+ *     handler block most of this at the source, but a raw settings
+ *     write or a #172-class post-response commit can still leave a
+ *     rule imbalanced; this check is the defense-in-depth catch.
  *
  * Callers (toolUpdateNativeApp, toolCheckRuleHealth) attach this report
  * to mutation responses so an LLM sees broken state immediately.
@@ -18817,74 +18984,16 @@ private Map _rmCheckRuleHealth(Integer appId) {
         if (multipleFlagPoison) {
             issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
         }
-        // Structural balance check for IF/ELSE-IF/ELSE/END-IF and Repeat/End-Repeat blocks.
-        //
-        // Collect every actType.<N>/actSubType.<N> pair from settings and walk
-        // them in numerical order, tracking a stack of open blocks. The pair
-        // (actType=condActs, actSubType=getIfThen) opens an IF block; getElseIf
-        // and getElse continue a block (and require an open IF on top of the
-        // stack); getEndIf closes the IF block. repeatActs/getRepeat and
-        // repeatActs/getWhile open a Repeat block; repeatActs/getStopRepeat
-        // closes it. Anything else is a leaf action and doesn't change depth.
-        //
-        // At the end, the stack must be empty. A non-empty stack means at
-        // least one open block has no closer; a pop attempt with an empty
-        // stack means an orphaned END-IF or End-Repeat. Cross-kind closes
-        // (END-IF closing a Repeat or vice-versa) are also flagged.
-        def actIndices = [] as TreeSet
-        settingsByName.each { name, _ ->
-            def m = name =~ /^actType\.(\d+)$/
-            if (m.matches()) actIndices << ((m[0] as List)[1] as Integer)
-        }
-        // Use end-of-list as the stack top: `<<` appends, and the top is
-        // `blockStack[-1]`. Groovy's `List.pop()` removes from the FRONT
-        // (push/pop operate on the head), which would mismatch with `<<`
-        // and report the wrong un-closed index — so pop the tail explicitly
-        // via removeAt(size-1).
-        def blockStack = []
-        actIndices.each { idx ->
-            def aType = settingsByName["actType.${idx}".toString()]?.value?.toString()
-            def sType = settingsByName["actSubType.${idx}".toString()]?.value?.toString()
-            if (aType == "condActs") {
-                if (sType == "getIfThen") {
-                    blockStack << [kind: "if", openIdx: idx]
-                } else if (sType == "getElseIf" || sType == "getElse") {
-                    if (blockStack.isEmpty() || blockStack[-1].kind != "if") {
-                        structuralIssues << ("action ${idx} (${sType == 'getElse' ? 'ELSE' : 'ELSE-IF'}) is outside any IF block — orphaned branch keyword".toString())
-                    }
-                } else if (sType == "getEndIf") {
-                    if (blockStack.isEmpty()) {
-                        structuralIssues << ("action ${idx} (END-IF) has no matching IF — orphaned closer (too many END-IFs)".toString())
-                    } else if (blockStack[-1].kind != "if") {
-                        def open = blockStack[-1]
-                        structuralIssues << ("action ${idx} (END-IF) closes a Repeat block opened at action ${open.openIdx} — mismatched block closer".toString())
-                        blockStack.removeAt(blockStack.size() - 1)
-                    } else {
-                        blockStack.removeAt(blockStack.size() - 1)
-                    }
-                }
-            } else if (aType == "repeatActs") {
-                if (sType == "getRepeat" || sType == "getWhile") {
-                    blockStack << [kind: "repeat", openIdx: idx]
-                } else if (sType == "getStopRepeat") {
-                    if (blockStack.isEmpty()) {
-                        structuralIssues << ("action ${idx} (End Repeat) has no matching Repeat — orphaned closer".toString())
-                    } else if (blockStack[-1].kind != "repeat") {
-                        def open = blockStack[-1]
-                        structuralIssues << ("action ${idx} (End Repeat) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
-                        blockStack.removeAt(blockStack.size() - 1)
-                    } else {
-                        blockStack.removeAt(blockStack.size() - 1)
-                    }
-                }
-            }
-        }
-        blockStack.each { open ->
-            def kindLabel = open.kind == "if" ? "IF" : "Repeat"
-            structuralIssues << ("action ${open.openIdx} (${kindLabel}) opened a block that was never closed — rule is missing an ${open.kind == 'if' ? 'END-IF' : 'End-Repeat'}".toString())
-        }
+        // Structural balance check for IF/ELSE-IF/ELSE/END-IF and Repeat/End-Repeat
+        // blocks — see _rmStructuralIssuesFromSequence for the walker semantics.
+        // Most imbalance is now blocked at the pre-flight refusal in
+        // _rmDeleteAction / _rmAddAction / the replaceActions handler before
+        // it lands; this defense-in-depth catch covers raw settings writes
+        // and the #172 post-response-commit race that can slip past those.
+        def structuralSequence = _rmStructuralSequenceFromSettings(settingsByName)
+        structuralIssues.addAll(_rmStructuralIssuesFromSequence(structuralSequence))
         if (structuralIssues) {
-            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a removeAction or replaceActions that false-failed mid-flow (issue #172/#178). Use restore_item_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
+            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a raw settings write or a #172-class mutation that committed post-response. Use restore_item_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
         }
     } catch (Exception e) {
         issues << "health check failed: ${e.message}".toString()
@@ -20546,6 +20655,30 @@ def toolUpdateNativeApp(args) {
         def removed = []
         def addedResults = []
         try {
+            // Pre-flight (issue #178): walk the replaceActions spec list's
+            // capability sequence and refuse the call before clearActions
+            // runs if the proposed list is itself structurally imbalanced.
+            // This catches the LLM-error case where the caller forgot an
+            // end-if / stop-repeat (or stacked an extra one) — better to
+            // surface the mistake than wipe the rule and then re-add a
+            // broken structure on top. The new sequence is walked against
+            // an empty current state (clearActions runs first, so the
+            // rule's existing actions don't factor in).
+            if (replaceActionsList != null) {
+                def projectedSeq = []
+                replaceActionsList.eachWithIndex { spec, i ->
+                    if (!(spec instanceof Map)) return
+                    def specCap = (spec as Map).capability?.toString()
+                    def pair = _rmStructuralPairForCapability(specCap)
+                    if (pair) {
+                        projectedSeq << [idx: (i + 1), actType: pair[0], actSubType: pair[1]]
+                    }
+                }
+                def specIssues = _rmStructuralIssuesFromSequence(projectedSeq)
+                if (specIssues) {
+                    throw new IllegalArgumentException("replaceActions blocked: the proposed action list is structurally imbalanced — ${specIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. This refusal is a #178 pre-flight check — RM is not touched and no actions are cleared.")
+                }
+            }
             if (removeActionSpec) {
                 if (removeActionSpec.index == null) throw new IllegalArgumentException("removeAction.index is required")
                 def idx = (removeActionSpec.index as Integer)
@@ -20853,6 +20986,18 @@ def toolUpdateNativeApp(args) {
                         }
                         patchResults << [success: true, op: "clearActions", removedIndices: cleared]
                     } else if (pm.containsKey("replaceActions")) {
+                        // Issue #178 pre-flight: validate the proposed list's
+                        // structural balance before clearActions touches RM.
+                        def patchSeq = []
+                        (pm.replaceActions as List).eachWithIndex { aspec, ai ->
+                            if (!(aspec instanceof Map)) return
+                            def pair = _rmStructuralPairForCapability(((aspec as Map).capability)?.toString())
+                            if (pair) patchSeq << [idx: (ai + 1), actType: pair[0], actSubType: pair[1]]
+                        }
+                        def patchSpecIssues = _rmStructuralIssuesFromSequence(patchSeq)
+                        if (patchSpecIssues) {
+                            throw new IllegalArgumentException("patches[${pi}].replaceActions blocked: the proposed action list is structurally imbalanced — ${patchSpecIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. This refusal is a #178 pre-flight check — RM is not touched and no actions are cleared.")
+                        }
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
                         catch (Exception clearExc) {
