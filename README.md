@@ -1480,6 +1480,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.3.14** - fix: prevent (and detect) IF/END-IF + Repeat structural imbalance (#178). PRs: [#206](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/206)
 - **v1.3.13** - fix: drop top-level anyOf from import_native_app input_schema (Haiku 4.5 compat). PRs: [#205](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/205)
 - **v1.3.12** - feat: addAction Set-Variable, runCommand variable parameters, Set-Mode modeName. PRs: [#196](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/196)
 - **v1.3.11** - feat: MCP readOnlyHint + destructiveHint annotations on every tool. PRs: [#202](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/202)
