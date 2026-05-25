@@ -2104,6 +2104,574 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note?.contains("Removed action 1") || result.removedIndices?.contains(1)
     }
 
+    // Issue #178 pre-flight refusal tests — three layers that refuse the
+    // call BEFORE RM is touched so the false-fail-with-post-commit race
+    // can't leak through. Counterpart to the post-mutation detection in
+    // check_rule_health (defense-in-depth).
+
+    private List nestedIfThenSettings() {
+        // Reproduces the live BAT-178 rule structure (well-formed):
+        //   IF -> IF -> lock-delayed -> END-IF -> IF -> lock -> END-IF -> END-IF
+        [
+            [name: "actType.9",  value: "condActs"], [name: "actSubType.9",  value: "getIfThen"],
+            [name: "actType.10", value: "condActs"], [name: "actSubType.10", value: "getIfThen"],
+            [name: "actType.11", value: "lockActs"], [name: "actSubType.11", value: "getLULock"],
+            [name: "actType.12", value: "condActs"], [name: "actSubType.12", value: "getEndIf"],
+            [name: "actType.13", value: "condActs"], [name: "actSubType.13", value: "getIfThen"],
+            [name: "actType.14", value: "lockActs"], [name: "actSubType.14", value: "getLULock"],
+            [name: "actType.15", value: "condActs"], [name: "actSubType.15", value: "getEndIf"],
+            [name: "actType.16", value: "condActs"], [name: "actSubType.16", value: "getEndIf"]
+        ]
+    }
+
+    def "removeAction refuses to delete the inner END-IF that would unbalance a nested rule (issue #178)"() {
+        // The exact #178 trigger: removeAction({index: <inner END-IF>}) on a
+        // well-formed nested rule. Pre-fix: returned false-fail timeout but
+        // the delete committed post-response, leaving 3 IFs / 2 END-IFs.
+        // Post-fix: pre-flight refuses before any HTTP click goes out.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Nested", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, nestedIfThenSettings()) }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 12], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("removeAction(12) blocked")
+        result.error?.contains("structural END-IF")
+        result.error?.contains("RM is not touched")
+
+        and: "no delAct button click fires"
+        !posts.any { it.body?.get("stateAttribute") == "delAct" }
+
+        and: "pre-flight refusal response attaches health so the caller can see the existing balance state"
+        result.health != null
+        result.restoreHint?.contains("Pre-flight refusal")
+    }
+
+    def "removeAction refuses to delete the outer IF that would unbalance a nested rule"() {
+        // Symmetric to the END-IF case: removing the outer IF (action 9)
+        // would leave two END-IFs dangling. Pre-flight should refuse.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Nested", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, nestedIfThenSettings()) }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 9], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("removeAction(9) blocked")
+        result.error?.contains("structural IF")
+        result.error?.contains("RM is not touched")
+        !posts.any { it.body?.get("stateAttribute") == "delAct" }
+    }
+
+    def "removeAction allows deleting a leaf (lock) action — no structural risk"() {
+        // No-false-positive guard: action 11 is a lockActs/getLULock leaf.
+        // Deleting it doesn't touch the IF/END-IF balance, so pre-flight
+        // should pass through and the normal delete path should run.
+        given:
+        enableHubAdminWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Nested", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired) {
+                // post-click: action 11 gone
+                statusJson(100, nestedIfThenSettings().findAll { !it.name?.endsWith(".11") })
+            } else {
+                statusJson(100, nestedIfThenSettings())
+            }
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 11], confirm: true])
+
+        then:
+        result.success == true
+        delActFired == true
+    }
+
+    def "removeAction allows deleting an IF when the rule is already imbalanced and the delete improves it"() {
+        // Edge case: the rule is already broken (3 IFs, 2 END-IFs).
+        // Removing the dangling outer IF (action 9) would FIX the imbalance.
+        // Pre-flight must allow this because projected-issues <= current-issues.
+        given:
+        enableHubAdminWrite()
+        def delActFired = false
+        // Already-imbalanced rule: drop action 12 (inner END-IF) from the
+        // well-formed set so 3 IFs (9, 10, 13) and only 2 END-IFs (15, 16) remain.
+        def alreadyBroken = nestedIfThenSettings().findAll { !it.name?.endsWith(".12") }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Already broken", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired) {
+                statusJson(100, alreadyBroken.findAll { !it.name?.endsWith(".9") })
+            } else {
+                statusJson(100, alreadyBroken)
+            }
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 9], confirm: true])
+
+        then: "pre-flight allows the removal because it doesn't make things worse"
+        result.success == true
+        delActFired == true
+    }
+
+    def "addAction(endIf) refuses when no IF is open on the stack"() {
+        // Adding a bare END-IF to a rule with no open IF would leave an
+        // orphaned closer. Pre-flight should refuse before the doActPage
+        // wizard even opens.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // Single switch action — no open IF.
+            statusJson(100, [[name: "actType.1", value: "switchActs"], [name: "actSubType.1", value: "getOnOff"]])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, addAction: [capability: "endIf"], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("addAction(endIf) blocked")
+        result.error?.contains("END-IF) has no matching IF")
+        result.error?.contains("RM is not touched")
+        !posts.any { it.body?.get("stateAttribute")?.toString()?.startsWith("doAct") }
+
+        and: "the addAction catch path also routes pre-flight refusals through the helper — restoreHint and health are attached"
+        result.restoreHint?.contains("Pre-flight refusal")
+        result.health != null
+    }
+
+    def "addAction(stopRepeat) refuses when no Repeat is open on the stack"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, addAction: [capability: "stopRepeat"], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("addAction(stopRepeat) blocked")
+        result.error?.contains("End Repeat) has no matching Repeat")
+        result.error?.contains("RM is not touched")
+    }
+
+    def "addAction(ifThen) is NOT refused — opener-without-closer is a normal multi-step build"() {
+        // Asymmetric on purpose: adding an IF alone is fine; the caller
+        // will close it in a follow-up call. We only refuse closers.
+        // This test runs the spec only as far as the pre-flight — the
+        // ifThen wizard then needs full doActPage stubbing that's out of
+        // scope here, so we assert the pre-flight didn't fire.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
+            confirm: true
+        ])
+
+        then: "the pre-flight does NOT refuse — error (if any) comes from the wizard stubs, not pre-flight"
+        // The wizard call will fail on the harness's missing doActPage
+        // mocks, but the error MUST NOT contain the pre-flight refusal
+        // sentinel ('RM is not touched' is only emitted by the four
+        // pre-flight refusal paths) and the pre-flight 'addAction(ifThen)
+        // blocked' prefix.
+        !(result?.error?.toString()?.contains("RM is not touched"))
+        !(result?.error?.toString()?.contains("addAction(ifThen) blocked"))
+
+        and: "the wizard's doActPage open click DID fire (proves pre-flight passed and control reached _rmAddAction's wizard flow)"
+        posts.any { it.body?.get("stateAttribute")?.toString()?.startsWith("doAct") }
+    }
+
+    def "replaceActions refuses an imbalanced spec list before any clearActions click"() {
+        // Caller passes a list with 2 IFs and 1 END-IF — pre-flight refuses
+        // before clearActions runs, so the original rule is preserved.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            replaceActions: [
+                [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
+                [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
+                [capability: "endIf"]
+            ],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("replaceActions blocked")
+        result.error?.contains("structurally imbalanced")
+        result.error?.contains("RM is not touched")
+
+        and: "no trashAll click — the original rule is preserved"
+        !posts.any { it.body?.get("name") == "trashAll" }
+
+        and: "pre-flight refusal response attaches health and a non-restore hint"
+        result.health != null
+        result.restoreHint?.contains("Pre-flight refusal")
+    }
+
+    def "replaceActions allows a balanced spec list"() {
+        // Pre-flight must pass when the list is balanced. Asserts both the
+        // negative (no pre-flight refusal sentinel in the error) AND the
+        // positive (the trashAll button click DID fire, meaning pre-flight
+        // passed and control reached clearActions).
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            replaceActions: [
+                [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
+                [capability: "endIf"]
+            ],
+            confirm: true
+        ])
+
+        then: "no pre-flight refusal"
+        !(result?.error?.toString()?.contains("RM is not touched"))
+        !(result?.error?.toString()?.contains("replaceActions blocked"))
+
+        and: "restoreHint is NOT the pre-flight one — proves the catch block didn't tag this as a pre-flight refusal"
+        result?.restoreHint == null || !result.restoreHint.contains("Pre-flight refusal")
+
+        and: "the run made it past pre-flight into clearActions territory (either trashAll click or cancelTrash recovery from a failed clearActions attempt — both prove pre-flight passed)"
+        posts.any { it.body?.get("name") == "trashAll" || it.body?.get("name") == "cancelTrash" }
+    }
+
+    def "patches[replaceActions=...] refuses an imbalanced patch spec before any clearActions click"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [[replaceActions: [
+                [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
+                [capability: "endIf"],
+                [capability: "endIf"]
+            ]]],
+            confirm: true
+        ])
+
+        then:
+        result.patches?.first()?.success == false
+        result.patches?.first()?.error?.contains("patches[0].replaceActions blocked")
+        result.patches?.first()?.error?.contains("structurally imbalanced")
+
+        and: "no trashAll click — the original rule is preserved"
+        !posts.any { it.body?.get("name") == "trashAll" }
+    }
+
+    // Coverage for the structural subtypes that are in _rmDeleteAction's
+    // structuralSubTypes list but had no dedicated removal test.
+
+    def "removeAction refuses deleting a Repeat opener that would leave its End-Repeat orphaned"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def repeatSettings = ifStructureSettings([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "lockActs",   actSubType: "getLULock"],
+            [idx: 3, actType: "repeatActs", actSubType: "getStopRepeat"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, repeatSettings) }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("removeAction(1) blocked")
+        result.error?.contains("structural Repeat")
+        result.error?.contains("RM is not touched")
+        !posts.any { it.body?.get("stateAttribute") == "delAct" }
+    }
+
+    def "removeAction refuses deleting an End-Repeat that would leave its Repeat unclosed"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def repeatSettings = ifStructureSettings([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "lockActs",   actSubType: "getLULock"],
+            [idx: 3, actType: "repeatActs", actSubType: "getStopRepeat"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, repeatSettings) }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 3], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("removeAction(3) blocked")
+        result.error?.contains("structural End-Repeat")
+        result.error?.contains("RM is not touched")
+        !posts.any { it.body?.get("stateAttribute") == "delAct" }
+    }
+
+    def "removeAction allows deleting an ELSE-IF in an IF / ELSE-IF / END-IF rule (no balance change)"() {
+        given:
+        enableHubAdminWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        def chain = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getElseIf"],
+            [idx: 4, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 5, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Chain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            delActFired ? statusJson(100, chain.findAll { !it.name?.endsWith(".3") }) : statusJson(100, chain)
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 3], confirm: true])
+
+        then: "deleting an ELSE-IF doesn't change IF/END-IF balance — pre-flight allows the delete"
+        result.success == true
+        delActFired == true
+    }
+
+    // Coverage for elseIf/else orphan refusal in _rmAddAction (the closer-or-
+    // branch-keywords path that landed alongside the structural pre-flight).
+
+    def "addAction(elseIf) refuses when no IF is open on the stack"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "switchActs"], [name: "actSubType.1", value: "getOnOff"]])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [capability: "elseIf", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("addAction(elseIf) blocked")
+        result.error?.contains("ELSE-IF) is outside any IF block")
+        result.error?.contains("RM is not touched")
+        !posts.any { it.body?.get("stateAttribute")?.toString()?.startsWith("doAct") }
+    }
+
+    def "addAction(else) refuses when no IF is open on the stack"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, addAction: [capability: "else"], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("addAction(else) blocked")
+        result.error?.contains("ELSE) is outside any IF block")
+        result.error?.contains("RM is not touched")
+    }
+
+    // Regression guard for the case-sensitivity hole: a mis-cased structural
+    // capability in replaceActions used to pass the pre-flight as "balanced"
+    // (the walker treated it as a leaf), then fail at per-item dispatch after
+    // clearActions had already wiped the rule. The fix dropped .toLowerCase()
+    // in _rmStructuralPairForCapability so it matches dispatch's case-
+    // sensitive comparison — mis-cased structural caps now project to null
+    // (leaf) AND will fail downstream dispatch, so this regression test
+    // expects either a pre-flight refusal (when the mis-spelling produces
+    // an imbalance) or a clearActions never firing.
+
+    def "replaceActions with mis-cased endIf is not silently accepted as balanced"() {
+        // ['ifThen', 'endIF' (wrong case)] — pre-fix this passed the pre-
+        // flight because the walker lowercased 'endIF' to 'endif' and saw
+        // a matched IF/END-IF pair. Post-fix the walker treats 'endIF' as
+        // a leaf (returns null pair), so the projected sequence is just
+        // [ifThen] which is imbalanced — pre-flight refuses.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            replaceActions: [
+                [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
+                [capability: "endIF"]
+            ],
+            confirm: true
+        ])
+
+        then: "pre-flight refuses because mis-cased endIF doesn't satisfy the pair lookup"
+        result.success == false
+        result.error?.contains("replaceActions blocked")
+        result.error?.contains("structurally imbalanced")
+
+        and: "no trashAll click — the original rule is preserved (the #178 damage class)"
+        !posts.any { it.body?.get("name") == "trashAll" }
+    }
+
+    // Coverage for the auto-attached health field on update_native_app
+    // mutation responses — the PR's tool description promises this surface
+    // but no existing test pins it.
+
+    def "update_native_app attaches health.structuralIssues field on every mutation response"() {
+        given:
+        enableHubAdminWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        // Three-action balanced rule: IF / lock / END-IF.
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Balanced", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired) {
+                statusJson(100, settings.findAll { !it.name?.endsWith(".2") })
+            } else {
+                statusJson(100, settings)
+            }
+        }
+
+        when: "remove the leaf lock action (no structural risk)"
+        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 2], confirm: true])
+
+        then: "the response surfaces health AND specifically the structuralIssues field"
+        result.success == true
+        result.health != null
+        result.health.structuralIssues != null
+        result.health.structuralIssues instanceof List
+        // The remaining IF/END-IF pair is still balanced, so structuralIssues is empty.
+        result.health.structuralIssues.isEmpty()
+    }
+
     def "walkStep introspect returns schema for a page without mutating"() {
         given:
         enableHubAdminWrite()
@@ -2475,6 +3043,195 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.ok == false
         result.issues != null
         result.issues.any { it.toString().toLowerCase().contains("broken") }
+    }
+
+    // Issue #178: removeAction / replaceActions can false-fail and post-commit, leaving
+    // the rule with three IFs and two END-IFs (or any other unbalanced nesting) while
+    // RM's paragraph render and label remain clean. The structural-balance walker on
+    // actType.<N>/actSubType.<N> is the only signal that catches this class of damage.
+
+    private List ifStructureSettings(List<Map> rows) {
+        // rows = [[idx: N, actType: "condActs", actSubType: "getIfThen"], ...]
+        def out = []
+        rows.each { r ->
+            out << [name: "actType.${r.idx}".toString(), value: r.actType]
+            out << [name: "actSubType.${r.idx}".toString(), value: r.actSubType]
+        }
+        out
+    }
+
+    def "check_rule_health flags structural imbalance when an IF has no closing END-IF (issue #178)"() {
+        given:
+        enableReadOnly()
+        // Three IFs + two END-IFs — reproduces the live state observed on the test hub
+        // after removeAction(<inner-END-IF>) false-failed but committed post-response.
+        def settings = ifStructureSettings([
+            [idx: 9,  actType: "condActs", actSubType: "getIfThen"],
+            [idx: 10, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 11, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 13, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 14, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 15, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 16, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Unbalanced Rule", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues instanceof List
+        result.structuralIssues.size() == 1
+        result.structuralIssues[0].toString().contains("action 9")
+        result.structuralIssues[0].toString().contains("never closed")
+        result.issues.any { it.toString().contains("structural imbalance") }
+    }
+
+    def "check_rule_health flags an orphaned END-IF (more END-IFs than IFs)"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 4, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Extra EndIf", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("orphaned closer") }
+        result.structuralIssues.any { it.toString().contains("action 4") }
+    }
+
+    def "check_rule_health flags an orphaned End-Repeat closing nothing"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 2, actType: "repeatActs", actSubType: "getStopRepeat"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Orphan Stop", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("End Repeat") }
+        result.structuralIssues.any { it.toString().contains("orphaned closer") }
+    }
+
+    def "check_rule_health flags ELSE-IF outside any IF block"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getElseIf"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Stray ElseIf", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("ELSE-IF") }
+        result.structuralIssues.any { it.toString().contains("outside any IF block") }
+    }
+
+    def "check_rule_health flags END-IF closing a Repeat block (mismatched closer)"() {
+        given:
+        enableReadOnly()
+        // Repeat opens at action 1, but the closer at action 3 is END-IF (wrong kind).
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Mismatched", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("END-IF") && it.toString().contains("closes a Repeat block") }
+    }
+
+    def "check_rule_health reports ok on a balanced nested IF / IF / END-IF / IF / END-IF / END-IF"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 3, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 4, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 5, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 6, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 7, actType: "condActs", actSubType: "getEndIf"],
+            [idx: 8, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Balanced Nested", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "check_rule_health reports ok on IF / ELSE-IF / ELSE / END-IF sequence"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getElseIf"],
+            [idx: 4, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 5, actType: "condActs", actSubType: "getElse"],
+            [idx: 6, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 7, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "If Else Chain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "check_rule_health reports ok on Repeat / End-Repeat sequence"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "repeatActs", actSubType: "getStopRepeat"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
     }
 
     // ---------- clone / export / import_native_app (appCloner trio) ----------
