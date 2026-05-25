@@ -3128,7 +3128,7 @@ PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition field
 
 On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.
 
-Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'detected'/'not detected' for CO2, 'active'/'inactive' for Acceleration, 'tampered'/'clear' for Tamper). Full table in TOOL_GUIDE.md."""
+Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'detected'/'clear' for CO2, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper). Full table in TOOL_GUIDE.md."""
                     ],
 
                     addActions: [
@@ -17033,11 +17033,23 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     if (actionSpec.expression instanceof Map) {
         def exprConds = (actionSpec.expression as Map).conditions
         if (exprConds instanceof List) {
-            // Normalize singular deviceId -> deviceIds before pre-validation (same
-            // pattern as _rmAddRequiredExpression) **because** _rmBuildCondition's internal
-            // normalization runs too late to protect _rmValidateDeviceIdsExist; the validator
-            // below sees the raw deviceIds list and would silently skip a singular deviceId.
-            // Covers nested subExpression conditions.
+            // Pre-pass: reject nested subExpression at the top level rather than
+            // recursing into a shape the doActPage walker does not yet support. The
+            // walker also rejects subExpression with a targeted message at the first
+            // condition site, but catching it here is cheaper and produces a clearer
+            // error before any backup is taken. _rmAddRequiredExpression supports
+            // nested subExpression today; _rmAddAction's doActPage walker is flat-only.
+            exprConds.eachWithIndex { entry, idx ->
+                if (entry instanceof Map && (entry as Map).subExpression != null) {
+                    throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
+                }
+            }
+            // Normalize singular deviceId -> deviceIds before pre-validation **because**
+            // _rmBuildCondition's internal normalization runs too late to protect
+            // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
+            // and would silently skip a singular deviceId. The recursion guards against
+            // future subExpression-on-doActPage support without re-introducing a normalize
+            // gap (the reject above will catch unsupported shapes today).
             def normExprCondList
             normExprCondList = { List cl ->
                 cl.each { entry ->
@@ -18153,9 +18165,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // Invoked by _rmWalkConditionReveal before throwing on validation failure so
         // the caller does not leave the wizard half-open. Track cleanup failure so the
         // outer error result can surface wizardStuck for the caller.
+        // actCancelledByWalker mirrors STPage's cancelledByWalker flag -- without it,
+        // a walker-side throw + outer-catch fallback would issue two cancelCapab clicks
+        // back-to-back (the walker's own call inside cancelInFlightActCond, then the
+        // outer catch's redundant call). The second always fails (nothing to cancel),
+        // setting actWizardCleanupFailed=true and surfacing a false wizardStuck=true.
         def actWizardCleanupFailed = false
         def actWizardCleanupErr = null
+        def actCancelledByWalker = false
         def cancelInFlightActCond = {
+            actCancelledByWalker = true
             try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
             catch (Exception cancelExc) {
                 actWizardCleanupFailed = true
@@ -18175,6 +18194,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}] is not a Map")
             }
             def cond = condRaw as Map
+            // Reject subExpression on this path until the recursive walker lands -- the
+            // pre-pass at L16953 already recurses through subExpression.conditions[] for
+            // device-ID normalization (so callers naturally assume nesting works), but the
+            // walker only handles the flat condition shape on doActPage. Surface a targeted
+            // message rather than the generic "capability is required" that the next check
+            // would produce. The recursive doActPage walker is tracked as a follow-up;
+            // _rmAddRequiredExpression (STPage) supports nested subExpression today.
+            if (cond.subExpression != null) {
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: nested subExpression on this row is not yet supported. _rmAddRequiredExpression (addRequiredExpression) supports nested expressions; on ${cap} rows, either flatten the condition list, or capture the sub-expression as a Required Expression instead.")
+            }
             def ccap = cond.capability?.toString()?.trim()
             if (!ccap) throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability is required")
             _rmWriteSettingOnPage(appId, "doActPage", "cond", "a", applied, null, skipped)
@@ -18194,6 +18223,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 cancelInFlightActCond()
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
             }
+            actCancelledByWalker = false
             try {
                 _rmWalkConditionReveal(appId, [
                     page: "doActPage",
@@ -18206,6 +18236,14 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                     skipped: skipped
                 ], cond, cIdx)
             } catch (Exception perCondExc) {
+                // Mirror STPage outer-catch symmetry: only cancel if the walker did not
+                // already do so before throwing. _rmFetchConfigJson exceptions from inside
+                // _rmRevealStep propagate out of the walker WITHOUT calling cancelInFlightCondition,
+                // so the outer catch must issue the cancel itself. Without this fallback the
+                // wizard stays half-open and the next addAction starts in a broken state.
+                if (!actCancelledByWalker) {
+                    cancelInFlightActCond()
+                }
                 if (actWizardCleanupFailed) {
                     // Both the per-condition write AND the cancel cleanup failed --
                     // embed the marker so the dispatcher's catch can surface wizardStuck.
@@ -20312,7 +20350,14 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
         n && n.matches(pattern)
     }
     def revealed = revealedNew ?: revealedAny
-    return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it }]
+    // fallbackToExisting signals "matched only via revealedAny" -- the field was already
+    // visible BEFORE the trigger closure ran. Callers that care (e.g. a walker tracking
+    // whether a trigger write actually advanced the schema vs returning a stale leftover
+    // from a prior slot/run) can surface this as an informational sentinel. Does NOT
+    // imply failure: static-schema firmware legitimately exposes always-visible fields
+    // and this path is the only way the walker reaches them.
+    def fallbackToExisting = (revealedNew == null) && (revealedAny != null)
+    return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it }, fallbackToExisting: fallbackToExisting]
 }
 
 /**
@@ -20369,6 +20414,34 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     def hrefParams            = ctx.hrefParams as Map
     def skippedAccum          = ctx.skipped as List
     def page                  = ctx.page?.toString() ?: "STPage"
+    // _rmRevealStep returns fallbackToExisting=true when only revealedAny matched (a
+    // matching field was already visible BEFORE the trigger closure ran). On static-schema
+    // firmware this is normal; on progressive-disclosure firmware it can mask a silent
+    // trigger rejection if a same-named field is left over from a prior slot or run.
+    // The walker pushes an informational sentinel so callers can detect the fallback path
+    // -- does NOT set partial=true by itself (legitimate static-schema operation).
+    // Wrapper deliberately mirrors the _rmRevealStep signature so future maintenance can
+    // search-and-replace either direction without arg-list edits.
+    //
+    // Sentinel scoping: only fire on revealStep() calls whose trigger closure WRITES a
+    // setting. Empty-trigger calls (used for "discover already-revealed field" -- they
+    // exist purely to fetch the latest schema after a previous write committed the field)
+    // would otherwise emit false positives because their preNames == postNames by design.
+    // Empty-trigger callers use the discoverField() helper below which routes through
+    // _rmRevealStep directly without the sentinel push.
+    def revealStep = { Integer aId, String pg, String pattern, Closure trigger ->
+        def step = _rmRevealStep(aId, pg, pattern, trigger)
+        if (step?.fallbackToExisting == true && skippedAccum != null) {
+            skippedAccum << [key: pattern, reason: "reveal_fallback_to_existing_field", condIdx: condIdx]
+        }
+        return step
+    }
+    // discoverField: empty-trigger reveal for fields already-revealed by a prior write.
+    // Same return shape as revealStep but does NOT push the reveal-fallback sentinel
+    // (these calls are by design discovery-only and would emit false positives).
+    def discoverField = { Integer aId, String pg, String pattern ->
+        return _rmRevealStep(aId, pg, pattern, {})
+    }
 
     // ---- Mode capability ----
     // RM reveals a modes<cIdx> picker (e.g. modes6) after rCapab is committed --
@@ -20393,7 +20466,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // _rmRevealStep: snapshot pre-state, then write rCapab (the revealing trigger),
         // then re-fetch and return the newly-appeared modes<cIdx> picker.
         def capKey = "rCapab_${cIdx}".toString()
-        def modesReveal = _rmRevealStep(appId, page, /modes\d+/, {
+        def modesReveal = revealStep(appId, page, /modes\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!modesReveal.input) {
@@ -20491,7 +20564,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
 
         // Reveal 1: write rCapab as the trigger -> starting<cIdx> type selector appears
         def capKey = "rCapab_${cIdx}".toString()
-        def startTypeReveal = _rmRevealStep(appId, page, /starting\d+/, {
+        def startTypeReveal = revealStep(appId, page, /starting\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!startTypeReveal.input) {
@@ -20502,7 +20575,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def startTypeField = startTypeReveal.input.name.toString()
 
         // Reveal 2: write start type as the trigger -> startingA<cIdx> value field appears
-        def startValReveal = _rmRevealStep(appId, page, /startingA\d+/, {
+        def startValReveal = revealStep(appId, page, /startingA\d+/, {
             writeST(hrefParams, startTypeField, startTypeWire)
         })
         if (!startValReveal.input) {
@@ -20514,7 +20587,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def startValField = startValReveal.input.name.toString()
 
         // Reveal 3: write start value as the trigger -> ending<cIdx> end-type selector appears
-        def endTypeReveal = _rmRevealStep(appId, page, /ending\d+/, {
+        def endTypeReveal = revealStep(appId, page, /ending\d+/, {
             writeST(hrefParams, startValField, startValToWrite)
         })
         if (!endTypeReveal.input) {
@@ -20526,7 +20599,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
 
         // Reveal 4: write end type as the trigger -> endingA<cIdx> or endSunriseOffset<cIdx> appears
         // Clock: endingA<cIdx>; sunrise/sunset: endSunriseOffset<cIdx> for offset minutes.
-        def endValReveal = _rmRevealStep(appId, page, /endingA\d+|endSunriseOffset\d+/, {
+        def endValReveal = revealStep(appId, page, /endingA\d+|endSunriseOffset\d+/, {
             writeST(hrefParams, endTypeField, endTypeWire)
         })
         if (!endValReveal.input) {
@@ -20570,7 +20643,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
 
         // Reveal 1: write rCapab as the trigger -> variable-name picker appears
         // (e.g. lVar_<N> or varX_<N>; exact name is firmware-assigned)
-        def varPickerReveal = _rmRevealStep(appId, page, /[a-zA-Z]+Var[a-zA-Z]*_\d+|varName_\d+|rVar_\d+/, {
+        def varPickerReveal = revealStep(appId, page, /[a-zA-Z]+Var[a-zA-Z]*_\d+|varName_\d+|rVar_\d+/, {
             writeST(hrefParams, capKey, capCanonical)
         })
         if (!varPickerReveal.input) {
@@ -20587,14 +20660,26 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def varOpts = (varOptsRaw instanceof Map)
             ? (varOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
             : (varOptsRaw ?: []).collect { it?.toString() }.findAll { it }
-        if (varOpts && !varOpts.any { it == varName }) {
+        if (!varOpts) {
+            // Schema's option list came back empty -- could be a hub with no variables defined,
+            // a firmware version that lazily-populates the enum, or a probe-timing race. The
+            // walker cannot disambiguate, so it MUST signal degradation rather than silently
+            // accept a name that may not resolve. Mirrors the addAction setVariable
+            // api_unavailable sentinel pattern (L17402). The write still proceeds because the
+            // caller-supplied varName is the only signal we have; partial=true tells them the
+            // schema-side validation was skipped so they can verify post-write.
+            mcpLog("warn", "rm-native", "conditions[${condIdx}]: Variable: picker '${varPickerField}' returned an empty option list -- variable-name validation skipped; write will proceed unvalidated")
+            if (skippedAccum != null) {
+                skippedAccum << [key: "variable-validation", reason: "api_unavailable", condIdx: condIdx, varName: varName, pickerField: varPickerField]
+            }
+        } else if (!varOpts.any { it == varName }) {
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: Variable: hub variable '${varName}' not in the revealed picker for '${varPickerField}'. Available: ${varOpts.sort().join(', ')}")
         }
 
         // Reveal 2: write variable name as the trigger -> RelrDev_<N> comparator appears
         def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
-        def relrReveal = _rmRevealStep(appId, page, /RelrDev_\d+/, {
+        def relrReveal = revealStep(appId, page, /RelrDev_\d+/, {
             writeST(hrefParams, varPickerField, varName)
         })
         if (!relrReveal.input) {
@@ -20608,13 +20693,27 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // Reveal 3: write RelrDev as the trigger -> state_<N> value appears
         def condStateOrValue = cond.state != null ? cond.state : cond.value
         def stateKey = "state_${cIdx}".toString()
-        def stateReveal = _rmRevealStep(appId, page, /state_\d+/, {
+        def stateReveal = revealStep(appId, page, /state_\d+/, {
             writeST(hrefParams, relrField, normalizedComparator)
         })
         if (!stateReveal.input) {
             cancelInFlightCond()
             def visible = stateReveal.visibleNames?.join(', ') ?: "(none)"
             throw new IllegalStateException("conditions[${condIdx}]: Variable: state_<N> (value field) not revealed after RelrDev write. Visible fields: ${visible}")
+        }
+        // Fail loud when the comparator requires an RHS value but the caller did not
+        // supply one. Without this guard the state_<N> write is skipped (null check
+        // below) and RM renders the comparator against the field's default (0), producing
+        // a condition like "myVar = 0" when the caller intended "myVar = <something>".
+        // Mirrors the _rmBuildCondition (selectTriggers) fail-loud at L18557 which throws
+        // when xVarR_<N> did not land for the same conceptual reason. State-change
+        // comparators ('*changed*', '*became*' family) legitimately omit RHS, so accept
+        // those without a value.
+        def comparatorIsRhsOptional = normalizedComparator?.toString()?.toLowerCase()?.contains("changed") ||
+                                      normalizedComparator?.toString()?.toLowerCase()?.contains("became")
+        if (condStateOrValue == null && !comparatorIsRhsOptional) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable: comparator '${cond.comparator}' requires an RHS value, but neither 'state' nor 'value' was provided. Without an RHS, RM renders the comparator against the field default (0). Either supply 'value: <constant>' / 'state: <variableName>' or use a state-change comparator ('*changed*' / '*became*').")
         }
         if (condStateOrValue != null) {
             writeST(hrefParams, stateKey, condStateOrValue)
@@ -20657,7 +20756,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // Pre-snapshot sees the schema without RelrDev; trigger writes rCustomAttr;
             // post-fetch confirms RelrDev appeared. Use the discovered field name (not a
             // hardcoded slot) and normalize the comparator token the same way as Variable.
-            def relrReveal = _rmRevealStep(appId, page, /RelrDev_\d+/, {
+            def relrReveal = revealStep(appId, page, /RelrDev_\d+/, {
                 if (attrVal != null) {
                     writeST(hrefParams, customAttrKey, attrVal)
                 }
@@ -20673,7 +20772,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // _rmRevealStep: write RelrDev_<N> as the trigger -> state_<N> appears.
             def condStateOrValue = cond.state != null ? cond.state : cond.value
             def stateKey = "state_${cIdx}".toString()
-            def stateReveal = _rmRevealStep(appId, page, /state_\d+/, {
+            def stateReveal = revealStep(appId, page, /state_\d+/, {
                 writeST(hrefParams, relrField, normalizedComparator)
             })
             if (!stateReveal.input) {
@@ -20742,7 +20841,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible}")
             }
             // Reveal the RHS-type selector by writing RelrDev as the trigger.
-            def rhsTypeReveal = _rmRevealStep(appId, page, /stateType_\d+|rhsType_\d+/, {
+            def rhsTypeReveal = revealStep(appId, page, /stateType_\d+|rhsType_\d+/, {
                 writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
             })
             if (!rhsTypeReveal.input) {
@@ -20779,19 +20878,37 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 }
                 writeST(hrefParams, rhsTypeField, anotherDevOption.key)
                 // After choosing "another device", the reference device and attribute fields appear.
-                def refDevReveal = _rmRevealStep(appId, page, /rDev2_\d+|refDev_\d+|compareDevId_\d+/, {})
-                if (refDevReveal.input) {
-                    writeST(hrefParams, refDevReveal.input.name.toString(), [ctd.deviceId.toString()])
+                // refDev and refAttr are spec-required (validated at the top of this block).
+                // If the reveal returns null the firmware did not expose the picker even though
+                // the "another device" option was selected -- the only recoverable outcome is
+                // to fail loud + cancel the wizard. A silent no-op would write a Map condition
+                // with no reference device and render success:true, partial:false, which is a
+                // lie. Mirror the rhsTypeReveal pattern's failure surface above.
+                def refDevReveal = discoverField(appId, page, /rDev2_\d+|refDev_\d+|compareDevId_\d+/)
+                if (!refDevReveal.input) {
+                    cancelInFlightCond()
+                    def visible = refDevReveal.visibleNames?.join(', ') ?: "(none)"
+                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-device picker not revealed after selecting 'another device' in RHS-type field '${rhsTypeField}'. Expected one of rDev2_<N>/refDev_<N>/compareDevId_<N>. Visible fields: ${visible}")
                 }
-                def refAttrReveal = _rmRevealStep(appId, page, /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/, {})
-                if (refAttrReveal.input) {
-                    writeST(hrefParams, refAttrReveal.input.name.toString(), ctd.attribute.toString())
+                writeST(hrefParams, refDevReveal.input.name.toString(), [ctd.deviceId.toString()])
+                def refAttrReveal = discoverField(appId, page, /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/)
+                if (!refAttrReveal.input) {
+                    cancelInFlightCond()
+                    def visible = refAttrReveal.visibleNames?.join(', ') ?: "(none)"
+                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-attribute picker not revealed after writing reference device. Expected one of rCustomAttr2_<N>/refAttr_<N>/compareAttr_<N>. Visible fields: ${visible}")
                 }
-                // Optional offset field
+                writeST(hrefParams, refAttrReveal.input.name.toString(), ctd.attribute.toString())
+                // Optional offset field -- if caller passed offset and the field did not appear,
+                // degrade with partial:true rather than throw (offset is optional in the spec).
                 if (ctd.offset != null) {
-                    def offsetReveal = _rmRevealStep(appId, page, /offset_\d+|devOffset_\d+/, {})
+                    def offsetReveal = discoverField(appId, page, /offset_\d+|devOffset_\d+/)
                     if (offsetReveal.input) {
                         writeST(hrefParams, offsetReveal.input.name.toString(), ctd.offset)
+                    } else {
+                        mcpLog("warn", "rm-native", "conditions[${condIdx}]: compareToDevice: offset field not revealed after reference-attribute write (firmware may not expose the offset slot for this attribute); offset=${ctd.offset} dropped")
+                        if (skippedAccum != null) {
+                            skippedAccum << [key: "compareToDevice", reason: "offset_field_not_revealed", condIdx: condIdx, offset: ctd.offset]
+                        }
                     }
                 }
             }
@@ -21914,18 +22031,34 @@ def toolUpdateNativeApp(args) {
         // rule instance. Mirrors addTrigger's "caller fires updateRule"
         // contract -- for addRequiredExpression we do it here since the
         // expression is a leaf operation (no expected follow-on).
+        // _rmCheckRuleHealth inspects configPage.error / *BROKEN* markers /
+        // render markers / multiple-flag poison but does NOT detect that
+        // updateRule itself was rejected. Capture the failure here and
+        // propagate via dedicated response slots so callers do not have to
+        // grep log lines to discover the expression is not live. Mirrors
+        // the wizardStuck propagation pattern on the addAction branch.
+        def updateRuleFailed = false
+        def expressionNotLive = false
+        def updateRuleError = null
         try { _rmClickAppButton(appId, "updateRule") }
         catch (Exception updateExc) {
+            updateRuleFailed = true
+            expressionNotLive = true
+            updateRuleError = updateExc.message
             mcpLog("warn", "rm-native", "addRequiredExpression: trailing updateRule click failed for app ${appId} -- expression may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
         def reCondCount = reResult?.conditionIndices?.size() ?: 0
+        def repairHints = (reResult?.repairHints as List) ?: []
+        if (updateRuleFailed) {
+            repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+        }
         // Propagate partial/repairHints and all failure fields from the underlying
         // result so callers can detect degraded writes and verification failures
         // without re-parsing settingsSkipped. Mirrors the addAction branch at L21194.
         return [
-            success: (reResult?.success != false) && health.ok,
-            partial: reResult?.partial,
+            success: (reResult?.success != false) && health.ok && !updateRuleFailed,
+            partial: (reResult?.partial == true) || updateRuleFailed,
             appId: appId,
             backup: backup,
             conditionIndices: reResult?.conditionIndices,
@@ -21934,9 +22067,12 @@ def toolUpdateNativeApp(args) {
             error: reResult?.error,
             verificationFetchFailed: reResult?.verificationFetchFailed,
             hubRenderError: reResult?.hubRenderError,
-            repairHints: reResult?.repairHints,
+            updateRuleFailed: updateRuleFailed,
+            expressionNotLive: expressionNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
             health: health,
-            note: "Required Expression added with ${reCondCount} ${reCondCount == 1 ? 'condition' : 'conditions'}; updateRule fired."
+            note: "Required Expression added with ${reCondCount} ${reCondCount == 1 ? 'condition' : 'conditions'}; updateRule ${updateRuleFailed ? 'FAILED -- expression may not be live' : 'fired'}."
         ]
     }
 
@@ -23664,14 +23800,15 @@ For the live machine-readable per-field schema (action enums, required and optio
   - `stopColorTempFade` (no fields)
   - `setColorTempPerMode` + `deviceIds` + `perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}`
 - **Button** (`capability='button'`, pushable-button devices): `push` + `deviceIds` + `buttonNumber`. `pushPerMode` + `deviceIds` + `perMode={modeIdOrName: buttonNumber, ...}`. `choosePerMode` + `buttonNumber` + `perMode={modeIdOrName: [deviceIds], ...}`.
-- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'NUMBER',value:75},...]` + optional `useLastEventDevice`. Calls any device-driver command (`off`, `on`, `setLevel`, `flashOff`, `refresh`, custom-driver verbs, etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings.
+- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'number',value:75},...]` + optional `useLastEventDevice`. Each parameter entry may be a literal (`{type:'number', value:75}`) or variable-sourced (`{type:'number', variable:'myVar'}`); the two forms may be mixed across slots. The `type` field is lowercase (`number`, `decimal`, `string`) -- the validator at `_rmAddAction` only accepts lowercase. Calls any device-driver command (`off`, `on`, `setLevel`, `flashOff`, `refresh`, custom-driver verbs, etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings.
 - **File IO** (`capability='fileWrite'`/`'fileAppend'`/`'fileDelete'`): `fileWrite` + `fileName` + `content` (overwrites). `fileAppend` + `fileName` + `content` (file must exist; `localFile` is an enum picker). `fileDelete` + `fileName`.
 - **Z-Wave Polling** (`capability='zwavePoll'`): `action='start'`/`'stop'` + `deviceIds` (Z-Wave switches/dimmers only) + `target='switches'|'dimmers'`.
 - **Lock** (`capability='lock'`): `action='lock'`/`'unlock'` + `deviceIds`.
 - **Thermostat** (`capability='thermostat'`): `action=(any)` + `deviceIds` + optional `mode`/`fanMode`/`heatingSetpoint`/`coolingSetpoint`/`adjustHeating`/`adjustCooling`.
 - **Shade/blind** (`capability='shade'`): `open`/`close`/`stop` + `deviceIds`. `setPosition` + `deviceIds` + `position` (0–100).
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
-- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) or `modeName` (String).
+- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `get_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
+- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` + `value` (numeric constant) OR `sourceVariable` (copy from another hub variable). Both `variable` and `sourceVariable` must be existing hub variable names -- unknown names are rejected before any write. `value` and `sourceVariable` are mutually exclusive; providing both is rejected. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
 - **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`.
@@ -23698,9 +23835,12 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 - **Numeric**: `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`
 - **Time-based**: `Days of week`, `Between two dates`, `Between two times`, `On a Day`
 - **Hub state**: `Mode`, `Private Boolean`
+- **Variable comparison**: `Variable`
 - **Custom / other**: `Custom Attribute`, `Last Event Device`, `Lock codes`
 
-Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.''',
+Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+
+Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types (Smoke, CO, CO2, Tamper), `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. See `docs/rm_action_subtype_schemas.md` for the full state-value table.''',
 
         create_native_app_reference: '''## `create_native_app` reference
 

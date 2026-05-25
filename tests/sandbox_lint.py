@@ -1175,11 +1175,19 @@ def check_tool_name_consistency() -> list[dict]:
 IS_CI = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
 
 
-def check_tool_guide_pointers() -> list[dict]:
+def check_tool_guide_pointers(src_override: str | None = None,
+                              tg_override: str | None = None,
+                              anchors_override: dict | None = None) -> list[dict]:
     """Verify every get_tool_guide(section='X') pointer in the .groovy schemas
     references a section key that actually exists in getToolGuideSections().
 
-    Three failure modes this catches:
+    src_override / tg_override let the self-test drive this function with
+    synthetic corpora -- routes the must-catch / must-not-catch fixtures
+    through the production dispatch + finding-dict construction so a missing
+    key in any appended dict surfaces in the self-test rather than at first
+    real-failure time.
+
+    Failure modes this catches:
 
     1. **Broken pointer.** Schema description says "Call
        `get_tool_guide(section='X')` for the foo reference" but X is not a
@@ -1198,15 +1206,28 @@ def check_tool_guide_pointers() -> list[dict]:
        skipping the drift check for that key. Forces the contributor adding
        the section to also add the hint. Emitted as
        `tool-guide-no-heading-hint`.
+
+    4. **Content-anchor drift.** Per-section anchor strings (declared in
+       `key_to_content_anchors` below) must appear in BOTH the source
+       doc-block AND TOOL_GUIDE.md. Catches in-body prose drift that the
+       heading-presence check at step 2/3 cannot see. Emitted as one of
+       `tool-guide-anchor-missing-{both,source,doc}`.
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
     tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
-    if not server.exists() or not tool_guide.exists():
-        return findings
-
-    src = server.read_text(encoding="utf-8", errors="replace")
-    tg = tool_guide.read_text(encoding="utf-8", errors="replace")
+    if src_override is not None:
+        src = src_override
+    else:
+        if not server.exists():
+            return findings
+        src = server.read_text(encoding="utf-8", errors="replace")
+    if tg_override is not None:
+        tg = tg_override
+    else:
+        if not tool_guide.exists():
+            return findings
+        tg = tool_guide.read_text(encoding="utf-8", errors="replace")
 
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
@@ -1220,8 +1241,9 @@ def check_tool_guide_pointers() -> list[dict]:
             "file": str(server.relative_to(REPO_ROOT)),
             "line": 1,
             "severity": "error",
-            "code": "tool-guide-no-sections",
-            "message": "Could not locate getToolGuideSections() return literal — has the function shape changed?",
+            "rule": "tool-guide-no-sections",
+            "message": "Could not locate getToolGuideSections() return literal -- has the function shape changed?",
+            "source": "",
         })
         return findings
 
@@ -1230,6 +1252,20 @@ def check_tool_guide_pointers() -> list[dict]:
     # `something: '''` inside one of the baked markdown bodies (deeper indentation, or
     # mid-paragraph) can't be mistaken for a real section key.
     section_keys = set(re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*'''", sections_block, re.MULTILINE))
+    # Extract each section's full body too so the content-anchor check below can verify
+    # specific anchor strings exist in BOTH the source doc-block AND TOOL_GUIDE.md. The
+    # heading-presence check at L1252 only protects against renames/deletions; without a
+    # content check, in-body prose can drift silently between the two files (live failure
+    # mode: content-body drift -- heading-presence check passes but a specific entry is
+    # absent from the source doc-block, so agents calling get_tool_guide see stale text).
+    # Non-greedy match to next 8-space key, or end-of-block.
+    section_bodies = {}
+    body_re = re.compile(
+        r"^ {8}([a-z_][a-z0-9_]*):\s*'''(.*?)'''(?=\s*(?:,|$|\n\s{0,8}[a-z_]+:))",
+        re.MULTILINE | re.DOTALL,
+    )
+    for m in body_re.finditer(sections_block):
+        section_bodies[m.group(1)] = m.group(2)
 
     # 2. Extract every get_tool_guide(section='X') reference from the .groovy.
     #    Tolerate both single and double quotes; whitespace around the `=`.
@@ -1241,12 +1277,13 @@ def check_tool_guide_pointers() -> list[dict]:
                     "file": str(server.relative_to(REPO_ROOT)),
                     "line": line_no,
                     "severity": "error",
-                    "code": "tool-guide-broken-pointer",
+                    "rule": "tool-guide-broken-pointer",
                     "message": (
                         f"get_tool_guide(section='{ptr}') points at a section that is NOT a key "
                         f"in getToolGuideSections(). Either add the section to the dispatcher or "
                         f"fix the pointer. Known sections: {sorted(section_keys)}."
                     ),
+                    "source": line.strip()[:200],
                 })
 
     # 3. Drift check: every section key should have a matching heading anchor in TOOL_GUIDE.md.
@@ -1270,17 +1307,18 @@ def check_tool_guide_pointers() -> list[dict]:
         hint = key_to_heading_hint.get(key)
         if hint is None:
             # New section added to the .groovy without a hint mapping above.
-            # Fail loud rather than silently skip — keeps this lint honest.
+            # Fail loud rather than silently skip -- keeps this lint honest.
             findings.append({
                 "file": str(server.relative_to(REPO_ROOT)),
                 "line": 1,
                 "severity": "error",
-                "code": "tool-guide-no-heading-hint",
+                "rule": "tool-guide-no-heading-hint",
                 "message": (
                     f"getToolGuideSections key '{key}' has no entry in key_to_heading_hint "
                     f"(in tests/sandbox_lint.py). Add a mapping so the TOOL_GUIDE.md drift "
                     f"check can verify the heading still exists."
                 ),
+                "source": "",
             })
             continue
         if hint not in tg:
@@ -1288,13 +1326,87 @@ def check_tool_guide_pointers() -> list[dict]:
                 "file": str(tool_guide.relative_to(REPO_ROOT)),
                 "line": 1,
                 "severity": "error",
-                "code": "tool-guide-heading-missing",
+                "rule": "tool-guide-heading-missing",
                 "message": (
                     f"getToolGuideSections key '{key}' baked into the .groovy, but the matching "
                     f"heading '{hint}' is not present in TOOL_GUIDE.md. Either restore the heading "
                     f"or update key_to_heading_hint in tests/sandbox_lint.py."
                 ),
+                "source": "",
             })
+
+    # 4. Content anchors: per-section list of substrings that MUST appear in both the
+    #    source doc-block and TOOL_GUIDE.md. Catches in-body prose drift that the
+    #    heading-presence check at step 3 cannot see -- e.g. a new addAction capability
+    #    family added to TOOL_GUIDE.md but never ported back into the source doc-block.
+    #    Add one anchor per facts-section worth pinning; do NOT pin prose unless it
+    #    represents a load-bearing API surface fact (capability name, error keyword,
+    #    API endpoint slug, etc.).
+    default_anchors = {
+        "update_native_app_reference": [
+            # setVariable / Hub Variable addAction family (TOOL_GUIDE.md:628)
+            "setVariable",
+            # Mode action's modeName-resolution behavior (TOOL_GUIDE.md:627)
+            "modeName",
+            # Discrete-event sensor note for STPage capability list (TOOL_GUIDE.md:664)
+            "discrete events",
+            # Variable comparison capability for STPage (TOOL_GUIDE.md:659)
+            "Variable comparison",
+            # Lowercase parameter type validator only accepts these
+            "lowercase",
+        ],
+    }
+    key_to_content_anchors = anchors_override if anchors_override is not None else default_anchors
+    for key, anchors in key_to_content_anchors.items():
+        if key not in section_bodies:
+            # Either the body extractor regex shape changed, or the key is unmapped.
+            # The unmapped-key path is already covered by step 3's tool-guide-no-heading-hint.
+            continue
+        body = section_bodies[key]
+        for anchor in anchors:
+            in_body = anchor in body
+            in_tg = anchor in tg
+            if not in_body and not in_tg:
+                findings.append({
+                    "file": "tests/sandbox_lint.py",
+                    "line": 1,
+                    "severity": "error",
+                    "rule": "tool-guide-anchor-missing-both",
+                    "message": (
+                        f"Content anchor '{anchor}' (key='{key}') is missing from BOTH the source "
+                        f"doc-block in hubitat-mcp-server.groovy AND TOOL_GUIDE.md. Either remove "
+                        f"the anchor from key_to_content_anchors (no longer load-bearing) or "
+                        f"restore the content in both files."
+                    ),
+                    "source": "",
+                })
+            elif not in_body:
+                findings.append({
+                    "file": str(server.relative_to(REPO_ROOT)),
+                    "line": 1,
+                    "severity": "error",
+                    "rule": "tool-guide-anchor-missing-source",
+                    "message": (
+                        f"Content anchor '{anchor}' (key='{key}') is present in TOOL_GUIDE.md but "
+                        f"NOT in the source doc-block in hubitat-mcp-server.groovy. Agents calling "
+                        f"get_tool_guide(section='{key}') will not see this fact. Port the text "
+                        f"into the doc-block or drop the anchor from key_to_content_anchors."
+                    ),
+                    "source": "",
+                })
+            elif not in_tg:
+                findings.append({
+                    "file": str(tool_guide.relative_to(REPO_ROOT)),
+                    "line": 1,
+                    "severity": "error",
+                    "rule": "tool-guide-anchor-missing-doc",
+                    "message": (
+                        f"Content anchor '{anchor}' (key='{key}') is present in the source "
+                        f"doc-block but NOT in TOOL_GUIDE.md. Add it to keep the human-readable "
+                        f"reference in sync, or drop the anchor from key_to_content_anchors."
+                    ),
+                    "source": "",
+                })
 
     return findings
 
@@ -1927,6 +2039,130 @@ def _run_count_self_test() -> int:
     return failures
 
 
+# (anchor, body_text, tg_text, expected_rule_codes) -- must-catch / must-not-catch
+# fixtures for the content-anchor drift check inside check_tool_guide_pointers (step 4).
+# Each fixture exercises one of the four outcome paths:
+#   - missing in BOTH -> tool-guide-anchor-missing-both
+#   - missing in source only -> tool-guide-anchor-missing-source
+#   - missing in doc only -> tool-guide-anchor-missing-doc
+#   - present in both -> no finding (must-not-catch case)
+#
+# Fixtures route through the REAL check_tool_guide_pointers via synthetic corpus
+# overrides (src_override / tg_override / anchors_override). This catches not just
+# the anchor-dispatch correctness but also the finding-dict shape (rule/source keys
+# must be present so format_finding does not KeyError downstream).
+TOOL_GUIDE_ANCHOR_SELF_TEST_CASES = [
+    (
+        "anchor present in both source body and TOOL_GUIDE.md -- no finding",
+        "modeName",
+        "Mode action takes modeName for resolution",
+        "Mode capability uses modeName lookup",
+        set(),
+    ),
+    (
+        "anchor missing from BOTH source and doc -- flags missing-both",
+        "ghostAnchor",
+        "Body has no reference to it",
+        "Doc has no reference to it",
+        {"tool-guide-anchor-missing-both"},
+    ),
+    (
+        "anchor present in doc but missing from source body -- flags missing-source",
+        "setVariable",
+        "Mode and modeName references",
+        "Hub Variable (capability='setVariable') is documented",
+        {"tool-guide-anchor-missing-source"},
+    ),
+    (
+        "anchor present in source body but missing from doc -- flags missing-doc",
+        "discrete events",
+        "Sensors report discrete events here",
+        "STPage list contains no such note",
+        {"tool-guide-anchor-missing-doc"},
+    ),
+]
+
+
+def _build_synthetic_groovy_corpus(section_key: str, body: str) -> str:
+    """Construct a minimal Groovy corpus that satisfies check_tool_guide_pointers'
+    parser: a getToolGuideSections() return literal with exactly ONE section whose
+    key + body match the test fixture. The body is wrapped in a triple-single-quoted
+    Groovy heredoc with the same 8-space indentation the production regex matches.
+    """
+    # Indent the body so any embedded ''' won't terminate the heredoc accidentally
+    # (we keep the fixture bodies simple -- plain text without ''' or backticks).
+    return (
+        "def getToolGuideSections() {\n"
+        "    return [\n"
+        f"        {section_key}: '''{body}''',\n"
+        "    ]\n"
+        "}\n"
+    )
+
+
+def _run_tool_guide_anchor_self_test() -> int:
+    """Drive check_tool_guide_pointers with synthetic corpora and verify both:
+    (a) the right rule codes fire (dispatch correctness), AND
+    (b) every finding can be rendered by format_finding without KeyError
+        (finding-dict shape correctness -- catches missing 'rule'/'source' keys).
+    """
+    failures = 0
+    # Use a synthetic section key + heading hint pair so the real heading-presence
+    # check at step 3 does not fire for these fixtures. The hint must appear in the
+    # synthetic TG corpus to pass step 3; we prepend it to every fixture's tg_text.
+    synthetic_key = "selftest_anchor_section"
+    synthetic_hint = "selftest_anchor_section"  # any unique substring works
+    # Step 3 (heading-hint mapping) checks via the hardcoded `key_to_heading_hint`
+    # in production code. A synthetic key not in that map would fire
+    # tool-guide-no-heading-hint; we filter that code out of the actual-set so the
+    # self-test only asserts on step 4's anchor codes. (Alternatives: make
+    # key_to_heading_hint injectable too. Filter is simpler and the noise is local.)
+    irrelevant_rules = {"tool-guide-no-heading-hint"}
+    for i, (desc, anchor, body, tg, expected_codes) in enumerate(
+        TOOL_GUIDE_ANCHOR_SELF_TEST_CASES, start=1
+    ):
+        synthetic_src = _build_synthetic_groovy_corpus(synthetic_key, body)
+        synthetic_tg = f"{synthetic_hint}\n{tg}\n"
+        synthetic_anchors = {synthetic_key: [anchor]}
+        findings = check_tool_guide_pointers(
+            src_override=synthetic_src,
+            tg_override=synthetic_tg,
+            anchors_override=synthetic_anchors,
+        )
+        # Shape check FIRST: every finding the production path appended must be
+        # format_finding-renderable. Catches the missing-'rule'/'source' bug class
+        # that crashes the CLI output path. Done before the rule-code comparison
+        # so a shape failure prints a clean structured message instead of letting
+        # the rule-code accessor below crash with a bare KeyError.
+        shape_ok = True
+        for f in findings:
+            try:
+                _ = format_finding(f)
+            except KeyError as ke:
+                failures += 1
+                shape_ok = False
+                print(
+                    f"TOOL-GUIDE-ANCHOR-SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  finding dict missing required key for format_finding: {ke}\n"
+                    f"  finding keys present: {sorted(f.keys())}\n"
+                    f"  finding: {f!r}"
+                )
+        if not shape_ok:
+            # Shape failures already reported; skip the dispatch-correctness check
+            # for this fixture to avoid noisy compound failures from key accesses.
+            continue
+        actual_codes = {f["rule"] for f in findings if f["rule"] not in irrelevant_rules}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"TOOL-GUIDE-ANCHOR-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}\n"
+                f"  all-finding-rules: {sorted({f['rule'] for f in findings})}"
+            )
+    return failures
+
+
 def run_self_test() -> int:
     """Scan inline fixtures through scan_source and confirm each rule
     triggers where expected. Uses scan_source (not strip_comments_and_strings
@@ -2022,13 +2258,25 @@ def run_self_test() -> int:
     count_failures = _run_count_self_test()
     failures += count_failures
 
+    # Tool-guide-anchor must-catch / must-not-catch fixtures (PIPELINE.md Rule 13:
+    # the anchor-drift check inside check_tool_guide_pointers is a class-wide
+    # mechanism; it ships with positive + negative fixtures so a future regression
+    # in the dispatch logic surfaces here rather than silently weakening the lint).
+    anchor_failures = _run_tool_guide_anchor_self_test()
+    failures += anchor_failures
+
     if failures:
         print(f"--- {failures} self-test failure(s) ---")
         return 1
-    total_cases = len(SELF_TEST_CASES) + len(COUNT_SELF_TEST_CASES)
+    total_cases = (
+        len(SELF_TEST_CASES)
+        + len(COUNT_SELF_TEST_CASES)
+        + len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)
+    )
     print(
         f"Self-test: {total_cases} case(s) passed "
-        f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count)."
+        f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count, "
+        f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor)."
     )
     return 0
 
