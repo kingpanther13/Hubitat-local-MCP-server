@@ -17814,6 +17814,159 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note?.contains("fired (subscriptions populated)")
     }
 
+    // ---------- bulk addTriggers/addActions trailing-updateRule failure surfaces dedicated slots ----------
+
+    def "update_native_app bulk addTriggers trailing-updateRule failure surfaces dedicated slots"() {
+        // Sibling pattern from the patches trailing-updateRule failure spec at L18131
+        // and the addLocalVariable / addRequiredExpression counterparts. When the
+        // post-bulk updateRule click is rejected, the per-item adds landed but the
+        // rule never re-subscribes; the envelope MUST carry dedicated slots
+        // (updateRuleFailed / subscriptionsNotLive / updateRuleError), flip success
+        // to false + partial to true, and append a recovery repairHint. A regression
+        // that swallows the trailing-updateRule failure into the generic
+        // _rmBuildUpdateErrorResponse shape would leave all three flags null and
+        // route the rejection through the "bulk path errored partway" path instead.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleAttempted = false
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // Throw on the trailing updateRule click only -- every prior per-item
+            // _rmAddTrigger write succeeds so the bulk path reaches the trailing
+            // updateRule click cleanly.
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleAttempted = true
+                throw new RuntimeException("simulated bulk updateRule rejection (firmware refused the click)")
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        // mainPage shows trigger IS baked so each _rmAddTrigger reaches its post-commit verify.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTriggers: [
+                [capability: "Switch", deviceIds: [8], state: "on"],
+                [capability: "Switch", deviceIds: [9], state: "off"]
+            ],
+            confirm: true
+        ])
+
+        then: "trailing updateRule click was attempted -- precondition"
+        // Without this, an earlier-throw regression (per-item add throws before
+        // reaching updateRule) would silently make the rest of the assertions
+        // vacuous. Pins the trailing-updateRule path was actually reached.
+        updateRuleAttempted == true
+
+        and: "envelope carries dedicated failure slots, not just a warn log"
+        // Load-bearing discriminators: a regression that reverts the trailing-
+        // updateRule propagation (warn-log-only, or wraps the click back inside
+        // the per-item try) would leave all three flags null. subscriptionsNotLive
+        // is the bulk-path slot name (matching addTrigger's semantic since the
+        // trailing updateRule's only effect on the bulk path is subscription
+        // re-init -- actions self-bake via doActPage->selectActions navigation).
+        result.updateRuleFailed == true
+        result.subscriptionsNotLive == true
+        result.updateRuleError?.toString()?.contains("simulated bulk updateRule rejection")
+
+        and: "success flips false and partial flips true"
+        result.success == false
+        result.partial == true
+
+        and: "per-item triggers results are still surfaced (committed before the trailing click failed)"
+        // Load-bearing discriminator: a regression that routes the trailing-updateRule
+        // failure through _rmBuildUpdateErrorResponse would drop the per-item results
+        // into triggerResults/actionResults camelCase keys (the error-response shape)
+        // instead of leaving them on the success-shape triggers/actions keys.
+        (result.triggers as List)?.size() == 2
+
+        and: "repairHints names the retry path"
+        result.repairHints?.any { it?.toString()?.contains("updateRule click was rejected") }
+
+        and: "note text reflects the FAILED outcome"
+        // Load-bearing discriminator: pin the failure-branch ternary text. A typo
+        // regression on the failure branch would still satisfy the flag checks above
+        // but ship a mis-labelled note to the consumer.
+        result.note?.contains("FAILED -- subscriptions may not be live")
+    }
+
+    def "update_native_app bulk addTriggers trailing-updateRule SUCCESS leaves updateRuleFailed + subscriptionsNotLive falsy"() {
+        // Negative pin paired with the bulk-path failure spec above. A regression
+        // that initializes updateRuleFailed=true or subscriptionsNotLive=true at
+        // the wrong default (so callers see them true even on success) would
+        // surface here. Mirror of the single-trigger addTrigger SUCCESS pin at
+        // L17756.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTriggers: [
+                [capability: "Switch", deviceIds: [8], state: "on"],
+                [capability: "Switch", deviceIds: [9], state: "off"]
+            ],
+            confirm: true
+        ])
+
+        then: "trailing updateRule click happened -- precondition"
+        updateRuleClicked == true
+
+        and: "new failure slots stay falsy on the success path"
+        // Load-bearing discriminators: each of the three flags MUST NOT be set on
+        // the happy path. An init-value regression (e.g. updateRuleFailed=true
+        // default OR subscriptionsNotLive=true default) surfaces here.
+        result.updateRuleFailed != true
+        result.subscriptionsNotLive != true
+        result.updateRuleError == null
+
+        and: "both bulk items still surface in triggers[]"
+        (result.triggers as List)?.size() == 2
+
+        and: "repairHints does NOT carry the updateRule-rejected recovery line"
+        // Load-bearing discriminator: a regression that unconditionally appends
+        // the recovery hint (instead of gating on updateRuleFailed) surfaces here.
+        def hints = (result.repairHints as List) ?: []
+        !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+
+        and: "note text reflects the success outcome (consumer-visible response field)"
+        // Load-bearing discriminator: pin the success-branch ternary text. A typo
+        // regression on the success branch would still satisfy the flag checks
+        // above but ship a mis-labelled note to the consumer.
+        result.note?.contains("fired once at the end")
+        !result.note?.contains("FAILED -- subscriptions may not be live")
+    }
+
     // ---------- _rmBuildCondition deviceId normalize-before-validate ----------
 
     def "_rmBuildCondition via addTrigger.condition: singular deviceId normalized to deviceIds list before wire write"() {

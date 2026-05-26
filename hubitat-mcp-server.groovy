@@ -3212,7 +3212,7 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
+                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. No trailing updateRule call is needed from the caller: doActPage->selectActions navigation self-bakes the action into the rule's actions[] map.
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -21880,9 +21880,9 @@ def toolUpdateNativeApp(args) {
     if (addActionSpec) {
         // High-level structured action creation. Mirrors addTrigger:
         // replaces the 6-7 wizard calls of the manual doActPage flow
-        // with one orchestrated call. After the helper commits, the
-        // caller still issues update_native_app(button='updateRule') to
-        // bake the actions[] map.
+        // with one orchestrated call. Action committed via
+        // doActPage->selectActions navigation; no trailing updateRule
+        // click is issued or required for action bake.
         def actResult
         try {
             actResult = _rmAddAction(appId, addActionSpec)
@@ -21907,7 +21907,7 @@ def toolUpdateNativeApp(args) {
             repairHints: actResult?.repairHints,
             health: actResult?.health,
             verificationFetchFailed: actResult?.verificationFetchFailed,
-            note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake -- no manual updateRule needed."
+            note: "Action added + committed (baked into actions[] map). No trailing updateRule needed; doActPage->selectActions navigation finalizes."
         ]
     }
 
@@ -22191,8 +22191,19 @@ def toolUpdateNativeApp(args) {
         // then fire updateRule once at the end. This is the efficient
         // shape for callers who already know all the triggers/actions
         // they want — collapses N tool calls into 1.
+        // Trailing-updateRule failure propagation: when the post-bulk
+        // updateRule click is rejected, the per-item adds landed but the
+        // rule never re-subscribes. The catch in the trailing-updateRule
+        // block below sets these so the response surfaces dedicated slots
+        // (sibling pattern from F1 patches at L22038+ / F2 addLocalVariable
+        // at L22088+). subscriptionsNotLive captures the trigger-side
+        // consequence (actions self-bake via doActPage->selectActions, so
+        // the trailing updateRule's only effect is subscription re-init).
         def triggerResults = []
         def actionResults = []
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
         try {
             (addTriggersList ?: []).eachWithIndex { spec, i ->
                 if (!(spec instanceof Map)) {
@@ -22216,13 +22227,6 @@ def toolUpdateNativeApp(args) {
                     mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                 }
             }
-            // One updateRule fires after everything to populate
-            // eventSubscriptions and re-run initialize(). Each
-            // _rmAddAction self-bakes its own action via the
-            // doActPage→selectActions navigation, so this trailing
-            // click is just for the final re-init (mirrors the UI's
-            // top-level "Update Rule" / "Done" press).
-            _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addTriggers/addActions bulk failed for app ${appId}: ${e.message}")
             def bulkResult = _rmBuildUpdateErrorResponse(appId, e.message, backup)
@@ -22230,17 +22234,43 @@ def toolUpdateNativeApp(args) {
             bulkResult.actionResults = actionResults
             return bulkResult
         }
+        // Trailing updateRule fires AFTER per-item adds complete. Hoisted out
+        // of the per-item try so a rejection here doesn't get routed through
+        // the generic "bulk path errored partway" shape -- per-item state IS
+        // committed and callers need the dedicated failure slots to detect
+        // the subscriptions-not-live consequence without log-grep. Each
+        // _rmAddAction self-bakes its own action via the doActPage->
+        // selectActions navigation, so this trailing click is just for the
+        // final re-init (mirrors the UI's top-level "Update Rule" / "Done"
+        // press, which populates eventSubscriptions from the trigger rows).
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+            mcpLog("warn", "rm-native", "addTriggers/addActions bulk: trailing updateRule click failed for app ${appId} -- per-item adds committed but subscriptions may not populate: ${updateExc.message}")
+        }
         def trigOk = triggerResults.count { it?.success != false }
         def actOk = actionResults.count { it?.success != false }
         def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size())
         return [
-            success: trigOk == triggerResults.size() && actOk == actionResults.size() && health.ok,
+            success: trigOk == triggerResults.size() && actOk == actionResults.size() && health.ok && !updateRuleFailed,
+            partial: itemsPartial || updateRuleFailed,
             appId: appId,
             backup: backup,
             triggers: triggerResults,
             actions: actionResults,
             health: health,
-            note: "Bulk update committed: ${trigOk}/${triggerResults.size()} triggers + ${actOk}/${actionResults.size()} actions; updateRule fired once at the end."
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
+            note: "Bulk update committed: ${trigOk}/${triggerResults.size()} triggers + ${actOk}/${actionResults.size()} actions; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired once at the end'}."
         ]
     }
 
