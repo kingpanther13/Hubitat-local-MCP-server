@@ -130,6 +130,14 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 
 Every new tool requires changes in exactly three places:
 
+**Design rules first** (see `AGENTS.md` § Tool design rules for full rationale and citations):
+
+0a. **Tool name follows the design rules** — `hub_` service prefix, verb from the allowed vocabulary, `manage_` only on gateways (or the narrow flat-multi-action exception), verb-noun order.
+0b. **All four annotation hints set explicitly** — `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. Defaults for unannotated tools are the cautious posture; explicit is safer than implicit.
+0c. **Parameter names are unambiguous** — `device_id` not `id`, `user_id` not `user`. Name parameters after what they semantically are.
+
+**Then the three placement changes:**
+
 1. **Tool definition** in `getAllToolDefinitions()` — a map with `name`, `description`, and `inputSchema` (JSON Schema format)
 2. **Case statement** in `executeTool()` — dispatches `toolName` to the implementation method
 3. **Implementation method** — prefixed with `tool` (e.g., `toolMyNewTool`)
@@ -166,6 +174,43 @@ For write tools, include safety warnings and mandatory pre-flight checklists."""
     ]
 ]
 ```
+
+**Canonical example with annotations + outputSchema (new tools should follow this shape):**
+
+```groovy
+[
+    name: "hub_get_room_health",
+    description: """Returns a health verdict for one room.
+
+Returns a structured map of room state plus a single `healthy` boolean roll-up so
+the AI can decide whether to drill in. Use this before sending commands to devices
+in the room — it surfaces stale-state warnings the device-level tools don't.""",
+    inputSchema: [
+        type: "object",
+        properties: [
+            room_id: [type: "string", description: "Room ID (string). Use hub_list_rooms to discover IDs."]
+        ],
+        required: ["room_id"]
+    ],
+    outputSchema: [
+        type: "object",
+        properties: [
+            healthy: [type: "boolean", description: "True if every device in the room reported within the freshness window."],
+            stale_devices: [type: "array", items: [type: "string"], description: "device IDs with no recent activity"],
+            warnings: [type: "array", items: [type: "string"], description: "human-readable warnings, empty when healthy"]
+        ],
+        required: ["healthy", "stale_devices", "warnings"]
+    ],
+    annotations: [
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+    ]
+]
+```
+
+Full rationale and citations: `AGENTS.md` § Tool design rules.
 
 Rules:
 - `inputSchema` root is always `type: "object"` with `properties`

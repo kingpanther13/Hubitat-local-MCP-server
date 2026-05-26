@@ -42,3 +42,4 @@
 - [ ] `./gradlew test` passes locally (or CI confirms)
 - [ ] Live-hub BAT tests updated if tool behaviour changed (see `tests/BAT-v2.md`)
 - [ ] Documentation updated if user-facing behaviour or tool surface changed
+- [ ] New/renamed MCP tools follow `AGENTS.md` Tool Design Rules (naming, annotations, schema)
