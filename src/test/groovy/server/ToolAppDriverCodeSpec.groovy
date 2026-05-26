@@ -141,7 +141,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not both")
+        ex.message.contains('exactly one')
     }
 
     @spock.lang.Unroll
@@ -155,7 +155,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         response.error.code == -32602
-        response.error.message.contains('not both')
+        response.error.message.contains('exactly one')
 
         where:
         useGateways << [true, false]
@@ -999,7 +999,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('not both')
+        ex.message.contains('exactly one')
     }
 
     @spock.lang.Unroll
@@ -1013,7 +1013,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         response.error.code == -32602
-        response.error.message.contains('not both')
+        response.error.message.contains('exactly one')
 
         where:
         useGateways << [true, false]
@@ -1525,9 +1525,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.installs.size() == 3
         result.installs[0].success == true
         result.installs[1].success == false
-        result.installs[1].error.contains("'source' or 'sourceFile'")
+        result.installs[1].error.contains("'source', 'sourceFile', or 'importUrl'")
         result.installs[2].success == false
-        result.installs[2].error.contains("'source' or 'sourceFile'")
+        result.installs[2].error.contains("'source', 'sourceFile', or 'importUrl'")
     }
 
     @spock.lang.Unroll
@@ -1560,9 +1560,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.installs.size() == 3
         inner.installs[0].success == true
         inner.installs[1].success == false
-        inner.installs[1].error.contains("'source' or 'sourceFile'")
+        inner.installs[1].error.contains("'source', 'sourceFile', or 'importUrl'")
         inner.installs[2].success == false
-        inner.installs[2].error.contains("'source' or 'sourceFile'")
+        inner.installs[2].error.contains("'source', 'sourceFile', or 'importUrl'")
 
         where:
         useGateways << [true, false]

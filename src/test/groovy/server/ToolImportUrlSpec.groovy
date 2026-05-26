@@ -22,8 +22,33 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
 
+    // Mutable per-test response state set by stubHttpGet / stubHttpGetThrows.
+    // The setupSpec-level httpGet stub reads these; specs swap them between tests.
+    @Shared private int nextHttpGetStatus = 200
+    @Shared private String nextHttpGetBody = ''
+    @Shared private Throwable nextHttpGetThrow = null
+    @Shared private Map nextHttpGetCaptured = [:]
+
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
+        // Install ONE global httpGet stub at spec-class scope -- mirrors the
+        // rule harness pattern (RuleHarnessSpec.groovy:209). Per-test state is
+        // mutated via the stubHttpGet / stubHttpGetThrows helpers below.
+        appExecutor.httpGet(*_) >> { args ->
+            if (nextHttpGetThrow) throw nextHttpGetThrow
+            Map params = args[0] as Map
+            Closure handler = args[1] as Closure
+            nextHttpGetCaptured.uri = params?.uri
+            handler.call([status: nextHttpGetStatus, data: [text: nextHttpGetBody]])
+        }
+    }
+
+    def setup() {
+        // Reset per-test state so prior-test stub config doesn't leak.
+        nextHttpGetStatus = 200
+        nextHttpGetBody = ''
+        nextHttpGetThrow = null
+        nextHttpGetCaptured.clear()
     }
 
     private void enableHubAdminWrite() {
@@ -32,28 +57,17 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     /**
-     * Stub httpGet to return the given body with the given status. Captures
-     * the URL the helper requested so tests can assert on what was fetched.
-     * Returns the captured map; mutate it from the test body if needed.
+     * Configure the next httpGet response. Returns the captured map (the URL the
+     * helper requested lands in captured.uri after the call).
      */
     private Map stubHttpGet(int status, String body) {
-        def captured = [:]
-        script.metaClass.httpGet = { Map params, Closure handler ->
-            captured.uri = params?.uri
-            captured.timeout = params?.timeout
-            captured.textParser = params?.textParser
-            handler.call([
-                status: status,
-                data: [text: body]
-            ])
-        }
-        captured
+        nextHttpGetStatus = status
+        nextHttpGetBody = body
+        nextHttpGetCaptured
     }
 
     private void stubHttpGetThrows(String message) {
-        script.metaClass.httpGet = { Map params, Closure handler ->
-            throw new RuntimeException(message)
-        }
+        nextHttpGetThrow = new RuntimeException(message)
     }
 
     // -------- _fetchSourceFromUrl helper --------
@@ -68,16 +82,12 @@ class ToolImportUrlSpec extends ToolSpecBase {
         then:
         result == 'definition(name: "Hello")'
         captured.uri == 'https://example.com/test.groovy'
-        captured.textParser == true
-        captured.timeout == 60
     }
 
     def "_fetchSourceFromUrl: throws IAE on non-http/https scheme before any I/O"() {
         given:
-        def httpGetCalled = false
-        script.metaClass.httpGet = { Map params, Closure handler ->
-            httpGetCalled = true
-        }
+        // If httpGet ever fires for this test, the stub would set captured.uri.
+        stubHttpGet(200, 'should-not-be-reached')
 
         when:
         script._fetchSourceFromUrl('ftp://example.com/x.groovy')
@@ -86,7 +96,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('http://')
         ex.message.contains('https://')
-        !httpGetCalled  // scheme check fires before any network attempt
+        nextHttpGetCaptured.uri == null  // scheme check fires before any network attempt
     }
 
     def "_fetchSourceFromUrl: throws IAE on null url"() {

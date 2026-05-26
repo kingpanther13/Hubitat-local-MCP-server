@@ -6928,47 +6928,64 @@ def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean i
 }
 
 /**
- * Fetch Groovy source from an external URL via synchronous httpGet.
+ * Fetch Groovy source from an external URL.
  * Mirrors the browser fetch() the Hubitat code editor uses behind its
  * "Import Code from Website" dialog: relocated server-side so MCP callers
  * can deploy from a URL in one tool call instead of paste-then-save.
  *
- * Sandbox-safe pattern (same shape as hubInternalGet). textParser:true so
- * resp.data is a Reader and large bodies stream cleanly; probe verified
- * 1.25 MB hubitat-mcp-server.groovy fetched from raw.githubusercontent.com
- * in <1s with no sandbox cap. 60s timeout is generous headroom.
+ * Probe verified 1.25 MB hubitat-mcp-server.groovy fetched from
+ * raw.githubusercontent.com in <1s with no sandbox cap.
  *
  * Throws IllegalArgumentException with a structured message on bad scheme,
  * non-200 status, fetch exception, or empty body. Returns the body String
  * on success.
+ *
+ * The actual httpGet call lives in _httpFetchUrl so tests can stub the
+ * single seam method instead of the closure-style httpGet (which the
+ * Hubitat sandbox dispatches through a path that bypasses metaClass).
  */
 private String _fetchSourceFromUrl(String url) {
     if (!(url?.startsWith("http://") || url?.startsWith("https://"))) {
         throw new IllegalArgumentException("importUrl must start with http:// or https://")
     }
-    def source = null
-    def status = null
+    def resp
     try {
-        httpGet([
-            uri: url,
-            textParser: true,
-            timeout: 60,
-            ignoreSSLIssues: true
-        ]) { resp ->
-            status = resp.status
-            try { source = resp.data.text }
-            catch (Exception readErr) { source = resp.data?.toString() ?: "" }
-        }
+        resp = _httpFetchUrl(url)
     } catch (Exception e) {
         throw new IllegalArgumentException("importUrl fetch failed: ${e.message}")
     }
+    def status = resp?.status
+    def body = resp?.body
     if (status != 200) {
         throw new IllegalArgumentException("importUrl returned HTTP ${status}")
     }
-    if (!source) {
+    if (!body) {
         throw new IllegalArgumentException("importUrl returned empty body from ${url}")
     }
-    return source
+    return body
+}
+
+/**
+ * Synchronous httpGet wrapped as a plain Map-returning method so tests can
+ * stub via script.metaClass. Returns [status: int, body: String].
+ * Sandbox-safe pattern (same shape as hubInternalGet). textParser:true so
+ * resp.data is a Reader and large bodies stream cleanly; 60s timeout is
+ * generous headroom for the largest known payload (~1.3 MB).
+ */
+private Map _httpFetchUrl(String url) {
+    def status = null
+    def body = null
+    httpGet([
+        uri: url,
+        textParser: true,
+        timeout: 60,
+        ignoreSSLIssues: true
+    ]) { resp ->
+        status = resp.status
+        try { body = resp.data.text }
+        catch (Exception readErr) { body = resp.data?.toString() ?: "" }
+    }
+    return [status: status, body: body]
 }
 
 /**
