@@ -708,7 +708,7 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 - `variableNotLive` (addLocalVariable): the variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires. Diagnostic story: "my actions can't read this variable yet."
 - `patchesNotLive` (patches): the patch ops landed but the rule won't re-evaluate / re-subscribe (catch-all because patches can bundle any mix of the above). Diagnostic story: "I just patched a bunch of stuff and nothing is taking effect."
 
-All five share `updateRuleFailed` and `updateRuleError` for the common facts. The slot-name divergence is intentional -- a caller-facing diagnostic, not a code-side typology. Single-name unification was considered and rejected because it would force every caller to read the operation-type to interpret the consequence.
+All four share `updateRuleFailed` and `updateRuleError` for the common facts. The slot-name divergence is intentional -- a caller-facing diagnostic, not a code-side typology. Single-name unification was considered and rejected because it would force every caller to read the operation-type to interpret the consequence.
 
 #### `create_native_app` reference
 

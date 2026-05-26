@@ -2983,7 +2983,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
-**Reading note for T607-T617 Expected sections**: where these scenarios say "no broken markers" the concrete check is `result.brokenMarkers` is empty (the field surfaced by `_rmCheckRuleHealth` / `check_rule_health`) AND `result.health.ok=true`. Together they confirm the rule did not pick up any `*BROKEN*` rendering markers post-commit.
+**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers" the concrete check is `result.brokenMarkers` is empty (the field surfaced by `_rmCheckRuleHealth` / `check_rule_health`) AND `result.health.ok=true`. Together they confirm the rule did not pick up any `*BROKEN*` rendering markers post-commit.
 
 ### T607 — addAction setVariable: set a hub variable to a constant value inside an RM rule
 
