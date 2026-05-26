@@ -1,7 +1,6 @@
 package server
 
 import spock.lang.Shared
-import spock.lang.Unroll
 import support.TestChildApp
 import support.ToolSpecBase
 
@@ -399,6 +398,10 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.triggerUpdated == 194
         result.updatedFired == false
         result.repairHints?.any { it.toString().contains('lifecycle-fire POST failed') }
+        // Pins that BOTH posts were attempted -- the save (1) + the lifecycle fire (2).
+        // Without this, a regression that throws before reaching the lifecycle POST
+        // could produce the same envelope shape while never trying the second POST.
+        postCount == 2
     }
 
     def "update_app_code without triggerUpdated does NOT fire updated() (negative pin matches UI behavior)"() {
