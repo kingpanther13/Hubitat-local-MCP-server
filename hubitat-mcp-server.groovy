@@ -2966,7 +2966,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
                     ],
                     actions: [
                         type: "array",
-                        description: "Optional list of action specs to populate after creating the rule (and any bundled triggers). Each spec follows the same shape as update_native_app(addAction=…). The tool creates the rule, adds every trigger, then every action sequentially, then fires updateRule once at the end so subscriptions and the actions[] map bake from a fully-loaded rule. Pairs naturally with the triggers array — pass both to build a complete rule (trigger + actions) in a single call. Empty/omitted = no actions added.",
+                        description: "Optional list of action specs to populate after creating the rule (and any bundled triggers). Each spec follows the same shape as update_native_app(addAction=…). The tool creates the rule, adds every trigger, then every action sequentially (actions self-bake via doActPage->selectActions per-item), then fires updateRule once at the end so subscriptions populate from a fully-loaded rule. Pairs naturally with the triggers array -- pass both to build a complete rule (trigger + actions) in a single call. Empty/omitted = no actions added.",
                         items: [type: "object"]
                     ],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
@@ -3058,11 +3058,11 @@ Optional fields on every spec:
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`. (`subscriptionsNotLive` rather than `expressionNotLive` because the failure consequence is device-event subscription, not gate-evaluator re-pick-up -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]"""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.",
+                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
@@ -3129,14 +3129,14 @@ PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition field
 
 On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.[[FLAT_TRIM]]
 
-Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]
+Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `update_native_app(button='updateRule', confirm=true)`. (`expressionNotLive` rather than `subscriptionsNotLive` because the failure consequence is gate-evaluator re-pick-up, not device-event subscription -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]
 
-Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'detected'/'clear' for CO2, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper). Full table in TOOL_GUIDE.md."""
+Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper).[[FLAT_TRIM]] Carbon dioxide sensor is intentionally EXCLUDED: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; CO2 looks superficially symmetric to CO but RM 5.1 rejects the state-based shape.[[/FLAT_TRIM]] Full table in TOOL_GUIDE.md."""
                     ],
 
                     addActions: [
                         type: "array",
-                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so the actions[] map and subscriptions bake atomically. Pairs naturally with addTriggers — pass both to add many triggers + many actions in a single tool call.",
+                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
@@ -14623,6 +14623,25 @@ String _rmNormalizeAtTime(String raw) {
  * first missing id with a message keyed by `label` (e.g.
  * "addTrigger.deviceIds[2]"). Idempotent for List<null>/empty.
  */
+/**
+ * Single source of truth for the set of `settingsSkipped[].reason` codes that
+ * are INFORMATIONAL (do NOT signal a genuine field-write failure). Consumed by
+ * both `_rmAddRequiredExpression` and `_rmAddAction` partial gates -- the
+ * shared `_rmWalkConditionReveal` walker emits the same sentinels on STPage and
+ * doActPage, so both callsites need an identical exemption list. Centralising
+ * it here means a future addition (a second informational reason code) lands
+ * in one place rather than requiring lockstep edits in two helpers.
+ *
+ * Genuinely-partial reason codes (`silent_rejection`, `rhs_type_not_revealed`,
+ * `offset_field_not_revealed`, `verification_fetch_failed`, `not_in_schema`,
+ * `api_unavailable`, etc.) are NOT in this list and continue to flip `partial`.
+ * Reason-code is the disambiguator -- doc contract at the inline get_tool_guide
+ * content block calls this list out by name.
+ */
+private List _rmInformationalSkippedReasons() {
+    return ["reveal_fallback_to_existing_field"]
+}
+
 private void _rmValidateDeviceIdsExist(String label, Object ids) {
     if (!(ids instanceof List)) return
     ids.each { id ->
@@ -18535,16 +18554,33 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // worth retrying via update_native_app(walkStep) or replaceActions.
     // health.brokenMarkers non-empty means a PRIOR action/trigger is already
     // broken; the new action committed but the rule is in a known-bad state.
-    def partial = (skipped != null && !skipped.isEmpty()) || actionNotBaked ||
+    // INFORMATIONAL sentinels (reveal_fallback_to_existing_field) are excluded
+    // from the partial computation -- they signal a static-schema or already-
+    // revealed-field walker path, NOT a genuine field-write failure. Mirrors
+    // the exemption in _rmAddRequiredExpression's partial gate; the shared
+    // _rmWalkConditionReveal walker emits the same sentinels on both pages,
+    // so both call sites need the same exemption to match the documented
+    // "INFORMATIONAL -- does NOT flip partial by itself" contract. Set sourced
+    // from _rmInformationalSkippedReasons() so a future addition lands in one
+    // place rather than requiring lockstep edits in both helpers.
+    def informationalReasons = _rmInformationalSkippedReasons()
+    def genuineSkipped = (skipped ?: []).findAll {
+        !(it instanceof Map) || it.reason == null || !(it.reason in informationalReasons)
+    }
+    def partial = !genuineSkipped.isEmpty() || actionNotBaked ||
                   ((health?.brokenMarkers as List)?.size() > 0)
-    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
+    def hubRenderError = err != null || (genuineSkipped.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
     def repairHints = []
     if (actionNotBaked) {
         repairHints << "Action did not bake — mainPage still shows 'Define Actions' placeholder. Common causes: required field for the (capability, action) pair was omitted (e.g. dimmer.setLevel needs 'level'; switch.setPerMode needs 'perMode'; runCommand needs 'command'), invalid deviceIds, or value out of range. Inspect the rule via get_app_config(includeSettings=true) — settings.actType.<idx> set without matching subtype-specific fields means the action was registered but not committed. Use removeAction(${idx}) to clean up, then rebuild."
     }
     if (partial) {
-        if (skipped != null && !skipped.isEmpty()) {
-            repairHints << "Some settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
+        // Use genuineSkipped (excluding informational sentinels) so the repair
+        // hint only names keys that actually failed to land. An informational
+        // fallback entry would otherwise be reported as "didn't land" when in
+        // fact the field was written via the already-revealed path.
+        if (!genuineSkipped.isEmpty()) {
+            repairHints << "Some settings didn't land: ${genuineSkipped*.key.join(', ')}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
             if (hubRenderError) {
                 repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
             }
@@ -21126,10 +21162,28 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // callers see a clear error instead of a phantom in-flight rule.
     // Verified live: rDev_1={99999: null} written but
     // expression didn't commit.
-    conditions.eachWithIndex { condRaw, i ->
-        if (!(condRaw instanceof Map)) return  // shape errors caught later
-        _rmValidateDeviceIdsExist("addRequiredExpression.conditions[${i}].deviceIds", (condRaw as Map).deviceIds)
+    //
+    // Recursive: the STPage executor walks nested subExpression.conditions[]
+    // and the deviceId normalizer above already walks the same tree, but the
+    // existence validator was originally flat -- nested bogus deviceIds
+    // bypassed the fail-loud guard. Walk the same shape here so every
+    // condition's deviceIds get pre-validated, with a path string that names
+    // the exact nesting site so the error message is actionable.
+    def validateDeviceIdsRecursive
+    validateDeviceIdsRecursive = { List cl, String pathPrefix ->
+        cl.eachWithIndex { condRaw, i ->
+            if (!(condRaw instanceof Map)) return  // shape errors caught later
+            def m = condRaw as Map
+            _rmValidateDeviceIdsExist("${pathPrefix}[${i}].deviceIds", m.deviceIds)
+            if (m.subExpression instanceof Map) {
+                def sub = (m.subExpression as Map).conditions
+                if (sub instanceof List) {
+                    validateDeviceIdsRecursive.call(sub as List, "${pathPrefix}[${i}].subExpression.conditions")
+                }
+            }
+        }
     }
+    validateDeviceIdsRecursive.call(conditions as List, "addRequiredExpression.conditions")
 
     // Closure that wraps _rmWriteSubPageField with applied/skipped routing
     // based on the helper's persistence verification (Map return). Use this
@@ -21498,7 +21552,24 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         ]
     }
 
-    def hasDegradation = skipped.any { it instanceof Map && it.reason != null }
+    // `reveal_fallback_to_existing_field` is INFORMATIONAL only -- it signals
+    // the walker matched a field that was already visible BEFORE the trigger
+    // closure ran (normal on static-schema firmware, AND normal on Between-two-times
+    // where multiple stage reveals naturally land on already-revealed fields after
+    // the previous stage committed). The doc contract at the inline get_tool_guide
+    // content block says these sentinels do NOT flip `partial` by themselves;
+    // production must match. Other reason codes (silent_rejection,
+    // rhs_type_not_revealed, offset_field_not_revealed, verification_fetch_failed,
+    // not_in_schema, etc.) ARE genuine degradation and continue to flip `partial`.
+    // Reason-code is the disambiguator -- compareToDevice's genuinely-partial paths
+    // use distinct codes (rhs_type_not_revealed / offset_field_not_revealed), so a
+    // single-code exemption here is safe and contract-aligned. Set sourced from
+    // _rmInformationalSkippedReasons() so the doActPage callsite in _rmAddAction
+    // sees the exact same exemption list without lockstep edits.
+    def informationalReasons = _rmInformationalSkippedReasons()
+    def hasDegradation = skipped.any {
+        it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
+    }
     if (hasDegradation) {
         return [
             success: true,
@@ -21513,7 +21584,12 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 // not_in_schema). Per-condition stamping (condIdx) happens in the
                 // walkConds loop above; entries that still lack condIdx came from
                 // outside any per-condition walk (e.g. the useST=true mainPage write).
-                def degEntries = skipped.findAll { it instanceof Map && it.reason != null }
+                // Filter out informational reasons here too so the count matches the
+                // partial gate's count -- otherwise a fallback entry inflates the
+                // "N conditions used a degraded write path" number.
+                def degEntries = skipped.findAll {
+                    it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
+                }
                 def uniqueCondIdxs = degEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
                 def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : degEntries.size()
                 def cw = (deg == 1) ? "condition" : "conditions"
@@ -21660,6 +21736,18 @@ def toolUpdateNativeApp(args) {
         // statement below.
         def removed = []
         def addedResults = []
+        // Trailing-updateRule failure propagation (sibling pattern from the
+        // bulk addTriggers/addActions branch and the addTrigger single-spec
+        // branch). When the post-mutation updateRule click is rejected, the
+        // mutations IS in the rule's appSettings but the running rule
+        // instance never re-subscribes to its trigger events. Surface this
+        // via dedicated slots so callers can detect without log-grep.
+        // subscriptionsNotLive is the slot name because every action-mutation
+        // path here ultimately affects the trigger->action wiring that the
+        // trailing updateRule re-initializes.
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
         try {
             // Pre-flight: walk the replaceActions spec list's capability
             // sequence and refuse the call before clearActions runs if the
@@ -21718,7 +21806,6 @@ def toolUpdateNativeApp(args) {
                     }
                 }
             }
-            _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${e.message}")
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
@@ -21731,65 +21818,68 @@ def toolUpdateNativeApp(args) {
             }
             return result
         }
+        // Trailing updateRule fires AFTER mutation block completes. Hoisted
+        // out of the per-item try so a rejection here doesn't get routed
+        // through the generic "mutation errored partway" shape -- the mutation
+        // state IS committed and callers need the dedicated failure slots to
+        // detect the subscriptions-not-live consequence without log-grep.
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+            mcpLog("warn", "rm-native", "action mutation: trailing updateRule click failed for app ${appId} -- mutations committed but subscriptions may not populate: ${updateExc.message}")
+        }
         def addedOk = (addedResults ?: []).count { it?.success != false }
         def addedTotal = (replaceActionsList ?: []).size()
         def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        def itemsPartial = replaceActionsList != null && addedOk != addedTotal
         return [
-            success: (addedOk == addedTotal) && health.ok,
+            success: (addedOk == addedTotal) && health.ok && !updateRuleFailed,
+            partial: itemsPartial || updateRuleFailed,
             appId: appId,
             backup: backup,
             removedIndices: removed ?: null,
             addedActions: addedResults ?: null,
             health: health,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
             note: replaceActionsList != null
-                ? "Replaced actions: removed ${removed?.size() ?: 0}, added ${addedOk}/${addedTotal}; updateRule fired."
-                : (clearActionsFlag ? "Cleared ${removed?.size() ?: 0} actions; updateRule fired."
-                : (moveActionSpec ? "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule fired."
-                : "Removed action ${removeActionSpec?.index}; updateRule fired."))
+                ? "Replaced actions: removed ${removed?.size() ?: 0}, added ${addedOk}/${addedTotal}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+                : (clearActionsFlag ? "Cleared ${removed?.size() ?: 0} actions; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+                : (moveActionSpec ? "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+                : "Removed action ${removeActionSpec?.index}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."))
         ]
     }
 
     // Trigger mutation paths — single delete or single field-edit.
     // updateRule fires after each so subscriptions bake from the
-    // updated trigger state.
+    // updated trigger state. Trailing-updateRule failure propagation is
+    // wired the same way as the action-mutation block above and the bulk
+    // addTriggers/addActions branch -- if the trailing click is rejected,
+    // the mutation IS committed but the rule never re-subscribes, so the
+    // envelope surfaces dedicated slots (updateRuleFailed /
+    // subscriptionsNotLive / updateRuleError) and flips success=false +
+    // partial=true.
     if (removeTriggerSpec || modifyTriggerSpec) {
+        def trigMutResult = null
+        def trigIdxOut = null
         try {
             if (removeTriggerSpec) {
                 if (removeTriggerSpec.index == null) throw new IllegalArgumentException("removeTrigger.index is required")
-                def trigIdx = (removeTriggerSpec.index as Integer)
-                def result = _rmRemoveTrigger(appId, trigIdx)
-                _rmClickAppButton(appId, "updateRule")
-                def health = _rmCheckRuleHealth(appId)
-                return [
-                    success: result.success != false && health.ok,
-                    appId: appId,
-                    backup: backup,
-                    removedIndex: result.removedIndex,
-                    beforeIndices: result.beforeIndices,
-                    afterIndices: result.afterIndices,
-                    health: health,
-                    note: "Removed trigger ${trigIdx}; updateRule fired."
-                ]
-            }
-            if (modifyTriggerSpec) {
+                trigIdxOut = (removeTriggerSpec.index as Integer)
+                trigMutResult = _rmRemoveTrigger(appId, trigIdxOut)
+            } else if (modifyTriggerSpec) {
                 if (modifyTriggerSpec.index == null) throw new IllegalArgumentException("modifyTrigger.index is required")
                 if (!(modifyTriggerSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})")
-                def trigIdx = (modifyTriggerSpec.index as Integer)
-                def result = _rmModifyTrigger(appId, trigIdx, modifyTriggerSpec.mods as Map)
-                _rmClickAppButton(appId, "updateRule")
-                def health = _rmCheckRuleHealth(appId)
-                return [
-                    success: result.success != false && health.ok,
-                    appId: appId,
-                    backup: backup,
-                    modifiedIndex: result.modifiedIndex,
-                    verifiedState: result.verifiedState,
-                    verificationFetchFailed: result.verificationFetchFailed,
-                    settingsApplied: result.settingsApplied,
-                    settingsSkipped: result.settingsSkipped,
-                    health: health,
-                    note: "Modified trigger ${trigIdx}; updateRule fired."
-                ]
+                trigIdxOut = (modifyTriggerSpec.index as Integer)
+                trigMutResult = _rmModifyTrigger(appId, trigIdxOut, modifyTriggerSpec.mods as Map)
             }
         } catch (Exception e) {
             mcpLog("error", "rm-native", "trigger mutation failed for app ${appId}: ${e.message}")
@@ -21808,6 +21898,58 @@ def toolUpdateNativeApp(args) {
             }
             return trigResult
         }
+        // Trailing updateRule fires AFTER the mutation completes. Hoisted out
+        // of the per-mutation try so a rejection here doesn't get routed
+        // through the generic "trigger mutation failed" error response.
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+            mcpLog("warn", "rm-native", "trigger mutation: trailing updateRule click failed for app ${appId} -- mutation committed but subscriptions may not populate: ${updateExc.message}")
+        }
+        def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        if (removeTriggerSpec) {
+            return [
+                success: trigMutResult.success != false && health.ok && !updateRuleFailed,
+                partial: updateRuleFailed,
+                appId: appId,
+                backup: backup,
+                removedIndex: trigMutResult.removedIndex,
+                beforeIndices: trigMutResult.beforeIndices,
+                afterIndices: trigMutResult.afterIndices,
+                updateRuleFailed: updateRuleFailed,
+                subscriptionsNotLive: subscriptionsNotLive,
+                updateRuleError: updateRuleError,
+                repairHints: repairHints,
+                health: health,
+                note: "Removed trigger ${trigIdxOut}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+            ]
+        }
+        return [
+            success: trigMutResult.success != false && health.ok && !updateRuleFailed,
+            partial: updateRuleFailed,
+            appId: appId,
+            backup: backup,
+            modifiedIndex: trigMutResult.modifiedIndex,
+            verifiedState: trigMutResult.verifiedState,
+            verificationFetchFailed: trigMutResult.verificationFetchFailed,
+            settingsApplied: trigMutResult.settingsApplied,
+            settingsSkipped: trigMutResult.settingsSkipped,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
+            health: health,
+            note: "Modified trigger ${trigIdxOut}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+        ]
     }
 
     if (addTriggerSpec) {
@@ -22054,6 +22196,16 @@ def toolUpdateNativeApp(args) {
         }
         return [
             success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok && !updateRuleFailed,
+            // `partial` is ORTHOGONAL to success: a patches call where every op
+            // landed but one carried partial:true (e.g. trailing-updateRule
+            // failure on an inner addRequiredExpression, or settingsSkipped on
+            // an inner addTrigger), or a call where the outer trailing-updateRule
+            // failed, or a call where any op returned success=false -- all must
+            // surface `partial: true` so callers do not silently treat the
+            // response as fully baked. Mirrors the bulk path at the
+            // addTriggers/addActions branch and the addRequiredExpression /
+            // addTrigger single-spec branches.
+            partial: (patchErr != null) || (opsOk != patchResults.size()) || patchResults.any { it instanceof Map && (it.partial == true) } || updateRuleFailed,
             appId: appId,
             backup: backup,
             patches: patchResults,
@@ -22097,18 +22249,29 @@ def toolUpdateNativeApp(args) {
         if (updateRuleFailed) {
             repairHints << "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
+        // Propagate partial/error/hubRenderError/repairHints from the inner
+        // helper. _rmAddLocalVariable's commit-verification path can return
+        // {success:false, partial:true, hubRenderError:true, error:..., repairHints:[...]}
+        // when the variable settings persist but the rule status never picks
+        // them up. Without the propagation here the outer envelope clobbered
+        // those slots with updateRuleFailed-only signals -- callers had no
+        // way to distinguish "trailing updateRule rejected" from "variable
+        // never rendered into appState". Mirrors the addRequiredExpression
+        // branch below at L22169-22186.
         return [
             success: (varResult?.success != false) && health.ok && !updateRuleFailed,
-            partial: updateRuleFailed,
+            partial: (varResult?.partial == true) || updateRuleFailed,
             appId: appId,
             backup: backup,
             variable: [name: varResult?.name, type: varResult?.type, value: varResult?.value],
             settingsApplied: varResult?.settingsApplied,
             settingsSkipped: varResult?.settingsSkipped,
+            error: varResult?.error,
+            hubRenderError: varResult?.hubRenderError,
             updateRuleFailed: updateRuleFailed,
             variableNotLive: variableNotLive,
             updateRuleError: updateRuleError,
-            repairHints: repairHints,
+            repairHints: ((varResult?.repairHints as List) ?: []) + repairHints,
             health: health,
             note: "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired'}."
         ]
@@ -23980,7 +24143,7 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 
 Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
 
-Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types (Smoke, CO, CO2, Tamper), `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
+Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types (Smoke, CO, Tamper), `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. Carbon dioxide sensor is intentionally EXCLUDED from the discrete-event list: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; the names look superficially symmetric to Carbon monoxide detector but RM 5.1 treats them differently. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
 
 ### Extended per-capability spec shapes
 
@@ -24002,9 +24165,13 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 - `api_unavailable` paired with `key: "variable-validation"` -- Variable picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
 - `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
 
-Trailing-updateRule failure slots (`addRequiredExpression` and `addTrigger`):
+Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):
 - `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. `repairHints` adds a recovery line pointing at `update_native_app(button='updateRule', confirm=true)`.
-- `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to its device events -- retry `updateRule` to populate subscriptions.''',
+- `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to its device events -- retry `updateRule` to populate subscriptions.
+- `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
+- `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
+- `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above.
+- `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.''',
 
         create_native_app_reference: '''## `create_native_app` reference
 

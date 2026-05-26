@@ -519,8 +519,9 @@ comparator-based condition:
 | `Water sensor` | `'wet'`, `'dry'` |
 | `Smoke detector` | `'detected'`, `'clear'`, `'tested'` |
 | `Carbon monoxide detector` | `'detected'`, `'clear'`, `'tested'` |
-| `Carbon dioxide sensor` | `'detected'`, `'clear'` |
 | `Tamper alert` | `'detected'`, `'clear'` |
 | `Acceleration` | `'active'`, `'inactive'` |
 
 For these capabilities, pass `state: 'wet'` (not `comparator: '=' / value: ...`).
+
+**Carbon dioxide sensor is NOT in this table.** The `CarbonDioxideMeasurement` capability is numeric ppm (use `comparator: '>'` + `value: 1000` etc.), not a discrete enum. The name is superficially symmetric to `Carbon monoxide detector` but RM 5.1 treats CO2 as a numeric comparator condition; the state-based shape is rejected at the walker. See the `DISCRETE_EVENT_CAPS` rationale comment in `hubitat-mcp-server.groovy`.

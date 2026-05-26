@@ -1425,6 +1425,451 @@ def check_tool_guide_pointers(src_override: str | None = None,
     return findings
 
 
+def check_discrete_event_caps_doc_parity(
+    src_override: str | None = None,
+    doc_surfaces_override: dict | None = None,
+) -> list[dict]:
+    """Verify every doc surface that lists discrete-event sensor capabilities
+    only names capabilities that are in production's DISCRETE_EVENT_CAPS map.
+
+    Production code's authoritative class predicate lives in the
+    DISCRETE_EVENT_CAPS map literal in hubitat-mcp-server.groovy. Doc surfaces
+    that list capabilities as discrete-event (the inline addRE schema
+    description, the inline get_tool_guide content block, TOOL_GUIDE.md, and
+    docs/rm_action_subtype_schemas.md) MUST cite a subset of that production
+    set -- otherwise agents copy a doc example that the live walker rejects.
+
+    Failure mode this catches: a future contributor adding (or removing) a
+    capability from DISCRETE_EVENT_CAPS without propagating to the 4 doc
+    surfaces, OR a doc surface listing a capability as discrete-event when
+    production treats it as numeric (the CO2-symmetric-to-CO pitfall the
+    DISCRETE_EVENT_CAPS comment warns about).
+
+    src_override / doc_surfaces_override let the self-test drive this with
+    synthetic corpora. doc_surfaces_override is a dict {label: text}.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if src_override is not None:
+        src = src_override
+    else:
+        if not server.exists():
+            return findings
+        src = server.read_text(encoding="utf-8", errors="replace")
+
+    # 1. Extract the canonical DISCRETE_EVENT_CAPS set from production.
+    #    The map literal shape is:
+    #        def DISCRETE_EVENT_CAPS = [
+    #            "Water sensor":                ["wet", "dry"],
+    #            ...
+    #        ]
+    map_match = re.search(
+        r"def\s+DISCRETE_EVENT_CAPS\s*=\s*\[(.*?)\n\s*\]",
+        src,
+        re.DOTALL,
+    )
+    if not map_match:
+        findings.append({
+            "file": str(server.relative_to(REPO_ROOT)),
+            "line": 1,
+            "severity": "error",
+            "rule": "discrete-event-caps-no-map",
+            "message": (
+                "Could not locate `def DISCRETE_EVENT_CAPS = [ ... ]` literal -- "
+                "has the map shape changed? Update the check_discrete_event_caps_doc_parity "
+                "extractor regex or remove the lint rule if intentionally restructured."
+            ),
+            "source": "",
+        })
+        return findings
+    canonical_caps = set(re.findall(r'"([^"]+)"\s*:', map_match.group(1)))
+    if not canonical_caps:
+        findings.append({
+            "file": str(server.relative_to(REPO_ROOT)),
+            "line": 1,
+            "severity": "error",
+            "rule": "discrete-event-caps-empty",
+            "message": "DISCRETE_EVENT_CAPS map literal parsed but yielded zero capabilities.",
+            "source": "",
+        })
+        return findings
+
+    # 2. Build the doc-surface map. Each surface is the full text of the source
+    #    block to scan; the check is "for each capability mentioned in a
+    #    discrete-event context, verify it's in canonical_caps".
+    if doc_surfaces_override is not None:
+        doc_surfaces = doc_surfaces_override
+    else:
+        tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
+        action_schemas = REPO_ROOT / "docs" / "rm_action_subtype_schemas.md"
+        doc_surfaces = {}
+        # Two inline surfaces in the server source: extract narrow scope so we
+        # only scan the "discrete events" / "discrete-event" notes, not the
+        # whole 800KB file (which mentions caps in many unrelated contexts).
+        for m in re.finditer(
+            r"(?:report discrete events|discrete-event capability|some sensor capabilities).{0,800}",
+            src,
+            re.DOTALL,
+        ):
+            label = f"hubitat-mcp-server.groovy:{src[:m.start()].count(chr(10)) + 1}"
+            doc_surfaces[label] = m.group(0)
+        if tool_guide.exists():
+            tg = tool_guide.read_text(encoding="utf-8", errors="replace")
+            for m in re.finditer(
+                r"(?:report discrete events|discrete-event capability|some sensor capabilities).{0,800}",
+                tg,
+                re.DOTALL,
+            ):
+                label = f"TOOL_GUIDE.md:{tg[:m.start()].count(chr(10)) + 1}"
+                doc_surfaces[label] = m.group(0)
+        if action_schemas.exists():
+            as_text = action_schemas.read_text(encoding="utf-8", errors="replace")
+            # The discrete-event table in this file is the authoritative table.
+            m = re.search(
+                r"###\s*Sensor capabilities with discrete event states.*?(?=\n##|\Z)",
+                as_text,
+                re.DOTALL,
+            )
+            if m:
+                label = f"docs/rm_action_subtype_schemas.md:{as_text[:m.start()].count(chr(10)) + 1}"
+                doc_surfaces[label] = m.group(0)
+
+    # 3. The set of all capability names this lint cares about: production's
+    #    canonical set + the well-known pitfall caps that are NOT in production
+    #    but might be accidentally added to a doc surface (Carbon dioxide sensor
+    #    is the documented pitfall).
+    pitfall_caps = {"Carbon dioxide sensor"}
+    caps_to_check = canonical_caps | pitfall_caps
+
+    # 4. For each doc surface, isolate the *positive claim* region -- the
+    #    parenthesized list of capabilities adjacent to the "report discrete
+    #    events" phrase, OR the markdown-table rows under a "discrete event"
+    #    heading. Only claims inside that narrow region count as the doc
+    #    asserting the capability is discrete-event. Mentions in surrounding
+    #    explanatory / exclusion text (e.g. "Carbon dioxide sensor is
+    #    intentionally EXCLUDED because ...") do NOT count.
+    #
+    #    Two positive-claim shapes we recognize:
+    #    (a) "(Water sensor, Smoke detector, ...) report discrete events"
+    #        -- the parenthetical immediately preceding the phrase.
+    #    (b) "report discrete events" with no parenthetical immediately
+    #        before -- treat the immediately-following inline list (up to
+    #        the next sentence-end period) as the positive claim region.
+    #    (c) Markdown-table rows of the form `| `<cap>` |` under a heading
+    #        that contains "discrete event" -- the table rows are the
+    #        positive claim region.
+    paren_before_phrase_re = re.compile(
+        r"\(([^()]*?)\)\s*report discrete events"
+    )
+    table_row_re = re.compile(r"\|\s*`([^`]+)`\s*\|")
+    for label, surface_text in doc_surfaces.items():
+        positive_claim_regions = []
+        for m in paren_before_phrase_re.finditer(surface_text):
+            positive_claim_regions.append(m.group(1))
+        # Markdown-table form (only fires when surface starts with the table heading)
+        if "discrete event" in surface_text.lower() and "|" in surface_text:
+            for tr in table_row_re.finditer(surface_text):
+                positive_claim_regions.append(tr.group(1))
+        positive_claim_text = " ".join(positive_claim_regions)
+        if not positive_claim_text:
+            # No positive-claim region detected -- this doc surface mentions
+            # discrete events but doesn't carry a parenthetical / table-row
+            # cap list. Skip; the heading-presence checks elsewhere cover
+            # structural drift.
+            continue
+        for cap in caps_to_check:
+            if cap in positive_claim_text and cap not in canonical_caps:
+                file_part, _, line_part = label.partition(":")
+                findings.append({
+                    "file": file_part,
+                    "line": int(line_part) if line_part.isdigit() else 1,
+                    "severity": "error",
+                    "rule": "discrete-event-caps-doc-drift",
+                    "message": (
+                        f"Doc surface lists capability '{cap}' as a discrete-event "
+                        f"capability (inside a positive-claim region), but '{cap}' "
+                        f"is NOT in production's DISCRETE_EVENT_CAPS map (canonical "
+                        f"set: {sorted(canonical_caps)}). Agents copying this doc "
+                        f"would build a condition the live walker rejects. Either "
+                        f"remove '{cap}' from the positive-claim list or add it to "
+                        f"the production DISCRETE_EVENT_CAPS map."
+                    ),
+                    "source": positive_claim_text[:160].replace("\n", " "),
+                })
+
+    return findings
+
+
+# Self-test fixtures for check_discrete_event_caps_doc_parity. Drives the real
+# check function with synthetic corpora to cover must-catch + must-not-catch
+# cases (PIPELINE.md Rule 13).
+DISCRETE_EVENT_CAPS_SELF_TEST_CASES = [
+    # (description, synthetic_src, doc_surfaces, expected_codes)
+    (
+        "doc surface positive-claim region lists only canonical caps -- no finding (must-not-catch)",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"],\n    "Smoke detector": ["detected", "clear"]\n]',
+        {"surface1": "some sensor capabilities (Water sensor, Smoke detector) report discrete events"},
+        set(),
+    ),
+    (
+        "positive-claim region lists pitfall cap NOT in canonical -- flags drift (must-catch)",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
+        {"surface_drift": "some sensor capabilities (Water sensor, Carbon dioxide sensor) report discrete events"},
+        {"discrete-event-caps-doc-drift"},
+    ),
+    (
+        "no DISCRETE_EVENT_CAPS map in synthetic source -- flags no-map (extractor regression guard)",
+        "def someOtherMap = [:]",
+        {"surface_noop": "some sensor capabilities report discrete events"},
+        {"discrete-event-caps-no-map"},
+    ),
+    (
+        "explanatory-exclusion text mentioning pitfall cap OUTSIDE positive-claim region -- no false positive",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
+        # The positive-claim region is just `(Water sensor)`; the explanatory text after
+        # mentions Carbon dioxide sensor but to explain its EXCLUSION, not to claim it as
+        # discrete-event. The classifier must scope to the parenthetical region only.
+        {"surface_exclusion": "some sensor capabilities (Water sensor) report discrete events. Carbon dioxide sensor is intentionally EXCLUDED because CarbonDioxideMeasurement is numeric ppm."},
+        set(),
+    ),
+    (
+        "markdown-table positive-claim region with pitfall cap row -- flags drift (must-catch)",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
+        {"surface_table": "### Sensor capabilities with discrete event states\n\n| Capability | State values |\n|---|---|\n| `Water sensor` | wet, dry |\n| `Carbon dioxide sensor` | detected, clear |\n"},
+        {"discrete-event-caps-doc-drift"},
+    ),
+]
+
+
+def _run_discrete_event_caps_self_test() -> int:
+    """Drive check_discrete_event_caps_doc_parity with synthetic corpora and verify:
+    (a) the right rule codes fire (dispatch correctness)
+    (b) every finding is format_finding-renderable (finding-dict shape correctness)
+    """
+    failures = 0
+    for i, (desc, src, surfaces, expected_codes) in enumerate(
+        DISCRETE_EVENT_CAPS_SELF_TEST_CASES, start=1
+    ):
+        findings = check_discrete_event_caps_doc_parity(
+            src_override=src,
+            doc_surfaces_override=surfaces,
+        )
+        # Shape check first (same pattern as _run_tool_guide_anchor_self_test).
+        shape_ok = True
+        for f in findings:
+            try:
+                _ = format_finding(f)
+            except KeyError as ke:
+                failures += 1
+                shape_ok = False
+                print(
+                    f"DISCRETE-EVENT-CAPS-SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  finding dict missing required key for format_finding: {ke}\n"
+                    f"  finding keys present: {sorted(f.keys())}\n"
+                    f"  finding: {f!r}"
+                )
+        if not shape_ok:
+            continue
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"DISCRETE-EVENT-CAPS-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}\n"
+                f"  all findings: {findings!r}"
+            )
+    return failures
+
+
+def check_trailing_updaterule_envelope_parity(
+    src_override: str | None = None,
+) -> list[dict]:
+    """Verify every `catch (Exception updateExc)` block in the RM dispatcher
+    is followed by the full 5-slot trailing-updateRule envelope shape:
+    `updateRuleFailed`, one of the `*NotLive` slots (subscriptionsNotLive /
+    expressionNotLive / variableNotLive / patchesNotLive), `updateRuleError`,
+    `repairHints`, and `partial`.
+
+    Failure mode this catches: a future dispatcher that wires a trailing
+    updateRule click + catch block but forgets to thread the dedicated slots
+    into the return shape. The catch block silently sets a local boolean and
+    the response never surfaces the regression, so callers cannot detect the
+    not-live state without log-grep -- the exact bug class B3 fixed.
+
+    Conservative scope: we scan the ~120 lines following each
+    `catch (Exception updateExc)` block, looking for the 5 envelope slots
+    appearing in the same vicinity. If any of the 5 are missing, flag the
+    catch block as incomplete.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if src_override is not None:
+        src = src_override
+    else:
+        if not server.exists():
+            return findings
+        src = server.read_text(encoding="utf-8", errors="replace")
+
+    # Each match marks the start of a trailing-updateRule catch block. Scope
+    # to the literal handler shape so we don't false-positive on broader
+    # catch-Exception patterns elsewhere in the file.
+    catch_pattern = re.compile(r"catch\s*\(\s*Exception\s+updateExc\s*\)")
+    # Required envelope slots. At least one of NOTLIVE_SLOT_VARIANTS must
+    # appear in the vicinity (different dispatchers use different slot names).
+    REQUIRED_SLOTS = ["updateRuleFailed", "updateRuleError", "repairHints", "partial"]
+    NOTLIVE_SLOT_VARIANTS = [
+        "subscriptionsNotLive",
+        "expressionNotLive",
+        "variableNotLive",
+        "patchesNotLive",
+    ]
+    # Vicinity window: large enough to span declaration -> catch -> return,
+    # small enough to avoid bleeding into the next dispatcher's return shape.
+    LOOKAHEAD_CHARS = 4500
+
+    for m in catch_pattern.finditer(src):
+        # Also look BEHIND a bit because some dispatchers declare the booleans
+        # before the try (so updateRuleFailed/etc. live in the def block above
+        # the catch). Use a small backward window plus the forward window.
+        scope_start = max(0, m.start() - 1500)
+        scope_end = min(len(src), m.end() + LOOKAHEAD_CHARS)
+        vicinity = src[scope_start:scope_end]
+
+        missing = [slot for slot in REQUIRED_SLOTS if slot not in vicinity]
+        if not any(slot in vicinity for slot in NOTLIVE_SLOT_VARIANTS):
+            missing.append(f"one of {NOTLIVE_SLOT_VARIANTS}")
+
+        if missing:
+            line_no = src[:m.start()].count("\n") + 1
+            findings.append({
+                "file": str(server.relative_to(REPO_ROOT)),
+                "line": line_no,
+                "severity": "error",
+                "rule": "trailing-updaterule-envelope-incomplete",
+                "message": (
+                    f"`catch (Exception updateExc)` at L{line_no} is missing one or more "
+                    f"trailing-updateRule envelope slots in its return shape: {missing}. "
+                    f"Callers cannot detect the not-live state without log-grep. Pattern "
+                    f"reference: addRequiredExpression / addTrigger / bulk addTriggers "
+                    f"dispatchers all set the 5-slot envelope on the catch path."
+                ),
+                "source": src[m.start():m.start() + 120].replace("\n", " "),
+            })
+
+    return findings
+
+
+# Self-test fixtures for check_trailing_updaterule_envelope_parity. Drives
+# the real check function with synthetic corpora to cover must-catch +
+# must-not-catch cases (PIPELINE.md Rule 13).
+ENVELOPE_PARITY_SELF_TEST_CASES = [
+    # (description, synthetic_src, expected_codes)
+    (
+        "complete envelope -- no finding (must-not-catch)",
+        """
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+        }
+        def repairHints = []
+        return [
+            success: false,
+            partial: true,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints
+        ]
+        """,
+        set(),
+    ),
+    (
+        "missing repairHints in envelope -- flags incomplete (must-catch)",
+        """
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+        }
+        return [
+            success: false,
+            partial: true,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: null
+        ]
+        """,
+        {"trailing-updaterule-envelope-incomplete"},
+    ),
+    (
+        "missing ANY NotLive slot -- flags incomplete (must-catch)",
+        """
+        def updateRuleFailed = false
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+        }
+        return [
+            success: false,
+            partial: true,
+            updateRuleFailed: updateRuleFailed,
+            updateRuleError: null,
+            repairHints: []
+        ]
+        """,
+        {"trailing-updaterule-envelope-incomplete"},
+    ),
+    (
+        "no `catch (Exception updateExc)` block at all -- no finding (rule never fires)",
+        "def foo = 1\ntry { stuff() } catch (Exception e) { log.error e.message }",
+        set(),
+    ),
+]
+
+
+def _run_envelope_parity_self_test() -> int:
+    """Drive check_trailing_updaterule_envelope_parity with synthetic corpora
+    and verify dispatch correctness + finding-dict shape correctness.
+    """
+    failures = 0
+    for i, (desc, src, expected_codes) in enumerate(
+        ENVELOPE_PARITY_SELF_TEST_CASES, start=1
+    ):
+        findings = check_trailing_updaterule_envelope_parity(src_override=src)
+        shape_ok = True
+        for f in findings:
+            try:
+                _ = format_finding(f)
+            except KeyError as ke:
+                failures += 1
+                shape_ok = False
+                print(
+                    f"ENVELOPE-PARITY-SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  finding dict missing required key for format_finding: {ke}\n"
+                    f"  finding keys present: {sorted(f.keys())}"
+                )
+        if not shape_ok:
+            continue
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"ENVELOPE-PARITY-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}\n"
+                f"  all findings: {findings!r}"
+            )
+    return failures
+
+
 def format_finding(f: dict) -> str:
     """Format a single finding for human-readable output."""
     severity = f["severity"].upper()
@@ -2279,6 +2724,15 @@ def run_self_test() -> int:
     anchor_failures = _run_tool_guide_anchor_self_test()
     failures += anchor_failures
 
+    # Discrete-event-caps must-catch / must-not-catch fixtures (PIPELINE.md Rule 13).
+    discrete_event_failures = _run_discrete_event_caps_self_test()
+    failures += discrete_event_failures
+
+    # Trailing-updateRule envelope parity must-catch / must-not-catch fixtures
+    # (PIPELINE.md Rule 13).
+    envelope_parity_failures = _run_envelope_parity_self_test()
+    failures += envelope_parity_failures
+
     if failures:
         print(f"--- {failures} self-test failure(s) ---")
         return 1
@@ -2286,11 +2740,15 @@ def run_self_test() -> int:
         len(SELF_TEST_CASES)
         + len(COUNT_SELF_TEST_CASES)
         + len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)
+        + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
+        + len(ENVELOPE_PARITY_SELF_TEST_CASES)
     )
     print(
         f"Self-test: {total_cases} case(s) passed "
         f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count, "
-        f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor)."
+        f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor, "
+        f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
+        f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity)."
     )
     return 0
 
@@ -2322,6 +2780,19 @@ def main() -> int:
     # Catches the silent-truncation regression class of "trim points caller
     # at get_tool_guide(section=Y), but Y was never added to the dispatcher".
     all_findings.extend(check_tool_guide_pointers())
+
+    # Check that every doc surface that lists discrete-event sensor capabilities
+    # only names capabilities that are in production's DISCRETE_EVENT_CAPS map.
+    # Catches the "doc surface drifts ahead of production" class -- agents
+    # copying a stale-doc example would build a condition the live walker rejects.
+    all_findings.extend(check_discrete_event_caps_doc_parity())
+
+    # Check that every `catch (Exception updateExc)` block in the RM dispatcher
+    # is followed by the full 5-slot trailing-updateRule envelope shape.
+    # Catches the "dispatcher catches the click rejection but forgets to thread
+    # the dedicated slots into the return shape" class -- callers cannot detect
+    # the not-live state without log-grep otherwise.
+    all_findings.extend(check_trailing_updaterule_envelope_parity())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))

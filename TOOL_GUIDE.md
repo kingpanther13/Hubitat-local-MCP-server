@@ -649,7 +649,7 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
 
   **Note: nested `subExpression` is REQUIRED-EXPRESSION-ONLY today.** `addAction` (ifThen/elseIf/repeatWhile/waitExpression) rejects nested `subExpression` in `expression.conditions[]` with a targeted error (`"nested subExpression on this row is not yet supported"`) -- flatten the conditions list or move the nested expression to a Required Expression. `addRequiredExpression` supports nesting today.
 
-  Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert, Acceleration) report discrete events -- use capability-specific state names (e.g. `'wet'`/`'dry'`, `'detected'`/`'clear'`, `'active'`/`'inactive'`) rather than numeric comparator conditions.
+  Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Tamper alert, Acceleration) report discrete events -- use capability-specific state names (e.g. `'wet'`/`'dry'`, `'detected'`/`'clear'`, `'active'`/`'inactive'`) rather than numeric comparator conditions. Carbon dioxide sensor is intentionally EXCLUDED here: `CarbonDioxideMeasurement` is numeric ppm (comparator + value), not a discrete enum.
 
 ##### `addRequiredExpression` STPage capability list
 
@@ -664,7 +664,7 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 
 Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
 
-Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Carbon dioxide sensor, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types, `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
+Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types, `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. Carbon dioxide sensor is intentionally EXCLUDED: `CarbonDioxideMeasurement` is numeric ppm (use comparator + value), not a discrete enum; the names look superficially symmetric to Carbon monoxide detector but RM 5.1 treats them differently. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
 
 ##### Extended per-capability spec shapes
 
@@ -696,6 +696,19 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 - Trailing-updateRule failure slots:
   - `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true; `repairHints` adds a recovery line pointing at `update_native_app(button='updateRule', confirm=true)`.
   - `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to the device events -- retry `updateRule` to populate subscriptions.
+  - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
+  - `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
+  - `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above.
+  - `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.
+
+**Naming-divergence rationale.** The `*NotLive` slot name encodes the **consequence** of the trailing-updateRule failure, not the operation that committed. Each tool surfaces the consequence that matters most to a caller deciding how to recover:
+
+- `expressionNotLive` (addRequiredExpression): the rule's gate evaluator never re-picked-up the new expression -- the gate stays at its prior state until updateRule fires. The recovery path is the same retry, but the diagnostic story callers tell themselves is "my new gate isn't being evaluated yet."
+- `subscriptionsNotLive` (addTrigger, bulk addTriggers/addActions, action-mutation, trigger-mutation): the running rule instance never re-subscribed to the device events its trigger depends on -- the rule will not fire on those events until updateRule fires. Diagnostic story: "my new/changed trigger doesn't get the event."
+- `variableNotLive` (addLocalVariable): the variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires. Diagnostic story: "my actions can't read this variable yet."
+- `patchesNotLive` (patches): the patch ops landed but the rule won't re-evaluate / re-subscribe (catch-all because patches can bundle any mix of the above). Diagnostic story: "I just patched a bunch of stuff and nothing is taking effect."
+
+All five share `updateRuleFailed` and `updateRuleError` for the common facts. The slot-name divergence is intentional -- a caller-facing diagnostic, not a code-side typology. Single-name unification was considered and rejected because it would force every caller to read the operation-type to interpret the consequence.
 
 #### `create_native_app` reference
 
