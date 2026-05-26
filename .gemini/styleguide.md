@@ -61,3 +61,18 @@ Best-effort judgment: read the diff and decide whether the prefix and ticked che
 - If the title says `docs:` but the diff edits Groovy logic, suggest the appropriate code prefix.
 
 This check is judgmental and you may misread the diff. That is expected and acceptable. Raise it as a suggestion only ("This looks more like a refactor than a feature — would you consider relabeling?"), not as a hard finding. Author pushback ends the discussion.
+
+### 4. New MCP tools follow `AGENTS.md` Tool Design Rules
+
+When a PR adds or renames an MCP tool, best-effort judgement: does the tool follow the conventions in `AGENTS.md` § Tool design rules? Eight broad areas to look at:
+
+1. **Naming** — `hub_` prefix present; verb from the allowed vocabulary; `manage_` used only for gateways (or the documented flat-multi-action exception).
+2. **Parameter names** — unambiguous (e.g. `device_id` not `id`); semantic over wired.
+3. **Annotations** — all four hints (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) set explicitly.
+4. **Description quality** — concise first line; usage guidance; write-tool safety warnings present; semantic IDs over opaque UUIDs.
+5. **Consolidation candidates** — verb-pair tools (enable/disable, pause/resume, etc.) suggested for merge into a single `set_<noun>_<attribute>` tool; always-called-in-sequence tools flagged.
+6. **Schema design** — `enum` for fixed-set free-text params; `required` only when applicable; `outputSchema` present for structured returns.
+7. **Error contracts** — validation throws `IllegalArgumentException`; runtime returns `[success: false, error, note]`; `isError: true` for tool-execution errors; error text is recovery-oriented.
+8. **Pagination** — cursor support on any tool that can return a long list.
+
+Raise mismatches as suggestions only (e.g. "Consider `hub_get_room_health` instead of `check_room_health` — `check` folds into `get` in the verb vocabulary"). Don't mark as blocking, don't lower the verdict for naming nits. Author pushback ends the discussion.
