@@ -6928,104 +6928,166 @@ def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean i
 }
 
 /**
- * Fetch Groovy source from an external URL.
- * Mirrors the browser fetch() the Hubitat code editor uses behind its
- * "Import Code from Website" dialog: relocated server-side so MCP callers
- * can deploy from a URL in one tool call instead of paste-then-save.
+ * Fetch Groovy source from an external URL. Mirrors the editor's "Import
+ * Code from Website" + Save flow, relocated server-side so MCP callers
+ * can deploy from a URL in one tool call.
  *
- * Probe verified 1.25 MB hubitat-mcp-server.groovy fetched from
- * raw.githubusercontent.com in <1s with no sandbox cap.
- *
- * Throws IllegalArgumentException with a structured message on bad scheme,
- * non-200 status, fetch exception, or empty body. Returns the body String
- * on success.
- *
- * The actual httpGet call lives in _httpFetchUrl so tests can stub the
- * single seam method instead of the closure-style httpGet (which the
- * Hubitat sandbox dispatches through a path that bypasses metaClass).
+ * Throws IllegalArgumentException with a structured message + class name on
+ * bad scheme, non-200 status, fetch exception, or empty body. mcpLogs each
+ * failure at error level so the MCP log buffer carries the URL + cause.
  */
-private String _fetchSourceFromUrl(String url) {
-    if (!(url?.startsWith("http://") || url?.startsWith("https://"))) {
-        throw new IllegalArgumentException("importUrl must start with http:// or https://")
+private String _fetchSourceFromUrl(urlArg) {
+    // Accept Object so we can validate at the boundary; a typed `String url`
+    // signature would let Groovy reject non-Strings with MissingMethodException
+    // before our structured IAE could fire.
+    if (urlArg == null) {
+        mcpLog("error", "hub-admin", "_fetchSourceFromUrl called with null url")
+        throw new IllegalArgumentException("importUrl is required")
+    }
+    if (!(urlArg instanceof String)) {
+        mcpLog("error", "hub-admin", "_fetchSourceFromUrl: importUrl is not a String (got ${urlArg})")
+        throw new IllegalArgumentException("importUrl must be a String")
+    }
+    String url = (String) urlArg
+    def lower = url.toLowerCase()
+    if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
+        mcpLog("error", "hub-admin", "_fetchSourceFromUrl: bad scheme in ${url.take(40)}")
+        throw new IllegalArgumentException("importUrl scheme must be http or https (got '${url.take(40)}')")
     }
     def resp
     try {
         resp = _httpFetchUrl(url)
     } catch (Exception e) {
-        throw new IllegalArgumentException("importUrl fetch failed: ${e.message}")
+        // Include class via toString() since sandbox forbids getClass().
+        // e.message can be null on SSL/socket exceptions; toString() always returns something.
+        def cause = e.toString()
+        mcpLog("error", "hub-admin", "_fetchSourceFromUrl ${url}: ${cause}")
+        throw new IllegalArgumentException("importUrl fetch failed: ${cause}")
     }
     def status = resp?.status
     def body = resp?.body
+    if (status == null) {
+        // httpGet returned without invoking the closure -- shouldn't happen on the
+        // synchronous path, but if it does the misleading "HTTP null" error helps
+        // distinguish "no response" from "non-200 response".
+        mcpLog("error", "hub-admin", "_fetchSourceFromUrl ${url}: httpGet returned without status (closure never invoked)")
+        throw new IllegalArgumentException("importUrl fetch returned no response (status null) -- httpGet closure never invoked for ${url}")
+    }
     if (status != 200) {
-        throw new IllegalArgumentException("importUrl returned HTTP ${status}")
+        mcpLog("error", "hub-admin", "_fetchSourceFromUrl ${url}: HTTP ${status}")
+        throw new IllegalArgumentException("importUrl returned HTTP ${status} for ${url}")
     }
     if (!body) {
+        mcpLog("error", "hub-admin", "_fetchSourceFromUrl ${url}: empty body")
         throw new IllegalArgumentException("importUrl returned empty body from ${url}")
+    }
+    // Surface content-type at info level so a user debugging "import succeeds but
+    // hub returns syntax error pointing at line 1" can see if the URL returned HTML
+    // or JSON instead of Groovy. Not load-bearing -- we still let the hub be the
+    // arbiter of valid source -- but it's the difference between "unexpected token: <"
+    // being mysterious vs the log line saying contentType=text/html;charset=utf-8.
+    def ct = resp.contentType
+    if (ct) {
+        mcpLog("info", "hub-admin", "_fetchSourceFromUrl ${url}: ${body.length()} bytes, contentType=${ct}")
+    } else {
+        mcpLog("info", "hub-admin", "_fetchSourceFromUrl ${url}: ${body.length()} bytes")
     }
     return body
 }
 
 /**
- * Synchronous httpGet wrapped as a plain Map-returning method so tests can
- * stub via script.metaClass. Returns [status: int, body: String].
- * Sandbox-safe pattern (same shape as hubInternalGet). textParser:true so
- * resp.data is a Reader and large bodies stream cleanly; 60s timeout is
- * generous headroom for the largest known payload (~1.3 MB).
+ * Synchronous httpGet wrapped as a plain Map-returning method.
+ * Returns [status: int, body: String, contentType: String].
+ *
+ * Body read failures (network reset mid-stream, gzip CRC, encoding decode)
+ * are re-thrown rather than swallowed. The previous "fall back to toString()
+ * on a Reader" pattern produces strings like "java.io.BufferedReader@..." that
+ * would silently pass downstream as source code -- not safe for a deploy path.
+ *
+ * Cert validation is NOT disabled for external URLs (unlike hubInternalGet
+ * which targets localhost). A hub-side fetch of executable code over a
+ * trusted-CA-signed connection is the floor; self-signed or MITM-d URLs
+ * fail the handshake.
  */
 private Map _httpFetchUrl(String url) {
     def status = null
     def body = null
+    def contentType = null
+    def readError = null
     httpGet([
         uri: url,
         textParser: true,
-        timeout: 60,
-        ignoreSSLIssues: true
+        timeout: 60
     ]) { resp ->
         status = resp.status
+        contentType = resp.headers?.'Content-Type'?.toString()
         try { body = resp.data.text }
-        catch (Exception readErr) { body = resp.data?.toString() ?: "" }
+        catch (Exception readErr) { readError = readErr }
     }
-    return [status: status, body: body]
+    if (readError != null) {
+        // Surface the read error to _fetchSourceFromUrl's outer catch, which wraps
+        // with class name + mcpLogs. Don't swallow with toString() junk.
+        throw readError
+    }
+    return [status: status, body: body, contentType: contentType]
 }
 
 /**
  * Create a running user-app instance from already-installed code. Replicates
  * the hub UI's "Add user app -> select code -> Done" flow in one HTTP call.
  *
- * Hub responds to GET /installedapp/create/<codeId> with a 302 redirect to
- * /installedapp/configure/<newInstanceId>/mainPage; the new instance is
- * created and installed() fires as a side effect of the redirect.
+ * The hub creates the instance (firing installed()) on GET to
+ * /installedapp/create/<codeId>, then 302-redirects to
+ * /installedapp/configure/<newInstanceId>/mainPage. We don't follow the
+ * redirect -- the new instance id is parsed from the Location header.
  *
- * Returns {success, codeAppId, instanceAppId, ...} on success or
- * {success:false, error, ...} on failure (codeAppId not a user app, hub
- * returned non-302, etc). Never throws.
+ * Returns a structured envelope on every input. Caller (toolInstallApp) is
+ * responsible for range-checking codeAppId before this is called.
  */
 private Map _createUserAppInstance(Integer codeAppId) {
-    if (codeAppId == null || codeAppId < 1) {
-        throw new IllegalArgumentException(
-            "installAsUserApp must be a positive integer (the codeAppId from Apps Code)"
-        )
-    }
     def result
     try {
         result = hubInternalGetRaw("/installedapp/create/${codeAppId}")
     } catch (Exception e) {
+        mcpLog("error", "hub-admin", "_createUserAppInstance(${codeAppId}): ${e.toString()}")
         return [
             success: false,
-            error: "User app instantiation failed: ${e.message}",
+            error: "User app instantiation failed: ${e.toString()}",
             codeAppId: codeAppId
         ]
     }
     if (result?.status != 302 || !result.location) {
+        def status = result?.status
+        def hint
+        switch (status) {
+            case 401:
+            case 403:
+                hint = "Hub Security authentication failed (status ${status}). Verify MCP credentials and Hub Security state."
+                break
+            case 404:
+                hint = "codeAppId ${codeAppId} does not exist in Apps Code."
+                break
+            case 500:
+                hint = "Hub returned a server error (status 500). Code ${codeAppId} may be in a compile-error state -- inspect via get_app_source."
+                break
+            case 200:
+                hint = "Hub returned the configure page without redirect (status 200). codeAppId ${codeAppId} may be a driver/library, or an already-instantiated app."
+                break
+            default:
+                hint = "Hub returned unexpected status ${status}. The codeAppId may not exist or may not be a user app."
+        }
+        mcpLog("warn", "hub-admin", "_createUserAppInstance(${codeAppId}): non-302 (status=${status})")
         return [
             success: false,
-            error: "Hub did not redirect to a new instance (status=${result?.status}). The codeAppId may not exist or may not be a user app.",
+            error: hint,
             codeAppId: codeAppId,
-            hubResponse: result?.data?.toString()?.take(200)
+            status: status,
+            hubResponse: result?.data?.toString()?.take(500)
         ]
     }
     def m = (result.location =~ /\/installedapp\/configure\/(\d+)/)
     if (!m) {
+        mcpLog("warn", "hub-admin", "_createUserAppInstance(${codeAppId}): could not parse instance id from Location ${result.location}")
         return [
             success: false,
             error: "Could not parse new instance id from Location header: ${result.location}",
@@ -7033,6 +7095,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
         ]
     }
     def newId = m[0][1] as Integer
+    mcpLog("info", "hub-admin", "_createUserAppInstance: created instance ${newId} from codeAppId ${codeAppId}")
     return [
         success: true,
         message: "User app instance created and installed() fired",
@@ -10651,6 +10714,11 @@ def toolInstallApp(args) {
         catch (Exception e) {
             throw new IllegalArgumentException("installAsUserApp must be a positive integer (got '${args.installAsUserApp}')")
         }
+        // Range-check at the caller so _createUserAppInstance can keep a clean
+        // "always returns an envelope, never throws" contract.
+        if (codeAppId == null || codeAppId < 1) {
+            throw new IllegalArgumentException("installAsUserApp must be a positive integer (got '${args.installAsUserApp}')")
+        }
         return _createUserAppInstance(codeAppId)
     }
 
@@ -10747,8 +10815,6 @@ private Map toolInstallItemSingle(String type, args) {
         sourceCode = new String(bytes, "UTF-8")
         mcpLog("info", "hub-admin", "Read ${sourceCode.length()} chars from ${args.sourceFile}")
     } else if (args.importUrl) {
-        // Hub fetches the source bytes directly. Mirrors the UI's Import-from-Website
-        // dialog, but server-side so it can run in one tool call.
         sourceMode = "importUrl"
         mcpLog("info", "hub-admin", "Reading ${type} source from importUrl: ${args.importUrl}")
         sourceCode = _fetchSourceFromUrl(args.importUrl)
@@ -10876,9 +10942,16 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
-    // Validate source mode early (presence only) so subsequent guards / I/O fire against a well-formed call.
-    if (!args.resave && !args.sourceFile && !args.source && !args.importUrl) {
+    // Validate source mode: exactly one of resave/sourceFile/source/importUrl. The
+    // mutex matches toolInstallItemSingle's strict check -- tool schemas advertise
+    // these as mutually exclusive, so the API boundary must reject the combination
+    // rather than silently picking one via if/else precedence.
+    def modesSet = [args.resave, args.sourceFile, args.source, args.importUrl].count { it }
+    if (modesSet == 0) {
         throw new IllegalArgumentException("One of 'source', 'sourceFile', 'importUrl', or 'resave' is required")
+    }
+    if (modesSet > 1) {
+        throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', 'importUrl', or 'resave'")
     }
 
     // Reject explicit-null expectedVersion: a templated null arg would otherwise read as "no lock
@@ -10934,9 +11007,6 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         sourceCode = new String(bytes, "UTF-8")
         mcpLog("info", "hub-admin", "Read ${sourceCode.length()} chars from ${args.sourceFile}")
     } else if (args.importUrl) {
-        // Import URL mode: hub fetches the source bytes directly. Mirrors what the
-        // Hubitat code editor's "Import Code from Website" + Save flow does, but
-        // server-side so the whole thing is one tool call.
         sourceMode = "importUrl"
         mcpLog("info", "hub-admin", "Reading ${type} source from importUrl: ${args.importUrl}")
         sourceCode = _fetchSourceFromUrl(args.importUrl)
@@ -11074,9 +11144,16 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     successResult.updatedFired = true
                     mcpLog("info", "hub-admin", "triggerUpdated: fired updated() on instance ${triggerId} after app code save")
                 } catch (Exception updErr) {
+                    // Half-failure: the code was deployed (success:true holds) but the
+                    // opt-in lifecycle refresh failed. The whole point of triggerUpdated
+                    // was the lifecycle refresh -- so flag this as partial so callers
+                    // checking `result.partial` see the half-failure without having to
+                    // drill into updatedFired. Mirrors the partial:true pattern used
+                    // elsewhere (e.g. the RM wizard's partial-success envelope).
                     successResult.updatedFired = false
-                    successResult.repairHints = ["triggerUpdated requested but lifecycle-fire POST failed: ${updErr.message}. The new code is deployed but subscriptions/schedules may not have refreshed -- toggle the app off/on, or POST /installedapp/configure/${triggerId}/mainPage manually."]
-                    mcpLog("warn", "hub-admin", "triggerUpdated failed on instance ${triggerId}: ${updErr.message}")
+                    successResult.partial = true
+                    successResult.repairHints = ["triggerUpdated requested but lifecycle-fire POST failed: ${updErr.toString()}. The new code is deployed (success:true) but subscriptions/schedules may not have refreshed -- toggle the app off/on, or POST /installedapp/configure/${triggerId}/mainPage manually."]
+                    mcpLog("warn", "hub-admin", "triggerUpdated failed on instance ${triggerId}: ${updErr.toString()}")
                 }
             }
 
@@ -11561,10 +11638,16 @@ def toolUpdateLibraryCode(args) {
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
 
-    // Resolve source from one of three modes: source, sourceFile, or resave
+    // Resolve source: exactly one of resave/sourceFile/source/importUrl. Matches
+    // the mutex enforcement in toolInstallItemSingle / toolUpdateItemCodeInner --
+    // tool schema advertises these as mutually exclusive.
     def sourceCode = null
     def sourceMode = null
     def freshVersion = null
+    def modesSet = [args.resave, args.sourceFile, args.source, args.importUrl].count { it }
+    if (modesSet > 1) {
+        throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', 'importUrl', or 'resave'")
+    }
 
     if (args.resave) {
         sourceMode = "resave"

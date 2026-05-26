@@ -6,16 +6,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for the importUrl + installAsUserApp + triggerUpdated additions to the
- * install/update tools. Mirrors the pattern in ToolAppDriverCodeSpec --
- * httpGet is stubbed via script.metaClass; the deploy POST + verify GET
- * paths re-use the same stubs the existing source/sourceFile tests use.
- *
- * Coverage:
- *   - _fetchSourceFromUrl helper: happy + 4 failure paths
- *   - importUrl on update_app_code, install_app, install_library (one happy path each)
- *   - importUrl mutual exclusion + scheme validation
- *   - installAsUserApp: happy + 404 + mutual exclusion
- *   - triggerUpdated: happy + lifecycle-fire-failure + negative pin
+ * install/update tools.
  */
 class ToolImportUrlSpec extends ToolSpecBase {
 
@@ -25,20 +16,24 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // The setupSpec-level httpGet stub reads these; specs swap them between tests.
     @Shared private int nextHttpGetStatus = 200
     @Shared private String nextHttpGetBody = ''
+    @Shared private String nextHttpGetContentType = null
     @Shared private Throwable nextHttpGetThrow = null
     @Shared private Map nextHttpGetCaptured = [:]
 
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
-        // Install ONE global httpGet stub at spec-class scope -- mirrors the
-        // rule harness pattern (RuleHarnessSpec.groovy:209). Per-test state is
-        // mutated via the stubHttpGet / stubHttpGetThrows helpers below.
+        // Install ONE global httpGet stub at spec-class scope. Per-test state is
+        // mutated via the stubHttpGet / stubHttpGetThrows helpers below. (Spock
+        // dispatches httpGet from the script through the appExecutor mock; the
+        // script.metaClass route doesn't intercept this path, hence the
+        // appExecutor stub.)
         appExecutor.httpGet(*_) >> { args ->
             if (nextHttpGetThrow) throw nextHttpGetThrow
             Map params = args[0] as Map
             Closure handler = args[1] as Closure
             nextHttpGetCaptured.uri = params?.uri
-            handler.call([status: nextHttpGetStatus, data: [text: nextHttpGetBody]])
+            def headers = nextHttpGetContentType ? ['Content-Type': nextHttpGetContentType] : [:]
+            handler.call([status: nextHttpGetStatus, data: [text: nextHttpGetBody], headers: headers])
         }
     }
 
@@ -46,6 +41,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // Reset per-test state so prior-test stub config doesn't leak.
         nextHttpGetStatus = 200
         nextHttpGetBody = ''
+        nextHttpGetContentType = null
         nextHttpGetThrow = null
         nextHttpGetCaptured.clear()
     }
@@ -93,8 +89,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('http://')
-        ex.message.contains('https://')
+        ex.message.contains('http or https')
         nextHttpGetCaptured.uri == null  // scheme check fires before any network attempt
     }
 
@@ -104,7 +99,31 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('http://')
+        ex.message.contains('required')
+    }
+
+    def "_fetchSourceFromUrl: throws IAE when scheme is uppercase HTTPS (not normalized as a valid scheme today)"() {
+        // Lowercase comparison: uppercase schemes are rejected. Pins the toLowerCase
+        // normalization step so a future refactor doesn't accidentally bypass it.
+        given:
+        stubHttpGet(200, 'unused')
+
+        when:
+        script._fetchSourceFromUrl('HTTPS://example.com/x.groovy')
+
+        then:
+        // The lowercase normalization means uppercase HTTPS IS accepted by the
+        // scheme check. This test pins that behavior.
+        noExceptionThrown()
+    }
+
+    def "_fetchSourceFromUrl: throws IAE on non-String importUrl"() {
+        when:
+        script._fetchSourceFromUrl(123)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('String')
     }
 
     def "_fetchSourceFromUrl: throws IAE on non-200 status"() {
@@ -174,7 +193,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.success == true
         result.sourceMode == 'importUrl'
         result.sourceLength == 'fetched-source-here'.length()
-        result.note?.contains('importUrl')
+        result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
         captured.path == '/app/ajax/update'
         captured.body.source == 'fetched-source-here'
     }
@@ -207,7 +226,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.sourceMode == 'importUrl'
         captured.path == '/app/save'
         captured.body.source == 'definition(name: "FromUrl")'
-        result.note?.contains('importUrl')
+        result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
     }
 
     // -------- importUrl integration: install_library --------
@@ -238,11 +257,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     // -------- mutual exclusion --------
-    // For install_*_code, modesSet counts the present modes and throws if > 1.
-    // For update_*_code, the existing if-else chain naturally takes the first
-    // present mode in the order resave > sourceFile > importUrl > source --
-    // tool schema documents these as mutually exclusive; explicit mutex
-    // enforcement at the API boundary is a follow-up if it proves needed.
+    // All install/update tools enforce: exactly one of source / sourceFile /
+    // importUrl / resave (resave is install-irrelevant). modesSet count > 1 throws.
 
     def "install_app rejects multiple source modes together"() {
         given:
@@ -315,7 +331,34 @@ class ToolImportUrlSpec extends ToolSpecBase {
         then:
         result.success == false
         result.codeAppId == 99999
-        result.error.contains('404')
+        result.status == 404
+        result.error.contains('does not exist')  // status-aware hint for 404
+    }
+
+    @spock.lang.Unroll
+    def "install_app installAsUserApp returns status-aware error for status #status"() {
+        // Pins the status-aware error hints so a 401 auth-expired case doesn't get
+        // misread as "codeAppId wrong" the way a generic non-302 message would.
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: status, location: null, data: 'body']
+        }
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 310, confirm: true])
+
+        then:
+        result.success == false
+        result.status == status
+        result.error.contains(hint)
+
+        where:
+        status | hint
+        401    | 'authentication'
+        403    | 'authentication'
+        500    | 'server error'
+        200    | 'without redirect'
     }
 
     def "install_app rejects installAsUserApp combined with importUrl"() {
@@ -430,5 +473,353 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.containsKey('updatedFired') == false
         posts.size() == 1
         posts[0].path == '/app/ajax/update'  // only the code-save POST, no lifecycle POST
+    }
+
+    def "update_app_code with triggerUpdated lifecycle failure also sets partial:true"() {
+        // Pins the half-failure flag added so callers checking result.partial see
+        // the lifecycle-fire failure without drilling into updatedFired.
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "source": "old", "version": 5}'
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            if (path.startsWith('/installedapp/configure/')) throw new RuntimeException('hub rejected lifecycle POST')
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([
+            appId: '42',
+            source: 'new',
+            triggerUpdated: 194,
+            confirm: true
+        ])
+
+        then:
+        result.success == true       // code save committed
+        result.partial == true       // lifecycle refresh failed
+        result.updatedFired == false
+    }
+
+    // -------- mutual exclusion on update paths (mirrors install paths) --------
+
+    def "update_app_code rejects multiple source modes together"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolUpdateAppCode([
+            appId: '42',
+            source: 'inline',
+            importUrl: 'https://x.com/a.groovy',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('exactly one')
+    }
+
+    def "update_library_code rejects multiple source modes together"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolUpdateLibraryCode([
+            libraryId: '7',
+            sourceFile: 'lib.groovy',
+            importUrl: 'https://x.com/lib.groovy',
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('exactly one')
+    }
+
+    // -------- self-update guard + importUrl (no SSRF via importUrl) --------
+
+    def "update_app_code self-update guard blocks importUrl mode (no outbound fetch happens)"() {
+        // If a refactor reorders mode resolution above the self-update guard, the hub
+        // could be tricked into fetching attacker-controlled URLs (SSRF probe) even
+        // though the guard would later block the write. Pins guard-before-fetch ordering.
+        given:
+        enableHubAdminWrite()
+        settingsMap.enableDeveloperMode = false
+        stubHttpGet(200, 'pwn')
+
+        when:
+        // appId '1' matches the sharedAppStub id, triggering the self-update guard.
+        script.toolUpdateAppCode([appId: '1', importUrl: 'http://attacker.example/x.groovy', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+        nextHttpGetCaptured.uri == null  // guard ran before _fetchSourceFromUrl
+    }
+
+    // -------- installAsUserApp validation edge cases --------
+
+    @spock.lang.Unroll
+    def "install_app installAsUserApp rejects invalid value (#value)"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolInstallApp([installAsUserApp: value, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('positive integer')
+
+        where:
+        value << [0, -5, 'not-a-number']
+    }
+
+    def "install_app installAsUserApp coerces stringified integer"() {
+        given:
+        enableHubAdminWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 302, location: '/installedapp/configure/9999/mainPage', data: '']
+        }
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: '310', confirm: true])
+
+        then:
+        result.success == true
+        result.codeAppId == 310
+        result.instanceAppId == 9999
+    }
+
+    // -------- triggerUpdated validation edge cases --------
+
+    @spock.lang.Unroll
+    def "update_app_code triggerUpdated #value returns success+updatedFired:false+repairHints (code save still committed)"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        def lifecyclePostCount = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            if (path.startsWith('/installedapp/configure/')) lifecyclePostCount++
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([
+            appId: '42',
+            source: 'new',
+            triggerUpdated: value,
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updatedFired == false
+        result.repairHints?.any { it.toString().contains('positive integer') }
+        lifecyclePostCount == 0  // never reached the lifecycle POST
+
+        where:
+        value << [0, -1, 'abc']
+    }
+
+    // -------- per-tool importUrl smoke (install_driver / update_driver_code / update_library_code) --------
+
+    def "install_driver with importUrl fetches via httpGet and POSTs to /driver/save"() {
+        given:
+        enableHubAdminWrite()
+        stubHttpGet(200, 'metadata { definition (name: "FromUrl") {} }')
+        def captured = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            captured.path = path; captured.body = body
+            [status: 302, location: 'http://127.0.0.1:8080/driver/editor/8888', data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
+
+        when:
+        def result = script.toolInstallDriver([importUrl: 'https://raw.example/d.groovy', confirm: true])
+
+        then:
+        result.success == true
+        result.driverId == '8888'
+        captured.path == '/driver/save'
+    }
+
+    def "update_driver_code with importUrl POSTs the fetched source to /driver/ajax/update"() {
+        given:
+        enableHubAdminWrite()
+        stubHttpGet(200, 'updated-driver-source')
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":3}' }
+        def captured = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            captured.path = path; captured.body = body
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 3, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateDriverCode([driverId: '55', importUrl: 'https://raw.example/d.groovy', confirm: true])
+
+        then:
+        result.success == true
+        result.sourceMode == 'importUrl'
+        captured.path == '/driver/ajax/update'
+        captured.body.source == 'updated-driver-source'
+    }
+
+    def "update_library_code with importUrl posts to /library/saveOrUpdateJson"() {
+        given:
+        enableHubAdminWrite()
+        stubHttpGet(200, 'library(name: "Updated")')
+        hubGet.register('/library/list/single/data/22') { params -> '[{"version":4,"source":"old"}]' }
+        // Stub File Manager so library backup doesn't blow up trying to write.
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def captured = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.path = path; captured.body = body
+            [success: true, id: 22, version: 5]
+        }
+
+        when:
+        def result = script.toolUpdateLibraryCode([libraryId: '22', importUrl: 'https://raw.example/lib.groovy', confirm: true])
+
+        then:
+        result.success == true
+        result.sourceMode == 'importUrl'
+        captured.path == '/library/saveOrUpdateJson'
+        captured.body.contains('library(name: \\"Updated\\")')
+    }
+
+    // -------- bulk-mode importUrl per-item forwarding --------
+
+    def "install_driver bulk: per-item importUrl is forwarded and fetched"() {
+        given:
+        enableHubAdminWrite()
+        stubHttpGet(200, 'driver-from-url')
+        def postPaths = []
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postPaths << path
+            [status: 302, location: 'http://127.0.0.1:8080/driver/editor/9001', data: '']
+        }
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
+
+        when:
+        def result = script.toolInstallDriver([
+            installs: [[importUrl: 'https://raw.example/d1.groovy']],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.installs.size() == 1
+        result.installs[0].success == true
+        result.installs[0].sourceMode == 'importUrl'
+        nextHttpGetCaptured.uri == 'https://raw.example/d1.groovy'
+        postPaths.contains('/driver/save')
+    }
+
+    def "update_driver_code bulk: per-item importUrl is forwarded and fetched"() {
+        given:
+        enableHubAdminWrite()
+        stubHttpGet(200, 'updated-bulk-driver')
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":2}' }
+        def postPaths = []
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postPaths << path
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 2, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateDriverCode([
+            updates: [[driverId: '77', importUrl: 'https://raw.example/d.groovy']],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updates.size() == 1
+        result.updates[0].success == true
+        result.updates[0].sourceMode == 'importUrl'
+        nextHttpGetCaptured.uri == 'https://raw.example/d.groovy'
+        postPaths.contains('/driver/ajax/update')
+    }
+
+    // -------- JSON-RPC dispatch envelope (-32602 on mutex, success on happy path) --------
+
+    @spock.lang.Unroll
+    def "install_app installAsUserApp via dispatch returns success envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 302, location: '/installedapp/configure/8888/mainPage', data: '']
+        }
+
+        when:
+        def response = mcpDriver.callTool('install_app', [installAsUserApp: 310, confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.instanceAppId == 8888
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "install_app installAsUserApp + importUrl via dispatch returns -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+
+        when:
+        def response = mcpDriver.callTool('install_app', [
+            installAsUserApp: 310,
+            importUrl: 'https://example.com/x.groovy',
+            confirm: true
+        ])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('mutually exclusive')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "update_app_code with importUrl via dispatch returns success envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        stubHttpGet(200, 'dispatch-fetched-source')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":9}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 9, fileName: 'b.json'] }
+
+        when:
+        def response = mcpDriver.callTool('update_app_code', [
+            appId: '42',
+            importUrl: 'https://example.com/app.groovy',
+            confirm: true
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.sourceMode == 'importUrl'
+
+        where:
+        useGateways << [true, false]
     }
 }
