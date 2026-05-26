@@ -3086,7 +3086,7 @@ Per-condition spec fields:
   - capability — required. Call `get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
   - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N] because RM 5.1 expects the array form in rDev_<N> -- passing a bare integer bypasses the pre-validation device-exist check and silently stores {N: null} in the setting (rule renders but never fires). If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
-  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).
+  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).[[FLAT_TRIM]] ASCII forms '!=' / '<>' / '==' are accepted and auto-mapped to RM's Unicode glyphs '≠' / '='. ALSO required together with `variable` and `value` when capability='Variable'; state-change comparators ('*changed*' / '*became*') are the only exemption from the RHS-value requirement on Variable conditions.[[/FLAT_TRIM]]
   - value — numeric threshold paired with comparator.
   - attribute — for capability='Custom Attribute', the attribute name (e.g., 'humidity', 'energy', any attribute exposed by the device). REQUIRED when using Custom Attribute; must be paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
   - not — boolean (default false). Set true to invert this condition.
@@ -17041,8 +17041,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             // recursing into a shape the doActPage walker does not yet support. The
             // walker also rejects subExpression with a targeted message at the first
             // condition site, but catching it here is cheaper and produces a clearer
-            // error before any backup is taken. _rmAddRequiredExpression supports
-            // nested subExpression today; _rmAddAction's doActPage walker is flat-only.
+            // error before any wizard write hits the hub (the backup on disk is
+            // already taken by the outer dispatcher at this point; fail-fast here
+            // means RM's wizard state stays untouched). _rmAddRequiredExpression
+            // supports nested subExpression today; _rmAddAction's doActPage walker
+            // is flat-only.
             exprConds.eachWithIndex { entry, idx ->
                 if (entry instanceof Map && (entry as Map).subExpression != null) {
                     throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
@@ -19079,7 +19082,7 @@ private Map _rmFetchSettingsByName(Integer appId) {
  * refusal, also attaches the current health so the caller sees existing
  * structural issues that motivated the refusal.
  */
-private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup) {
+private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
     def msgStr = msg?.toString() ?: ""
     def isPreflightRefusal = msgStr.contains("RM is not touched")
     // wizardStuck: mid-walk cancelCapab cleanup may have failed leaving the wizard
@@ -19091,9 +19094,12 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup) {
     }
     def restoreHint
     if (isPreflightRefusal) {
-        restoreHint = "Pre-flight refusal — RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
+        restoreHint = "Pre-flight refusal -- RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
     } else if (wizardStuck) {
-        restoreHint = "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) to manually close the in-flight wizard."
+        // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
+        // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
+        // themselves carry no page info, so callers thread it in.
+        restoreHint = "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
     } else {
         restoreHint = "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
     }
@@ -20338,7 +20344,15 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
  * @param page     Wizard page name (e.g. "doActPage", "STPage")
  * @param pattern  Java regex the target field name must match
  * @param trigger  Closure that causes the field to appear (write or click)
- * @return         Map: [input: <input-Map or null>, visibleNames: <List<String>>]
+ * @return         Map with three keys:
+ *                   input: matching input Map (or null if no match)
+ *                   visibleNames: List<String> of all input names in the post-trigger schema
+ *                   fallbackToExisting: Boolean -- true when the match came from the
+ *                     fallback "any matching field" path (revealedAny only, not
+ *                     revealedNew). Signals that the field was already visible BEFORE
+ *                     the trigger ran; callers tracking progressive-disclosure vs
+ *                     static-schema behaviour read this to emit informational
+ *                     sentinels. Does NOT imply failure.
  */
 private Map _rmRevealStep(Integer appId, String page, String pattern, Closure trigger) {
     def preCfg = _rmFetchConfigJson(appId, page)
@@ -20452,6 +20466,42 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // (these calls are by design discovery-only and would emit false positives).
     def discoverField = { Integer aId, String pg, String pattern ->
         return _rmRevealStep(aId, pg, pattern, {})
+    }
+
+    // ---- Pre-walker guard: discrete-event sensor capabilities ----
+    // Water sensor / Smoke detector / CO / CO2 / Tamper alert / Acceleration report
+    // discrete enum events (wet/dry, detected/clear, active/inactive) -- they do NOT
+    // accept the comparator+value path that numeric capabilities do.
+    //
+    // RM's runtime DOES validate two of the three shapes:
+    //   (a) comparator='=', value=1  -- value coerces to state and the state-domain
+    //       validator rejects loudly with "state '1' not in capability 'Water sensor'
+    //       domain. Valid: dry, wet".
+    //   (b) comparator='>', value=5  -- same path, same loud reject.
+    //
+    // The third shape (comparator with NO state and NO value) slips past RM's
+    // validation and silently degrades: success=true, partial=true, settingsSkipped
+    // entry [{key:'RelrDev_<N>', reason:'silent_rejection'}], with health.ok=true and
+    // no broken markers. The condition is CREATED (capability + device written) but
+    // has no comparator and no state value -- functionally meaningless, will evaluate
+    // to false on every check. Live-probed on test hub (rule 169, RM 5.1.8).
+    //
+    // Code-side reject closes the gap RM's runtime does not catch. Caller gets a
+    // targeted error pointing at the right state-value enumeration instead of a
+    // generic silent_rejection sentinel they might dismiss as minor partial.
+    def DISCRETE_EVENT_CAPS = [
+        "Water sensor":                ["wet", "dry"],
+        "Smoke detector":              ["detected", "clear"],
+        "Carbon monoxide detector":    ["detected", "clear"],
+        "Carbon dioxide sensor":       ["detected", "clear"],
+        "Tamper alert":                ["detected", "clear"],
+        "Acceleration":                ["active", "inactive"]
+    ]
+    def discreteValid = DISCRETE_EVENT_CAPS[capCanonical]
+    if (discreteValid != null && cond.comparator != null && cond.state == null && cond.value == null) {
+        cancelInFlightCond()
+        def validValues = discreteValid.collect { "'${it}'" }.join(" or ")
+        throw new IllegalArgumentException("conditions[${condIdx}]: ${capCanonical} is a discrete-event capability -- pass state: ${validValues} instead of a comparator+value pair. The comparator-without-value shape silently degrades on RM 5.1 (no broken marker, but the condition is functionally meaningless). See rCapab_<N> capability list for the full state-value table.")
     }
 
     // ---- Mode capability ----
@@ -20664,9 +20714,10 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         def varPickerField = varPickerReveal.input.name.toString()
         // Validate variable name against the schema's option list.
-        // Hub options for variable pickers are Maps (key=id, value=label); the written
-        // value is always the key. Use .keySet() when options is a Map to avoid
-        // Map.Entry.toString() producing "key=value" strings that never match.
+        // Hub options for variable pickers are Maps keyed by variable name (the throw
+        // at L20688 emits "hub variable '${varName}' not in the revealed picker" --
+        // varName IS the key). Map.Entry.toString() would produce "key=value" strings
+        // that never match a bare name; use .keySet() to extract the names.
         def varOptsRaw = varPickerReveal.input.options
         def varOpts = (varOptsRaw instanceof Map)
             ? (varOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
@@ -21867,6 +21918,13 @@ def toolUpdateNativeApp(args) {
         // Operations are atomic from the rule's perspective.
         def patchResults = []
         def patchErr = null
+        // Trailing-updateRule failure propagation: when the post-patch updateRule
+        // click is rejected, the patches landed but the rule never bakes them. The
+        // catch in the trailing-updateRule block below sets these so the response
+        // surfaces dedicated slots (sibling pattern from F2 addRequiredExpression).
+        def updateRuleFailed = false
+        def patchesNotLive = false
+        def updateRuleError = null
         try {
             patchesList.eachWithIndex { p, pi ->
                 if (!(p instanceof Map)) {
@@ -21962,11 +22020,16 @@ def toolUpdateNativeApp(args) {
             }
             // Fire updateRule once at the end so the rule's actions[]
             // map and event subscriptions bake from the fully-loaded
-            // post-patch state. Log on failure — this is a commit, not
-            // an idempotent tickle, and silent failure here means the
-            // patches landed but never bake into the running rule.
+            // post-patch state. Honour the comment: silent failure here means
+            // the patches landed but never bake into the running rule, so
+            // surface via dedicated envelope slots (sibling pattern from F2:
+            // addRequiredExpression slot propagation at L22091+ and F1's
+            // counterpart on addTrigger at L21598+).
             try { _rmClickAppButton(appId, "updateRule") }
             catch (Exception updateExc) {
+                updateRuleFailed = true
+                patchesNotLive = true
+                updateRuleError = updateExc.message
                 mcpLog("warn", "rm-native", "patches: trailing updateRule click failed for app ${appId} -- patches may not be live: ${updateExc.message}")
             }
         } catch (Exception e) {
@@ -21975,14 +22038,22 @@ def toolUpdateNativeApp(args) {
         }
         def opsOk = patchResults.count { it?.success != false }
         def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
         return [
-            success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok,
+            success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok && !updateRuleFailed,
             appId: appId,
             backup: backup,
             patches: patchResults,
             health: health,
             error: patchErr,
-            note: "Applied ${opsOk}/${patchResults.size()} patch ops; updateRule fired once."
+            updateRuleFailed: updateRuleFailed,
+            patchesNotLive: patchesNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
+            note: "Applied ${opsOk}/${patchResults.size()} patch ops; updateRule ${updateRuleFailed ? 'FAILED -- patches may not be live' : 'fired once'}."
         ]
     }
 
@@ -21997,20 +22068,39 @@ def toolUpdateNativeApp(args) {
             mcpLog("error", "rm-native", "addLocalVariable failed for app ${appId}: ${e.message}")
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
+        // Trailing-updateRule failure propagation (sibling pattern from F2 on
+        // addRequiredExpression at L22091+). variableNotLive: the variable was
+        // created on the hub (varResult is non-null) but the rule's action map
+        // never re-evaluates against the new variable until updateRule fires.
+        def updateRuleFailed = false
+        def variableNotLive = false
+        def updateRuleError = null
         try { _rmClickAppButton(appId, "updateRule") }
         catch (Exception updateExc) {
+            updateRuleFailed = true
+            variableNotLive = true
+            updateRuleError = updateExc.message
             mcpLog("warn", "rm-native", "addLocalVariable: trailing updateRule click failed for app ${appId} -- variable may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
         return [
-            success: (varResult?.success != false) && health.ok,
+            success: (varResult?.success != false) && health.ok && !updateRuleFailed,
+            partial: updateRuleFailed,
             appId: appId,
             backup: backup,
             variable: [name: varResult?.name, type: varResult?.type, value: varResult?.value],
             settingsApplied: varResult?.settingsApplied,
             settingsSkipped: varResult?.settingsSkipped,
+            updateRuleFailed: updateRuleFailed,
+            variableNotLive: variableNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
             health: health,
-            note: "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule fired."
+            note: "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired'}."
         ]
     }
 
@@ -22032,23 +22122,10 @@ def toolUpdateNativeApp(args) {
             reResult = _rmAddRequiredExpression(appId, addRequiredExpressionSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addRequiredExpression failed for app ${appId}: ${e.message}")
-            // The exception may carry a wizardStuck signal if the in-flight
-            // cancelCapab cleanup also failed. Detect that pattern in the
-            // message so callers know to manually fire cancelCapab before
-            // their next write OR restore from backup.
-            def msg = e.message?.toString() ?: ""
-            def wizardStuck = msg.contains("wizardStuck") ||
-                              msg.contains("cancelCapab cleanup failed")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message,
-                wizardStuck: wizardStuck,
-                backup: backup,
-                restoreHint: wizardStuck ?
-                    "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) to manually close the in-flight wizard." :
-                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
+            // STPage is the wizard page this branch operates on; the helper threads it
+            // into the wizardStuck restoreHint and surfaces preflight refusals with the
+            // current health block (which a future preflight on this branch would set).
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "STPage")
         }
         // Fire updateRule so the expression takes effect on the running
         // rule instance. Mirrors addTrigger's "caller fires updateRule"
