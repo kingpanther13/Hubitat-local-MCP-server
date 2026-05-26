@@ -6935,6 +6935,8 @@ def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean i
  * Throws IllegalArgumentException with a structured message + class name on
  * bad scheme, non-200 status, fetch exception, or empty body. mcpLogs each
  * failure at error level so the MCP log buffer carries the URL + cause.
+ *
+ * (Live-deployed via importUrl: marker comment to verify end-to-end smoke.)
  */
 private String _fetchSourceFromUrl(urlArg) {
     // Accept Object so we can validate at the boundary; a typed `String url`
