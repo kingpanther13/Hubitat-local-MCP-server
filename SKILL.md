@@ -188,7 +188,7 @@ in the room — it surfaces stale-state warnings the device-level tools don't.""
     inputSchema: [
         type: "object",
         properties: [
-            room_id: [type: "string", description: "Room ID (string). Use list_rooms to discover IDs."]
+            room_id: [type: "string", description: "Room ID (string). Use hub_list_rooms to discover IDs."]
         ],
         required: ["room_id"]
     ],

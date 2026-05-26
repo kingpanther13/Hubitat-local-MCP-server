@@ -30,7 +30,7 @@ Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare 
 
 ## Tool design rules
 
-These rules apply to every MCP tool added or renamed from PR1 onward. PR3 (this PR) establishes the rules; PR1 (forthcoming) renames existing tools to match. Cached MCP clients refresh their tool list on update — no deprecation aliases are shipped.
+These rules apply to every MCP tool added or renamed. Cached MCP clients refresh their tool list on update — no deprecation aliases are shipped.
 
 ### Tool naming
 
@@ -39,7 +39,7 @@ These rules apply to every MCP tool added or renamed from PR1 onward. PR3 (this 
 - **Gateways.** `manage_` is reserved for gateway tools (e.g., `hub_manage_rooms`, `hub_manage_logs`). One narrow exception: a flat tool that exposes a small set (≤4) of action-dispatched verbs on a single noun may use `manage_` (current example: `hub_manage_virtual_device` with `action: "create"/"delete"`). Don't introduce more flat-multi-action tools without explicit maintainer sign-off.
 - **Multi-gateway membership.** A tool MAY appear under more than one gateway when both gateway domains apply.
 - **Gateway read/write split.** Gateways SHOULD be read-only OR write-only where the domain permits. Mixed-mode gateways are accepted only when splitting genuinely doesn't fit the domain. Pure-mode gateways enable cleaner per-gateway disable in LLM client settings and clearer mental models for AI consumers.
-- **Hard rename, no aliases.** PR1 will rename every non-conforming tool in lockstep. The expectation: MCP clients refresh their cached tool list on server update. No deprecation aliases are shipped.
+- **Hard rename, no aliases.** Non-conforming tools are renamed in lockstep when the convention requires it. The expectation: MCP clients refresh their cached tool list on server update. No deprecation aliases are shipped.
 
 ### Verb vocabulary
 
@@ -54,7 +54,7 @@ Tools use exactly one verb from the table below. The table is the canonical list
 | `create` | Write that produces a new entity | `install` |
 | `update` | Write that mutates one or more existing fields in place (PATCH-like) | `rename` |
 | `delete` | Write that destroys an entity (no ID = delete all) | `clear`, `remove` |
-| `set` | Write that assigns a value/state (`set_X_<attr>`) or replaces an entity wholesale (`set_X`, PUT-like) | `pause`, `resume`, `enable`, `disable`, `assign`, `unassign` |
+| `set` | Write that assigns a value/state (`set_X_<attr>`) or replaces an entity wholesale (`set_X`, PUT-like) | `pause`, `resume`, `enable`, `disable`, `lock`, `unlock`, `mute`, `unmute`, `start`, `stop`, `open`, `close`, `assign`, `unassign` |
 | `call` | Invoke a method / service / dispatch / device command | `send`, `dispatch`, `invoke`, `request`, `evaluate`, `run`, `force` |
 | `manage` | Action-dispatch — gateways + narrow flat-multi-action exception | — |
 | `restore` | Re-apply a prior backup | — |
@@ -108,7 +108,7 @@ Defaults for unannotated tools are deliberately cautious (non-read-only, potenti
 - Use `enum` to constrain allowed values where there is a fixed set. Reduces invalid-arg errors and gives the LLM a usable hint.
 - The `required` array is present only when there ARE required parameters; absent for fully-optional tools (existing rule; reaffirmed).
 - **Add `outputSchema` for any new tool that returns structured content.** Servers MUST conform to a published `outputSchema`; clients SHOULD validate. Source: MCP spec 2025-06-18 — `/server/tools`.
-- **Forward-looking.** The MCP specification next-revision Release Candidate (RC locked 2026-05-21, targets 2026-07-28 publication) adds `_meta` on every request and `ttlMs`/`cacheScope` cache hints on list responses. PR3 does not require adoption; flagged here so future tool work doesn't re-discover it.
+- **Forward-looking.** The MCP specification next-revision Release Candidate (RC locked 2026-05-21, targets 2026-07-28 publication) adds `_meta` on every request and `ttlMs`/`cacheScope` cache hints on list responses. Not required today; flagged here so future tool work doesn't re-discover it.
 
 ### Error contracts
 
@@ -141,9 +141,9 @@ All rules above cite verified sources, re-checked on 2026-05-26.
 - OpenAI — *Function calling guide* — developers.openai.com/api/docs/guides/function-calling.
 - Cloudflare — *Code Mode* — blog.cloudflare.com/code-mode-mcp/ (2026-02-20).
 - FastMCP — gofastmcp.com/servers/tools (v3 docs). **Peer reference only — ideas worth considering, not enforced rules. The project is Groovy on the Hubitat sandbox; FastMCP is Python. Not every pattern transfers.**
-- MCP next-revision Release Candidate (RC locked 2026-05-21, targets 2026-07-28 publication) — blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/. Forward-looking direction; not adopted in PR3.
+- MCP next-revision Release Candidate (RC locked 2026-05-21, targets 2026-07-28 publication) — blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/. Forward-looking direction; not adopted yet.
 
-PR #202 (merged 2026-05-19) established the annotation-hints baseline on every shipped tool. PR3 codifies the rule going forward. PR1 (forthcoming) will rename existing tools to the new naming convention; PR2 (forthcoming) will audit non-tool conventions.
+PR #202 (merged 2026-05-19) established the annotation-hints baseline on every shipped tool.
 
 ## The custom MCP rule engine is legacy
 
