@@ -43,7 +43,7 @@ These rules apply to every MCP tool added or renamed from PR1 onward. PR3 (this 
 
 ### Verb vocabulary
 
-14 verbs + 2 destructive-ops exceptions + 1 locked-to-one-tool verb. Tools use exactly one verb from this table.
+Tools use exactly one verb from the table below. The table is the canonical list — `read`/`write` (file-manager domain), `report` (locked to one tool), and `reboot`/`shutdown` (destructive-ops domain) are narrow exceptions to the otherwise-general verb vocabulary.
 
 | Verb | Semantic | Folds in |
 |---|---|---|
@@ -77,7 +77,7 @@ Name parameters unambiguously. `device_id`, not `id`. `user_id`, not `user`. Whe
 1. **Verb-pair tools.** Two tools doing opposite state mutations on the same noun (enable/disable, pause/resume, lock/unlock, mute/unmute, start/stop, open/close) → merge into a single `set_<noun>_<attribute>` tool. Name the merged tool after the boolean/enum attribute being toggled, NOT after one of the two verbs (so `hub_set_rule_paused`, not `hub_set_rule_state` — the latter reads as a generic edit). Use boolean when binary; enum only when 3+ states or values aren't naturally true/false. Concrete: `pause_rm_rule` + `resume_rm_rule` → `hub_set_rule_paused`.
 2. **Flat multi-action tools.** A flat tool with an action enum is allowed ONLY when (a) actions share a noun, (b) action set is ≤4 verbs, and (c) a full `manage_` gateway would be overkill. Outside that, prefer separate tools or a real gateway. Concrete: `hub_manage_virtual_device` with `action: "create"/"delete"` fits.
 3. **Tools always called in sequence.** If callers always invoke A then B with no useful intermediate point, merge them. Anthropic's verified guidance: `get_customer_context` over three separate lookups; `schedule_event` over `list_users` + `list_events` + `create_event` — *writing-tools-for-agents*.
-4. **Overlapping noun + return shape.** Tools that only differ in a filter or projection should merge with an optional parameter. Precedent: PR #208's 103→95 reduction.
+4. **Overlapping noun + return shape.** Tools that only differ in a filter or projection should merge with an optional parameter. Recent example: PR #208 proposes a 103→95 tool reduction along these lines.
 5. **Single-action edge verbs.** Don't add a new verb for a single-action tool when an existing verb fits. `clear`/`remove` fold into `delete`; `rename` into `update`; `run`/`force` into `call`; `install` into `create`.
 6. **Anti-consolidation guardrails.** Don't merge tools whose error modes, safety gates, or payload shapes are fundamentally different (a Hub Admin Write tool with a no-gate read tool). Don't merge a time-critical tool with one whose schema would inflate context on every call. When in doubt, leave them separate.
 
@@ -108,13 +108,13 @@ Defaults for unannotated tools are deliberately cautious (non-read-only, potenti
 - Use `enum` to constrain allowed values where there is a fixed set. Reduces invalid-arg errors and gives the LLM a usable hint.
 - The `required` array is present only when there ARE required parameters; absent for fully-optional tools (existing rule; reaffirmed).
 - **Add `outputSchema` for any new tool that returns structured content.** Servers MUST conform to a published `outputSchema`; clients SHOULD validate. Source: MCP spec 2025-06-18 — `/server/tools`.
-- **Forward-looking.** The MCP 2026-07-28 Release Candidate (locked 2026-05-21) adds `_meta` on every request and `ttlMs`/`cacheScope` cache hints on list responses. PR3 does not require adoption; flagged here so future tool work doesn't re-discover it.
+- **Forward-looking.** The MCP specification next-revision Release Candidate (RC locked 2026-05-21, targets 2026-07-28 publication) adds `_meta` on every request and `ttlMs`/`cacheScope` cache hints on list responses. PR3 does not require adoption; flagged here so future tool work doesn't re-discover it.
 
 ### Error contracts
 
 - **Validation errors** (caller-recoverable, bad args): throw `IllegalArgumentException`. Caught by `handleToolsCall` and mapped to JSON-RPC `-32602`. Existing pattern; reaffirmed.
 - **Runtime errors** (operation tried and failed for non-arg reasons): return `[success: false, error: <human-readable>, note: <actionable guidance>]`. Don't throw — the AI needs a structured error.
-- **`isError: true` envelope** for tool-execution errors per MCP spec 2025-06-18. Already adopted in v0.7.7+ (SKILL.md L449).
+- **`isError: true` envelope** for tool-execution errors per MCP spec 2025-06-18. Already adopted in v0.7.7+ (see SKILL.md § Version Management for the adoption note).
 - **Specific, actionable, recovery-oriented error text.** Tell the model how to recover. Anthropic recommends steering truncation errors toward recovery strategies like *"many small and targeted searches instead of a single, broad search."*
 
 ### Pagination & response-size discipline
@@ -141,7 +141,7 @@ All rules above cite verified sources, re-checked on 2026-05-26.
 - OpenAI — *Function calling guide* — developers.openai.com/api/docs/guides/function-calling.
 - Cloudflare — *Code Mode* — blog.cloudflare.com/code-mode-mcp/ (2026-02-20).
 - FastMCP — gofastmcp.com/servers/tools (v3 docs). **Peer reference only — ideas worth considering, not enforced rules. The project is Groovy on the Hubitat sandbox; FastMCP is Python. Not every pattern transfers.**
-- MCP 2026-07-28 Release Candidate (locked 2026-05-21) — blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/. Forward-looking direction; not adopted in PR3.
+- MCP next-revision Release Candidate (RC locked 2026-05-21, targets 2026-07-28 publication) — blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/. Forward-looking direction; not adopted in PR3.
 
 PR #202 (merged 2026-05-19) established the annotation-hints baseline on every shipped tool. PR3 codifies the rule going forward. PR1 (forthcoming) will rename existing tools to the new naming convention; PR2 (forthcoming) will audit non-tool conventions.
 
