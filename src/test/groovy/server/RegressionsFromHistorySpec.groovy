@@ -422,7 +422,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '50', source: 'new source', confirm: true])
 
         then: 'update POST carries the fresh version=12'
         posted.body.version == 12
@@ -559,7 +559,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '50', source: 'new source', confirm: true])
 
         then: 'best-effort fallback — use the cached version=5'
         posted.body.version == 5
@@ -649,7 +649,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: 'new source', confirm: true])
 
         then: 'POST body carries the fresh version=9'
         capturedBody.version == 9
@@ -728,7 +728,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: 'new source', confirm: true])
 
         then: 'best-effort fallback -- use the cached version=7'
         capturedBody.version == 7

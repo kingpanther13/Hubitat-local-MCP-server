@@ -71,15 +71,21 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         where:
         // Sample from each category in getReadOnlyToolNames() -- full set lives in source.
+        // Removed by tool-surface reduction (folded into other reads):
+        //   poll_until_attribute → get_attribute(expectedValue=...)
+        //   custom_list_rules → custom_get_rule (no-id overload)
+        //   get_debug_logs + get_logging_status → get_debug_log_state(mode=logs|status)
+        //   get_set_hub_metrics → get_hub_info (recordSnapshot/trendPoints opt-in)
         name << [
-            'list_devices', 'get_device', 'get_attribute', 'poll_until_attribute',
-            'custom_list_rules', 'custom_test_rule', 'custom_export_rule',
+            'list_devices', 'get_device', 'get_attribute',
+            'custom_get_rule', 'custom_test_rule', 'custom_export_rule',
             'get_hub_info', 'get_modes', 'get_hsm_status',
             'list_variables', 'get_variable', 'get_variable_history',
             'list_captured_states',
-            'get_debug_logs', 'get_logging_status', 'generate_bug_report',
+            'get_debug_log_state', 'generate_bug_report',
             'get_hub_logs', 'get_device_history', 'get_performance_stats',
             'get_zwave_details', 'get_zigbee_details', 'device_health_check',
+            'force_garbage_collection',
             'list_hub_apps', 'get_app_source', 'list_item_backups',
             'list_virtual_devices',
             'list_rooms', 'get_room',
@@ -112,6 +118,13 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         tool.annotations.destructiveHint == true
 
         where:
+        // Removed by tool-surface reduction (folded into other writes):
+        //   set_log_level + clear_debug_logs → update_debug_logs(action=setLevel|clear)
+        //   install_app + update_app_code → save_app
+        //   install_driver + update_driver_code → save_driver
+        //   install_library + update_library_code → save_library
+        //   get_set_hub_metrics → get_hub_info (recordSnapshot=true), which is read-only
+        //   force_garbage_collection moved to read-only set (mutates JVM but not persisted state)
         name << [
             'send_command',
             'custom_create_rule', 'custom_update_rule', 'custom_delete_rule',
@@ -119,17 +132,17 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'set_mode',
             'set_variable', 'create_variable', 'delete_variable',
             'create_connector', 'remove_connector',
-            'set_hsm', 'set_log_level',
+            'set_hsm',
             'update_mcp_settings',
             'delete_captured_state', 'clear_captured_states',
-            'clear_debug_logs',
-            'create_hub_backup', 'force_garbage_collection', 'get_set_hub_metrics',
+            'update_debug_logs',
+            'create_hub_backup',
             'reboot_hub', 'shutdown_hub', 'zwave_repair', 'delete_device',
             'manage_virtual_device', 'update_device',
             'create_room', 'delete_room', 'rename_room',
-            'install_app', 'install_driver', 'update_app_code', 'update_driver_code',
+            'save_app', 'save_driver',
             'delete_app', 'delete_driver',
-            'install_library', 'update_library_code', 'delete_library',
+            'save_library', 'delete_library',
             'restore_item_backup',
             'write_file', 'delete_file',
             'run_rm_rule', 'pause_rm_rule', 'resume_rm_rule', 'set_rm_rule_boolean',
@@ -307,16 +320,21 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         def expectedReadOnly = [
             'list_devices', 'get_device', 'get_attribute', 'get_device_events',
-            'poll_until_attribute',
-            'custom_list_rules', 'custom_get_rule', 'custom_test_rule',
+            // poll_until_attribute folded into get_attribute(expectedValue=...)
+            // custom_list_rules folded into custom_get_rule (no-id overload)
+            'custom_get_rule', 'custom_test_rule',
             'custom_get_rule_diagnostics', 'custom_export_rule',
             'get_hub_info', 'get_modes', 'get_hsm_status', 'check_for_update',
             'list_variables', 'get_variable', 'get_variable_history',
             'list_captured_states',
-            'get_debug_logs', 'get_logging_status', 'generate_bug_report',
+            // get_debug_logs + get_logging_status folded into get_debug_log_state(mode=...)
+            'get_debug_log_state', 'generate_bug_report',
             'get_hub_logs', 'get_device_history', 'get_performance_stats',
             'get_hub_jobs', 'get_memory_history',
             'get_zwave_details', 'get_zigbee_details', 'device_health_check',
+            // force_garbage_collection moved here per maintainer rule that JVM-only
+            // mutations (no persisted hub data change) classify as read.
+            'force_garbage_collection',
             'list_hub_apps', 'list_hub_drivers',
             'get_app_source', 'get_driver_source', 'get_library_source',
             'list_item_backups', 'get_item_backup',
@@ -341,15 +359,18 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'update_mcp_settings',
             'set_hsm',
             'delete_captured_state', 'clear_captured_states',
-            'clear_debug_logs', 'set_log_level',
+            // clear_debug_logs + set_log_level folded into update_debug_logs(action=...)
+            'update_debug_logs',
             'create_hub_backup',
             'reboot_hub', 'shutdown_hub', 'zwave_repair', 'delete_device',
-            'force_garbage_collection', 'get_set_hub_metrics',
+            // get_set_hub_metrics folded into get_hub_info(recordSnapshot/trendPoints opt-in, read-only by default)
             'manage_virtual_device', 'update_device',
             'create_room', 'delete_room', 'rename_room',
-            'install_app', 'install_driver', 'update_app_code', 'update_driver_code',
+            // install_app + update_app_code → save_app; install_driver + update_driver_code → save_driver;
+            // install_library + update_library_code → save_library
+            'save_app', 'save_driver',
             'delete_app', 'delete_driver',
-            'install_library', 'update_library_code', 'delete_library',
+            'save_library', 'delete_library',
             'restore_item_backup',
             'write_file', 'delete_file',
             'run_rm_rule', 'pause_rm_rule', 'resume_rm_rule', 'set_rm_rule_boolean',

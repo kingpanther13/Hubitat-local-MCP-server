@@ -135,11 +135,11 @@ class GatewayToggleSpec extends ToolSpecBase {
             'reboot_hub', 'shutdown_hub', 'delete_device',
             'list_hub_apps', 'list_hub_drivers', 'get_app_source', 'get_driver_source',
             'list_item_backups', 'get_item_backup',
-            'install_app', 'install_driver', 'update_app_code', 'update_driver_code',
+            'save_app', 'save_driver', 'save_library',
             'delete_app', 'delete_driver', 'restore_item_backup',
             'get_hub_logs', 'get_device_history', 'get_performance_stats', 'get_hub_jobs',
-            'get_debug_logs', 'clear_debug_logs', 'set_log_level', 'get_logging_status',
-            'get_set_hub_metrics', 'get_memory_history', 'force_garbage_collection',
+            'get_debug_log_state', 'update_debug_logs',
+            'force_garbage_collection', 'get_memory_history',
             'device_health_check', 'custom_get_rule_diagnostics',
             'get_zwave_details', 'get_zigbee_details', 'zwave_repair',
             'list_captured_states', 'delete_captured_state', 'clear_captured_states',
@@ -237,7 +237,6 @@ class GatewayToggleSpec extends ToolSpecBase {
         !names.contains('custom_clone_rule')
 
         and: 'read-side custom_* tools remain'
-        names.contains('custom_list_rules')
         names.contains('custom_get_rule')
         names.contains('custom_test_rule')
         names.contains('custom_get_rule_diagnostics')

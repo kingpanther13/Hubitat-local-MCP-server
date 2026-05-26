@@ -3973,10 +3973,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // requireHubAdminWrite, and the rule-engine state machine.
 
         when: "every renamed tool name is dispatched"
-        // Top-level executeTool has cases for all 10 renames including
+        // Top-level executeTool has cases for all renames including
         // custom_get_rule_diagnostics (which is also a manage_diagnostics
         // sub-tool but routes through the same top-level switch).
-        def topLevel = ["custom_list_rules", "custom_get_rule", "custom_create_rule",
+        def topLevel = ["custom_get_rule", "custom_create_rule",
                         "custom_update_rule", "custom_delete_rule", "custom_test_rule",
                         "custom_get_rule_diagnostics",
                         "custom_export_rule", "custom_import_rule", "custom_clone_rule"]
@@ -6028,14 +6028,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
         def names = tools*.name as Set
 
-        then: "all 10 custom_* tools are visible"
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
+        then: "all 9 custom_* tools are visible"
+        ["custom_get_rule", "custom_create_rule", "custom_update_rule",
          "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
          "custom_export_rule", "custom_import_rule", "custom_clone_rule"].every { names.contains(it) }
     }
 
     def "custom_* visibility: read-only mode (engine OFF + builtinApp ON) shows read subset only"() {
-        // When enableCustomRuleEngine=false AND enableBuiltinApp=true, only the 5 read
+        // When enableCustomRuleEngine=false AND enableBuiltinApp=true, only the 4 read
         // tools should be visible; the 5 write/structural tools must be hidden.
         given:
         settingsMap.enableCustomRuleEngine = false
@@ -6047,7 +6047,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def names = tools*.name as Set
 
         then: "read subset is visible"
-        ["custom_list_rules", "custom_get_rule", "custom_update_rule",
+        ["custom_get_rule", "custom_update_rule",
          "custom_test_rule", "custom_get_rule_diagnostics"].every { names.contains(it) }
 
         and: "write/structural subset is hidden"
@@ -6055,7 +6055,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
          "custom_import_rule", "custom_clone_rule"].every { !names.contains(it) }
     }
 
-    def "custom_* visibility: full-hide mode (engine OFF + builtinApp OFF) hides all 10 custom_* tools"() {
+    def "custom_* visibility: full-hide mode (engine OFF + builtinApp OFF) hides all 9 custom_* tools"() {
         // When both toggles are off, no custom_* tools should appear.
         given:
         settingsMap.enableCustomRuleEngine = false
@@ -6066,13 +6066,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
         def names = tools*.name as Set
 
-        then: "all 10 custom_* tools are hidden"
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
+        then: "all 9 custom_* tools are hidden"
+        ["custom_get_rule", "custom_create_rule", "custom_update_rule",
          "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
          "custom_export_rule", "custom_import_rule", "custom_clone_rule"].every { !names.contains(it) }
     }
 
-    def "custom_list_rules includes source: mcp_custom_engine on every rule"() {
+    def "custom_get_rule (no ruleId, list mode) includes source: mcp_custom_engine on every rule"() {
         // The source marker lets LLMs distinguish MCP-managed rules from
         // native RM rules (list_rm_rules / manage_native_rules_and_apps).
         given:
@@ -6505,21 +6505,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "search_tools filters all custom_* tools in off mode"() {
         // Engine OFF + builtinApp OFF => off mode. search_tools must not surface
-        // ANY custom_* tools -- the full set of 10 must be excluded from scoring.
+        // ANY custom_* tools -- the full set of 9 must be excluded from scoring.
         given:
         settingsMap.enableCustomRuleEngine = false
         settingsMap.enableBuiltinApp = false
 
-        when: "searching for a query that would normally surface custom_list_rules"
+        when: "searching for a query that would normally surface custom_get_rule"
         def result = script.toolSearchTools([query: "custom list rules", maxResults: 10])
         def resultNames = result.results*.tool as Set
 
         then: "no custom_* tools appear in off-mode search results"
         resultNames.every { !it.startsWith("custom_") }
 
-        and: "visible corpus is smaller than full corpus by at least 10 (the hidden custom_* set)"
+        and: "visible corpus is smaller than full corpus by at least 9 (the hidden custom_* set)"
         def fullCorpusSize = script.buildToolSearchCorpus().size()
-        result.totalToolsSearched <= fullCorpusSize - 10
+        result.totalToolsSearched <= fullCorpusSize - 9
     }
 
     def "executeTool rejects custom_create_rule when customEngineMode is off"() {
@@ -6542,16 +6542,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("Built-in App Tools")
     }
 
-    def "executeTool rejects custom_list_rules in off mode (read tools also blocked)"() {
+    def "executeTool rejects custom_get_rule in off mode (read tools also blocked)"() {
         // In off mode even read-only custom_* tools are blocked -- the entire
         // engine is off. This is different from readonly mode where the read
-        // subset is allowed.
+        // subset is allowed. (custom_get_rule absorbed the former custom_list_rules
+        // via the no-ruleId overload, so the off-mode block applies whether the
+        // caller intended list or detail semantics.)
         given:
         settingsMap.enableCustomRuleEngine = false
         settingsMap.enableBuiltinApp = false
 
         when:
-        script.executeTool("custom_list_rules", [:])
+        script.executeTool("custom_get_rule", [:])
 
         then: "read tool also blocked in full-off mode"
         def ex = thrown(IllegalArgumentException)

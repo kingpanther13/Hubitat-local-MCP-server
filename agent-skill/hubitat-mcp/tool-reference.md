@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 103 MCP tools. The server exposes **36 items on `tools/list`**: 23 core tools + 13 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
+Quick reference for all 95 MCP tools. The server exposes **34 items on `tools/list`**: 21 core tools + 13 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute.
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
@@ -10,27 +10,25 @@ Every `tools/call` response is bounded by a 120 KB wire-encoded size guard. Over
 
 Opt-in cursor pagination is wired into the read-only list-returning tools below. All follow the same shape: omit `cursor` for the full list (backward-compatible), pass `cursor: ""` for the first page, iterate `nextCursor` until absent. Non-numeric / out-of-range cursors reject as `-32602`.
 
-**Tools with cursor:** `list_devices`, `list_installed_apps`, `list_hub_apps`, `list_hub_drivers`, `list_hpm_packages`, `list_rm_rules`, `custom_list_rules`, `list_variables`, `list_captured_states`, `list_item_backups`, `list_files`, `list_virtual_devices`, `list_rooms`, `device_health_check`, `get_device_in_use_by`, `get_hub_logs`, `get_memory_history`, `get_debug_logs`. See [TOOL_GUIDE.md](../../TOOL_GUIDE.md) for per-tool page sizes.
+**Tools with cursor:** `list_devices`, `list_installed_apps`, `list_hub_apps`, `list_hub_drivers`, `list_hpm_packages`, `list_rm_rules`, `custom_get_rule` (list mode), `list_variables`, `list_captured_states`, `list_item_backups`, `list_files`, `list_virtual_devices`, `list_rooms`, `device_health_check`, `get_device_in_use_by`, `get_hub_logs`, `get_memory_history`, `get_debug_log_state` (mode='logs'). See [TOOL_GUIDE.md](../../TOOL_GUIDE.md) for per-tool page sizes.
 
-## Core Tools (23) — Always visible on tools/list
+## Core Tools (21) — Always visible on tools/list
 
-### Device Tools (6)
+### Device Tools (5)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `list_devices` | List accessible devices. Pagination, `labelFilter` (substring), `capabilityFilter` (exact), `format='ids'` (flat ID array), `fields=[...]` (projection). Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |
 | `get_device` | Full device details: attributes, commands, capabilities, room. | None |
-| `get_attribute` | Get specific attribute value from a device. | None |
-| `send_command` | Send a command to a device (on, off, setLevel, etc.). | None |
+| `get_attribute` | Get specific attribute value from a device. Optional `expectedValue` / `expectedValues` turns this into a read-then-wait poll (at least one required if waiting; both may be set, OR semantics). `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms) when waiting; BLOCKS the MCP request; returns `success`, `finalValue`, `elapsedMs`, `polledCount`, `timedOut`; adds `neverReported: true` if the attribute was null throughout. | None |
+| `send_command` | Send a command to a device (on, off, setLevel, etc.). Optional `waitFor={attribute, expectedValue\|expectedValues, timeoutMs}` turns this into a command-then-wait in a single round-trip; same wait semantics as `get_attribute`. | None |
 | `get_device_events` | Recent events for a device. Default 10, recommended max 50. | None |
-| `poll_until_attribute` | Block-poll an attribute until it matches `expectedValue` or any of `expectedValues` (at least one required; both may be set simultaneously, OR semantics). `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). BLOCKS the MCP request; use sparingly and prefer event-driven flows. Returns `success`, `finalValue`, `elapsedMs`, `polledCount`, `timedOut`; adds `neverReported: true` if the attribute was null throughout. Use after `send_command` to verify a state change in a single round-trip. | None |
 
-### Rule Tools (4)
+### Rule Tools (3)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `custom_list_rules` | List all rules with status, last triggered. | None |
-| `custom_get_rule` | Full rule details (triggers, conditions, actions). | None |
+| `custom_get_rule` | Omit `ruleId` for list mode (all rules with status / last triggered); provide `ruleId` for detail mode (full triggers, conditions, actions). | None |
 | `custom_create_rule` | Create a new automation rule. | None |
 | `custom_update_rule` | Update rule triggers, conditions, or actions. Also handles enable/disable via `enabled=true/false`. | None |
 
@@ -51,7 +49,7 @@ Opt-in cursor pagination is wired into the read-only list-returning tools below.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `get_hub_info` | Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read. | None |
+| `get_hub_info` | Comprehensive hub info (hardware, health — memory, temp, DB size — MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read. Optional `recordSnapshot=true` appends a row to the rolling CSV trend file; `trends`/`trendPointsAvailable` are returned in every call (folds in former `hub_metrics`). | None |
 | `get_modes` | List location modes. | None |
 | `set_mode` | Change location mode (Home, Away, Night, etc.). | None |
 | `get_hsm_status` | Get Home Security Monitor status. | None |
@@ -65,7 +63,7 @@ Opt-in cursor pagination is wired into the read-only list-returning tools below.
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `search_tools` | BM25 natural language search across all 103 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `search_tools` | BM25 natural language search across all 95 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -138,24 +136,21 @@ Read-only access to hub apps, drivers, and libraries: list, view source, and bro
 | `list_item_backups` | List all source code backups. | None |
 | `get_item_backup` | Retrieve source from a backup. | None |
 
-### manage_app_driver_code (10 tools)
+### manage_app_driver_code (7 tools)
 
-Write operations for apps, drivers, and libraries: install, update, delete, and restore code.
+Write operations for apps, drivers, and libraries: save (install/update), delete, and restore code.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `install_app` | Install a new Groovy app from `source` (inline) or `sourceFile` (File Manager filename). Verifies install compiled cleanly. | Hub Admin Write |
-| `install_driver` | Install a new Groovy driver from `source` (inline) or `sourceFile` (File Manager filename). Bulk mode: `installs=[{source|sourceFile},...]` (continue-on-error). Verifies each install compiled cleanly. | Hub Admin Write |
-| `install_library` | Install a new Groovy library (`#include namespace.Name`). Library source must include a `library()` block with `name`, `namespace`, `author`, `description` (4 required; `category` optional). | Hub Admin Write |
-| `update_app_code` | Update existing app source code (source, sourceFile, or resave). | Hub Admin Write |
-| `update_driver_code` | Update existing driver source code. Single-driver mode (driverId + source/sourceFile/resave) or bulk mode (updates array of {driverId, sourceFile} pairs, continue-on-error). | Hub Admin Write |
-| `update_library_code` | Update existing library source code (libraryId + source/sourceFile/resave). Auto-backs up before modifying. | Hub Admin Write |
+| `save_app` | Install or update a Groovy app from `source` (inline) or `sourceFile` (File Manager filename). Omit `appId` to install; provide `appId` to update existing code. `resave` re-saves current source. Verifies the result compiled cleanly. Single-item only. | Hub Admin Write |
+| `save_driver` | Install or update a Groovy driver from `source` (inline) or `sourceFile`. Omit `driverId` to install; provide `driverId` to update. `resave` re-saves current source. Bulk modes: `installs=[{source|sourceFile},...]` for bulk install, `updates=[{driverId, sourceFile},...]` for bulk update (continue-on-error; top-level `success: true` only if all items pass; cannot combine with single-driver fields). Verifies each result compiled cleanly. | Hub Admin Write |
+| `save_library` | Install or update a Groovy library (`#include namespace.Name`). Omit `libraryId` to install; provide `libraryId` to update. Library source must include a `library()` block with `name`, `namespace`, `author`, `description` (4 required; `category` optional). Auto-backs up before modifying when updating. | Hub Admin Write |
 | `delete_app` | Delete an installed app (auto-backs up). | Hub Admin Write |
 | `delete_driver` | Delete an installed driver (auto-backs up). | Hub Admin Write |
 | `delete_library` | Delete an installed library (auto-backs up). Ensure no apps/drivers `#include` it first. | Hub Admin Write |
 | `restore_item_backup` | Restore app/driver to backed-up version. | Hub Admin Write |
 
-### manage_logs (8 tools)
+### manage_logs (6 tools)
 
 Hub and MCP log access, performance stats, and log configuration.
 
@@ -165,24 +160,21 @@ Hub and MCP log access, performance stats, and log configuration.
 | `get_device_history` | Up to 7 days of device event history. | Hub Admin Read |
 | `get_performance_stats` | Device/app performance stats from `/logs`: method call counts, % busy, cumulative total ms, state size, events. Sortable. | Hub Admin Read |
 | `get_hub_jobs` | Scheduled and running jobs on the hub. | Hub Admin Read |
-| `get_debug_logs` | Retrieve MCP debug log entries. Filter by level. | None |
-| `clear_debug_logs` | Clear all MCP debug logs. | None |
-| `set_log_level` | Set MCP log level (debug/info/warn/error). | None |
-| `get_logging_status` | View logging system statistics. | None |
+| `get_debug_log_state` | Read MCP debug state. `mode='logs'` returns debug log entries (filter by `level`, `component`, `ruleId`, `limit`); `mode='status'` returns logging system statistics. | None |
+| `update_debug_logs` | Write MCP debug state. `action='clear'` clears all MCP debug logs; `action='setLevel'` with `level=` (debug/info/warn/error) sets the MCP log level. | None |
 
-### manage_diagnostics (11 tools)
+### manage_diagnostics (10 tools)
 
 Performance monitoring, health checks, diagnostics, radio info, memory / GC, and state capture.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history. | Hub Admin Read |
+| `force_garbage_collection` | Force JVM garbage collection on the hub. Returns before/after free memory and delta. | Hub Admin Read |
 | `device_health_check` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Hub Admin Read |
 | `custom_get_rule_diagnostics` | Comprehensive diagnostics for a specific custom rule. | None |
 | `get_zwave_details` | Z-Wave radio info. | Hub Admin Read |
 | `get_zigbee_details` | Zigbee radio info. | Hub Admin Read |
 | `get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Hub Admin Read |
-| `force_garbage_collection` | Force JVM GC and return before/after memory comparison. | Hub Admin Read |
 | `zwave_repair` | Start Z-Wave network repair (5-30 min). | Hub Admin Write |
 | `list_captured_states` | List saved device state snapshots. | None |
 | `delete_captured_state` | Delete a specific state snapshot. | None |

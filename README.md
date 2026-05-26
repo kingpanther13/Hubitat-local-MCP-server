@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 103 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 95 MCP tools (34 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 103 tools total — 23 core tools are always visible, while 80 additional tools are organized behind 13 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 95 tools total — 21 core tools are always visible, while 74 additional tools are organized behind 13 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,33 +221,31 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (103 total — 36 on tools/list)
+### MCP Tools (95 total — 34 on tools/list)
 
-The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **80 additional tools** are organized behind **13 domain-named gateways**. The AI sees 36 items on `tools/list` (23 + 13 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 95 tools total. To keep the MCP `tools/list` manageable, **21 core tools** are always visible and **74 additional tools** are organized behind **13 domain-named gateways**. The AI sees 34 items on `tools/list` (21 + 13 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (23) — Always visible on tools/list
+#### Core Tools (21) — Always visible on tools/list
 
 <details>
-<summary><b>Devices</b> (6) — Control and query devices</summary>
+<summary><b>Devices</b> (5) — Control and query devices</summary>
 
 | Tool | Description |
 |------|-------------|
 | `list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection) |
 | `get_device` | Full device details: attributes, commands, capabilities |
-| `get_attribute` | Get a specific attribute value |
-| `send_command` | Send a command (on, off, setLevel, etc.) |
+| `get_attribute` | Get a specific attribute value. Read-then-wait: provide `expectedValue=...` (or `expectedValues=[...]`) to block-poll until the attribute matches or `timeoutMs` elapses (default 5000ms, max 60000ms). Supersedes the removed `poll_until_attribute`. |
+| `send_command` | Send a command (on, off, setLevel, etc.). Command-then-wait: provide `waitFor={attribute, expectedValue, ...}` to block until the device confirms the resulting state. Supersedes the removed `poll_until_attribute`. |
 | `get_device_events` | Recent events for a device |
-| `poll_until_attribute` | Block-poll an attribute until it matches an expected value or times out. `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` required. BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
 
 </details>
 
 <details>
-<summary><b>Rules</b> (4) — Create and manage automation rules</summary>
+<summary><b>Rules</b> (3) — Create and manage automation rules</summary>
 
 | Tool | Description |
 |------|-------------|
-| `custom_list_rules` | List all custom-engine rules with status |
-| `custom_get_rule` | Full custom-engine rule details (triggers, conditions, actions) |
+| `custom_get_rule` | Custom-engine rule details. Omit `ruleId` for list mode (all rules with status); provide `ruleId` for detail mode (triggers, conditions, actions). Supersedes the removed `custom_list_rules`. |
 | `custom_create_rule` | Create a new custom-engine automation rule (separate from native Rule Machine) |
 | `custom_update_rule` | Update custom-engine rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
 | `create_native_app` | Create a NATIVE classic SmartApp (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / Basic Rules / etc.). Appears under Apps / Automations like a normally-created app. |
@@ -270,7 +268,7 @@ The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_info` | Comprehensive hub info: hardware, health, MCP stats. PII (name, IP, location) requires Hub Admin Read |
+| `get_hub_info` | Comprehensive hub info: hardware, health (memory, temp, DB size), MCP stats. PII (name, IP, location) requires Hub Admin Read. Optional `recordSnapshot=true` writes a row to the rolling CSV history file (`mcp-performance-history.csv`); `trends`/`trendPointsAvailable` are returned in every call. Folds in former `hub_metrics` tool. |
 | `get_modes` | List location modes |
 | `set_mode` | Change location mode (Home, Away, Night, etc.) |
 | `get_hsm_status` | Get Home Security Monitor status |
@@ -384,27 +382,24 @@ All operations are disruptive. Hub admin tools require Hub Admin Read/Write to b
 </details>
 
 <details>
-<summary><b>manage_app_driver_code</b> (10) — Install, update, delete apps/drivers/libraries and restore backups</summary>
+<summary><b>manage_app_driver_code</b> (7) — Install, update, delete apps/drivers/libraries and restore backups</summary>
 
 | Tool | Description |
 |------|-------------|
-| `install_app` | Install new app from Groovy source or File Manager file (`source` or `sourceFile`). Verifies install succeeded. |
-| `install_driver` | Install new driver from Groovy source or File Manager file (`source` or `sourceFile`). Bulk mode: `installs=[{sourceFile},...]`. Verifies each install succeeded. |
-| `update_app_code` | Modify existing app code (source, sourceFile, or resave) |
-| `update_driver_code` | Modify existing driver code (single-driver or bulk `updates` array) |
+| `save_app` | Install or update an app from Groovy source or File Manager file (`source` or `sourceFile`). Omit `appId` to install; provide `appId` to update. Verifies the save succeeded. |
+| `save_driver` | Install or update a driver from Groovy source or File Manager file. Omit `driverId` to install; provide `driverId` to update. Bulk install: `installs=[{sourceFile},...]`; bulk update: `updates=[{driverId,...},...]`. Verifies each save succeeded. |
+| `save_library` | Install or update a Groovy library (#include namespace.Name). Omit `libraryId` to install; provide `libraryId` to update. |
 | `delete_app` | Permanently delete an app (auto-backs up) |
 | `delete_driver` | Permanently delete a driver (auto-backs up) |
-| `restore_item_backup` | Restore app/driver to backed-up version (libraries: see `update_library_code`) |
-| `install_library` | Install new Groovy library (#include namespace.Name) |
-| `update_library_code` | Modify existing library code |
 | `delete_library` | Permanently delete a library (auto-backs up) |
+| `restore_item_backup` | Restore app/driver to backed-up version (libraries: re-run `save_library(libraryId=..., source=...)` from the saved source) |
 
 Source code is automatically backed up before any modify/delete operation.
 
 </details>
 
 <details>
-<summary><b>manage_logs</b> (8) — Logs, performance stats, and log configuration</summary>
+<summary><b>manage_logs</b> (6) — Logs, performance stats, and log configuration</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -412,23 +407,20 @@ Source code is automatically backed up before any modify/delete operation.
 | `get_device_history` | Up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent history) |
 | `get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
 | `get_hub_jobs` | Scheduled jobs, running jobs, and hub actions |
-| `get_debug_logs` | Retrieve MCP debug log entries |
-| `clear_debug_logs` | Clear all MCP debug logs |
-| `set_log_level` | Set MCP log level (debug/info/warn/error) |
-| `get_logging_status` | Get logging system status and capacity |
+| `get_debug_log_state` | Read MCP debug log state. `mode='logs'` returns log entries (with optional `level`/`component`/`ruleId`/`limit` filters); `mode='status'` returns logging system status and capacity. Supersedes the removed `get_debug_logs` and `get_logging_status`. |
+| `update_debug_logs` | Mutate MCP debug log configuration. `action='clear'` clears all debug logs; `action='setLevel'` with `level=debug\|info\|warn\|error` sets the log level. Supersedes the removed `clear_debug_logs` and `set_log_level`. |
 
 Monitoring tools require Hub Admin Read to be enabled.
 
 </details>
 
 <details>
-<summary><b>manage_diagnostics</b> (11) — Diagnostics, memory, radio details, and state capture</summary>
+<summary><b>manage_diagnostics</b> (10) — Diagnostics, memory, radio details, and state capture</summary>
 
 | Tool | Description |
 |------|-------------|
-| `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history |
+| `force_garbage_collection` | Force JVM garbage collection on the hub. Returns before/after free memory and delta (Hub Admin Read) |
 | `get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
-| `force_garbage_collection` | Force JVM garbage collection; returns before/after free memory (Hub Admin Read) |
 | `device_health_check` | Find stale/offline devices |
 | `custom_get_rule_diagnostics` | Comprehensive diagnostics for a specific custom rule |
 | `get_zwave_details` | Z-Wave radio info (firmware, devices) |
@@ -684,7 +676,7 @@ Additionally, tools that modify or delete existing apps/drivers automatically ba
 <details>
 <summary><b>Item Backup & Restore</b></summary>
 
-When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes.
+When you use `save_app` (update mode), `save_driver` (update mode), `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes.
 
 - Backups stored as `.groovy` files in the hub's local **File Manager**
 - Named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`
@@ -808,7 +800,7 @@ Version 0.1.0 uses a new parent/child architecture. Old rules stored in `state.r
 <summary><b>Reporting bugs</b></summary>
 
 For easier bug reporting:
-1. Set debug log level: Settings > MCP Debug Log Level > "Debug", or ask your AI to `set_log_level` to "debug"
+1. Set debug log level: Settings > MCP Debug Log Level > "Debug", or ask your AI to call `update_debug_logs` with `action='setLevel'` and `level='debug'`
 2. Reproduce the issue
 3. Ask your AI to use the `generate_bug_report` tool — it will gather diagnostics and format a ready-to-submit report
 4. Submit at [GitHub Issues](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues)
@@ -1083,7 +1075,7 @@ For easier bug reporting:
   > 4. Cache results in `state` to reduce API calls
 
 - [ ] **Install/uninstall packages via HPM** — `Difficulty: 4 | Effort: L`
-  > *Partially feasible.* HPM has no programmatic API — it's purely UI-driven. **Bypass approach**: fetch the package manifest JSON, download each app/driver source, and install via existing `install_app`/`install_driver` tools. However, packages installed this way won't appear in HPM's "Installed" list, creating a fragmented experience. Uninstall requires removing running app instances (not just code) via poorly documented `/installedapp/` endpoints.
+  > *Partially feasible.* HPM has no programmatic API — it's purely UI-driven. **Bypass approach**: fetch the package manifest JSON, download each app/driver source, and install via existing `save_app`/`save_driver` tools (install mode — omit `appId`/`driverId`). However, packages installed this way won't appear in HPM's "Installed" list, creating a fragmented experience. Uninstall requires removing running app instances (not just code) via poorly documented `/installedapp/` endpoints.
   >
   > **Implementation plan:**
   > 1. Create `install_package` MCP tool using the bypass approach
@@ -1289,7 +1281,7 @@ For easier bug reporting:
   > 5. Note: computation-heavy analytics may time out with many devices
 
 - [x] **Hub performance trend monitoring** — `Difficulty: 1 | Effort: S`
-  > *Mostly already implemented.* The `get_set_hub_metrics` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
+  > *Mostly already implemented.* The `get_hub_info` tool (with `recordSnapshot=true`) records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points via `trendPoints>0`, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
   >
   > **Implementation plan (incremental):**
   > 1. Add `schedule("0 0 */4 ? * *", "recordPerformanceSnapshot")` to parent
