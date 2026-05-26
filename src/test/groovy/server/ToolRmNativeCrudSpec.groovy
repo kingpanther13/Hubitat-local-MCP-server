@@ -18977,11 +18977,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.toString()?.contains("silently degrades")
 
         where:
+        // Carbon dioxide sensor (CarbonDioxideMeasurement capability) is
+        // INTENTIONALLY ABSENT here -- RM treats CO2 as numeric ppm, not
+        // discrete-event. See the DISCRETE_EVENT_CAPS comment in
+        // hubitat-mcp-server.groovy near L20492 for the capability-name pitfall.
+        // Carbon monoxide detector (CarbonMonoxideDetector capability, discrete)
+        // is INCLUDED; the two look symmetric but are not.
         cap                            | validStates
         "Water sensor"                 | ["wet", "dry"]
         "Smoke detector"               | ["detected", "clear"]
         "Carbon monoxide detector"     | ["detected", "clear"]
-        "Carbon dioxide sensor"        | ["detected", "clear"]
         "Tamper alert"                 | ["detected", "clear"]
         "Acceleration"                 | ["active", "inactive"]
     }

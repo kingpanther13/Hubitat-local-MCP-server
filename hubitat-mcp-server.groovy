@@ -20489,11 +20489,21 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // Code-side reject closes the gap RM's runtime does not catch. Caller gets a
     // targeted error pointing at the right state-value enumeration instead of a
     // generic silent_rejection sentinel they might dismiss as minor partial.
+    // Capability-name pitfall: `Carbon monoxide detector` (CarbonMonoxideDetector
+    // capability -- discrete enum events) is IN the map; `Carbon dioxide sensor`
+    // (CarbonDioxideMeasurement capability -- numeric ppm value) is INTENTIONALLY
+    // OMITTED. The two capabilities look superficially symmetric but RM's STPage
+    // wizard treats CO2 as numeric (comparator + value path) and live-rejects the
+    // `state: 'detected'/'clear'` shape -- including CO2 here would over-zealously
+    // reject valid numeric usage AND direct callers to a path the wizard refuses.
+    // Tamper alert is included per the Hubitat TamperAlert capability docs but
+    // is not present in STPage's option list on every firmware (untestable on
+    // some hubs); the guard is defensible per docs and harmless when the
+    // capability never appears in capCanonical.
     def DISCRETE_EVENT_CAPS = [
         "Water sensor":                ["wet", "dry"],
         "Smoke detector":              ["detected", "clear"],
         "Carbon monoxide detector":    ["detected", "clear"],
-        "Carbon dioxide sensor":       ["detected", "clear"],
         "Tamper alert":                ["detected", "clear"],
         "Acceleration":                ["active", "inactive"]
     ]
