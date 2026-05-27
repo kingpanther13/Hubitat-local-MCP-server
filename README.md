@@ -1472,6 +1472,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.3.15** - docs: codify MCP tool design rules in AGENTS.md + derivative docs (part of #105); docs: vendor hub2 Vue SPA source as reference resource; docs: add PR1 (issue #105 tool audit) game plan to docs/; feat: per-capability reveal walker fixes Required Expression & ifThen Broken Conditions (issue #195 Group A). PRs: [#210](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/210), [#211](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/211), [#214](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/214), [#203](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/203)
 - **v1.3.14** - fix: prevent (and detect) IF/END-IF + Repeat structural imbalance (#178). PRs: [#206](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/206)
 - **v1.3.13** - fix: drop top-level anyOf from import_native_app input_schema (Haiku 4.5 compat). PRs: [#205](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/205)
 - **v1.3.12** - feat: addAction Set-Variable, runCommand variable parameters, Set-Mode modeName. PRs: [#196](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/196)

@@ -171,3 +171,9 @@ If MCP itself is broken:
 - **Duration triggers max out at 2 hours** (7200 seconds)
 - **Captured states default to 20 max** (configurable 1-100)
 - **Hub properties can throw on some firmware versions** - This is normal; the tools handle it gracefully
+
+## Tool annotation hints
+
+Every tool now carries four annotation hints in its definition: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. These are UX / risk signals to the MCP client — they help a client decide how to render the tool, whether to confirm before calling, and how to interpret retries.
+
+**Annotations are NOT a security boundary.** They don't make the model resist prompt injection or substitute for the existing Hub Admin Read / Hub Admin Write gates and `confirm` parameter checks. The gates remain the authoritative safety surface; annotations are advisory metadata.

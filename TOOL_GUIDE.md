@@ -549,7 +549,7 @@ For Room Lighting / Button Controllers / Basic Rules: `update_native_app` and `d
 
 #### `update_native_app` capability reference
 
-Reference for the three `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
+Reference for the `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap; gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` -- both return live structured Maps from the running code.
 
 ##### `addTrigger` capability families
 
@@ -578,6 +578,10 @@ Reference for the three `update_native_app` structured shortcuts (`addTrigger`, 
   }
   ```
   Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod1` → `everyN`/select → time → Done) so the trigger description bakes correctly.
+
+- **Inline conditional trigger** (`trigger.condition` Map): `{capability, deviceIds?, state?, comparator?, value?, attribute?, variable?, compareToVariable?, not?, rawSettings?}`. Drives the conditional-trigger sub-wizard inline (sets `isCondTrig.<N>=true` + `condTrig.<N>=a` + the condition fields + clicks hasAll). Convenience: pass singular `deviceId: N` (integer) instead of `deviceIds: [N]` (array) -- the dispatcher normalizes before writing. If both `deviceId` and `deviceIds` are supplied, `deviceIds` wins.
+  - The following per-capability extended shapes work on `trigger.condition`: Variable (incl. `compareToVariable`), Custom Attribute (`attribute` + `comparator` + `state`/`value`), and enum/numeric device-state conditions. **Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps are NOT yet supported on `trigger.condition`** -- `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker. For those shapes use `addRequiredExpression.conditions[]` or `addAction.expression.conditions[]` instead.
+  - `compareToVariable` is **addTrigger-only** (Variable LHS compared to another hub variable). `addRequiredExpression` and `addAction` IF-expressions support `value` (literal numeric RHS) for Variable conditions but NOT `compareToVariable` (variable-vs-variable) -- the `selectTriggers` sub-wizard exposes the `xVarR_<N>` field for variable-vs-variable comparison, while STPage and doActPage do not expose an equivalent field in tested firmware versions.
 
 ##### `addAction` capability families
 
@@ -632,6 +636,12 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
   - `else` (no fields; needs preceding `ifThen` or `elseIf`)
   - `endIf` (no fields; closes the IF block)
 
+  Per-condition shape for `expression.conditions[]` (same as `addRequiredExpression`): `{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}`. Convenience: pass singular `deviceId: N` (integer) instead of `deviceIds: [N]` (array) -- the dispatcher normalizes before writing. If both `deviceId` and `deviceIds` are supplied, `deviceIds` wins. The same per-capability extended shapes apply -- Mode `modeIds`, Between two times `start`/`end` (`{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}`; clock `time` is hub-local wall-clock, converted to ISO datetime internally; requires hub `location.timeZone` to be set in Settings > Location and Modes), Variable `variable`+`comparator`, Custom Attribute `attribute`+`comparator`, compareToDevice Map (when the RHS-type toggle is absent on the firmware, `settingsSkipped` entries carry `fallbackApplied: true|false`). The shared walker `_rmWalkConditionReveal` handles all per-capability reveal sequences for both `ifThen`/`elseIf`/`repeatWhile`/`waitExpression` (doActPage) and `addRequiredExpression` (STPage). `compareToVariable` (variable-vs-variable) is NOT supported on this row -- it is `addTrigger.condition`-only. See the "Extended per-capability spec shapes" section below.
+
+  **Note: nested `subExpression` is REQUIRED-EXPRESSION-ONLY today.** `addAction` (ifThen/elseIf/repeatWhile/waitExpression) rejects nested `subExpression` in `expression.conditions[]` with a targeted error (`"nested subExpression on this row is not yet supported"`) -- flatten the conditions list or move the nested expression to a Required Expression. `addRequiredExpression` supports nesting today.
+
+  Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Tamper alert, Acceleration) report discrete events -- use capability-specific state names (e.g. `'wet'`/`'dry'`, `'detected'`/`'clear'`, `'active'`/`'inactive'`) rather than numeric comparator conditions. Carbon dioxide sensor is intentionally EXCLUDED here: `CarbonDioxideMeasurement` is numeric ppm (comparator + value), not a discrete enum.
+
 ##### `addRequiredExpression` STPage capability list
 
 RM 5.1 Required Expression conditions accept these `capability` values (per-condition):
@@ -640,9 +650,56 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 - **Numeric**: `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`
 - **Time-based**: `Days of week`, `Between two dates`, `Between two times`, `On a Day`
 - **Hub state**: `Mode`, `Private Boolean`
+- **Variable comparison**: `Variable`
 - **Custom / other**: `Custom Attribute`, `Last Event Device`, `Lock codes`
 
-Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+
+Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types, `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. Carbon dioxide sensor is intentionally EXCLUDED: `CarbonDioxideMeasurement` is numeric ppm (use comparator + value), not a discrete enum; the names look superficially symmetric to Carbon monoxide detector but RM 5.1 treats them differently. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
+
+##### Extended per-capability spec shapes
+
+Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expression.conditions[]` (doActPage); the shared walker `_rmWalkConditionReveal` handles every per-capability reveal sequence below. For `addTrigger.condition`, see the narrowed support list in the "Inline conditional trigger" entry above -- Mode-via-picker / Between two times / compareToDevice are NOT yet available on the trigger row.
+
+**Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`.
+  The walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker (e.g. `modes1`) discovered from the live schema (not hardcoded). Note: triggers use `modesX<N>`; STPage/doActPage conditions use `modes<N>` (no `X` prefix).
+
+**Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`.
+  `time` is required when `type='clock'` (walker converts `HH:mm` to ISO datetime with hub-local TZ offset internally); `offset` is required when `type='sunrise'` or `'sunset'`. User-supplied `HH:mm` is interpreted as hub-local wall-clock time; the walker constructs ISO datetime with the anchor-date timezone offset internally so DST shifts between now and the January anchor do not affect rendering. Firmware fields: `starting<N>` (type enum), `startingA<N>` (clock time), `ending<N>`, `endingA<N>`/`endSunriseOffset<N>`. Precondition: hub timezone must be configured (Settings > Location and Modes). If `location.timeZone` is null, the walker throws before touching the wizard -- set hub timezone first.
+
+**Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}`.
+  Writes the firmware-assigned variable-name picker discovered from the live schema. Fail-loud if the variable name is not in the revealed enum AND the schema option list is non-empty. When the schema option list is empty (firmware lazily-populates the enum, or probe-timing race), the walker logs warn + pushes a `variable-validation` / `api_unavailable` sentinel to `settingsSkipped` and proceeds with the write unvalidated (`partial:true`).
+
+**Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}`.
+  Compares a device's attribute to another device's attribute (with optional numeric offset) rather than a literal threshold. The RHS-type selector is discovered from the live schema. Firmware-variant field names the walker discovers between: `rDev2_<N>`/`refDev_<N>`/`compareDevId_<N>` for reference-device, `rCustomAttr2_<N>`/`refAttr_<N>`/`compareAttr_<N>` for reference-attribute, `offset_<N>`/`devOffset_<N>` for optional offset. The walker fails loud if reference-device or reference-attribute is absent post-rhsType (spec-required), and degrades with an `offset_field_not_revealed` sentinel if optional offset is absent.
+
+**Sub-expressions (parens) -- addRequiredExpression-only**: for nested expressions like `P1 AND (P2 OR P3)`, a condition entry can also be `{subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}`. The STPage walker recursively handles nested sub-expressions of arbitrary depth. `addAction` (`ifThen`/`elseIf`/`repeatWhile`/`waitExpression`) does **NOT** support `subExpression` on this row -- the doActPage walker rejects it with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list or move the nested expression into a Required Expression.
+
+##### Partial-success and trailing-updateRule response slots
+
+`addRequiredExpression`, `addTrigger`, and `addAction` all return rich envelopes. Beyond `success`/`partial`/`settingsSkipped`/`repairHints`, the following slots help callers diagnose without log-grep:
+
+- `settingsSkipped[]` sentinel reasons callers may see:
+  - `rhs_type_not_revealed` -- compareToDevice RHS-type toggle absent on firmware. Entry also carries `fallbackApplied: true` (literal `state_<N>` fallback was written) or `false` (no state/value to fall back to; condition is incomplete).
+  - `offset_field_not_revealed` -- compareToDevice optional offset field absent. Entry carries the requested `offset` value for reference. Flips `partial:true`.
+  - `api_unavailable` paired with `key: "variable-validation"` -- Variable picker returned an empty option list. Schema-side validation was skipped; write still proceeds. Flips `partial:true`.
+  - `reveal_fallback_to_existing_field` -- the walker matched an already-visible field instead of a newly-revealed one (static-schema firmware path). **Informational** -- does NOT flip `partial` by itself.
+- Trailing-updateRule failure slots:
+  - `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true; `repairHints` adds a recovery line pointing at `update_native_app(button='updateRule', confirm=true)`.
+  - `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to the device events -- retry `updateRule` to populate subscriptions.
+  - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
+  - `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
+  - `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above.
+  - `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.
+
+**Naming-divergence rationale.** The `*NotLive` slot name encodes the **consequence** of the trailing-updateRule failure, not the operation that committed. Each tool surfaces the consequence that matters most to a caller deciding how to recover:
+
+- `expressionNotLive` (addRequiredExpression): the rule's gate evaluator never re-picked-up the new expression -- the gate stays at its prior state until updateRule fires. The recovery path is the same retry, but the diagnostic story callers tell themselves is "my new gate isn't being evaluated yet."
+- `subscriptionsNotLive` (addTrigger, bulk addTriggers/addActions, action-mutation, trigger-mutation): the running rule instance never re-subscribed to the device events its trigger depends on -- the rule will not fire on those events until updateRule fires. Diagnostic story: "my new/changed trigger doesn't get the event."
+- `variableNotLive` (addLocalVariable): the variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires. Diagnostic story: "my actions can't read this variable yet."
+- `patchesNotLive` (patches): the patch ops landed but the rule won't re-evaluate / re-subscribe (catch-all because patches can bundle any mix of the above). Diagnostic story: "I just patched a bunch of stuff and nothing is taking effect."
+
+All four share `updateRuleFailed` and `updateRuleError` for the common facts. The slot-name divergence is intentional -- a caller-facing diagnostic, not a code-side typology. Single-name unification was considered and rejected because it would force every caller to read the operation-type to interpret the consequence.
 
 #### `create_native_app` reference
 

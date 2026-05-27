@@ -227,7 +227,11 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['enableCustomRuleEngine'] == [type: 'bool', value: false]
 
         and: 'the user-facing message warns about reconnecting to refresh schemas'
-        result.message.contains('Updated 1 setting')
+        // Pin the sentence-period to distinguish "Updated 1 setting." (singular)
+        // from "Updated 1 setting (multi)..." (which would not exist with the count-aware
+        // ternary but a naive match would tolerate). Mirrors the multi-setting spec below.
+        result.message.contains('Updated 1 setting.')
+        !result.message.contains('Updated 1 settings')
         result.message.contains('reconnect')
     }
 
@@ -251,7 +255,10 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['enableHubAdminRead'] == [type: 'bool', value: true]
         sharedAppStub.settingsStore['enableBuiltinApp'] == [type: 'bool', value: true]
         sharedAppStub.settingsStore['debugLogging'] == [type: 'bool', value: false]
-        result.message.contains('Updated 3 setting')
+        // Pin the plural form with sentence-period to make singular vs plural
+        // discrimination explicit (W-spec-updateMcpSettings).
+        result.message.contains('Updated 3 settings.')
+        !result.message.contains('Updated 3 setting.')
     }
 
     def "writes a number setting with the correct type hint"() {

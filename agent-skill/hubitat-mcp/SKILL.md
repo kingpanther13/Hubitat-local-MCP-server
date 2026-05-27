@@ -14,6 +14,15 @@ You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server.
 3. **Inform before acting** - Tell the user what you plan to do before executing write operations.
 4. **Respect access gates** - Hub Admin Read/Write tools are gated for a reason. Follow pre-flight checklists.
 
+## Tool Naming Conventions
+
+All tools in this server follow these conventions. Use the conventions to predict tool shape even before consulting the full reference.
+
+- Every tool name begins with `hub_`.
+- Tool names follow verb-noun order. The allowed verbs are: `list`, `get`, `search`, `test`, `create`, `update`, `delete`, `set`, `call`, `manage`, `restore`, `import`, `export`, `clone`, plus `read`/`write` for file-manager tools and the destructive-ops exceptions `reboot` / `shutdown`. There is one locked-to-one-tool verb: `report` (used only by `hub_report_issue`).
+- `manage_*` tools are gateways. Call with no args to see the catalog of sub-tools; call with `tool=<name>` and `args={...}` to execute one. There is a narrow exception: a flat tool with a small action enum (e.g. `hub_manage_virtual_device` with `action: "create"/"delete"`) may also use `manage_`.
+- Read tools never modify state. Write tools require user confirmation per the safety guide.
+
 ## Device Control
 
 ### Finding Devices

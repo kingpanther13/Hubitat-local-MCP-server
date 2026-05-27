@@ -4,6 +4,15 @@ Quick reference for all 95 MCP tools. The server exposes **34 items on `tools/li
 
 For the most authoritative reference, call `get_tool_guide` via MCP.
 
+## Tool Naming Conventions
+
+All tools in this server follow these conventions. Use the conventions to predict tool shape even before consulting the per-tool entries below.
+
+- Every tool name begins with `hub_`.
+- Tool names follow verb-noun order. The allowed verbs are: `list`, `get`, `search`, `test`, `create`, `update`, `delete`, `set`, `call`, `manage`, `restore`, `import`, `export`, `clone`, plus `read`/`write` for file-manager tools and the destructive-ops exceptions `reboot` / `shutdown`. There is one locked-to-one-tool verb: `report` (used only by `hub_report_issue`).
+- `manage_*` tools are gateways. Call with no args to see the catalog of sub-tools; call with `tool=<name>` and `args={...}` to execute one. There is a narrow exception: a flat tool with a small action enum (e.g. `hub_manage_virtual_device` with `action: "create"/"delete"`) may also use `manage_`.
+- Per-tool entries below use the names current at the time of writing. Predict shape from the conventions, not the names.
+
 ## Universal response-size guard + opt-in cursor pagination
 
 Every `tools/call` response is bounded by a 120 KB wire-encoded size guard. Oversized responses come back as a structured `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}` envelope rather than vanishing into a hub `-32603`. The `suggestion` field gives the LLM a specific narrowing hint per tool.

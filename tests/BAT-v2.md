@@ -2320,7 +2320,7 @@ All 95 tools are covered by at least one test, excluding the destructive operati
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 205 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management) plus 13 excluded destructive operations documented for manual testing
+**Total: 214 test scenarios** (110 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -2983,6 +2983,8 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
+**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers" the concrete check is `result.brokenMarkers` is empty (the field surfaced by `_rmCheckRuleHealth` / `check_rule_health`) AND `result.health.ok=true`. Together they confirm the rule did not pick up any `*BROKEN*` rendering markers post-commit.
+
 ### T607 — addAction setVariable: set a hub variable to a constant value inside an RM rule
 
 ```json
@@ -3039,6 +3041,155 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: Action renders as "Set bat_sv_dst to null" (numOp=number written instead of variable). xVar3 not written (sourceVariable dropped). Unknown variable name accepted silently and produces a broken action.
 
+### T611 — addRequiredExpression + addAction ifThen: Mode and Variable conditions in a single rule (walker parity)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create hub variable 'bat_re_walker_var' (numeric, value 0). Note the hub's modes via get_modes -- pick one valid mode name and the hub variable name. Create RM rule 'BAT Walker Parity Test'.",
+  "test_prompt": "First, add a Required Expression to 'BAT Walker Parity Test' using addRequiredExpression: conditions=[{capability:'Mode', state:'<valid mode name>'}, {capability:'Variable', variable:'bat_re_walker_var', comparator:'>', value:0}], operator='AND'. Then add an ifThen action: capability='ifThen', expression={conditions:[{capability:'Mode', state:'<valid mode name>'}]}. Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT Walker Parity Test'. Delete hub variable bat_re_walker_var."
+}
+```
+
+**Expected**: Both `addRequiredExpression` and `addAction ifThen` complete with `success=true`, `partial!=true`. `check_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders both conditions (Mode + Variable), not the bare "Define Required Expression" placeholder. The ifThen action appears in the actions list with the Mode condition baked correctly (not as "BROKEN"). Demonstrates that `_rmWalkConditionReveal` fires correctly from both STPage and doActPage entry points.
+
+**Failure modes**: Required Expression placeholder remains ("Define Required Expression" on mainPage), indicating the expression did not bake. Mode condition in ifThen renders as Broken Condition (modes picker not written). Variable comparator/value silently dropped (RelrDev or state_N not revealed after picker write).
+
+### T612 — addRequiredExpression Between two times: clock start/end lands on STPage (reveal walker coverage)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Between Two Times Test'.",
+  "test_prompt": "Add a Required Expression to 'BAT Between Two Times Test' using addRequiredExpression: conditions=[{capability:'Between two times', start:{type:'clock', time:'08:00'}, end:{type:'clock', time:'22:00'}}]. Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT Between Two Times Test'."
+}
+```
+
+**Expected**: `addRequiredExpression` completes with `success=true`, `partial!=true`. `check_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a time-range condition (e.g. references 8:00 or 22:00), not the bare "Define Required Expression" placeholder. Demonstrates that `_rmWalkConditionReveal` correctly writes the Between two times clock fields (starting<N> type enum + startingA<N> ISO datetime + ending<N> + endingA<N>) via the STPage reveal sequence.
+
+**Failure modes**: Required Expression placeholder remains ("Define Required Expression" on mainPage), indicating the expression did not bake. Broken Condition marker on the Required Expression row (starting/ending type not written, or startingA/endingA ISO datetime rejected). `partial=true` with `settingsSkipped` entries showing the clock fields as silent rejections.
+
+---
+
+### T613 — addRequiredExpression singular deviceId normalization: passes deviceId:N (not deviceIds:[N]) and verifies condition bakes
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT DeviceId Norm Test'. Identify one motion sensor deviceId on the hub.",
+  "test_prompt": "Add a Required Expression to 'BAT DeviceId Norm Test' using addRequiredExpression: conditions=[{capability:'Motion', deviceId:<motionSensorId>, state:'active'}] -- pass the integer deviceId directly (not deviceIds:[N]). Then call check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT DeviceId Norm Test'."
+}
+```
+
+**Expected**: `addRequiredExpression` completes with `success=true`. `check_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a motion-sensor condition (e.g. "MotionSensor is active"), not the bare "Define Required Expression" placeholder. Demonstrates that the dispatcher normalizes singular `deviceId: N` to `deviceIds: [N]` before the STPage walker fires so agents don't need to know the array form.
+
+**Failure modes**: Required Expression placeholder remains, indicating normalization did not happen. Broken Condition marker (rDev_<N> not written because singular deviceId was ignored). `partial=true` with `settingsSkipped` showing rDev_1 as silent_rejection.
+
+---
+
+### T614 — addTrigger.condition singular deviceId: conditional trigger normalizes deviceId:N inline
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT AddTrigger Cond DeviceId'. Identify one Switch deviceId and one Motion sensor deviceId on the hub.",
+  "test_prompt": "Add a conditional trigger to 'BAT AddTrigger Cond DeviceId' using addTrigger: {capability:'Switch', deviceIds:[<switchId>], state:'on', condition:{capability:'Motion', deviceId:<motionId>, state:'active'}} -- the condition Map uses singular integer deviceId. Then check_rule_health and confirm no broken markers.",
+  "teardown_prompt": "Delete 'BAT AddTrigger Cond DeviceId'."
+}
+```
+
+**Expected**: `addTrigger` completes with `success=true`. `check_rule_health` reports no broken markers. The trigger paragraph renders the gating condition (e.g. "Switch on -- ONLY IF Motion is active"). Demonstrates the dispatcher normalizes singular `condition.deviceId` BEFORE pre-validation runs, so the existence check fires.
+
+**Failure modes**: "Broken Trigger" marker (rDev_<N> for the condition slot stored {N: null}). The pre-validation existence check skipped (deviceIds was null in the un-normalized form). condTrig.<N> set but the condition row renders as a placeholder.
+
+---
+
+### T615 — addAction ifThen singular deviceId in expression.conditions[]: addAction normalizes inline
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT AddAction Cond DeviceId'. Identify one Custom Attribute capable device on the hub (humidity sensor preferred).",
+  "test_prompt": "Add an ifThen action to 'BAT AddAction Cond DeviceId' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Custom Attribute', deviceId:<humidityDeviceId>, attribute:'humidity', comparator:'<', value:40}]}} -- the expression condition uses singular integer deviceId. Verify the IF action bakes without broken markers.",
+  "teardown_prompt": "Delete 'BAT AddAction Cond DeviceId'."
+}
+```
+
+**Expected**: `addAction` completes with `success=true`. `check_rule_health` reports no broken markers. The IF paragraph on mainPage renders the comparator-on-attribute condition (e.g. "IF Humidity < 40 THEN"). Mirrors T613 for the doActPage walker side.
+
+**Failure modes**: IF paragraph renders the bare "Define IF" placeholder. Broken Condition marker (rDev_<N> not written). settingsSkipped shows rDev_1 as silent_rejection in the doActPage walk.
+
+---
+
+### T616 — addAction ifThen rejects nested subExpression with actionable recovery message
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT NestedCond Reject'. Identify one Motion sensor deviceId on the hub.",
+  "test_prompt": "Add an ifThen action to 'BAT NestedCond Reject' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'active'}, {subExpression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'inactive'}]}}], operator:'OR'}} -- the second condition is a nested subExpression. Verify the call rejects WITHOUT writing anything to the rule.",
+  "teardown_prompt": "Delete 'BAT NestedCond Reject'."
+}
+```
+
+**Expected**: `addAction` returns `success=false`. The `error` message contains the phrase `nested subExpression is not yet supported` (the production reject text -- broad phrasing matches both the pre-pass at `_rmAddAction` and the in-walker reject at `_rmWalkConditionReveal`; the pre-pass is the path that actually fires for this input). `check_rule_health` reports no actions on the rule and no broken markers (the pre-pass rejection fires BEFORE any wizard write). The rejection guides the agent toward `addRequiredExpression` (which DOES support nested subExpression) or flattening the conditions list.
+
+**Failure modes**: Call returns `success=true` (recursive walker support quietly landed without doc updates -- in which case the docs that ship today need to advertise it). Call returns `success=false` but the error message lacks the targeted recovery hint (regression to the generic "capability is required" pre-fix behaviour, leaving the agent without an actionable next step). A broken action row gets written to the rule (the in-walker reject at `_rmWalkConditionReveal` fired AFTER a partial write; outer pre-pass should have rejected first).
+
+---
+
+### T617 — addRequiredExpression Mode condition on static-schema fixture: reveal_fallback informational sentinel
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Reveal Fallback'. Identify one mode name (e.g. 'Night') on the hub.",
+  "test_prompt": "Add a Required Expression to 'BAT Reveal Fallback' using addRequiredExpression: {conditions:[{capability:'Mode', state:'Night'}]}. After it commits, inspect result.settingsSkipped -- if the firmware exposes modes<N> always-visible (static schema rather than progressive disclosure), the entry should include {key: '<pattern>', reason: 'reveal_fallback_to_existing_field', condIdx: 0}. If the firmware exposes modes<N> only after the rCapab='Mode' write (progressive disclosure -- typical on current firmware), no sentinel fires and the entry is absent. Confirm result.success=true and result.partial!=true in BOTH cases -- the sentinel is informational and does NOT degrade.",
+  "teardown_prompt": "Delete 'BAT Reveal Fallback'."
+}
+```
+
+**Expected**: `addRequiredExpression` completes with `success=true` and `partial!=true`. The Required Expression paragraph renders correctly (e.g. "Mode is Night"). On firmware where modes<N> is always-visible, `settingsSkipped` contains a `reveal_fallback_to_existing_field` entry stamped with `condIdx=0` -- informational diagnostic that the walker fell back to matching an already-visible field rather than a newly-revealed one. On firmware where modes<N> reveals progressively, the entry is absent (revealedNew matched). The presence of the sentinel does NOT flip partial -- this is the load-bearing contract.
+
+**Firmware dependence -- which assertion is load-bearing here depends on which firmware the hub is running**:
+- On **progressive-disclosure firmware** (the default for modern Hubitat hubs), the sentinel's ABSENCE is load-bearing. A regression that emits the sentinel on every reveal (rather than only when `fallbackToExisting=true`) would produce a false-positive `reveal_fallback_to_existing_field` entry here even though the schema advanced normally.
+- On **static-schema firmware**, the sentinel's PRESENCE is load-bearing. A regression that reverts the wrapper's push (or breaks the `fallbackToExisting` detection) would leave settingsSkipped without the entry on the static-schema path.
+- The Spock spec pair (`addRequiredExpression: walker pushes reveal_fallback_to_existing_field sentinel when only revealedAny matches` + `addRequiredExpression: progressive-disclosure reveal does NOT push reveal_fallback sentinel`) covers BOTH firmware classes deterministically via stubbed fixtures. T617 is the live-hub smoke-check for whichever path the hub-under-test actually exposes.
+
+**Failure modes**: `partial=true` set when the only finding is the `reveal_fallback_to_existing_field` sentinel (regression in the wrapper's "informational does not flip partial" contract). Sentinel pushed on every reveal even when the schema legitimately advanced (the wrapper stopped distinguishing `fallbackToExisting=true` from `false`; every progressive-disclosure write would emit false-positive sentinels). Sentinel never pushed even on a static-schema fixture (the wrapper's push was reverted).
+
+---
+
+### T618 — addRequiredExpression compareToDevice: RHS-type fallback partial-success on RM 5.1.8
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT CompareToDevice'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
+,
+  "test_prompt": "Add a Required Expression to 'BAT CompareToDevice' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], comparator:'>', state:70, compareToDevice:{deviceId:<deviceB>, attribute:'temperature'}}]}. Inspect result.partial and result.settingsSkipped after the call.",
+  "teardown_prompt": "Delete 'BAT CompareToDevice'."
+}
+```
+
+**Expected** (on RM 5.1.8 -- the firmware tracked by task #177): `addRequiredExpression` returns `success=true` and `partial=true`. `settingsSkipped` contains a Map entry with `key='compareToDevice'`, `reason='rhs_type_not_revealed'`, and `fallbackApplied=true` (the literal `state:70` was written as `state_<N>` fallback). The Required Expression paragraph renders with deviceA's temperature compared to the literal threshold (the device-relative wire write did not land because the RHS-type toggle is absent in this firmware). `result.brokenMarkers` is empty AND `result.health.ok=true` -- the fallback path produces a valid (if degraded) condition, not a broken row.
+
+**Firmware dependence**: this scenario reflects the firmware-fallback contract task #177 documents -- the `rhsType_<N>` toggle is absent on RM 5.1.8 so the walker degrades with a sentinel rather than commit the full device-relative wire shape. On future firmware that exposes the toggle, `partial` flips false and the sentinel disappears; agents reading T618 should treat the sentinel as the expected-on-current-firmware path, not a regression.
+
+**Failure modes**: `success=false` with a fail-loud reject (regression to the pre-fix path where the walker threw on missing rhsType). `partial=true` but no `rhs_type_not_revealed` sentinel (the fallback path fired but the sentinel push was dropped -- caller has no diagnostic for the degraded write). `fallbackApplied=false` despite `state:70` being supplied (the fallback-applied logic broke; caller thinks the condition is incomplete when it actually has a literal threshold). `brokenMarkers` non-empty (the fallback wrote something inconsistent that RM rendered as `*BROKEN*`).
+
+---
+
+### T619 — addRequiredExpression Between two times with sunrise/sunset offset
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Hub timezone is set (Settings > Location and Modes). Create RM rule 'BAT Between Sunrise'."
+,
+  "test_prompt": "Add a Required Expression to 'BAT Between Sunrise' using addRequiredExpression: {conditions:[{capability:'Between two times', start:{type:'clock', time:'08:00'}, end:{type:'sunset', offset:-30}}]}. Inspect the rule paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Between Sunrise'."
+}
+```
+
+**Expected**: `addRequiredExpression` returns `success=true` and `partial!=true`. The Required Expression paragraph on mainPage renders with both the clock start (e.g. "between 8:00 AM") AND the sunset end with the -30 minute offset (e.g. "and 30 minutes before sunset"). `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises the `endingA<N>` / `endSunriseOffset<N>` distinct wire path that T612 (clock-only) does not cover.
+
+**Failure modes**: `partial=true` with a `silent_rejection` sentinel on `endSunriseOffset_<N>` (the sunrise-offset write was silently dropped -- the walker's start/end type-detection logic regressed). Paragraph renders "and (unset)" or similar placeholder for the end-time half (the sunset offset never landed). `brokenMarkers` non-empty (the partial write rendered the time-band as `*BROKEN*`). Pre-validation throws on `location.timeZone == null` (the precondition documented in the walker -- agent must set hub timezone first in Settings > Location and Modes).
+
 ---
 
 ## Changes from BAT v1
@@ -3054,7 +3205,8 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total)
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice fallback adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total). Note: `Total: 214 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 185) reflects only sequentially-numbered tests in the explicit-coverage section.
+11. **Spec-only coverage by necessity**: the trailing-updateRule failure paths on `addTrigger`, `addRequiredExpression`, `addLocalVariable`, `addTriggers`/`addActions` (bulk), `patches`, and the action-mutation/trigger-mutation dispatchers (`removeAction`, `clearActions`, `replaceActions`, `moveAction`, `removeTrigger`, `modifyTrigger`) -- response slots `updateRuleFailed`, `subscriptionsNotLive` / `expressionNotLive` / `variableNotLive` / `patchesNotLive`, `updateRuleError`, and the recovery `repairHints` line -- are covered exclusively by Spock specs in `src/test/groovy/server/ToolRmNativeCrudSpec.groovy` (the single-path failure/SUCCESS pairs for `addTrigger` / `addRequiredExpression` / `addLocalVariable`, the three-row `@Unroll` failure/SUCCESS pairs for the bulk path covering `addTriggers`-only / `addActions`-only / both, and the corresponding patches and action-mutation envelope specs). Live-hub BAT coverage was considered but skipped: deterministically forcing the trailing `_rmClickAppButton(updateRule)` to throw against a real hub requires hub-side disruption (firmware downgrade / network partition mid-call / hub-config corruption) that is not realistically scriptable from an agent prompt. The Spock specs exercise the production response-shape contract directly via stub injection and constitute the regression gate.
 
 ---
 

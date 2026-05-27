@@ -703,7 +703,42 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.deletedRoom.id == '5'
         result.deletedRoom.name == 'Old Room'
         result.devicesUnassigned == 2
+        // W-spec-deleteRoom-text: pin the count-aware message text, not just the
+        // structured field. A regression that drops the count-aware ternary would
+        // surface as "1 devices are now unassigned" / "2 device is now unassigned"
+        // -- structured asserts above would still pass.
+        result.message.contains('2 devices are now unassigned')
         rooms == []
+    }
+
+    def "delete_room with exactly one device renders 'device is' singular"() {
+        // W-spec-deleteRoom-text (singular side): exercises the count-aware ternary
+        // at L12702-12703 for the deviceCount==1 branch.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def rooms = [
+            [id: 5, name: 'Solo Room', deviceIds: [400]]
+        ]
+        installGetRoomsStub(rooms)
+        installCookieStub()
+
+        and:
+        httpPostHandler = { Map params, Closure cb ->
+            if (params.path == '/room/delete/5') {
+                rooms.removeAll { it.id == 5 }
+            }
+            cb.call([status: 200, data: ''])
+        }
+
+        when:
+        def result = script.toolDeleteRoom([room: '5', confirm: true])
+
+        then:
+        result.success == true
+        result.devicesUnassigned == 1
+        result.message.contains('1 device is now unassigned')
+        !result.message.contains('devices are')
     }
 
     @spock.lang.Unroll

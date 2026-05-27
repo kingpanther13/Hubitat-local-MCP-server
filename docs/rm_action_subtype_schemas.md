@@ -398,7 +398,7 @@ No fields required.
 
 | Field | Type | Notes |
 |---|---|---|
-| `expression` | Map | Required. `{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}` |
+| `expression` | Map | Required. `{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}`. `expression.conditions[]` follow the addRequiredExpression per-condition spec -- see "Per-condition spec" section below. |
 | `hours` | Integer | |
 | `minutes` | Integer | |
 | `seconds` | Integer | |
@@ -409,7 +409,7 @@ No fields required.
 
 | Field | Type | Notes |
 |---|---|---|
-| `expression` | Map | Required. `{conditions: [...], operator?, operators?}` |
+| `expression` | Map | Required. `{conditions: [...], operator?, operators?}`. `expression.conditions[]` follow the addRequiredExpression per-condition spec -- see "Per-condition spec" section below. |
 | `delay` | Map | `{hours?, minutes?, seconds?}` |
 | `useDuration` | Boolean | |
 
@@ -429,12 +429,16 @@ Opens an IF block. Close with `capability='endIf'`. Use `elseIf`/`else` for bran
 | `expression` | Map | Required. `{conditions: [...], operator?, operators?}` |
 | `rawSettings` | Map | |
 
+`expression.conditions[]` follow the addRequiredExpression per-condition spec shape -- see "Per-condition spec" section below. The same per-capability extended fields apply: Mode `modeIds`, Between two times `start`/`end`, Variable `variable`+`comparator`, Custom Attribute `attribute`+`comparator`, compareToDevice Map. The shared walker `_rmWalkConditionReveal` handles all per-capability reveal sequences for ifThen / elseIf / repeatWhile / waitExpression (doActPage) and addRequiredExpression (STPage).
+
+**Note: nested `subExpression` is REQUIRED-EXPRESSION-ONLY today.** `ifThen` (and its siblings `elseIf` / `repeatWhile` / `waitExpression`) rejects nested `subExpression` in `expression.conditions[]` with `"nested subExpression on this row is not yet supported"`. Either flatten the conditions list, or move the nested expression into a Required Expression -- `addRequiredExpression` supports nesting. See the `subExpression` row in the per-condition field table below.
+
 ### elseIf
 Continues an IF block. Needs a preceding `ifThen`.
 
 | Field | Type | Notes |
 |---|---|---|
-| `expression` | Map | Required |
+| `expression` | Map | Required. Same `{conditions, operator?, operators?}` shape as ifThen. `expression.conditions[]` follow the addRequiredExpression per-condition spec. Nested `subExpression` is REQUIRED-EXPRESSION-ONLY -- see ifThen note above. |
 | `rawSettings` | Map | |
 
 ### else
@@ -470,3 +474,54 @@ File must already exist.
 |---|---|---|
 | `fileName` | String | Required |
 | `rawSettings` | Map | |
+
+---
+
+## addRequiredExpression spec shape
+
+### Top-level spec
+
+| Field | Type | Notes |
+|---|---|---|
+| `conditions` | List\<Map\> | Required. Non-empty list of per-condition Maps (see below). |
+| `operator` | String | `'AND'` / `'OR'` / `'XOR'`. Applied to every gap between conditions. |
+| `operators` | List\<String\> | Per-gap operators; length = `conditions.size()-1`. Use for mixed-operator expressions like "P1 AND P2 OR P3". |
+
+Exactly one of `operator` or `operators` must be supplied when `conditions.size() > 1`.
+
+### Per-condition spec
+
+| Field | Type | Notes |
+|---|---|---|
+| `capability` | String | Required. See STPage capability list in TOOL_GUIDE.md. |
+| `deviceIds` | List\<Integer\> | Required for device-backed capabilities (Switch, Motion, Temperature, etc.). Omit for Mode, Private Boolean, Last Event Device, time-based capabilities. Convenience: pass singular `deviceId: N` (integer) instead -- the dispatcher normalizes to `deviceIds: [N]`. If both `deviceId` and `deviceIds` are provided, `deviceIds` wins. Applies recursively inside nested `subExpression.conditions[]`. |
+| `state` | String | Enum value for the capability (e.g. `'on'`/`'off'` for Switch, `'active'`/`'inactive'` for Motion, `'open'`/`'closed'` for Contact, `'locked'`/`'unlocked'` for Lock, `'present'`/`'not present'` for Presence). Omit for numeric comparator path. |
+| `comparator` | String | For numeric, Variable, and Custom Attribute capabilities: `'='`, `'<'`, `'>'`, `'<='`, `'>='`, `'!='`. ASCII forms `'!='` / `'<>'` / `'=='` are accepted and auto-mapped to RM's Unicode glyphs `'≠'` / `'='`. Required together with `attribute` for Custom Attribute conditions; required together with `variable` and `value` for Variable conditions. State-change comparators (`'*changed*'` / `'*became*'`) are the only exemption from the RHS-value requirement on Variable conditions. |
+| `value` | Number | Numeric threshold paired with `comparator`. |
+| `attribute` | String | For `capability='Custom Attribute'`: the attribute name (e.g. `'humidity'`). Required together with `comparator`. |
+| `variable` | String | For `capability='Variable'`: the hub variable name. Required together with `comparator` and `value`. The walker validates against the live schema's enum options. |
+| `modeIds` | List\<String\> | For `capability='Mode'`: list of mode IDs. Alternative to `state` (mode name). |
+| `start` | Map | For `capability='Between two times'`: `{type:'clock'\|'sunrise'\|'sunset', time?:'HH:mm', offset?:<minutes>}`. `time` is required when `type='clock'`; pass hub-local wall-clock (e.g. `'08:00'`), the walker converts to ISO datetime internally. `offset` (minutes) is required when `type='sunrise'` or `'sunset'`. |
+| `end` | Map | For `capability='Between two times'`: same shape as `start`. |
+| `compareToDevice` | Map | For numeric caps: `{deviceId:<N>, attribute:'<attr>', offset?:<N>}`. Compares against another device's attribute. |
+| `subExpression` | Map | **`addRequiredExpression`-only.** Nested paren group: `{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}`. The STPage walker recursively handles nested sub-expressions of arbitrary depth. `addAction` / `ifThen` / `elseIf` / `repeatWhile` / `waitExpression` reject this field with a targeted error -- flatten the conditions list or move the nested expression to a Required Expression. |
+| `not` | Boolean | `true` to invert this condition (NOT). Default false. |
+| `rawSettings` | Map | Escape hatch: `{fieldName: value}` for fields not yet mapped above. |
+
+### Sensor capabilities with discrete event states
+
+Some sensor capabilities report discrete events rather than a continuous enum state.
+Use the capability-specific state names below rather than expecting a numeric or
+comparator-based condition:
+
+| Capability | State values |
+|---|---|
+| `Water sensor` | `'wet'`, `'dry'` |
+| `Smoke detector` | `'detected'`, `'clear'` |
+| `Carbon monoxide detector` | `'detected'`, `'clear'` |
+| `Tamper alert` | `'detected'`, `'clear'` |
+| `Acceleration` | `'active'`, `'inactive'` |
+
+For these capabilities, pass `state: 'wet'` (not `comparator: '=' / value: ...`).
+
+**Carbon dioxide sensor is NOT in this table.** The `CarbonDioxideMeasurement` capability is numeric ppm (use `comparator: '>'` + `value: 1000` etc.), not a discrete enum. The name is superficially symmetric to `Carbon monoxide detector` but RM 5.1 treats CO2 as a numeric comparator condition; the state-based shape is rejected at the walker. See the `DISCRETE_EVENT_CAPS` rationale comment in `hubitat-mcp-server.groovy`.
