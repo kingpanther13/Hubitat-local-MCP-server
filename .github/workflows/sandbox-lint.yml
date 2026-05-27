@@ -7,6 +7,9 @@ on:
       - 'packageManifest.json'
       - 'tests/sandbox_lint.py'
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
