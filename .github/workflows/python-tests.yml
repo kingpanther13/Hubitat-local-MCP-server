@@ -14,6 +14,9 @@ on:
       - 'tests/e2e_test.py'
       - '.github/workflows/python-tests.yml'
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

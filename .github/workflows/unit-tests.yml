@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   matrix-test:
     runs-on: ubuntu-latest
@@ -67,6 +70,7 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    permissions: {}
     needs: matrix-test
     if: always()
     steps:
