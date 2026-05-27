@@ -158,14 +158,14 @@ def mainPage() {
             def customEngineExplicitlyOn = settings.enableCustomRuleEngine == true
             def builtinAppEnabled = settings.enableBuiltinApp == true
             if (existingRuleCount > 0 && !customEngineExplicitlyOn) {
-                def readonlyNote = builtinAppEnabled ? " your AI can still SEE these rules (<code>custom_list_rules</code>, <code>custom_get_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from your AI."
+                def readonlyNote = builtinAppEnabled ? " your AI can still SEE these rules (<code>custom_get_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from your AI."
                 paragraph "<b>NOTICE: ${existingRuleCount} existing custom MCP rule(s)</b><br>" +
                           "Your ${existingRuleCount} custom MCP rule(s) still fire and work normally. The Custom Rule Engine setting used to be ON by default; it now defaults OFF because the custom MCP rule engine is legacy -- it will continue to receive bug fixes but new feature work goes to native Rule Machine.<br>" +
                           "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use your AI to fully manage these rules.<br>" +
                           "For new rule creation, prefer <code>manage_native_rules_and_apps</code> create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
-                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_list_rules, custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
+                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
                   description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other toggles (Built-in App Tools, Custom Rule Engine) also add or remove entries from tools/list independently of this setting.",
@@ -982,65 +982,54 @@ def getGatewayConfig() {
             ]
         ],
         manage_app_driver_code: [
-            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Hub Admin Write. Read-only counterparts (get_app_source, get_driver_source, get_library_source, list_*) live in the manage_apps_drivers gateway.",
-            tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup", "install_library", "update_library_code", "delete_library"],
+            description: "Install, update, and delete hub apps, drivers, and libraries. save_* tools install when id is absent, update when id is present. All operations modify hub code and require Hub Admin Write. Read-only counterparts (get_app_source, get_driver_source, get_library_source, list_*) live in the manage_apps_drivers gateway.",
+            tools: ["save_app", "save_driver", "delete_app", "delete_driver", "restore_item_backup", "save_library", "delete_library"],
             summaries: [
-                install_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
-                install_driver: "Install new driver. PREFER curl-upload + sourceFile. For 1: source|sourceFile. For >1: USE BULK (single round-trip: installs=[{source|sourceFile},...]). confirm=true",
-                update_app_code: "Modify existing app code (CRITICAL). PREFER curl-upload + sourceFile. Args: appId, source|sourceFile|resave, confirm=true",
-                update_driver_code: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile},...]). PREFER sourceFile + curl-upload over inline. confirm=true",
+                save_app: "Install OR update app code (appId absent=install, present=update). PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: appId?, source|sourceFile|resave (resave=update only), confirm=true",
+                save_driver: "Install OR update driver code. Single: driverId? + source|sourceFile|resave. Bulk install: installs=[{source|sourceFile},...]. Bulk update: updates=[{driverId, source|sourceFile|resave},...]. PREFER curl-upload + sourceFile. confirm=true",
                 delete_app: "Permanently delete an app (DESTRUCTIVE). Args: appId, confirm=true",
                 delete_driver: "Permanently delete a driver (DESTRUCTIVE). Args: driverId, confirm=true",
                 restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true",
-                install_library: "Install new Groovy library (#include namespace.Name). PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
-                update_library_code: "Modify existing library code. PREFER curl-upload + sourceFile. Args: libraryId, source|sourceFile|resave, confirm=true",
+                save_library: "Install OR update Groovy library code (libraryId absent=install, present=update). #include namespace.Name. PREFER curl-upload + sourceFile (bypasses agent context). Args: libraryId?, source|sourceFile|resave (resave=update only), confirm=true",
                 delete_library: "Permanently delete a library (DESTRUCTIVE). Args: libraryId, confirm=true"
             ],
             searchHints: [
-                install_app: "add new application integration groovy",
-                install_driver: "add new device handler type groovy",
-                update_app_code: "modify change edit application groovy push deploy",
-                update_driver_code: "modify change edit device handler type groovy push deploy",
+                save_app: "install add new update modify change edit application integration groovy push deploy",
+                save_driver: "install add new update modify change edit device handler type groovy push deploy bulk batch multiple",
                 delete_app: "remove uninstall application integration",
                 delete_driver: "remove uninstall device handler type",
                 restore_item_backup: "rollback revert undo previous version",
-                install_library: "add new shared groovy library include namespace",
-                update_library_code: "modify change edit groovy library shared code push deploy",
+                save_library: "install add new update modify change edit shared groovy library include namespace push deploy",
                 delete_library: "remove uninstall groovy library shared"
             ]
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         manage_logs: [
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, device event history, MCP debug logs, and log level configuration.",
-            tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
+            tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_log_state", "update_debug_logs"],
             summaries: [
                 get_hub_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex AND/OR), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
                 get_device_history: "Get device or location event history (up to 7 days). Omit deviceId for location events. Args: deviceId (optional), hoursBack, attribute, limit",
                 get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
-                get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
-                clear_debug_logs: "Clear all MCP debug log entries",
-                set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)",
-                get_logging_status: "Get logging system status and capacity"
+                get_debug_log_state: "Read MCP debug logger state. mode='logs' returns entries (args: level, component, ruleId, limit); mode='status' returns logger status (level, counts, capacity)",
+                update_debug_logs: "Mutate MCP debug logger. action='clear' deletes all entries; action='setLevel' sets minimum log level threshold (args: level=debug/info/warn/error)"
             ],
             searchHints: [
                 get_hub_logs: "errors warnings messages trace syslog output print recent latest newest device app scope regex pattern filter time window since until last hour minute",
                 get_device_history: "events timeline past activity what happened sensor mode hsm location hub variable",
                 get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 get_hub_jobs: "scheduled cron timer recurring what is running next automation",
-                get_debug_logs: "mcp internal troubleshoot trace",
-                clear_debug_logs: "wipe reset mcp internal",
-                set_log_level: "verbosity debug trace quiet",
-                get_logging_status: "buffer capacity how many"
+                get_debug_log_state: "mcp internal troubleshoot trace buffer capacity how many",
+                update_debug_logs: "wipe reset mcp internal verbosity debug trace quiet"
             ]
         ],
         manage_diagnostics: [
-            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
-            tools: ["get_set_hub_metrics", "get_memory_history", "force_garbage_collection", "device_health_check", "custom_get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+            description: "Health monitoring, diagnostics, and radio details: memory history, garbage collection, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots. (Hub-wide metrics + CSV trend recording lives on the core get_hub_info tool.)",
+            tools: ["force_garbage_collection", "get_memory_history", "device_health_check", "custom_get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
             summaries: [
-                get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
+                force_garbage_collection: "Force JVM garbage collection on the hub to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires Hub Admin Read.",
                 get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
-                force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
                 device_health_check: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
                 custom_get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
                 get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
@@ -1051,9 +1040,8 @@ def getGatewayConfig() {
                 clear_captured_states: "Clear all captured device states"
             ],
             searchHints: [
-                get_set_hub_metrics: "temperature database size trending monitoring over time",
+                force_garbage_collection: "gc garbage collection free reclaim ram cleanup java heap memory",
                 get_memory_history: "ram free used leak trending over time java heap nio",
-                force_garbage_collection: "free reclaim ram cleanup java heap",
                 device_health_check: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway identify led blink locate physical hub",
                 custom_get_rule_diagnostics: "automation troubleshoot broken not working debug why",
                 get_zwave_details: "zwave mesh network frequency firmware 908mhz 700 800 series",
@@ -1174,24 +1162,39 @@ def getGatewayConfig() {
 
 def getReadOnlyToolNames() {
     return [
-        // Device introspection
+        // Device introspection. get_attribute optionally blocks-polls when
+        // expectedValue/expectedValues set; send_command optionally bundles
+        // a post-command wait via waitFor — both are observation primitives
+        // even in polling mode (no state mutation), so get_attribute stays
+        // read-only here. send_command is excluded (it's the command write).
+        // poll_until_attribute removed; folded into get_attribute polling mode.
         "list_devices", "get_device", "get_attribute", "get_device_events",
-        "poll_until_attribute",
         // Custom rule reads (legacy MCP engine) -- test_rule is dry-run, no
-        // actions fire; export is a serialization read.
-        "custom_list_rules", "custom_get_rule", "custom_test_rule",
+        // actions fire; export is a serialization read. custom_list_rules
+        // removed (folded into custom_get_rule via no-ruleId overload).
+        "custom_get_rule", "custom_test_rule",
         "custom_get_rule_diagnostics", "custom_export_rule",
-        // Hub state reads
+        // Hub state reads. get_hub_info is read-only by default; opt-in
+        // recordSnapshot=true makes it a write (gated separately at call time).
         "get_hub_info", "get_modes", "get_hsm_status", "check_for_update",
         // Variables (reads)
         "list_variables", "get_variable", "get_variable_history",
         // Captured states (read)
         "list_captured_states",
-        // Diagnostics + logs (read)
-        "get_debug_logs", "get_logging_status", "generate_bug_report",
+        // Diagnostics + logs (read). get_debug_logs + get_logging_status
+        // folded into get_debug_log_state(mode=logs|status). update_debug_logs
+        // (the merged clear/setLevel write tool) is NOT in this set.
+        "get_debug_log_state", "generate_bug_report",
         "get_hub_logs", "get_device_history", "get_performance_stats",
         "get_hub_jobs", "get_memory_history",
         "get_zwave_details", "get_zigbee_details",
+        // force_garbage_collection: mutates JVM state but does not modify any
+        // user-visible / persisted hub data; the maintainer-declared rule is
+        // that CSV-file writes don't count as a "real" write either, and a GC
+        // is at the same conceptual level — listing it under read-only for
+        // consistency with how the metrics tool's CSV recording is treated
+        // (gated separately on call rather than via the readOnly classification).
+        "force_garbage_collection",
         // device_health_check has an optional identifyHub LED blink, but its
         // primary mode is staleness + ICMP-ping observation; treating as read
         // matches user expectation for a "health check" tool.
@@ -1449,8 +1452,9 @@ def getToolDefinitions() {
     if (customEngineMode == "off") {
         // Both toggles off: hide all custom_* tools everywhere they could appear
         // (base tools in flat mode, sub-tools of manage_rules_admin and manage_diagnostics
-        // in gateway mode).
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule", "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
+        // in gateway mode). custom_list_rules removed by tool-surface reduction —
+        // its list-mode functionality lives on custom_get_rule(ruleId=null).
+        ["custom_get_rule", "custom_create_rule", "custom_update_rule", "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
             hideByName << it
         }
     } else if (customEngineMode == "readonly") {
@@ -1583,14 +1587,20 @@ Only query devices the user has mentioned or that are relevant to their request.
         ],
         [
             name: "get_attribute",
-            description: """Get a specific attribute value from a device.
+            description: """Get a specific attribute value from a device. Optionally block-poll the attribute until it matches an expected value (or one of a set), or timeoutMs elapses — this is the polling-only mode (no other side effect).
+
+When expectedValue or expectedValues is supplied: server-side poll loop runs (single MCP round-trip replaces N client-side polls); response gains polledCount, elapsedMs, timedOut, and (if applicable) neverReported/interrupted. timeoutMs default 5000ms, max 60000ms (60s). First read fires immediately; subsequent reads spaced by pollIntervalMs (default 200ms). Without expected values the call returns immediately with the current value (fast read).
 
 Only query devices the user has mentioned or that are relevant to their request.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID from list_devices"],
-                    attribute: [type: "string", description: "Attribute name"]
+                    attribute: [type: "string", description: "Attribute name"],
+                    expectedValue: [type: "string", description: "Optional. Match when currentValue equals this string — activates server-side polling."],
+                    expectedValues: [type: "array", items: [type: "string"], description: "Optional. Match when currentValue is any of these strings — activates server-side polling. Compatible with expectedValue (OR semantics if both set)."],
+                    timeoutMs: [type: "integer", description: "Polling mode only. Max wait in MILLISECONDS. Default 5000ms, min 100ms, max 60000ms (60s).", default: 5000],
+                    pollIntervalMs: [type: "integer", description: "Polling mode only. Re-check interval in MILLISECONDS. Default 200ms, min 50ms, max 5000ms. Clamped to timeoutMs if larger.", default: 200]
                 ],
                 required: ["deviceId", "attribute"]
             ]
@@ -1599,13 +1609,27 @@ Only query devices the user has mentioned or that are relevant to their request.
             name: "send_command",
             description: """Send a command to a device. Always verify state changed after.
 
+Optionally bundle send + verify by passing waitFor — the tool sends the command, then server-side polls the named attribute until it matches expected value(s) or waitFor.timeoutMs elapses. Response gains a 'wait' block (polledCount, elapsedMs, timedOut, finalValue). Saves a round-trip on the common send-and-confirm pattern.
+
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID from list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name"],
-                    parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
+                    parameters: [type: "array", description: "Command parameters", items: [type: "string"]],
+                    waitFor: [
+                        type: "object",
+                        description: "Optional. Post-command attribute confirmation. When set, send_command blocks until the attribute matches or waitFor.timeoutMs elapses.",
+                        properties: [
+                            attribute: [type: "string", description: "Attribute name to poll after sending the command."],
+                            expectedValue: [type: "string", description: "Match when currentValue equals this string. At least one of expectedValue or expectedValues is required."],
+                            expectedValues: [type: "array", items: [type: "string"], description: "Match when currentValue is any of these strings (OR semantics with expectedValue)."],
+                            timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000ms, min 100ms, max 60000ms.", default: 5000],
+                            pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 200ms, min 50ms, max 5000ms.", default: 200]
+                        ],
+                        required: ["attribute"]
+                    ]
                 ],
                 required: ["deviceId", "command"]
             ]
@@ -1622,50 +1646,16 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 required: ["deviceId"]
             ]
         ],
-        [
-            name: "poll_until_attribute",
-            description: """Block-poll a device attribute until it matches an expected value (or one of a set of values), or a timeout elapses. Returns immediately when the match condition is satisfied.
-
-Single MCP round-trip replaces N client-side get_attribute polls + sleep loops. Common use: verify a send_command actually took effect (e.g. switch turned on), wait for a sensor reading to cross a threshold, or detect when a Z-Wave inclusion finished.
-
-Cost profile: this tool BLOCKS up to timeoutMs (default 5000ms, max 60000ms = 60 seconds). Use sparingly and prefer event-driven flows when possible. For passive one-shot observation use get_attribute instead. Concurrent MCP requests will queue while this call blocks; avoid parallel poll_until_attribute calls.
-
-First read fires immediately (no upfront delay); subsequent reads are spaced by pollIntervalMs.
-
-At least one of expectedValue or expectedValues must be provided. If both are provided, the poll succeeds when currentValue matches either (OR semantics).""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"],
-                    attribute: [type: "string", description: "Attribute name to poll"],
-                    expectedValue: [type: "string", description: "Match when currentValue equals this string. At least one of expectedValue or expectedValues is required."],
-                    expectedValues: [type: "array", items: [type: "string"], description: "Match when currentValue is any of these strings. Compatible with expectedValue (OR semantics if both set)."],
-                    timeoutMs: [type: "integer", description: "Max wait time in MILLISECONDS (e.g., 5000 = 5 seconds). Default 5000ms, min 100ms, max 60000ms (60 seconds).", default: 5000],
-                    pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS (e.g., 200 = 0.2 seconds). Default 200ms, min 50ms, max 5000ms (5 seconds). Clamped to timeoutMs if larger.", default: 200]
-                ],
-                required: ["deviceId", "attribute"]
-            ]
-        ],
         // Rule Management
         [
-            name: "custom_list_rules",
-            description: "List all MCP automation rules. Returns summary; use custom_get_rule for details. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full rules list. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
             name: "custom_get_rule",
-            description: "Get detailed information about a specific rule. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
+            description: "Get MCP custom rule(s). Omit ruleId to list all rules as summaries (id, name, enabled, counts, lastTriggered, executionCount) — list mode supports opt-in cursor pagination. Provide ruleId to fetch full rule data (triggers, conditions, actions, localVariables) — cursor is ignored in detail mode. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
-                ],
-                required: ["ruleId"]
+                    ruleId: [type: "string", description: "Rule ID for detail mode. Omit to list all rules as summaries."],
+                    cursor: [type: "string", description: "List mode (no ruleId) only. Opt-in pagination cursor. Omit to get the full rules list. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
             ]
         ],
         [
@@ -1741,11 +1731,13 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "get_hub_info",
-            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
+            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read. Optionally blink the hub LED to identify the physical hub (identifyHub=true). Optionally record a snapshot of the memory/temp/DB-size metrics to a rolling CSV history in File Manager (recordSnapshot=true, opt-in) and/or return recent trend points (trendPoints>0). All extras are opt-in to keep the bare call cheap (no File Manager round-trip).",
             inputSchema: [
                 type: "object",
                 properties: [
-                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false]
+                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
+                    recordSnapshot: [type: "boolean", description: "If true, append the current memory/temp/DB-size sample to the rolling CSV history file (mcp-performance-history.csv) in File Manager. Default: false — call is read-only by default. Requires Hub Admin Read (recording is the write side).", default: false],
+                    trendPoints: [type: "integer", description: "Number of recent historical trend points to include in the response under 'trends'. Default: 0 (no CSV download — bare get_hub_info() avoids the File Manager round-trip). Set >0 to fetch trends; max: 50.", default: 0]
                 ]
             ]
         ],
@@ -1920,23 +1912,32 @@ Verify rule after creation.""",
 
         // Debug Logging Tools
         [
-            name: "get_debug_logs",
-            description: "Get MCP debug logs (stored in app state). Useful for debugging rule issues.",
+            name: "get_debug_log_state",
+            description: "Get MCP debug logger state. mode='logs' returns entries (with optional filters, plus opt-in cursor pagination). mode='status' returns the logger's status (current log level, entry counts by severity, capacity).",
             inputSchema: [
                 type: "object",
                 properties: [
-                    limit: [type: "integer", description: "Max entries to return (default: 50, max: 200)"],
-                    level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "Filter by log level (default: all)"],
-                    component: [type: "string", description: "Filter by component (e.g., 'server', 'rule')"],
-                    ruleId: [type: "string", description: "Filter by specific rule ID"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
-                ]
+                    mode: [type: "string", enum: ["logs", "status"], description: "Which view of the debug logger to return."],
+                    limit: [type: "integer", description: "mode=logs only. Max entries to return (default: 50, max: 200)"],
+                    level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "mode=logs only. Filter by log level (default: all)"],
+                    component: [type: "string", description: "mode=logs only. Filter by component (e.g., 'server', 'rule')"],
+                    ruleId: [type: "string", description: "mode=logs only. Filter by specific rule ID"],
+                    cursor: [type: "string", description: "mode=logs only. Opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                ],
+                required: ["mode"]
             ]
         ],
         [
-            name: "clear_debug_logs",
-            description: "Clear all stored debug log entries. Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]]
+            name: "update_debug_logs",
+            description: "Mutate the MCP debug logger. action='clear' deletes all stored debug log entries (irreversible). action='setLevel' sets the minimum log level threshold; entries below that level won't be stored (debug < info < warn < error).",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    action: [type: "string", enum: ["clear", "setLevel"], description: "Which mutation to apply."],
+                    level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "action=setLevel only. New minimum log level."]
+                ],
+                required: ["action"]
+            ]
         ],
         [
             name: "custom_get_rule_diagnostics",
@@ -1948,22 +1949,6 @@ Verify rule after creation.""",
                 ],
                 required: ["ruleId"]
             ]
-        ],
-        [
-            name: "set_log_level",
-            description: "Set the minimum log level threshold. Logs below this level won't be stored. Levels in order: debug < info < warn < error",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
-                ],
-                required: ["level"]
-            ]
-        ],
-        [
-            name: "get_logging_status",
-            description: "Get status of the debug logging system including current log level, entry counts by severity, and capacity information.",
-            inputSchema: [type: "object", properties: [:]]
         ],
         [
             name: "generate_bug_report",
@@ -2035,7 +2020,6 @@ Verify rule after creation.""",
         ],
 
         // ==================== HUB ADMIN READ TOOLS ====================
-        // get_hub_details merged into get_hub_info (core tool)
         [
             name: "list_hub_apps",
             description: "List all installed apps on the hub (not just MCP rules). Requires Hub Admin Read.",
@@ -2127,14 +2111,11 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_set_hub_metrics",
-            description: "Record and retrieve hub metrics (memory, temp, DB size) with CSV trend history. Use recordSnapshot=false to read without recording. Requires Hub Admin Read.",
+            name: "force_garbage_collection",
+            description: "Force JVM garbage collection on the hub to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
-                properties: [
-                    recordSnapshot: [type: "boolean", description: "Record this snapshot to the performance history CSV. Default: true.", default: true],
-                    trendPoints: [type: "integer", description: "Number of recent historical data points to include. Default: 10, max: 50.", default: 10]
-                ]
+                properties: [:]
             ]
         ],
         [
@@ -2161,14 +2142,6 @@ Verify rule after creation.""",
                     limit: [type: "integer", description: "Max entries to return (most recent). Default: 100, 0 for all. Hub may have thousands of entries.", default: 100],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Pages within the limit-filtered entries (limit=0 + cursor pages the full ring buffer). Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
-            ]
-        ],
-        [
-            name: "force_garbage_collection",
-            description: "Force JVM garbage collection to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [:]
             ]
         ],
 
@@ -2378,7 +2351,7 @@ Requires Hub Admin Write.""",
         // Hub Admin App/Driver Source Read Tools
         [
             name: "get_app_source",
-            description: "Get app Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_app_code sourceFile mode. Requires Hub Admin Read.",
+            description: "Get app Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with save_app sourceFile mode. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2391,7 +2364,7 @@ Requires Hub Admin Write.""",
         ],
         [
             name: "get_driver_source",
-            description: "Get driver Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_driver_code sourceFile mode. Requires Hub Admin Read.",
+            description: "Get driver Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with save_driver sourceFile mode. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2404,123 +2377,73 @@ Requires Hub Admin Write.""",
         ],
         // Hub Admin App/Driver Management Write Tools
         [
-            name: "install_app",
-            description: """⚠️ Install new app. Show code to user and get confirmation first.
+            name: "save_app",
+            description: """⚠️ Install OR update app code. Omit appId to install a new app (creates). Provide appId to update an existing app (modifies). Show code to user and get confirmation first.
 
 PREFERRED workflow (avoids reading source into agent transcript):
   1) Upload bytes to File Manager via local CLI tool that bypasses agent context:
        curl -F 'uploadFile=@./app.groovy' -F 'folder=/' 'http://<hub>/hub/fileManager/upload'
        (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
-  2) install_app(sourceFile: 'app.groovy', confirm: true)
+  2) save_app(sourceFile: 'app.groovy', confirm: true)                      # install
+     save_app(appId: <id>, sourceFile: 'app.groovy', confirm: true)         # update
 
 Inline 'source' is acceptable for stub-size snippets only. The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
 
-Verifies install succeeded: if the hub accepted the request but the app failed to compile, install_app returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new app ID. After install, add via Apps > Add User App in Hubitat UI.""",
+Install path verifies the app compiled (success=false with error if it didn't) and returns the new appId. Update path auto-backs-up before modifying. resave (recompile without changes) is only valid in update mode. Update mode honors optional expectedVersion (optimistic-lock guard) and refuses to overwrite this MCP server's own app source unless Developer Mode is on (self-update guard from #189). Requires Hub Admin Write + confirm + backup <24h. New installs: after success, add the app via Apps > Add User App in Hubitat UI.""",
             inputSchema: [
                 type: "object",
                 properties: [
+                    appId: [type: "string", description: "The app ID to update. Omit to install a new app instead."],
                     source: [type: "string", description: "Inline Groovy source. ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install/redeploy. For non-trivial apps, prefer sourceFile (recipe in tool description)."],
                     sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    resave: [type: "boolean", description: "Update mode only (appId required). Re-save the current source code without changes. Runs entirely on-hub -- no source touches the agent transcript."],
+                    expectedVersion: [type: "integer", description: "Update mode only. OPTIONAL optimistic-lock guard. If supplied, the update aborts with success:false + conflict:true when the hub's current version differs. Stringified integers (e.g. \"7\") are coerced for JSON-RPC clients that don't preserve numeric types; explicit null is rejected."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
             ]
         ],
         [
-            name: "install_driver",
-            description: """⚠️ Install new driver. Show code to user and get confirmation first.
+            name: "save_driver",
+            description: """⚠️ Install OR update driver code. Omit driverId (and 'updates') to install a new driver. Provide driverId to update an existing single driver. Use 'installs' array for bulk-install (multiple new drivers in one call) or 'updates' array for bulk-update (multiple existing drivers in one call). Show code to user and get confirmation first.
 
 PREFERRED workflow (avoids reading source into agent transcript):
-  1) Upload bytes to File Manager via local CLI tool that bypasses agent context:
-       curl -F 'uploadFile=@./driver.groovy' -F 'folder=/' 'http://<hub>/hub/fileManager/upload'
-       (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
-  2) install_driver(sourceFile: 'driver.groovy', confirm: true)
+  1) Upload bytes via local CLI: 'curl -F uploadFile=@./driver.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives.)
+  2) save_driver(sourceFile: 'driver.groovy', confirm: true)                              # single install
+     save_driver(driverId: <id>, sourceFile: 'driver.groovy', confirm: true)              # single update
+     save_driver(installs: [{sourceFile: ...}, ...], confirm: true)                       # bulk install
+     save_driver(updates: [{driverId: <id>, sourceFile: ...}, ...], confirm: true)        # bulk update
 
-Inline 'source' is acceptable for stub-size snippets only. The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
+Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes; update mode only -- on-hub only, no source touched). 'installs' / 'updates' arrays continue-on-error (per-item failures don't abort the rest). Practical bulk limit: ~10-20 drivers/call.
 
-For >1 driver: USE BULK mode (single round-trip, not N separate calls): installs=[{sourceFile}, ...]. Each driver's bytes still uploaded once via CLI per the same recipe -- bulk mode references them by filename.
-
-Single-driver mode: supply one of source|sourceFile.
-Bulk mode: 'installs' array of {source|sourceFile} objects. Errors on individual items do not abort the rest (continue-on-error). Practical limit: ~10-20 drivers per call. Cannot mix bulk and single-driver fields.
-
-Verifies install succeeded: if the hub accepted the request but the driver failed to compile, install_driver returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new driver ID(s).""",
+Single-install and single-update verify the driver compiled. Update auto-backs up before modifying. Single-update honors optional expectedVersion (optimistic-lock guard from #189); for bulk update, put expectedVersion inside each updates[] entry instead. Cannot mix bulk and single-driver fields. Requires Hub Admin Write + confirm + backup <24h. Returns new driverId(s) on install.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "Inline Groovy source (single-driver mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install/redeploy. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
-                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    driverId: [type: "string", description: "The driver ID to update (single update mode). Omit for install, or when using 'installs'/'updates' arrays."],
+                    source: [type: "string", description: "Inline Groovy source (single mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every call. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
+                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED, single mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
+                    resave: [type: "boolean", description: "Update mode only (driverId required). Re-save the current source code without changes. Runs entirely on-hub -- no source touches the agent transcript."],
+                    expectedVersion: [type: "integer", description: "Update mode only (driverId required, single mode). OPTIONAL optimistic-lock guard. Update aborts with success:false + conflict:true on version mismatch. Stringified integers coerced; explicit null rejected. For bulk-update, put expectedVersion inside each updates[] entry instead."],
                     installs: [
                         type: "array",
-                        description: "BULK MODE -- USE THIS WHEN INSTALLING >1 DRIVER (single round-trip vs N separate calls; same arg structure, just an array). Each entry: {source|sourceFile}. Cannot mix with single-driver fields (source/sourceFile). Continue-on-error: failures on individual items don't abort the rest. Practical limit ~10-20 drivers/call. Authorization is controlled by top-level 'confirm' only. PREFER each item's sourceFile (after CLI upload per recipe in tool description) over inline source.",
+                        description: "BULK INSTALL MODE -- USE THIS WHEN INSTALLING >1 DRIVER (single round-trip vs N separate calls). Each entry: {source|sourceFile}. Cannot mix with single-driver fields or with 'updates'. Continue-on-error: failures on individual items don't abort the rest. Practical limit ~10-20 drivers/call. Authorization is controlled by top-level 'confirm' only. PREFER each item's sourceFile over inline source.",
                         items: [
                             type: "object",
                             properties: [
-                                sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED -- upload first via CLI per tool description recipe to bypass agent transcript)"],
+                                sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED -- upload first via CLI to bypass agent transcript)"],
                                 source: [type: "string", description: "Inline source (stubs only -- fills agent transcript)"]
                             ]
                         ]
                     ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "update_app_code",
-            description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
-
-PREFERRED workflow for any iterative app dev (avoids reading source into agent transcript):
-  1) Upload bytes via local CLI: 'curl -F uploadFile=@./app.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
-  2) update_app_code(appId: <id>, sourceFile: 'app.groovy', confirm: true)
-
-Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
-Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.
-
-Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on (a bad self-update bricks the MCP loop). Optional expectedVersion arg enables optimistic locking -- supply it to abort cleanly on a concurrent edit instead of overwriting.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "The app ID to update"],
-                    source: [type: "string", description: "Inline Groovy source. ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial apps, prefer sourceFile (recipe in tool description)."],
-                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial apps). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
-                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub -- no source touches the agent transcript."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. If supplied, the update aborts with success:false + conflict:true when the hub's current version differs. Stringified integers (e.g. \"7\") are coerced for JSON-RPC clients that don't preserve numeric types; explicit null is rejected."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["appId", "confirm"]
-            ]
-        ],
-        [
-            name: "update_driver_code",
-            description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
-
-PREFERRED workflow for any iterative driver dev (avoids reading source into agent transcript):
-  1) Upload bytes via local CLI: 'curl -F uploadFile=@./driver.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives where curl is unavailable).
-  2) update_driver_code(driverId: <id>, sourceFile: 'driver.groovy', confirm: true)
-
-For >1 driver: USE BULK mode (single round-trip, not N): updates=[{driverId, sourceFile}, ...]. Each driver's bytes still uploaded once via CLI per the same recipe -- bulk-mode references them by filename.
-
-Single-driver mode: driverId + one of source|sourceFile|resave.
-Bulk mode: 'updates' array of {driverId, sourceFile|source|resave} objects. Errors on individual items do not abort the rest (continue-on-error). Practical limit: ~20 drivers per call. Cannot mix bulk and single-driver fields.
-
-Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
-Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array for bulk."],
-                    source: [type: "string", description: "Inline Groovy source (single-driver mode). ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial drivers, prefer sourceFile (recipe in tool description)."],
-                    sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED for non-trivial drivers, single-driver mode). Upload bytes first via local CLI to bypass agent transcript: 'curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload' (Hub Security: authenticate first with 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod / Python requests / Node fetch as alternatives). Subsequent redeploys reference the same file at ~50 bytes per call."],
-                    resave: [type: "boolean", description: "Re-save the current source code without changes (single-driver mode). Runs entirely on-hub -- no source touches the agent transcript."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard (single-driver mode). Update aborts with success:false + conflict:true on version mismatch. Stringified integers coerced; explicit null rejected. Bulk mode: put expectedVersion inside each updates[] entry instead."],
                     updates: [
                         type: "array",
-                        description: "BULK MODE -- USE THIS WHEN UPDATING >1 DRIVER (single round-trip vs N separate calls; same arg structure, just an array). Each entry: {driverId, sourceFile|source|resave, optional expectedVersion}. Cannot mix with single-driver fields (driverId/source/sourceFile/resave/expectedVersion). Continue-on-error: failures on individual items don't abort the rest (including per-item version conflicts -- other items still apply). Practical limit ~20 drivers/call. Authorization is controlled by top-level 'confirm' only; item-level 'confirm' is ignored. PREFER each item's sourceFile (after CLI upload per recipe in tool description) over inline source.",
+                        description: "BULK UPDATE MODE -- USE THIS WHEN UPDATING >1 DRIVER (single round-trip vs N separate calls). Each entry: {driverId, sourceFile|source|resave, optional expectedVersion}. Cannot mix with single-driver fields or with 'installs'. Continue-on-error: failures on individual items don't abort the rest (including per-item version conflicts — other items still apply). Practical limit ~20 drivers/call. Authorization is controlled by top-level 'confirm' only; item-level 'confirm' is ignored. PREFER each item's sourceFile over inline source.",
                         items: [
                             type: "object",
                             properties: [
                                 driverId: [type: "string", description: "The driver ID to update"],
-                                sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED -- upload first via CLI per tool description recipe to bypass agent transcript)"],
+                                sourceFile: [type: "string", description: "Filename in hub File Manager (RECOMMENDED -- upload first via CLI to bypass agent transcript)"],
                                 source: [type: "string", description: "Inline source (stubs only -- fills agent transcript)"],
                                 resave: [type: "boolean", description: "Re-save without changes (no source touched)"],
                                 expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only. On mismatch the entry fails with conflict:true; sibling entries still apply. Stringified integers coerced; explicit null rejected."]
@@ -2565,11 +2488,11 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
         // Hub Admin Library Management Tools
         [
             name: "get_library_source",
-            description: "Get library Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_library_code sourceFile mode. Requires Hub Admin Read.",
+            description: "Get library Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with save_library sourceFile mode. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    libraryId: [type: "string", description: "The library ID (from install_library response, or check Hubitat web UI > FOR DEVELOPERS > Libraries code for installed library IDs)"],
+                    libraryId: [type: "string", description: "The library ID (from save_library response, or check Hubitat web UI > FOR DEVELOPERS > Libraries code for installed library IDs)"],
                     offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
@@ -2577,54 +2500,29 @@ Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Ad
             ]
         ],
         [
-            name: "install_library",
-            description: """⚠️ Install new Groovy library code. Libraries are shared code modules included by drivers/apps via the #include namespace.LibraryName directive. Show code to user and get confirmation first.
+            name: "save_library",
+            description: """⚠️ Install OR update Groovy library code. Omit libraryId to install a new library (creates). Provide libraryId to update an existing library (modifies). Libraries are shared code modules included by drivers/apps via the #include namespace.LibraryName directive. Show code to user and get confirmation first.
 
 PREFERRED workflow (avoids reading source into agent transcript):
   1) Upload bytes to File Manager via a local CLI tool that bypasses agent context:
        curl -F "uploadFile=@library.groovy" -F "folder=/" "http://<HUB_IP>/hub/fileManager/upload"
        (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
-  2) install_library(sourceFile: 'library.groovy', confirm: true)
+  2) save_library(sourceFile: 'library.groovy', confirm: true)                          # install
+     save_library(libraryId: '<id>', sourceFile: 'library.groovy', confirm: true)       # update
 
-Inline 'source' is acceptable for stub-size snippets only.
-The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
+Inline 'source' is acceptable for stub-size snippets only. The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
 
-Library source must include a library() definition block with these 4 required fields: name, namespace, author, description. The `category` field is optional. Hubitat rejects missing required fields with errors like "author cannot be empty in library section" or "description,author cannot be empty in library section". NOTE: the hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library. install_library returns verified:true when the library record exists in the hub catalog; that does NOT guarantee the Groovy compiles. Requires Hub Admin Write + confirm + backup <24h. Returns new libraryId.""",
+Library source on install must include a library() definition block with these 4 required fields: name, namespace, author, description. The `category` field is optional. Hubitat rejects missing required fields with errors like "author cannot be empty in library section". NOTE: the hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library. Install returns verified:true when the library record exists in the hub catalog; that does NOT guarantee the Groovy compiles. resave (recompile without changes) is only valid in update mode. Update auto-backs-up before modifying. Requires Hub Admin Write + confirm + backup <24h. Returns new libraryId on install.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every install. For non-trivial libraries, prefer sourceFile (curl recipe in tool description). Must include a library() definition block with these 4 required fields: name, namespace, author, description (category is optional). Install fails with 'author cannot be empty in library section' (or similar for the missing field) if any required field is absent."],
+                    libraryId: [type: "string", description: "The library ID to update. Omit to install a new library instead."],
+                    source: [type: "string", description: "ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every call. For non-trivial libraries, prefer sourceFile (curl recipe in tool description). Install path must include a library() definition block with name/namespace/author/description (category optional)."],
                     sourceFile: [type: "string", description: "PREFERRED: File Manager filename after curl upload (e.g., 'my-library.groovy'). Upload first: curl -F 'uploadFile=@mylib.groovy' -F 'folder=/' http://<HUB_IP>/hub/fileManager/upload (Hub Security: run 'curl -c cookies.txt -d username=USER&password=PASS http://<HUB_IP>/login' first, then add '-b cookies.txt' to the upload; no auth needed without Hub Security)"],
+                    resave: [type: "boolean", description: "Update mode only (libraryId required). Re-save the current source code without changes. Runs entirely on-hub -- no cloud round-trip needed."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
-            ]
-        ],
-        [
-            name: "update_library_code",
-            description: """⚠️ CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.
-
-PREFERRED workflow for any iterative library dev (avoids reading source into agent transcript):
-  1) Upload bytes to File Manager via a local CLI tool that bypasses agent context:
-       curl -F "uploadFile=@library.groovy" -F "folder=/" "http://<HUB_IP>/hub/fileManager/upload"
-       (Hub Security: first run 'curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login', then add '-b cookies.txt' to the upload command. Without Hub Security no auth is needed. PowerShell Invoke-RestMethod, Python requests via uv, or Node fetch all work as alternatives.)
-  2) update_library_code(libraryId: '<id>', sourceFile: 'library.groovy', confirm: true)
-
-Inline 'source' is acceptable for stub-size snippets only.
-The 'manage_files write_file' MCP tool ALSO pulls content through agent context -- prefer the CLI-tool upload above.
-
-Modes: source (inline -- stubs only, fills agent transcript), sourceFile (RECOMMENDED -- bytes bypass agent context after CLI upload), resave (recompile without changes -- on-hub only, no source touched).
-Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    libraryId: [type: "string", description: "The library ID to update"],
-                    source: [type: "string", description: "ACCEPTABLE for stub-size snippets only -- inline source goes into agent transcript on every update. For non-trivial libraries, prefer sourceFile (curl recipe in tool description)."],
-                    sourceFile: [type: "string", description: "PREFERRED: File Manager filename after curl upload (e.g., 'mcp-source-library-123.groovy'). Upload first: curl -F 'uploadFile=@mylib.groovy' -F 'folder=/' http://<HUB_IP>/hub/fileManager/upload (Hub Security: run 'curl -c cookies.txt -d username=USER&password=PASS http://<HUB_IP>/login' first, then add '-b cookies.txt' to the upload; no auth needed without Hub Security)"],
-                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub -- no cloud round-trip needed."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["libraryId", "confirm"]
             ]
         ],
         [
@@ -2669,7 +2567,7 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
         ],
         [
             name: "restore_item_backup",
-            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use install_app/install_driver/install_library instead. Library backups return a clear error directing you to update_library_code. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use save_app/save_driver/save_library instead. Library backups return a clear error directing you to save_library. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2772,7 +2670,7 @@ Returns the app's identity (label, type, parent, disabled state) and its current
 
 Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
 
-Workflow: (1) Get the appId from list_installed_apps (all apps), list_rm_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not custom_list_rules / custom_get_rule, which only handle MCP-native rules), or list_installed_apps with filter=parents to explore app hierarchy. (2) Call get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
+Workflow: (1) Get the appId from list_installed_apps (all apps), list_rm_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not custom_get_rule, which only handle MCP-native rules), or list_installed_apps with filter=parents to explore app hierarchy. (2) Call get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
 
 Requires Hub Admin Read.""",
             inputSchema: [
@@ -2842,6 +2740,8 @@ Drift signal types:
 - orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
 
 Response fields: hpmAppId (echoed for caching); packagesChecked (filtered population if packageFilter narrowed); packagesWithActionableDrift (packages with at least one actionable signal -- excludes data-quality-only); totalDriftSignals (count of actionable signals only); drift[] (per-package: manifestUrl, packageName, version, signals[], optional dataQualityWarnings[]/skippedAppCount/skippedDriverCount); summary; orphanDetection ({enabled, reason?}); orphanDriverDetection (same shape for /hub2/userDeviceTypes); optional top-level dataQualityWarnings[]; optional skippedMalformed[]. On zero-match filter: filterMatchedZero=true + availablePackages[]; packagesChecked == 0 and summary reads "No drift detected across 0 tracked packages."
+
+Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via save_app) are NOT surfaced.
 
 drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist (they appear for visibility, not counted in summary).
 
@@ -2936,7 +2836,7 @@ appType (default: rule_machine): which class of native app to create.
   - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via update_native_app / delete_native_app with their appId.
 [[/FLAT_TRIM]]
 
-This is COMPLETELY SEPARATE from the MCP custom rule engine (custom_list_rules / custom_create_rule). Use create_native_app for native automations that show up in the hub UI; use custom_create_rule for MCP-managed rules.
+This is COMPLETELY SEPARATE from the MCP custom rule engine (custom_get_rule / custom_create_rule). Use create_native_app for native automations that show up in the hub UI; use custom_create_rule for MCP-managed rules.
 
 Workflow: create_native_app(appType=\"rule_machine\", name=\"...\") → get_app_config(appId) to read the page schema → update_native_app(appId, settings={...}) to add triggers/conditions/actions. Each update_native_app call auto-backs-up first, enforces the multiple=true capability contract, and verifies post-write that the app still renders cleanly.
 
@@ -3500,7 +3400,7 @@ def executeTool(toolName, args) {
     def customEngineOn = settings.enableCustomRuleEngine == true
     def builtinAppOn   = settings.enableBuiltinApp == true
     def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
-    def customReadonlyTools = ["custom_list_rules", "custom_get_rule", "custom_test_rule",
+    def customReadonlyTools = ["custom_get_rule", "custom_test_rule",
                                "custom_get_rule_diagnostics", "custom_update_rule"] as Set
     if (toolName?.startsWith("custom_")) {
         if (customEngineMode == "off") {
@@ -3514,14 +3414,13 @@ def executeTool(toolName, args) {
         // Device Tools
         case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor)
         case "get_device": return toolGetDevice(args.deviceId)
-        case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
+        case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor)
         case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
-        case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
-        case "poll_until_attribute": return toolPollUntilAttribute(args)
+        case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute, args)
 
         // Rule Management - now using child apps
-        case "custom_list_rules": return toolListRules(args)
-        case "custom_get_rule": return toolGetRule(args.ruleId)
+        // custom_list_rules removed: toolGetRule(null) returns list-summary mode (overload).
+        case "custom_get_rule": return toolGetRule(args)
         case "custom_create_rule": return toolCreateRule(args)
         case "custom_update_rule": return toolUpdateRule(args.ruleId, args, customEngineMode)
         case "custom_delete_rule": return toolDeleteRule(args)
@@ -3550,11 +3449,15 @@ def executeTool(toolName, args) {
         case "clear_captured_states": return toolClearCapturedStates()
 
         // Debug Logging Tools
-        case "get_debug_logs": return toolGetDebugLogs(args)
-        case "clear_debug_logs": return toolClearDebugLogs(args)
+        case "get_debug_log_state":
+            if (args.mode == "logs") return toolGetDebugLogs(args)
+            if (args.mode == "status") return toolGetLoggingStatus(args)
+            throw new IllegalArgumentException("get_debug_log_state requires mode='logs' or mode='status' (got: ${args.mode})")
+        case "update_debug_logs":
+            if (args.action == "clear") return toolClearDebugLogs(args)
+            if (args.action == "setLevel") return toolSetLogLevel(args)
+            throw new IllegalArgumentException("update_debug_logs requires action='clear' or action='setLevel' (got: ${args.action})")
         case "custom_get_rule_diagnostics": return toolGetRuleDiagnostics(args)
-        case "set_log_level": return toolSetLogLevel(args)
-        case "get_logging_status": return toolGetLoggingStatus(args)
         case "generate_bug_report": return toolGenerateBugReport(args)
 
         // Rule Export/Import/Clone
@@ -3566,7 +3469,6 @@ def executeTool(toolName, args) {
         case "check_for_update": return toolCheckForUpdate(args)
 
         // Hub Admin Read Tools
-        // get_hub_details merged into get_hub_info
         case "list_hub_apps": return toolListHubApps(args)
         case "list_hub_drivers": return toolListHubDrivers(args)
         case "get_zwave_details": return toolGetZwaveDetails(args)
@@ -3578,10 +3480,9 @@ def executeTool(toolName, args) {
         case "get_device_history": return toolGetDeviceHistory(args)
         case "get_performance_stats": return toolGetPerformanceStats(args)
         case "get_hub_jobs": return toolGetHubJobs(args)
-        case "get_set_hub_metrics": return toolGetHubPerformance(args)
+        case "force_garbage_collection": return toolForceGarbageCollection(args)
         case "device_health_check": return toolDeviceHealthCheck(args)
         case "get_memory_history": return toolGetMemoryHistory(args)
-        case "force_garbage_collection": return toolForceGarbageCollection(args)
 
         // Hub Admin Write Tools
         case "create_hub_backup": return toolCreateHubBackup(args)
@@ -3611,17 +3512,35 @@ def executeTool(toolName, args) {
         // Hub Admin App/Driver Management
         case "get_app_source": return toolGetAppSource(args)
         case "get_driver_source": return toolGetDriverSource(args)
-        case "install_app": return toolInstallApp(args)
-        case "install_driver": return toolInstallDriver(args)
-        case "update_app_code": return toolUpdateAppCode(args)
-        case "update_driver_code": return toolUpdateDriverCode(args)
+        case "save_app":
+            // appId absent → install (creates), appId present → update existing
+            return (args.appId != null && args.appId.toString().trim()) ? toolUpdateAppCode(args) : toolInstallApp(args)
+        case "save_driver":
+            // updates → bulk update; installs → bulk install; driverId → single update; else single install.
+            // Use `!= null` (not truthy) so an EMPTY updates/installs array still routes to the
+            // bulk path — the underlying impl owns the empty-array validation message.
+            // Reject mutually-exclusive combinations so silent precedence can't drop a payload.
+            def saveDriverModes = 0
+            if (args.updates != null) saveDriverModes++
+            if (args.installs != null) saveDriverModes++
+            if (args.driverId != null && args.driverId.toString().trim()) saveDriverModes++
+            if (saveDriverModes > 1) {
+                throw new IllegalArgumentException(
+                    "save_driver: at most one of 'updates' (bulk update), 'installs' (bulk install), or 'driverId' (single update) may be set. " +
+                    "For a single install, omit all three and provide 'source' or 'sourceFile'."
+                )
+            }
+            if (args.updates != null) return toolUpdateDriverCode(args)
+            if (args.installs != null) return toolInstallDriver(args)
+            return (args.driverId != null && args.driverId.toString().trim()) ? toolUpdateDriverCode(args) : toolInstallDriver(args)
         case "delete_app": return toolDeleteApp(args)
         case "delete_driver": return toolDeleteDriver(args)
 
         // Hub Admin Library Management
         case "get_library_source": return toolGetLibrarySource(args)
-        case "install_library": return toolInstallLibrary(args)
-        case "update_library_code": return toolUpdateLibraryCode(args)
+        case "save_library":
+            // libraryId absent → install (creates), libraryId present → update existing
+            return (args.libraryId != null && args.libraryId.toString().trim()) ? toolUpdateLibraryCode(args) : toolInstallLibrary(args)
         case "delete_library": return toolDeleteLibrary(args)
 
         // Item Backup Tools
@@ -4099,7 +4018,7 @@ def toolGetDevice(deviceId) {
     ]
 }
 
-def toolSendCommand(deviceId, command, parameters) {
+def toolSendCommand(deviceId, command, parameters, waitFor = null) {
     def device = findDevice(deviceId)
     if (!device) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -4121,12 +4040,31 @@ def toolSendCommand(deviceId, command, parameters) {
         device."${command}"()
     }
 
-    return [
+    def response = [
         success: true,
         device: deviceLabel,
         command: command,
         parameters: parameters
     ]
+
+    // Optional post-command poll. waitFor must be an object with at least
+    // 'attribute' + one of expectedValue / expectedValues. A non-Map waitFor is
+    // a caller mistake (not a no-op) — throw loudly. Args are passed through
+    // so toolPollUntilAttribute's strict unknown-key gate catches typos.
+    if (waitFor != null) {
+        if (!(waitFor instanceof Map)) {
+            throw new IllegalArgumentException("send_command 'waitFor' must be a JSON object with at least 'attribute' (got a non-object value)")
+        }
+        if (!waitFor.attribute) {
+            throw new IllegalArgumentException("waitFor requires 'attribute'")
+        }
+        def pollArgs = new LinkedHashMap(waitFor)
+        pollArgs.deviceId = deviceId.toString()
+        // pollArgs.attribute already carries through from waitFor
+        response.wait = toolPollUntilAttribute(pollArgs)
+    }
+
+    return response
 }
 
 /**
@@ -4221,7 +4159,28 @@ def toolGetDeviceEvents(deviceId, limit) {
     ]
 }
 
-def toolGetAttribute(deviceId, attribute) {
+def toolGetAttribute(deviceId, attribute, args = null) {
+    // Polling mode: triggered when any poll-specific arg is present
+    // (expectedValue, expectedValues, timeoutMs, pollIntervalMs). The poll itself
+    // does the reads — no leading fast-read side effect. Catching timeoutMs +
+    // pollIntervalMs (not just expectedValue) means a caller who passes
+    // 'timeoutMs: 5000' but forgets 'expectedValue' still hits toolPollUntilAttribute's
+    // strict gate (which then surfaces the missing expectedValue error) instead
+    // of silently degrading to a fast read. UX-trap (fast-read tool silently
+    // becoming long-blocking) is mitigated because polling only kicks in when
+    // the caller explicitly supplied a poll-shape arg.
+    def pollKeys = ['expectedValue', 'expectedValues', 'timeoutMs', 'pollIntervalMs'] as Set
+    if (args instanceof Map && args.keySet().any { pollKeys.contains(it) }) {
+        // Pass the full args map through (with positional fields applied) so
+        // toolPollUntilAttribute's strict unknown-key gate catches typos like
+        // 'timeOut' / 'timeoutSeconds' / 'expectedvalue' instead of silently
+        // dropping them.
+        def pollArgs = new LinkedHashMap(args)
+        pollArgs.deviceId = deviceId.toString()
+        pollArgs.attribute = attribute
+        return toolPollUntilAttribute(pollArgs)
+    }
+
     def device = findDevice(deviceId)
     if (!device) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -4249,11 +4208,8 @@ def toolGetAttribute(deviceId, attribute) {
  * timeout elapses. Uses pauseExecution() for inter-poll delays -- the only
  * synchronous sleep available in the Hubitat app sandbox.
  *
- * Kept separate from get_attribute rather than extending it because the two
- * tools have different cost profiles (sub-second vs. up-to-60s blocking),
- * different cognitive intent (observe now vs. wait-for), and different arg
- * shapes. Extending get_attribute would create a UX trap where a fast-read
- * tool silently becomes a long-blocking one.
+ * Internal helper; no longer dispatched as its own MCP tool. get_attribute
+ * (polling mode) and send_command (waitFor) both delegate here.
  */
 def toolPollUntilAttribute(args) {
     // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
@@ -4464,7 +4420,15 @@ def toolListRules(args = null) {
     return result
 }
 
-def toolGetRule(ruleId) {
+def toolGetRule(args) {
+    // Accept either a raw ruleId (legacy callers / direct Spock invocations) or
+    // a full args Map. The dispatcher now passes args so cursor pagination on
+    // list mode (no-ruleId overload) can forward through.
+    def safeArgs = (args instanceof Map) ? args : null
+    def ruleId = safeArgs ? safeArgs.ruleId : args
+    if (ruleId == null || ruleId.toString().trim().isEmpty()) {
+        return toolListRules(safeArgs ?: [:])
+    }
     def childApp = getChildAppById(ruleId)
     if (!childApp) {
         def redirect = findRuleAppRedirect(ruleId, "read")
@@ -5156,18 +5120,31 @@ def applyDeviceMapping(data, Map mapping) {
 // ==================== SYSTEM TOOLS ====================
 
 def toolGetHubInfo(args = null) {
+    def safeArgs = (args instanceof Map) ? args : [:]
+    def recordSnapshot = safeArgs.recordSnapshot == true
+    // trendPoints defaults to 0 (no CSV history fetched). Callers wanting trend points
+    // opt in by passing trendPoints>0 — otherwise the bare get_hub_info() call avoids
+    // the File Manager round-trip entirely.
+    def trendPoints = Math.min((safeArgs.trendPoints ?: 0) as Integer, 50)
+
+    // Hub Admin Read gates the write side only — bare reads (and the always-available
+    // hub fields below) stay open, matching pre-merge get_hub_info behaviour. Recording
+    // a new CSV trend row IS a write to File Manager, so it requires the gate.
+    if (recordSnapshot) requireHubAdminRead()
+
     def hub = location.hub
     def info = [
         temperatureScale: location.temperatureScale
     ]
 
-    // Hub hardware and radio info (always available)
-    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = "unavailable" }
-    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
-    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
-    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }
-    try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable" }
-    try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable" }
+    // Hub hardware and radio info (always available). Log at warn on read failure so a
+    // firmware-upgrade regression that breaks one of these accessors leaves a server-log trail.
+    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = "unavailable"; mcpLog("warn", "hub-info", "hub.hardwareID threw: ${e.message}") }
+    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable"; mcpLog("warn", "hub-info", "hub.firmwareVersionString threw: ${e.message}") }
+    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable"; mcpLog("warn", "hub-info", "hub.zigbeeChannel threw: ${e.message}") }
+    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable"; mcpLog("warn", "hub-info", "hub.zwaveVersion threw: ${e.message}") }
+    try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable"; mcpLog("warn", "hub-info", "hub.zigbeeId threw: ${e.message}") }
+    try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable"; mcpLog("warn", "hub-info", "hub.type threw: ${e.message}") }
 
     // Uptime (always available)
     try {
@@ -5253,6 +5230,7 @@ def toolGetHubInfo(args = null) {
         info.hubAdminReadRequired = "Hub Admin Read is not enabled. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
     }
 
+    // Optional identifyHub LED blink (from #192 — added on main). Opt-in via args.
     if (args?.identifyHub == true) {
         try {
             hubInternalGet("/hub/advanced/blinkLED")
@@ -5263,6 +5241,77 @@ def toolGetHubInfo(args = null) {
             info.identifyHubError = msg
             mcpLog("warn", "system", "identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
         }
+    }
+
+    // CSV trend history (folded from former get_set_hub_metrics tool). The CSV lives in
+    // File Manager; recordSnapshot is opt-in (default false), trendPoints defaults to 0.
+    // The bare get_hub_info() call avoids the File Manager round-trip entirely; the
+    // download/upload only fires when the caller opts in.
+    def csvFileName = "mcp-performance-history.csv"
+    info.historyFile = csvFileName
+
+    if (recordSnapshot || trendPoints > 0) {
+        def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
+        def history = []
+        def downloadAttempted = false
+        try {
+            downloadAttempted = true
+            def existingBytes = downloadHubFile(csvFileName)
+            if (existingBytes) {
+                def csvText = new String(existingBytes, "UTF-8")
+                def csvLines = csvText.split("\n")
+                for (int i = 1; i < csvLines.size(); i++) {
+                    if (csvLines[i]?.trim()) history << csvLines[i].trim()
+                }
+            }
+        } catch (Exception e) {
+            // Could be "file not found" (expected on first run) or a real I/O failure.
+            // Surface the message so callers can distinguish "no history yet" from
+            // "read failed" instead of always seeing trendPointsAvailable: 0.
+            mcpLog("warn", "monitoring", "Could not read performance CSV (${csvFileName}): ${e.message}")
+            info.historyReadError = e.message
+        }
+
+        if (recordSnapshot) {
+            def csvRow = "${now()},${info.freeMemoryKB},${info.internalTempCelsius},${info.databaseSizeKB},${info.uptimeSeconds}"
+            history << csvRow
+            if (history.size() > 500) history = history.drop(history.size() - 500)
+            def csvContent = csvHeader + "\n" + history.join("\n") + "\n"
+            try {
+                uploadHubFile(csvFileName, csvContent.getBytes("UTF-8"))
+                info.snapshotRecorded = true
+            } catch (Exception e) {
+                mcpLog("warn", "monitoring", "Failed to write performance CSV: ${e.message}")
+                info.snapshotRecorded = false
+                info.snapshotError = e.message
+            }
+        }
+
+        def trends = []
+        def trendsSkipped = 0
+        def startIdx = Math.max(0, history.size() - trendPoints)
+        for (int i = startIdx; i < history.size(); i++) {
+            def parts = history[i].split(",", -1)
+            if (parts.size() < 5) {
+                trendsSkipped++
+                continue
+            }
+            try {
+                trends << [
+                    timestamp: formatTimestamp(parts[0] as Long),
+                    freeMemoryKB: parts[1],
+                    internalTempC: parts[2],
+                    databaseSizeKB: parts[3],
+                    uptimeSeconds: parts[4]
+                ]
+            } catch (Exception e) {
+                trendsSkipped++
+                mcpLog("warn", "monitoring", "Skipped malformed CSV row at index ${i}: ${e.message}")
+            }
+        }
+        info.trends = trends
+        info.trendPointsAvailable = history.size()
+        if (trendsSkipped > 0) info.trendsSkipped = trendsSkipped
     }
 
     return info
@@ -7284,10 +7333,10 @@ def toolListItemBackups(args = null) {
             backups: [],
             count: 0,
             total: 0,
-            message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, or delete_library.",
+            message: "No item backups exist yet. Backups are created automatically when you use save_app, save_driver, save_library, delete_app, delete_driver, or delete_library.",
             maxBackups: 20,
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
-            howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore (apps/drivers). For deleted apps or drivers, use 'install_app' or 'install_driver' with the backup source. For deleted libraries, use 'install_library' with the backup source."
+            howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore (apps/drivers). For deleted apps or drivers, use 'save_app' or 'save_driver' with the backup source. For deleted libraries, use 'save_library' with the backup source."
         ]
     }
 
@@ -7325,7 +7374,7 @@ def toolListItemBackups(args = null) {
         total: backupList.size(),
         maxBackups: 20,
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
-        howToRestore: "Use 'restore_item_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'update_library_code' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
+        howToRestore: "Use 'restore_item_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'save_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
@@ -7394,7 +7443,7 @@ def toolGetItemBackup(args) {
     if (entry.type == "app") {
         result.howToRestore = "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
     } else if (entry.type == "library") {
-        result.howToRestore = "Library backups cannot be restored via restore_item_backup. To restore: call 'update_library_code' with libraryId='${entry.id}' and sourceFile='${entry.fileName}' (confirm=true). To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > FOR DEVELOPERS > Libraries code > library ID ${entry.id} > paste source > Save."
+        result.howToRestore = "Library backups cannot be restored via restore_item_backup. To restore: call 'save_library' with libraryId='${entry.id}' and sourceFile='${entry.fileName}' (confirm=true). To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > FOR DEVELOPERS > Libraries code > library ID ${entry.id} > paste source > Save."
     } else {
         result.howToRestore = "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Drivers Code > driver ID ${entry.id} > paste source > Save."
     }
@@ -7404,7 +7453,7 @@ def toolGetItemBackup(args) {
 
 /**
  * Restores an app or driver to its backed-up source code.
- * Reads the backup from File Manager and calls update_app_code or update_driver_code.
+ * Reads the backup from File Manager and calls save_app or save_driver.
  * Both the read (downloadHubFile) and write (hubInternalPostForm) are local — no cloud involvement.
  * Requires Hub Admin Write access.
  */
@@ -7427,16 +7476,16 @@ def toolRestoreItemBackup(args) {
     }
 
     // Library backups cannot be restored via the app/driver ajax/update endpoint.
-    // Direct the caller to use install_library or update_library_code with the backup source.
+    // Direct the caller to use save_library with the backup source.
     if (entry.type == "library") {
         return [
             success: false,
-            error: "Library backups cannot be restored via restore_item_backup -- use install_library or update_library_code with the backup source from '${entry.fileName}' instead.",
+            error: "Library backups cannot be restored via restore_item_backup -- use save_library (with libraryId for existing library, or omit for fresh install) with the backup source from '${entry.fileName}' instead.",
             backupKey: args.backupKey,
             type: "library",
             backupFile: entry.fileName,
             directDownload: "http://<HUB_IP>/local/${entry.fileName}",
-            hint: "Download the backup from File Manager or use get_item_backup to retrieve the source, then call update_library_code with sourceFile mode."
+            hint: "Download the backup from File Manager or use get_item_backup to retrieve the source, then call save_library with sourceFile mode."
         ]
     }
 
@@ -7947,12 +7996,12 @@ def getLogLevels() {
 
 /**
  * Get configured log level threshold
- * Checks settings first (UI), then state (MCP set_log_level), then defaults to "error"
+ * Checks settings first (UI), then state (MCP update_debug_logs action=setLevel), then defaults to "error"
  */
 def getConfiguredLogLevel() {
     // Settings take priority (can be set via UI)
     if (settings.mcpLogLevel) return settings.mcpLogLevel
-    // Fall back to state (can be set via MCP set_log_level tool)
+    // Fall back to state (can be set via MCP update_debug_logs action=setLevel)
     return state.debugLogs?.config?.logLevel ?: "error"
 }
 
@@ -8509,70 +8558,6 @@ _Add any other context, screenshots, or transcripts when filing._
 }
 
 // ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
-
-def toolGetHubDetails(args) {
-    requireHubAdminRead()
-
-    def hub = location.hub
-    def details = [
-        name: hub?.name,
-        localIP: hub?.localIP,
-        timeZone: location.timeZone?.ID,
-        temperatureScale: location.temperatureScale,
-        latitude: location.latitude,
-        longitude: location.longitude,
-        zipCode: location.zipCode
-    ]
-
-    // Safe property access for hub properties
-    try { details.model = hub?.hardwareID } catch (Exception e) { details.model = "unavailable" }
-    try { details.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { details.firmwareVersion = "unavailable" }
-    try { details.uptime = hub?.uptime } catch (Exception e) { details.uptime = "unavailable" }
-    try { details.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { details.zigbeeChannel = "unavailable" }
-    try { details.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { details.zwaveVersion = "unavailable" }
-    try { details.zigbeeId = hub?.zigbeeId } catch (Exception e) { details.zigbeeId = "unavailable" }
-    try { details.type = hub?.type } catch (Exception e) { details.type = "unavailable" }
-    try { details.hubData = hub?.data } catch (Exception e) { details.hubData = null }
-
-    // Extended info via internal API
-    try {
-        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
-        if (freeMemory) details.freeMemoryKB = freeMemory.trim()
-    } catch (Exception e) {
-        details.freeMemoryKB = "unavailable (${e.message})"
-        mcpLog("debug", "hub-admin", "Could not get free memory: ${e.message}")
-    }
-
-    try {
-        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
-        if (tempC) details.internalTempCelsius = tempC.trim()
-    } catch (Exception e) {
-        details.internalTempCelsius = "unavailable (${e.message})"
-        mcpLog("debug", "hub-admin", "Could not get internal temperature: ${e.message}")
-    }
-
-    // Hub database size via internal API
-    try {
-        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
-        if (dbSize) details.databaseSizeKB = dbSize.trim()
-    } catch (Exception e) {
-        details.databaseSizeKB = "unavailable"
-        mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
-    }
-
-    details.mcpServerVersion = currentVersion()
-    details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
-    details.ruleCount = getChildApps()?.size() ?: 0
-    details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
-    details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
-    details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
-    details.builtinAppEnabled = settings.enableBuiltinApp ?: false
-    details.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
-    details.developerModeEnabled = settings.enableDeveloperMode ?: false
-
-    mcpLog("info", "hub-admin", "Retrieved extended hub details")
-    return details
-}
 
 def toolListHubApps(args) {
     requireHubAdminRead()
@@ -9505,115 +9490,50 @@ def toolGetHubJobs(args) {
     ]
 }
 
-def toolGetHubPerformance(args) {
+def toolForceGarbageCollection(args) {
     requireHubAdminRead()
 
-    def recordSnapshot = args.recordSnapshot != false
-    def trendPoints = Math.min(args.trendPoints ?: 10, 50)
+    def beforeKB = null
+    def beforeError = null
+    try { beforeKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim() as Integer } catch (Exception e) { beforeError = e.message }
 
-    // Gather current metrics
-    def current = [timestamp: formatTimestamp(now()), timestampEpoch: now()]
-
+    def gcTriggered = false
+    def gcError = null
     try {
-        current.freeMemoryKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim()
-        try {
-            def memKB = current.freeMemoryKB as Integer
-            if (memKB < 50000) current.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
-            else if (memKB < 100000) current.memoryNote = "Memory is moderate: ${memKB}KB free."
-        } catch (Exception nfe) { /* non-numeric */ }
-    } catch (Exception e) { current.freeMemoryKB = "unavailable" }
-
-    try {
-        current.internalTempC = hubInternalGet("/hub/advanced/internalTempCelsius")?.trim()
-        try {
-            def temp = current.internalTempC as Double
-            if (temp > 70) current.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
-            else if (temp > 60) current.temperatureNote = "Temperature is warm: ${temp}°C."
-        } catch (Exception nfe) { /* non-numeric */ }
-    } catch (Exception e) { current.internalTempC = "unavailable" }
-
-    try {
-        current.databaseSizeKB = hubInternalGet("/hub/advanced/databaseSize")?.trim()
-        try {
-            def dbKB = current.databaseSizeKB as Integer
-            if (dbKB > 500000) current.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-        } catch (Exception nfe) { /* non-numeric */ }
-    } catch (Exception e) { current.databaseSizeKB = "unavailable" }
-
-    try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
-    if (current.uptimeSeconds && current.uptimeSeconds instanceof Number) {
-        def days = (current.uptimeSeconds / 86400).toInteger()
-        def hours = ((current.uptimeSeconds % 86400) / 3600).toInteger()
-        def mins = ((current.uptimeSeconds % 3600) / 60).toInteger()
-        current.uptimeFormatted = "${days}d ${hours}h ${mins}m"
-    }
-
-    // CSV history management
-    def csvFileName = "mcp-performance-history.csv"
-    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
-    def history = []
-
-    // Read existing CSV from File Manager
-    try {
-        def existingBytes = downloadHubFile(csvFileName)
-        if (existingBytes) {
-            def csvText = new String(existingBytes, "UTF-8")
-            def csvLines = csvText.split("\n")
-            for (int i = 1; i < csvLines.size(); i++) {
-                if (csvLines[i]?.trim()) history << csvLines[i].trim()
-            }
-        }
+        hubInternalGet("/hub/forceGC")
+        gcTriggered = true
     } catch (Exception e) {
-        // File doesn't exist yet, that's fine
-        mcpLog("debug", "monitoring", "No existing performance CSV: ${e.message}")
+        gcError = e.message
+        mcpLog("warn", "diagnostics", "forceGC trigger failed: ${e.message}")
     }
+    pauseExecution(1000)
 
-    // Record current snapshot to CSV
-    if (recordSnapshot) {
-        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeKB},${current.uptimeSeconds}"
-        history << csvRow
+    def afterKB = null
+    def afterError = null
+    try { afterKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim() as Integer } catch (Exception e) { afterError = e.message }
 
-        // Trim to 500 rows (rolling window)
-        if (history.size() > 500) {
-            history = history.drop(history.size() - 500)
-        }
-
-        // Write back to File Manager
-        def csvContent = csvHeader + "\n" + history.join("\n") + "\n"
-        try {
-            uploadHubFile(csvFileName, csvContent.getBytes("UTF-8"))
-        } catch (Exception e) {
-            mcpLog("warn", "monitoring", "Failed to write performance CSV: ${e.message}")
-        }
-    }
-
-    // Parse recent trend points for response
-    def trends = []
-    def startIdx = Math.max(0, history.size() - trendPoints)
-    for (int i = startIdx; i < history.size(); i++) {
-        def parts = history[i].split(",", -1)
-        if (parts.size() >= 5) {
-            try {
-                trends << [
-                    timestamp: formatTimestamp(parts[0] as Long),
-                    freeMemoryKB: parts[1],
-                    internalTempC: parts[2],
-                    databaseSizeKB: parts[3],
-                    uptimeSeconds: parts[4]
-                ]
-            } catch (Exception e) {
-                // Skip malformed rows
-            }
-        }
-    }
-
-    mcpLog("info", "monitoring", "Hub performance snapshot recorded=${recordSnapshot}, trendPoints=${trends.size()}")
-    return [
-        current: current,
-        trends: trends,
-        trendPointsAvailable: history.size(),
-        historyFile: csvFileName
+    def result = [
+        success: gcTriggered,
+        gcTriggered: gcTriggered,
+        beforeFreeMemoryKB: beforeKB,
+        afterFreeMemoryKB: afterKB,
+        timestamp: formatTimestamp(now())
     ]
+    if (gcError) result.gcError = gcError
+    if (beforeError) result.beforeReadError = beforeError
+    if (afterError) result.afterReadError = afterError
+
+    if (gcTriggered && beforeKB != null && afterKB != null) {
+        result.deltaKB = afterKB - beforeKB
+        result.memoryReclaimed = result.deltaKB > 0
+        result.summary = "GC complete: ${beforeKB}KB → ${afterKB}KB (${result.deltaKB > 0 ? '+' : ''}${result.deltaKB}KB)"
+    } else if (gcTriggered) {
+        result.summary = "GC triggered but could not read memory values for comparison"
+    } else {
+        result.summary = "GC trigger FAILED: ${gcError ?: 'unknown error'}"
+    }
+    mcpLog("info", "diagnostics", "Forced GC: triggered=${gcTriggered}, before=${beforeKB}KB, after=${afterKB}KB")
+    return result
 }
 
 def toolGetMemoryHistory(args) {
@@ -9709,49 +9629,6 @@ def toolGetMemoryHistory(args) {
     }
 
     mcpLog("info", "diagnostics", "Memory history retrieved: ${paged.page.size()} entries (${allEntries.size()} total)")
-    return result
-}
-
-def toolForceGarbageCollection(args) {
-    requireHubAdminRead()
-
-    // Read free memory before GC
-    def beforeKB = null
-    try {
-        beforeKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim() as Integer
-    } catch (Exception e) {
-        beforeKB = null
-    }
-
-    // Trigger garbage collection
-    hubInternalGet("/hub/forceGC")
-
-    // Brief pause to let GC complete
-    pauseExecution(1000)
-
-    // Read free memory after GC
-    def afterKB = null
-    try {
-        afterKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim() as Integer
-    } catch (Exception e) {
-        afterKB = null
-    }
-
-    def result = [
-        beforeFreeMemoryKB: beforeKB,
-        afterFreeMemoryKB: afterKB,
-        timestamp: formatTimestamp(now())
-    ]
-
-    if (beforeKB != null && afterKB != null) {
-        result.deltaKB = afterKB - beforeKB
-        result.memoryReclaimed = result.deltaKB > 0
-        result.summary = "GC complete: ${beforeKB}KB → ${afterKB}KB (${result.deltaKB > 0 ? '+' : ''}${result.deltaKB}KB)"
-    } else {
-        result.summary = "GC triggered but could not read memory values for comparison"
-    }
-
-    mcpLog("info", "diagnostics", "Forced GC: before=${beforeKB}KB, after=${afterKB}KB")
     return result
 }
 
@@ -10570,7 +10447,7 @@ def toolGetDriverSource(args) {
 
 def toolInstallApp(args) {
     if (args.installs != null) {
-        throw new IllegalArgumentException("Bulk mode ('installs' array) is not supported for install_app. Apps do not cluster the way drivers do; install each app individually.")
+        throw new IllegalArgumentException("Bulk mode ('installs' array) is not supported for save_app. Apps do not cluster the way drivers do; install each app individually.")
     }
     requireHubAdminWrite(args.confirm)
     return toolInstallItemSingle("app", args)
@@ -10965,7 +10842,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
 
 def toolUpdateAppCode(args) {
     if (args.updates != null) {
-        throw new IllegalArgumentException("Bulk mode ('updates' array) is not supported for update_app_code. Apps do not cluster the way drivers do; update each app individually.")
+        throw new IllegalArgumentException("Bulk mode ('updates' array) is not supported for save_app. Apps do not cluster the way drivers do; update each app individually.")
     }
     return toolUpdateItemCode("app", "appId", args)
 }
@@ -11020,14 +10897,14 @@ def toolUpdateDriverCode(args) {
                 }
                 itemResults << entry
             } catch (Exception e) {
-                mcpLogError("hub-admin", "Bulk update_driver_code item ${idx} (driverId ${item.driverId}) threw", e)
+                mcpLogError("hub-admin", "Bulk save_driver item ${idx} (driverId ${item.driverId}) threw", e)
                 itemResults << [driverId: item.driverId.toString(), success: false, error: e.message ?: e.toString(), errorClass: e.class.simpleName]
                 allSucceeded = false
             }
         }
 
         def successCount = itemResults.count { it.success == true }
-        mcpLog("info", "hub-admin", "Bulk update_driver_code: ${successCount}/${itemResults.size()} succeeded")
+        mcpLog("info", "hub-admin", "Bulk save_driver: ${successCount}/${itemResults.size()} succeeded")
         return [
             success: allSucceeded,
             message: allSucceeded ? "All ${itemResults.size()} driver(s) updated successfully." : "${successCount} of ${itemResults.size()} driver(s) updated successfully.",
@@ -11083,7 +10960,7 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
             mcpLog("info", "hub-admin", "${type.capitalize()} ID ${itemId} deleted successfully")
             // .toString() because the stored key is a String but Map.get(GString) does not coerce (hashCode mismatch → silent null).
             def backupEntry = (atomicState.itemBackupManifest ?: [:])?.get("${type}_${itemId}".toString())
-            def installTool = (type == "app") ? "install_app" : "install_driver"
+            def installTool = (type == "app") ? "save_app" : "save_driver"
             def result = [
                 success: true,
                 message: backupSucceeded ? "${type.capitalize()} deleted successfully. Source code backed up to File Manager." : "${type.capitalize()} deleted successfully. WARNING: Pre-delete backup failed -- source code may not be recoverable.",
@@ -11182,7 +11059,7 @@ private Map backupLibrarySource(String libraryId) {
 
 /**
  * Get library Groovy source. Supports chunked reading (offset/length).
- * Large files are auto-saved to File Manager for use with update_library_code sourceFile mode.
+ * Large files are auto-saved to File Manager for use with save_library sourceFile mode.
  * Hub endpoint: GET /library/list/single/data/<id> returns [{id, source, version, ...}]
  */
 def toolGetLibrarySource(args) {
@@ -11255,7 +11132,7 @@ def toolGetLibrarySource(args) {
         }
         if (savedToFile) {
             result.sourceFile = savedToFile
-            result.sourceFileHint = "Full source saved to File Manager. Use update_library_code with sourceFile: '${savedToFile}' to update without cloud size limits."
+            result.sourceFileHint = "Full source saved to File Manager. Use save_library with sourceFile: '${savedToFile}' to update without cloud size limits."
         }
         if (savedToFileError) {
             result.sourceFileError = "Failed to auto-save full source to File Manager: ${savedToFileError}. Use chunked reads (offset/length) to retrieve the full source."
@@ -11607,7 +11484,7 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                restoreHint: backupEntry ? "To restore: use 'install_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                restoreHint: backupEntry ? "To restore: use 'save_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -13640,7 +13517,7 @@ def toolGetHpmDrift(args) {
         summary                     : summary,
         orphanDetection             : orphanDetection,
         orphanDriverDetection       : orphanDriverDetection,
-        limitations                 : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes."
+        limitations                 : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-save_app edits) is NOT detected -- HPM stores no source hashes."
     ]
     if (driftSkippedMalformed) result.skippedMalformed = driftSkippedMalformed
     if (driftDataQualityWarnings) result.dataQualityWarnings = driftDataQualityWarnings
@@ -23734,7 +23611,7 @@ def toolSearchTools(args) {
     def searchHideByName = [] as Set
     def searchHideGwSubTools = [:].withDefault { [] as Set }
     if (customEngineMode == "off") {
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
+        ["custom_get_rule", "custom_create_rule", "custom_update_rule",
          "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
          "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
             searchHideByName << it
@@ -24071,7 +23948,7 @@ MCP-managed virtual devices:
 - Only write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)
-- Created when using update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, delete_library
+- Created when using save_app, save_driver, save_library, delete_app, delete_driver, delete_library
 - Stored in File Manager as .groovy files
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned
@@ -24140,7 +24017,7 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
   - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call list_app_pages first to discover available page names for any multi-page app.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
-  - Workflow: list_installed_apps (or list_rm_rules for RM rules specifically -- note that custom_list_rules / custom_get_rule handle only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then get_app_config to inspect. For multi-page apps, consider list_app_pages first.
+  - Workflow: list_installed_apps (or list_rm_rules for RM rules specifically -- note that custom_get_rule handle only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then get_app_config to inspect. For multi-page apps, consider list_app_pages first.
 
 - **list_app_pages** — discover what pageNames a given app accepts (Hub Admin Read required)
   - Input: appId
@@ -24160,7 +24037,7 @@ Tools in the manage_installed_apps and manage_native_rules_and_apps gateways hav
   - Optional packageFilter (case-insensitive substring) narrows to specific packages
   - Response: packagesChecked, packagesWithActionableDrift (packages with at least one actionable signal), totalDriftSignals (actionable drift only -- not data-quality warnings), drift[] array (one entry per package with signals or dataQualityWarnings; drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist), summary sentence, orphanDetection ({enabled, reason?}), orphanDriverDetection ({enabled, reason?}), limitations note
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
-  - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via update_app_code are not detectable
+  - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via save_app are not detectable
 
 **manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 

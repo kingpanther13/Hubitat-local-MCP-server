@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture (23 core + 13 gateways = 36 on tools/list, 80 proxied, 103 total).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture (21 core + 13 gateways = 34 on tools/list, 74 proxied, 95 total).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -155,7 +155,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `get_device_events`. Returns recent on/off events.
 
-### T07b — poll_until_attribute (basic match)
+### T07b — get_attribute polling mode (basic match)
 
 ```json
 {
@@ -165,9 +165,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `send_command` (on), then `poll_until_attribute` with `attribute=switch, expectedValue="on", timeoutMs=5000`. Returns `success: true, timedOut: false`.
+**Expected**: Calls `send_command` (on), then `get_attribute` with `attribute=switch, expectedValue="on", timeoutMs=5000` (polling mode activates because expectedValue is supplied). Returns `success: true, timedOut: false`. Alternative one-shot: `send_command(..., waitFor={attribute:"switch", expectedValue:"on", timeoutMs:5000})`.
 
-### T07c — poll_until_attribute (timeout path)
+### T07c — get_attribute polling mode (timeout path)
 
 ```json
 {
@@ -177,9 +177,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `poll_until_attribute` with `expectedValue="on", timeoutMs=500`. Device was never turned on, so returns `success: false, timedOut: true`.
+**Expected**: Calls `get_attribute` with `expectedValue="on", timeoutMs=500`. Device was never turned on, so returns `success: false, timedOut: true`.
 
-### T07d — poll_until_attribute (expectedValues OR semantics)
+### T07d — get_attribute polling mode (expectedValues OR semantics)
 
 ```json
 {
@@ -189,9 +189,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `poll_until_attribute` with `expectedValues=["on","off"], timeoutMs=2000`. Device is in one of those states by default, so returns `success: true, timedOut: false` on the first poll.
+**Expected**: Calls `get_attribute` with `expectedValues=["on","off"], timeoutMs=2000`. Device is in one of those states by default, so returns `success: true, timedOut: false` on the first poll.
 
-### T08 — custom_list_rules
+### T08 — custom_get_rule (list-summary mode)
 
 ```json
 {
@@ -199,7 +199,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `custom_list_rules`. Returns rule count, names, enabled/disabled status.
+**Expected**: Calls `custom_get_rule` with `ruleId` omitted — list-summary mode (folded from former `custom_list_rules`). Returns rule count, names, enabled/disabled status.
 
 ### T09 — custom_get_rule
 
@@ -683,7 +683,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_logs` → `get_device_history`.
 
-### T49 — Discover get_set_hub_metrics (manage_diagnostics)
+### T49 — Discover get_hub_info (core)
 
 ```json
 {
@@ -691,7 +691,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_diagnostics` → `get_set_hub_metrics`.
+**Expected**: Discovers and calls the core `get_hub_info` tool directly. Performance metrics (memory, temperature, database size) live on `get_hub_info` (it absorbed the former `get_set_hub_metrics`/`hub_metrics` tool); the tool is a core surface, not a `manage_diagnostics` sub-tool.
 
 ### T50 — Discover device_health_check (manage_diagnostics)
 
@@ -703,7 +703,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_diagnostics` → `device_health_check`.
 
-### T51 — Discover get_debug_logs (manage_logs)
+### T51 — Discover get_debug_log_state (manage_logs)
 
 ```json
 {
@@ -711,7 +711,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_logs` → `get_debug_logs`.
+**Expected v0.8.0**: Discovers `manage_logs` → `get_debug_log_state` with `mode='logs'`.
 
 ### T52 — Discover generate_bug_report (manage_diagnostics)
 
@@ -735,7 +735,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_diagnostics` → `custom_get_rule_diagnostics`.
 
-### T54 — Discover set_log_level (manage_logs)
+### T54 — Discover update_debug_logs setLevel (manage_logs)
 
 ```json
 {
@@ -744,7 +744,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_logs` → `set_log_level` and → `get_logging_status`.
+**Expected v0.8.0**: Discovers `manage_logs` → `update_debug_logs` with `action='setLevel', level='warn'` and → `get_debug_log_state` with `mode='status'`.
 
 ### T55 — Discover list_captured_states (manage_diagnostics)
 
@@ -788,7 +788,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `manage_files` → `write_file` (and `delete_file` in teardown).
 
-### T59 — Discover clear_debug_logs (manage_logs)
+### T59 — Discover update_debug_logs clear (manage_logs)
 
 ```json
 {
@@ -796,7 +796,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `manage_logs` → `clear_debug_logs`, then → `get_debug_logs`.
+**Expected v0.8.0**: Discovers `manage_logs` → `update_debug_logs` with `action='clear'`, then → `get_debug_log_state` with `mode='logs'`.
 
 ---
 
@@ -997,7 +997,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `get_hub_logs` (system logs), not `get_debug_logs` (MCP-specific).
+**Expected**: Routes to `get_hub_logs` (system logs), not `get_debug_log_state` (MCP-specific).
 
 ---
 
@@ -1051,7 +1051,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: Split across `manage_diagnostics` (get_set_hub_metrics, device_health_check) and `manage_logs` (get_hub_logs, get_debug_logs).
+**Expected**: Split across `manage_diagnostics` (get_hub_info, device_health_check) and `manage_logs` (get_hub_logs, get_debug_log_state).
 
 ### T84 — Cross-gateway workflow
 
@@ -1140,7 +1140,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `get_set_hub_metrics` (in `manage_diagnostics`), not `get_hub_info` (core). Performance metrics = diagnostics gateway.
+**Expected**: `get_hub_info` (core). Performance metrics (memory, temperature, DB size) live on the core `get_hub_info` tool — it absorbed the former `hub_metrics`/`get_set_hub_metrics` tool, so no gateway hop is needed.
 
 ### T95 — User references wrong gateway domain
 
@@ -1524,7 +1524,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `custom_list_rules`.
+**Expected**: `custom_get_rule` with `ruleId` omitted (list-summary mode).
 **Equivalent to**: T08
 
 #### T211 — Walk me through this automation
@@ -2022,7 +2022,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_set_hub_metrics` (via `manage_diagnostics`).
+**Expected**: `get_hub_info` (via `manage_diagnostics`).
 **Equivalent to**: T49
 
 #### T278 — Dead or unresponsive devices
@@ -2044,7 +2044,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_debug_logs`.
+**Expected**: `get_debug_log_state` with `mode='logs'`.
 **Equivalent to**: T51
 
 #### T280 — Clean up diagnostic logs
@@ -2056,7 +2056,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `clear_debug_logs`, then `get_debug_logs` to verify.
+**Expected**: `update_debug_logs` with `action='clear'`, then `get_debug_log_state` with `mode='logs'` to verify.
 **Equivalent to**: T59
 
 #### T281 — Troubleshoot a broken automation
@@ -2081,7 +2081,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `set_log_level` (to 'warn' or 'error'), then `get_logging_status`.
+**Expected**: `update_debug_logs` with `action='setLevel', level='warn'` (or 'error'), then `get_debug_log_state` with `mode='status'`.
 **Equivalent to**: T54
 
 #### T283 — Generate a bug report
@@ -2194,7 +2194,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `get_set_hub_metrics` + `device_health_check` + `get_hub_logs` + `get_debug_logs`.
+**Expected**: `get_hub_info` + `device_health_check` + `get_hub_logs` + `get_debug_log_state`.
 **Equivalent to**: T83
 
 #### T299 — Complete smart home inventory
@@ -2244,10 +2244,10 @@ These operations are too destructive for automated testing. Test manually with e
 | Shutdown hub | `shutdown_hub` | manage_destructive_hub_ops | Requires physical restart |
 | Z-Wave repair | `zwave_repair` | manage_diagnostics | 5-30 min, devices unresponsive |
 | Delete real device | `delete_device` | manage_destructive_hub_ops | Permanent, no undo |
-| Install app | `install_app` | manage_app_driver_code | Modifies hub code |
-| Install driver | `install_driver` | manage_app_driver_code | Modifies hub code |
-| Update app code | `update_app_code` | manage_app_driver_code | Modifies production code |
-| Update driver code | `update_driver_code` | manage_app_driver_code | Modifies production code |
+| Install app | `save_app` (omit appId) | manage_app_driver_code | Modifies hub code |
+| Install driver | `save_driver` (omit driverId; bulk via `installs=[...]`) | manage_app_driver_code | Modifies hub code |
+| Update app code | `save_app` (provide appId) | manage_app_driver_code | Modifies production code |
+| Update driver code | `save_driver` (provide driverId; bulk via `updates=[...]`) | manage_app_driver_code | Modifies production code |
 | Delete app | `delete_app` | manage_app_driver_code | Permanent code removal |
 | Delete driver | `delete_driver` | manage_app_driver_code | Permanent code removal |
 | Restore item backup | `restore_item_backup` | manage_app_driver_code | Overwrites current code |
@@ -2288,7 +2288,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Section | Tests | Purpose |
 |---------|-------|---------|
-| 1. Core Tools | T01-T19f | 23 core tools work directly |
+| 1. Core Tools | T01-T19f | 21 core tools work directly (test range retained from main; some tests may still reference tools removed by this PR's reduction and need follow-up sweep) |
 | 2. Gateway Discovery | T20-T31, T35-T59 | LLM finds all proxied tools without hints |
 | 3. Gateway Behavior | T60-T65 | Catalog mode, skip-catalog, errors |
 | 4. Natural Language | T70-T79 | Casual prompts route correctly |
@@ -2299,24 +2299,24 @@ These operations are too destructive for automated testing. Test manually with e
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
 | 12. Developer Mode | T219-T226 | Self-administration: update_mcp_settings + delete_variable |
-| 13. Driver Code Lifecycle | T400-T406 | install_driver (single + bulk), update_driver_code (bulk), delete |
+| 13. Driver Code Lifecycle | T400-T406 | save_driver install (single + bulk), save_driver update (bulk), delete |
 | 14. Library Management | T500-T508 | Library CRUD: install, update, delete, get_source |
 
 ### Architecture (post installed-apps + RM interop + Developer Mode)
 
 | Component | Count |
 |-----------|-------|
-| Core tools on `tools/list` | 23 |
+| Core tools on `tools/list` | 21 |
 | Gateways on `tools/list` | 13 |
-| Total visible on `tools/list` | 36 |
-| Tools proxied behind gateways | 80 |
-| Total tools in codebase | 103 |
+| Total visible on `tools/list` | 34 |
+| Tools proxied behind gateways | 74 |
+| Total tools in codebase | 95 |
 
-**13 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_hpm` (2), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
+**13 Gateways**: `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (7), `manage_logs` (6), `manage_diagnostics` (10), `manage_files` (4), `manage_installed_apps` (4), `manage_hpm` (2), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
 
 ### Tool Coverage (non-destructive tools only)
 
-All 103 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 95 tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2693,81 +2693,81 @@ These tests exercise the Developer Mode self-administration surface — the `man
 
 All tests below require Hub Admin Write enabled and a recent backup. Tests are excluded from the auto-exercise sweep (destructive to hub code). Test artifacts use the `BAT_` name prefix per BAT convention so they can be identified and cleaned up independently.
 
-### T400 — install_driver via sourceFile (File Manager path)
+### T400 — save_driver install via sourceFile (File Manager path)
 
 ```json
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write a minimal driver stub to File Manager: write_file(fileName='bat-test-driver.groovy', content='metadata { definition(name: \"BAT_DriverCodeLifecycle\", namespace: \"bat\", author: \"test\") { } }').",
-  "test_prompt": "Install the driver using install_driver with sourceFile='bat-test-driver.groovy' and confirm=true. Report the new driver ID.",
+  "test_prompt": "Install the driver using save_driver (omit driverId) with sourceFile='bat-test-driver.groovy' and confirm=true. Report the new driver ID.",
   "teardown_prompt": "Delete the driver installed in this test using delete_driver with the driverId returned above and confirm=true. Also delete the File Manager file bat-test-driver.groovy using delete_file."
 }
 ```
 
 **Expected**: Tool resolves the file from File Manager, POSTs to `/driver/save`, fetches the new driver back to verify it compiled, and returns `success: true` with `driverId` set and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
 
-### T401 — install_driver compile failure detected (post-install verification)
+### T401 — save_driver install compile failure detected (post-install verification)
 
 ```json
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. This test intentionally installs broken Groovy source -- the hub creates a stub slot in an error state (BAT_BrokenInstallStub). Note the driver ID returned for cleanup.",
-  "test_prompt": "Install a driver with deliberately broken syntax using install_driver(source='this is not valid groovy {{ }}', confirm=true). Report what happens.",
+  "test_prompt": "Install a driver with deliberately broken syntax using save_driver(source='this is not valid groovy {{ }}', confirm=true). Report what happens.",
   "teardown_prompt": "Delete the error-state driver slot created in this test using delete_driver with the driverId returned and confirm=true."
 }
 ```
 
 **Expected**: Hub creates an item slot (returns a redirect with an ID) but the post-install verification detects `status: error` from `/driver/ajax/code`. Tool returns `success: false` with the compile error message and the item ID in the response. AI reports the error and does not claim success.
 
-### T402 — update_driver_code bulk mode (happy path)
+### T402 — save_driver update bulk mode (happy path)
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install two minimal BAT_ driver stubs via install_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
-  "test_prompt": "Update both drivers in a single call using update_driver_code with updates=[{driverId: '<id1>', sourceFile: 'bat-bulk-1.groovy'}, {driverId: '<id2>', sourceFile: 'bat-bulk-2.groovy'}] and confirm=true.",
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install two minimal BAT_ driver stubs via save_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
+  "test_prompt": "Update both drivers in a single call using save_driver with updates=[{driverId: '<id1>', sourceFile: 'bat-bulk-1.groovy'}, {driverId: '<id2>', sourceFile: 'bat-bulk-2.groovy'}] and confirm=true.",
   "teardown_prompt": "Delete both BAT_ drivers using delete_driver with confirm=true for each driverId. Also delete the File Manager files bat-bulk-1.groovy and bat-bulk-2.groovy using delete_file."
 }
 ```
 
 **Expected**: Tool applies both updates sequentially. Returns `success: true` with `updates` array containing two entries, each with `success: true`, `driverId`, and `sourceMode: 'sourceFile'`. `message` says "All 2 driver(s) updated successfully."
 
-### T403 — update_driver_code bulk mode rejects mixed single+bulk args
+### T403 — save_driver update bulk mode rejects mixed single+bulk args
 
 ```json
 {
-  "test_prompt": "Call update_driver_code with both driverId='123' AND updates=[{driverId: '456', sourceFile: 'f.groovy'}] and confirm=true."
+  "test_prompt": "Call save_driver with both driverId='123' AND updates=[{driverId: '456', sourceFile: 'f.groovy'}] and confirm=true."
 }
 ```
 
 **Expected**: Tool throws `IllegalArgumentException` (JSON-RPC -32602) with a message containing 'bulk mode' and 'driverId'. No update is performed.
 
-### T404 — install_driver bulk mode (happy path)
+### T404 — save_driver install bulk mode (happy path)
 
 ```json
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write two minimal driver stubs to File Manager: write_file(fileName='bat-bulk-install-1.groovy', content='metadata { definition(name: \"BAT_BulkInstall1\", namespace: \"bat\", author: \"test\") { } }') and write_file(fileName='bat-bulk-install-2.groovy', content='metadata { definition(name: \"BAT_BulkInstall2\", namespace: \"bat\", author: \"test\") { } }').",
-  "test_prompt": "Install both drivers in a single call using install_driver with installs=[{sourceFile: 'bat-bulk-install-1.groovy'}, {sourceFile: 'bat-bulk-install-2.groovy'}] and confirm=true. Report the driver IDs returned.",
+  "test_prompt": "Install both drivers in a single call using save_driver with installs=[{sourceFile: 'bat-bulk-install-1.groovy'}, {sourceFile: 'bat-bulk-install-2.groovy'}] and confirm=true. Report the driver IDs returned.",
   "teardown_prompt": "Delete both BAT_ drivers installed above using delete_driver with confirm=true for each driverId. Also delete the File Manager files bat-bulk-install-1.groovy and bat-bulk-install-2.groovy using delete_file."
 }
 ```
 
 **Expected**: Tool installs both drivers in a single call, resolving each from File Manager. Returns `success: true` with `installs` array containing two entries, each with `success: true`, a non-null `driverId`, and `sourceMode: 'sourceFile'`. `message` says "All 2 driver(s) installed successfully." No inline source was passed in the call.
 
-### T405 — install_driver bulk mode partial failure
+### T405 — save_driver install bulk mode partial failure
 
 ```json
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write one driver stub to File Manager: write_file(fileName='bat-bulk-partial.groovy', content='metadata { definition(name: \"BAT_BulkPartial\", namespace: \"bat\", author: \"test\") { } }'). Do NOT write 'bat-bulk-missing.groovy'.",
-  "test_prompt": "Install two drivers in a single bulk call: install_driver with installs=[{sourceFile: 'bat-bulk-partial.groovy'}, {sourceFile: 'bat-bulk-missing.groovy'}] and confirm=true. Report what happens for each item.",
+  "test_prompt": "Install two drivers in a single bulk call: save_driver with installs=[{sourceFile: 'bat-bulk-partial.groovy'}, {sourceFile: 'bat-bulk-missing.groovy'}] and confirm=true. Report what happens for each item.",
   "teardown_prompt": "Delete the successfully installed BAT_BulkPartial driver using delete_driver with confirm=true. Delete the File Manager file bat-bulk-partial.groovy using delete_file."
 }
 ```
 
 **Expected**: Tool attempts both installs. First item succeeds (driverId returned, success: true). Second item fails because the file is absent (success: false, error contains 'not found in File Manager'). Top-level `success: false` with `message` containing '1 of 2'. Continue-on-error: first driver still installed despite second failure.
 
-### T406 — install_driver bulk mode rejects mixed single+bulk args
+### T406 — save_driver install bulk mode rejects mixed single+bulk args
 
 ```json
 {
-  "test_prompt": "Call install_driver with both sourceFile='x.groovy' AND installs=[{sourceFile: 'f.groovy'}] and confirm=true."
+  "test_prompt": "Call save_driver with both sourceFile='x.groovy' AND installs=[{sourceFile: 'f.groovy'}] and confirm=true."
 }
 ```
 
@@ -2777,7 +2777,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ## Section 14: Library Management Tests
 
-Write tools (`install_library`, `update_library_code`, `delete_library`) live in the `manage_app_driver_code` gateway and require Hub Admin Write + confirm + a hub backup within the last 24 hours. `get_library_source` (read-only) lives in the `manage_apps_drivers` gateway and requires Hub Admin Read only. Tests use the `BAT_` prefix and clean up after themselves.
+Write tools (`save_library`, `delete_library`) live in the `manage_app_driver_code` gateway and require Hub Admin Write + confirm + a hub backup within the last 24 hours. `save_library` covers both install (omit `libraryId`) and update (provide `libraryId`). `get_library_source` (read-only) lives in the `manage_apps_drivers` gateway and requires Hub Admin Read only. Tests use the `BAT_` prefix and clean up after themselves.
 
 **Pre-flight (manual one-time):**
 1. Enable **Hub Admin Read Tools** and **Hub Admin Write Tools** in MCP Rule Server settings.
@@ -2789,14 +2789,14 @@ Write tools (`install_library`, `update_library_code`, `delete_library`) live in
 
 ```json
 {
-  "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using install_library.",
+  "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using save_library (omit libraryId).",
   "test_prompt": "Get the source of the first library returned by hub2/userLibraries. Use manage_apps_drivers -> get_library_source."
 }
 ```
 
 **Expected**: AI calls `manage_apps_drivers(tool='get_library_source', args={libraryId:'<id>'})`. Result includes `success: true`, `source` (non-empty string), `version`, `name`, `namespace`, `totalLength`. If total length exceeds 64KB, `sourceFile` and `sourceFileHint` fields are present.
 
-### T501 — install_library installs new library from inline source
+### T501 — save_library install (libraryId omitted) from inline source
 
 ```json
 {
@@ -2806,31 +2806,31 @@ Write tools (`install_library`, `update_library_code`, `delete_library`) live in
 }
 ```
 
-**Expected**: AI calls `manage_app_driver_code(tool='install_library', args={source:'library(...) { } def batHelper() { return "bat_ok" }', confirm:true})`. Result: `{success:true, libraryId:'<id>', version:<positive integer>, sourceMode:'source', message:'Library installed successfully'}`. No `verifyWarning` or `verifyError` field if verification succeeds. `verified: true`.
+**Expected**: AI calls `manage_app_driver_code(tool='save_library', args={source:'library(...) { } def batHelper() { return "bat_ok" }', confirm:true})` (libraryId omitted = install mode). Result: `{success:true, libraryId:'<id>', version:<positive integer>, sourceMode:'source', message:'Library installed successfully'}`. No `verifyWarning` or `verifyError` field if verification succeeds. `verified: true`.
 
-### T502 — update_library_code updates existing library source
+### T502 — save_library update (libraryId provided) replaces source
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Use install_library to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
-  "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2'. Use update_library_code with source mode.",
+  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Use save_library (omit libraryId) to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
+  "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2'. Use save_library with libraryId in source mode.",
   "teardown_prompt": "Delete BATTestLibUpdate library."
 }
 ```
 
-**Expected**: AI finds the library ID, calls `manage_app_driver_code(tool='update_library_code', args={libraryId:'<id>', source:'<updated source with v2Method>', confirm:true})`. Result: `{success:true, previousVersion:<N>, newVersion:<N+1>, sourceMode:'source'}` where `newVersion > previousVersion` (both positive integers). Pre-update backup appears in `list_item_backups` as a `library_<id>` key.
+**Expected**: AI finds the library ID, calls `manage_app_driver_code(tool='save_library', args={libraryId:'<id>', source:'<updated source with v2Method>', confirm:true})`. Result: `{success:true, previousVersion:<N>, newVersion:<N+1>, sourceMode:'source'}` where `newVersion > previousVersion` (both positive integers). Pre-update backup appears in `list_item_backups` as a `library_<id>` key.
 
-### T503 — update_library_code resave mode recompiles without external source
+### T503 — save_library update resave mode recompiles without external source
 
 ```json
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. A library named 'BATTestLibResave' exists (install it if not).",
-  "test_prompt": "Use update_library_code with resave=true on BATTestLibResave to trigger recompilation without changing the source.",
+  "test_prompt": "Use save_library with libraryId and resave=true on BATTestLibResave to trigger recompilation without changing the source.",
   "teardown_prompt": "Delete BATTestLibResave library."
 }
 ```
 
-**Expected**: AI calls `manage_app_driver_code(tool='update_library_code', args={libraryId:'<id>', resave:true, confirm:true})`. Result: `{success:true, sourceMode:'resave', note:'...no cloud round-trip...'}`. `newVersion` is a positive integer greater than `previousVersion`.
+**Expected**: AI calls `manage_app_driver_code(tool='save_library', args={libraryId:'<id>', resave:true, confirm:true})`. Result: `{success:true, sourceMode:'resave', note:'...no cloud round-trip...'}`. `newVersion` is a positive integer greater than `previousVersion`.
 
 ### T504 — delete_library deletes and auto-backs up source
 
@@ -2844,7 +2844,7 @@ Write tools (`install_library`, `update_library_code`, `delete_library`) live in
 
 **Expected**: AI calls `manage_app_driver_code(tool='delete_library', args={libraryId:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>.groovy', restoreHint:...}`. Backup file appears in `list_item_backups`. Subsequent `get_library_source` for the same ID returns `success:false` with "not found".
 
-### T505 — install_library refuses without confirm flag
+### T505 — save_library install refuses without confirm flag
 
 ```json
 {
@@ -2865,17 +2865,17 @@ Write tools (`install_library`, `update_library_code`, `delete_library`) live in
 
 **Expected**: AI calls `manage_apps_drivers(tool='get_library_source', args={libraryId:'999999'})`. Result: `{success:false, error:'...not found...'}` or similar. AI reports the error clearly and suggests using hub2/userLibraries or the Hubitat web UI (FOR DEVELOPERS > Libraries code) to find valid library IDs.
 
-### T507 — update_library_code sourceFile mode reads from File Manager
+### T507 — save_library update sourceFile mode reads from File Manager
 
 ```json
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install 'BATTestLibSourceFile' library. Upload a file named 'bat-lib-update.groovy' to File Manager via write_file with updated library source.",
-  "test_prompt": "Update BATTestLibSourceFile library using update_library_code with sourceFile='bat-lib-update.groovy'.",
+  "test_prompt": "Update BATTestLibSourceFile library using save_library with libraryId and sourceFile='bat-lib-update.groovy'.",
   "teardown_prompt": "Delete BATTestLibSourceFile library. Delete bat-lib-update.groovy from File Manager."
 }
 ```
 
-**Expected**: AI calls `manage_app_driver_code(tool='update_library_code', args={libraryId:'<id>', sourceFile:'bat-lib-update.groovy', confirm:true})`. Result: `{success:true, sourceMode:'sourceFile', note:'...File Manager...'}`.
+**Expected**: AI calls `manage_app_driver_code(tool='save_library', args={libraryId:'<id>', sourceFile:'bat-lib-update.groovy', confirm:true})`. Result: `{success:true, sourceMode:'sourceFile', note:'...File Manager...'}`.
 
 ### T508 — delete_library proceeds with warning when backup fails
 
@@ -3196,7 +3196,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 13 gateways (36 on tools/list, 103 total)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute + library management + HPM package state (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **23 core + 13 gateways (36 on tools/list, 103 total)** post installed-apps + RM interop + native CRUD + list_app_pages + poll_until_attribute + library management + HPM package state (was 21 core + 9 gateways / 30 total / 69 tools at v0.8.0). **Current state (post tool-surface reduction): 21 core + 13 gateways (34 on tools/list, 95 total)** — the reduction folded poll_until_attribute into get_attribute/send_command, custom_list_rules into custom_get_rule (no-id overload), hub_metrics into get_hub_info, four log tools into two (get_debug_log_state + update_debug_logs), and six install/update tools into three save_* tools.
 2. **Merged tools**: `enable_rule`/`disable_rule` → `custom_update_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `manage_virtual_device` (action enum)
 3. **Promoted to core**: `create_hub_backup`, `check_for_update`, `generate_bug_report`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `manage_diagnostics`, other tools merged into `get_hub_info` (core) or promoted

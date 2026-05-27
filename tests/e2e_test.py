@@ -407,7 +407,7 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
-        assert len(tools) == 36, f"Expected 36 tools (23 core + 13 gateways), got {len(tools)}"
+        assert len(tools) == 34, f"Expected 34 tools (21 core + 13 gateways), got {len(tools)}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
@@ -930,10 +930,12 @@ class TestRunner:
 
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
+        # get_hub_info is a core tool (not a manage_diagnostics sub-tool); exercise
+        # the gateway dispatch path against a tool that IS proxied here.
         result = self.client.call_tool("manage_diagnostics", {
-            "tool": "get_set_hub_metrics",
+            "tool": "force_garbage_collection",
         })
-        assert result is not None, "get_set_hub_metrics returned None"
+        assert result is not None, "manage_diagnostics → force_garbage_collection returned None"
 
     @test("system_tools")
     def test_get_memory_history(self) -> None:
@@ -955,14 +957,15 @@ class TestRunner:
 
     @test("system_tools")
     def test_force_garbage_collection(self) -> None:
+        # force_garbage_collection is a standalone tool proxied through manage_diagnostics;
+        # response fields live at the top level (beforeFreeMemoryKB/afterFreeMemoryKB/deltaKB),
+        # not under a nested gc block (the earlier hub_metrics(triggerGc=true) fold was reverted).
         result = self.client.call_tool("manage_diagnostics", {
             "tool": "force_garbage_collection",
         })
         assert isinstance(result, dict), f"force_garbage_collection returned {type(result)}"
         assert "beforeFreeMemoryKB" in result, "Missing 'beforeFreeMemoryKB'"
         assert "afterFreeMemoryKB" in result, "Missing 'afterFreeMemoryKB'"
-        assert "summary" in result, "Missing 'summary'"
-        # deltaKB should exist if both memory reads succeeded
         if result["beforeFreeMemoryKB"] is not None and result["afterFreeMemoryKB"] is not None:
             assert "deltaKB" in result, "Missing 'deltaKB'"
 
@@ -1285,12 +1288,15 @@ class TestRunner:
             assert "boolean" in msg.lower(), f"error didn't say boolean: {msg}"
 
     # -----------------------------------------------------------------------
-    # GROUP 11: poll_until_attribute (2 tests -- wall-clock coverage, I7)
+    # GROUP 11: get_attribute polling mode (2 tests -- wall-clock coverage, I7)
     # These exercise the real pauseExecution + now() path that Spock unit tests
-    # cannot reach because the test harness fixes now() to a constant.
+    # cannot reach because the test harness fixes now() to a constant. The
+    # polling behavior was folded into get_attribute (formerly the standalone
+    # poll_until_attribute tool); supplying expectedValue/expectedValues
+    # activates the server-side poll loop.
     # -----------------------------------------------------------------------
 
-    @test("poll_until_attribute")
+    @test("get_attribute_poll")
     def test_poll_immediate_match(self) -> None:
         """Happy path: device already in expected state -> polledCount=1, success=true."""
         # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
@@ -1299,7 +1305,7 @@ class TestRunner:
         self.client.call_tool("send_command", {"deviceId": dev_id, "command": "off"})
         time.sleep(0.3)
 
-        result = self.client.call_tool("poll_until_attribute", {
+        result = self.client.call_tool("get_attribute", {
             "deviceId": dev_id,
             "attribute": "switch",
             "expectedValue": "off",
@@ -1309,7 +1315,7 @@ class TestRunner:
         assert result.get("timedOut") is False, f"Expected timedOut=false, got: {result}"
         assert result.get("polledCount", 0) >= 1, f"Expected polledCount>=1, got: {result}"
 
-    @test("poll_until_attribute")
+    @test("get_attribute_poll")
     def test_poll_timeout(self) -> None:
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
@@ -1319,7 +1325,7 @@ class TestRunner:
 
         import time as _time
         t0 = _time.monotonic()
-        result = self.client.call_tool("poll_until_attribute", {
+        result = self.client.call_tool("get_attribute", {
             "deviceId": dev_id,
             "attribute": "switch",
             "expectedValue": "on",
@@ -1432,7 +1438,9 @@ class TestRunner:
 
         # Layer 3: sweep rules with BAT_E2E_ prefix
         try:
-            rules_result = self.client.call_tool("custom_list_rules")
+            # custom_get_rule with ruleId omitted returns the list-summary mode
+            # (folded from former custom_list_rules tool).
+            rules_result = self.client.call_tool("custom_get_rule")
             rules = rules_result if isinstance(rules_result, list) else rules_result.get("rules", [])
             for r in rules:
                 rname = r.get("name", "")

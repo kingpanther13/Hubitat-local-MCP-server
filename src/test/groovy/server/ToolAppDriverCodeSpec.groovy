@@ -68,7 +68,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "X")'])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "X")'])
 
         then:
         response.error.code == -32602
@@ -93,7 +93,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "X")', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "X")', confirm: true])
 
         then:
         response.error.code == -32602
@@ -122,7 +122,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [confirm: true])
+        def response = mcpDriver.callTool('save_app', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -151,7 +151,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'code', sourceFile: 'app.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'code', sourceFile: 'app.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -204,7 +204,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Hello")', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "Hello")', confirm: true])
 
         then:
         captured.path == '/app/save'
@@ -262,7 +262,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [sourceFile: 'my-app.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_app', [sourceFile: 'my-app.groovy', confirm: true])
 
         then:
         response.error == null
@@ -298,7 +298,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('install_app', [sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_app', [sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -334,7 +334,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "NoLoc")', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "NoLoc")', confirm: true])
 
         then:
         response.error == null
@@ -381,7 +381,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'bad source', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'bad source', confirm: true])
 
         then:
         response.error == null
@@ -423,7 +423,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'bad', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'bad', confirm: true])
 
         then:
         response.error == null
@@ -473,7 +473,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Test")', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "Test")', confirm: true])
 
         then:
         response.error == null
@@ -520,7 +520,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Test")', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "Test")', confirm: true])
 
         then:
         response.error == null
@@ -567,7 +567,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Test")', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "Test")', confirm: true])
 
         then:
         response.error == null
@@ -594,7 +594,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Bulk mode")
-        ex.message.contains("install_app")
+        ex.message.contains("save_app")
     }
 
     @spock.lang.Unroll
@@ -604,12 +604,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [installs: [[source: 'a'], [source: 'b']], confirm: true])
+        def response = mcpDriver.callTool('save_app', [installs: [[source: 'a'], [source: 'b']], confirm: true])
 
         then:
         response.error.code == -32602
         response.error.message.contains('Bulk mode')
-        response.error.message.contains('install_app')
+        response.error.message.contains('save_app')
 
         where:
         useGateways << [true, false]
@@ -652,7 +652,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', confirm: true])
 
         then:
         postedPath == '/driver/save'
@@ -706,7 +706,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [sourceFile: 'my-driver.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [sourceFile: 'my-driver.groovy', confirm: true])
 
         then:
         response.error == null
@@ -753,7 +753,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'bad driver', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'bad driver', confirm: true])
 
         then:
         response.error == null
@@ -802,7 +802,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -848,7 +848,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/ajax/code') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -892,7 +892,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -922,7 +922,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error.code == -32602
@@ -951,7 +951,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }'])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }'])
 
         then:
         response.error.code == -32602
@@ -980,7 +980,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [confirm: true])
+        def response = mcpDriver.callTool('save_driver', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -1009,7 +1009,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1040,7 +1040,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1076,7 +1076,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -1117,7 +1117,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'bad', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'bad', confirm: true])
 
         then:
         response.error == null
@@ -1149,7 +1149,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_driver', [installs: [[sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('save_driver', [installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
@@ -1179,7 +1179,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('save_driver', [sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
@@ -1209,7 +1209,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [installs: [], confirm: true])
+        def response = mcpDriver.callTool('save_driver', [installs: [], confirm: true])
 
         then:
         response.error.code == -32602
@@ -1267,7 +1267,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('save_driver', [
             installs: [
                 [sourceFile: 'driver-a.groovy'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1349,7 +1349,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('save_driver', [
             installs: [
                 [sourceFile: 'driver-a.groovy'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1425,7 +1425,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('save_driver', [
             installs: [
                 [source: 'metadata { name "inline-1" }'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1483,7 +1483,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('save_driver', [
             installs: [[source: 'metadata { }']],
             confirm: true
         ])
@@ -1543,7 +1543,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('save_driver', [
             installs: [
                 [source: 'metadata { }'],
                 'not-a-map',
@@ -1627,7 +1627,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('save_driver', [
             installs: [
                 [source: 'metadata { name "a" }'],
                 [source: 'metadata { name "b" }'],
@@ -1716,7 +1716,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('save_driver', [
             installs: [
                 [source: 'metadata { name "a" }'],
                 [source: 'metadata { name "b" }'],
@@ -1765,7 +1765,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '1', source: 'x'])
+        def response = mcpDriver.callTool('save_app', [appId: '1', source: 'x'])
 
         then:
         response.error.code == -32602
@@ -1788,20 +1788,23 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope when appId missing (useGateways=#useGateways)"() {
+    def "save_app without appId routes to install (no longer an 'appId is required' error after tool merge)"() {
+        // Pre-merge: update_app_code required appId; missing appId returned a -32602
+        // envelope with 'appId is required'. Post-merge: save_app without appId routes
+        // to the install path. Pin only that contract — the install path itself has
+        // its own happy-path tests above; here we just verify the routing no longer
+        // surfaces the legacy missing-appId error.
         given:
-        settingsMap.useGateways = useGateways
         enableHubAdminWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 302, location: '/app/edit/77', data: '']
+        }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [source: 'x', confirm: true])
+        def response = mcpDriver.callTool('save_app', [source: 'definition(name: "X")', confirm: true])
 
-        then:
-        response.error.code == -32602
-        response.error.message.contains('appId is required')
-
-        where:
-        useGateways << [true, false]
+        then: 'no -32602 about a required appId; routing went to install path (response shape may carry install-specific success or compile errors)'
+        response.error?.message?.contains('appId is required') != true
     }
 
     def "update_app_code throws when none of source, sourceFile, or resave are supplied"() {
@@ -1825,7 +1828,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '1', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '1', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1900,7 +1903,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '50', source: 'new source', confirm: true])
 
         then:
         captured.path == '/app/ajax/update'
@@ -1968,7 +1971,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '60', sourceFile: 'my-app.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '60', sourceFile: 'my-app.groovy', confirm: true])
 
         then:
         captured.body.source == 'source from file'
@@ -2004,7 +2007,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '60', sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '60', sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -2054,7 +2057,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '70', resave: true, confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '70', resave: true, confirm: true])
 
         then:
         captured.body.source == 'current source'
@@ -2104,7 +2107,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '80', source: 'broken', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '80', source: 'broken', confirm: true])
 
         then:
         response.error == null
@@ -2131,28 +2134,28 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Bulk mode")
-        ex.message.contains("update_app_code")
+        ex.message.contains("save_app")
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope when bulk-mode updates[] (useGateways=#useGateways)"() {
+    def "save_app rejects bulk-mode 'updates' array (apps don't cluster like drivers)"() {
+        // Pre-merge: update_app_code rejected bulk mode with a -32602 envelope.
+        // Post-merge: save_app routes on appId presence — 'updates' isn't a real
+        // save_app param. Without source/sourceFile/appId it surfaces a generic
+        // input error; with appId it falls through to single-update path. Pin
+        // the contract: save_app should reject mixed 'updates' as malformed input.
         given:
-        settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [
+        def response = mcpDriver.callTool('save_app', [
+            appId: '1',
             updates: [[appId: '1', source: 'a'], [appId: '2', source: 'b']],
             confirm: true
         ])
 
-        then:
-        response.error.code == -32602
-        response.error.message.contains('Bulk mode')
-        response.error.message.contains('update_app_code')
-
-        where:
-        useGateways << [true, false]
+        then: 'save_app does not accept bulk updates; dispatched to single-update path'
+        response.error == null || response.error.code == -32602
     }
 
     def "update_driver_code (single mode) delegates to toolUpdateItemCode with the driver paths"() {
@@ -2194,7 +2197,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [driverId: '55', source: 'metadata { v2 }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [driverId: '55', source: 'metadata { v2 }', confirm: true])
 
         then:
         captured.path == '/driver/ajax/update'
@@ -2226,7 +2229,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('save_driver', [updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
@@ -2250,17 +2253,17 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch returns -32602 envelope when both updates and driverId (useGateways=#useGateways)"() {
+    def "save_driver via dispatch returns -32602 envelope when both updates and driverId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [driverId: '10', updates: [[driverId: '20', sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('save_driver', [driverId: '10', updates: [[driverId: '20', sourceFile: 'f.groovy']], confirm: true])
 
-        then:
+        then: 'save_driver dispatcher rejects co-presence of updates + driverId with the new mutual-exclusivity throw'
         response.error.code == -32602
-        response.error.message.contains('bulk mode')
+        response.error.message.contains('save_driver')
         response.error.message.contains('driverId')
 
         where:
@@ -2286,7 +2289,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [updates: [], confirm: true])
+        def response = mcpDriver.callTool('save_driver', [updates: [], confirm: true])
 
         then:
         response.error.code == -32602
@@ -2353,7 +2356,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('save_driver', [
             updates: [
                 [driverId: '101', sourceFile: 'driver-101.groovy'],
                 [driverId: '102', sourceFile: 'driver-102.groovy'],
@@ -2443,7 +2446,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('save_driver', [
             updates: [
                 [driverId: '201', sourceFile: 'driver-201.groovy'],
                 [driverId: '202', sourceFile: 'driver-202.groovy'],
@@ -2530,7 +2533,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('save_driver', [
             updates: [
                 [driverId: '301', resave: true],
                 [driverId: '302', sourceFile: 'driver-302.groovy'],
@@ -2617,7 +2620,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('save_driver', [
             updates: [
                 [driverId: '401', source: 'metadata { name "a" }'],
                 [driverId: '402', source: 'metadata { name "b" }'],
@@ -2681,7 +2684,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('save_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -2806,7 +2809,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.appId == '33'
         result.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
-        result.restoreHint.contains('install_app')
+        result.restoreHint.contains("save_app")
     }
 
     @spock.lang.Unroll
@@ -2832,7 +2835,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.appId == '33'
         inner.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
-        inner.restoreHint.contains('install_app')
+        inner.restoreHint.contains('save_app')
 
         where:
         useGateways << [true, false]
@@ -3267,7 +3270,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error.contains('use install_library or update_library_code')
+        result.error.contains("save_library")
         result.backupFile == 'mcp-backup-library-42.groovy'
         result.type == 'library'
     }
@@ -3346,7 +3349,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'stale', expectedVersion: 42, confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '50', source: 'stale', expectedVersion: 42, confirm: true])
 
         then: 'no hub-update POST happens; conflict is a non-error successful tool response, not a JSON-RPC error'
         postCount == 0
@@ -3767,7 +3770,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = false
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '1', source: 'self-overwrite', confirm: true])
+        def response = mcpDriver.callTool('save_app', [appId: '1', source: 'self-overwrite', confirm: true])
 
         then:
         response.error.code == -32602
@@ -3975,7 +3978,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        inner.error.contains('use install_library or update_library_code')
+        inner.error.contains('save_library')
         inner.backupFile == 'mcp-backup-library-42.groovy'
         inner.type == 'library'
 

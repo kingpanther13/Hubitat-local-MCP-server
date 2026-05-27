@@ -254,7 +254,7 @@ def helperMethod() { return "ok" }
         result.totalLength == 65000
         result.hasMore == true
         result.sourceFile == 'mcp-source-library-10.groovy'
-        result.sourceFileHint.contains('update_library_code')
+        result.sourceFileHint.contains('save_library')
         uploadedFiles.containsKey('mcp-source-library-10.groovy')
     }
 
@@ -284,7 +284,7 @@ def helperMethod() { return "ok" }
         inner.totalLength == 65000
         inner.hasMore == true
         inner.sourceFile == 'mcp-source-library-10.groovy'
-        inner.sourceFileHint.contains('update_library_code')
+        inner.sourceFileHint.contains('save_library')
         uploadedFiles.containsKey('mcp-source-library-10.groovy')
 
         where:
@@ -354,7 +354,7 @@ def helperMethod() { return "ok" }
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
@@ -383,7 +383,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE])
 
         then:
         response.error.code == -32602
@@ -413,7 +413,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_library', [confirm: true])
+        def response = mcpDriver.callTool('save_library', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -443,7 +443,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -495,7 +495,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         capturedBody.id == null
@@ -558,7 +558,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [sourceFile: 'mylib.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_library', [sourceFile: 'mylib.groovy', confirm: true])
 
         then:
         capturedBody.source == SAMPLE_SOURCE
@@ -594,7 +594,7 @@ def helperMethod() { return "ok" }
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('install_library', [sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_library', [sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -631,7 +631,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: 'bad source', confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: 'bad source', confirm: true])
 
         then:
         response.error == null
@@ -672,7 +672,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -718,7 +718,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/hub2/userLibraries') { params -> '[]' }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -769,7 +769,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -820,7 +820,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -865,7 +865,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/hub2/userLibraries') { params -> '<html>login page</html>' }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -905,7 +905,7 @@ def helperMethod() { return "ok" }
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -951,7 +951,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -985,7 +985,7 @@ def helperMethod() { return "ok" }
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
@@ -1014,7 +1014,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: SAMPLE_SOURCE])
 
         then:
         response.error.code == -32602
@@ -1036,21 +1036,22 @@ def helperMethod() { return "ok" }
         ex.message.contains('libraryId is required')
     }
 
-    @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
+    def "save_library without libraryId routes to install (no longer an error after tool merge)"() {
+        // Pre-merge: update_library_code required libraryId; missing libraryId returned -32602.
+        // Post-merge: save_library without libraryId is the install mode.
         given:
-        settingsMap.useGateways = useGateways
         enableHubAdminWrite()
+        def postedPath = null
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            postedPath = path
+            [status: 200, location: null, data: '{"status":"ok","id":99}']
+        }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [source: SAMPLE_SOURCE, confirm: true])
 
-        then:
-        response.error.code == -32602
-        response.error.message.contains('libraryId is required')
-
-        where:
-        useGateways << [true, false]
+        then: 'no -32602; install path took over (may surface other validation errors per the install path)'
+        response.error == null || !response.error.message.contains('libraryId is required')
     }
 
     def "update_library_code throws when none of source, sourceFile, or resave is supplied"() {
@@ -1072,7 +1073,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1138,7 +1139,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         uploads.size() == 1
@@ -1223,7 +1224,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE + ' // edit', confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: SAMPLE_SOURCE + ' // edit', confirm: true])
 
         then:
         uploads == []
@@ -1281,7 +1282,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', sourceFile: 'updated-lib.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', sourceFile: 'updated-lib.groovy', confirm: true])
 
         then:
         capturedBody.source == SAMPLE_SOURCE
@@ -1317,7 +1318,7 @@ def helperMethod() { return "ok" }
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1362,7 +1363,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', resave: true, confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', resave: true, confirm: true])
 
         then:
         capturedBody.version == 1
@@ -1398,7 +1399,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '999', resave: true, confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '999', resave: true, confirm: true])
 
         then:
         response.error.code == -32602
@@ -1438,7 +1439,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -1477,7 +1478,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then: 'any thrown exception must surface as either -32602 (IAE) or isError envelope (RuntimeException)'
         response.error?.code == -32602 || response.result?.isError == true
@@ -1591,7 +1592,7 @@ def helperMethod() { return "ok" }
         result.libraryId == '42'
         result.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
-        result.restoreHint.contains('install_library')
+        result.restoreHint.contains('save_library')
     }
 
     @spock.lang.Unroll
@@ -1615,7 +1616,7 @@ def helperMethod() { return "ok" }
         inner.libraryId == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
-        inner.restoreHint.contains('install_library')
+        inner.restoreHint.contains('save_library')
 
         where:
         useGateways << [true, false]
@@ -1653,7 +1654,7 @@ def helperMethod() { return "ok" }
         result.success == true
         result.libraryId == '42'
         result.backupFile == 'mcp-backup-library-42.groovy'
-        result.restoreHint.contains('install_library')
+        result.restoreHint.contains('save_library')
     }
 
     @spock.lang.Unroll
@@ -1686,7 +1687,7 @@ def helperMethod() { return "ok" }
         inner.success == true
         inner.libraryId == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
-        inner.restoreHint.contains('install_library')
+        inner.restoreHint.contains('save_library')
 
         where:
         useGateways << [true, false]
@@ -1997,7 +1998,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: badId, source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('save_library', [libraryId: badId, source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
