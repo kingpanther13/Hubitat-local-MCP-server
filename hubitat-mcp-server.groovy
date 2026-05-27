@@ -3153,11 +3153,11 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. updateRule fires after the clear.[[FLAT_TRIM]] Async-commit recovery: if the trash op exhausts the verification window before the hub commits (rare; RM applies the delete async after returning HTTP 200) the response carries `asyncCommitLikely: true, partial: true, stage: 'clearActions.verify_absent'` plus `actionsRequestedForRemoval` / `actionsStillPresent` and a `safeRecovery` block. Recovery: call `get_app_config(appId)` to check whether the clear committed post-response. Do NOT call `cancelTrash` -- in trash-confirmation mode it may commit pending deletes rather than abort.[[/FLAT_TRIM]]"
+                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. updateRule fires after the clear.[[FLAT_TRIM]] Async-commit recovery: if the trash op exhausts the verification window before the hub commits (rare; RM applies the delete async after returning HTTP 200) the response carries `asyncCommitLikely: true, partial: true, stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` plus `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct` and a `safeRecovery` block `{recommended: 'verify-then-decide', verifyVia: 'get_app_config(appId: <id>)', ifActionsAbsent, ifActionsPresent, avoid: ['cancelTrash']}`. Recovery: call `get_app_config(appId)` to check whether the clear committed post-response. Do NOT call `cancelTrash` -- in trash-confirmation mode it may commit pending deletes rather than abort.[[/FLAT_TRIM]]"
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions, then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).[[FLAT_TRIM]] Async-commit recovery: if the inner clearActions exhausts its verification window the response carries `asyncCommitLikely: true, partial: true, stage: 'replaceActions.clear_committed_late_no_add'` and the add half is NOT attempted (prevents double-write if the clear committed asynchronously). Original specs are echoed as `pendingActionsToAdd`. Recovery: call `get_app_config(appId)`; if actions are absent the clear committed, call `addAction` (or bulk `addActions`) with the echoed specs to finish the replace. Do NOT call `cancelTrash`.[[/FLAT_TRIM]]",
+                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions, then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).[[FLAT_TRIM]] Async-commit recovery: if the inner clearActions exhausts its verification window the response carries `asyncCommitLikely: true, partial: true, stage: 'replaceActions.clear_committed_late_no_add'` and the add half is NOT attempted (prevents double-write if the clear committed asynchronously). Original specs are echoed as `pendingActionsToAdd`; the inner clearActions fingerprint is exposed via `clearActionsResult` (same shape as the standalone clearActions partial). `verifyHint` and `error` are overridden with copy that names the data-loss-protection rationale. Recovery: call `get_app_config(appId)`; if actions are absent the clear committed, call `addAction` (or bulk `addActions`) with the echoed specs to finish the replace. Do NOT call `cancelTrash`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     moveAction: [
@@ -5370,6 +5370,18 @@ def toolGetVariable(name) {
 // Hubitat sandbox rejects `private static final` at script scope.
 private List getHubVarForbiddenChars() {
     return ["'", '"', '\\', '~', '[', ':', ']', '<', '>']
+}
+
+// Sentinel appended to the IllegalStateException message thrown by
+// _rmClearActions on the retry-window-expired path. The action-mutation
+// dispatcher catches the throw, detects this token, and routes to the
+// structured eventual-consistency response shape (asyncCommitLikely:true).
+// Centralized so the throw site and every strip site share a single source
+// of truth -- a typo or drift would silently fall back to the legacy flat
+// error shape and lose the data-loss-protection contract. Leading space is
+// intentional: stripping " [asyncCommitLikely]" removes the separator too.
+private String getAsyncCommitMarker() {
+    return " [asyncCommitLikely]"
 }
 private List getHubVarTypes() {
     return ["Number", "Decimal", "String", "Boolean", "DateTime"]
@@ -16773,12 +16785,13 @@ private List _rmClearActions(Integer appId) {
     }
     def stillThereCount = stillThere.size()
     def stillThereWord = stillThereCount == 1 ? "action" : "actions"
-    // [asyncCommitLikely] marker tells the dispatcher catch that this is the
+    // asyncCommit marker tells the dispatcher catch that this is the
     // documented retry-window-expired case (HTTP 200 + verification window
     // exhausted), not a hard wizard / schema failure. Distinct from the
     // wizardStuck marker pattern but follows the same precedent of encoding
-    // a recoverable-shape hint in the exception message.
-    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions. [asyncCommitLikely]")
+    // a recoverable-shape hint in the exception message. Single source of
+    // truth: getAsyncCommitMarker() -- throw and strip sites must agree.
+    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
 }
 
 /**
@@ -22123,15 +22136,31 @@ def toolUpdateNativeApp(args) {
                     def cleared = _rmClearActions(appId) ?: []
                     removed = (removed + cleared).unique()
                 } catch (Exception clearExc) {
-                    // _rmClearActions threw mid-flow (trashAll click landed
-                    // but trashActs write didn't take, OR the post-condition
-                    // check found actions still present). The rule is now
-                    // stuck in trash-confirmation mode. Auto-fire cancelTrash
-                    // so the next edit doesn't open into a broken state.
-                    mcpLog("warn", "rm-native", "clearActions threw mid-flow for app ${appId} (${clearExc.message}) -- auto-firing cancelTrash to recover the page")
-                    try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
-                    catch (Exception cancelExc) {
-                        mcpLog("warn", "rm-native", "cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                    // _rmClearActions threw mid-flow. Two cases:
+                    //   (a) asyncCommit case: trashActs HTTP 200 returned but
+                    //       the GC verification window exhausted -- the delete
+                    //       is in RM's async commit queue and the rule is
+                    //       likely NO LONGER in trash-confirmation mode.
+                    //       Firing cancelTrash here would click the button in
+                    //       post-trashActs page state, which the upstream
+                    //       diagnostic warns may commit the pending delete
+                    //       rather than abort it -- the exact data-loss
+                    //       vector this contract exists to prevent. Skip
+                    //       cancelTrash and let the outer catch emit the
+                    //       structured envelope with safeRecovery.
+                    //   (b) hard-fail case: trashAll click landed but
+                    //       trashActs write didn't take, OR another mid-flow
+                    //       failure. The rule is stuck in trash-confirmation
+                    //       mode and cancelTrash IS the correct recovery.
+                    if (clearExc.message?.contains(getAsyncCommitMarker())) {
+                        def cleanForLog = clearExc.message?.replace(getAsyncCommitMarker(), "")
+                        mcpLog("warn", "rm-native", "clearActions threw on async-commit-likely path for app ${appId} (${cleanForLog}) -- skipping cancelTrash to avoid committing the pending delete")
+                    } else {
+                        mcpLog("warn", "rm-native", "clearActions threw mid-flow for app ${appId} (${clearExc.message}) -- auto-firing cancelTrash to recover the page")
+                        try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
+                        catch (Exception cancelExc) {
+                            mcpLog("warn", "rm-native", "cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                        }
                     }
                     throw clearExc
                 }
@@ -22150,7 +22179,14 @@ def toolUpdateNativeApp(args) {
                 }
             }
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${e.message}")
+            // Strip the asyncCommit sentinel before logging so the internal
+            // marker never reaches operator-facing channels. Single sanitize
+            // here, then both the error log and downstream branches consume
+            // the cleaned text. The structured-envelope branch below
+            // re-derives cleanedError for the same reason -- if e.message
+            // didn't carry the marker, replace() returns the original string.
+            def cleanedError = e.message?.replace(getAsyncCommitMarker(), "")
+            mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${cleanedError}")
             // Eventual-consistency response shape for the documented
             // clearActions retry-window-expired case: trashActs write returned
             // HTTP 200, but the GC verification window exhausted before the
@@ -22160,10 +22196,9 @@ def toolUpdateNativeApp(args) {
             // fires -- the clear may have committed and we can't tell yet, so
             // adding would risk double-write if the caller retries the whole
             // op after seeing the partial.
-            def isAsyncCommitLikely = e.message?.contains("[asyncCommitLikely]") &&
+            def isAsyncCommitLikely = e.message?.contains(getAsyncCommitMarker()) &&
                                       (clearActionsFlag || replaceActionsList != null)
             if (isAsyncCommitLikely) {
-                def cleanedError = e.message?.replace(" [asyncCommitLikely]", "")
                 def actionsStillPresent = null
                 try { actionsStillPresent = _rmCollectActionIndices(appId) }
                 catch (Exception fetchExc) {
@@ -22171,9 +22206,8 @@ def toolUpdateNativeApp(args) {
                 }
                 def possibleStateEditAct = false
                 try { possibleStateEditAct = (_rmGetStateEditAct(appId) != null) }
-                catch (Exception ignored) {
-                    // Best-effort diagnostic; absence does not affect the
-                    // structured response's correctness.
+                catch (Exception editActExc) {
+                    mcpLog("debug", "rm-native", "asyncCommitLikely: possibleStateEditAct fetch failed for app ${appId}: ${editActExc.message} -- defaulting to false")
                 }
                 def shape = [
                     success: false,
@@ -22192,7 +22226,7 @@ def toolUpdateNativeApp(args) {
                         recommended: 'verify-then-decide',
                         verifyVia: "get_app_config(appId: ${appId})",
                         ifActionsAbsent: 'treat as success -- clearActions committed post-response',
-                        ifActionsPresent: "retry clearActions with longer wait, or use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear state.editAct first",
+                        ifActionsPresent: "wait 15s, then call get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
                         avoid: ['cancelTrash']
                     ]
                 ]
@@ -22607,14 +22641,20 @@ def toolUpdateNativeApp(args) {
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
                         catch (Exception clearExc) {
-                            // Auto-recover: cancel trash mode so the next
-                            // patch doesn't open into a broken page. Mirror the
-                            // action-mutation branch's warn-on-recovery-failure
-                            // shape so operators have a signal if trash-confirmation
-                            // no longer renders cancelTrash OR the hub blips mid-recovery.
-                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
-                            catch (Exception cancelExc) {
-                                mcpLog("warn", "rm-native", "patches[${pi}].clearActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                            // Same asyncCommit-vs-hard-fail split as the top-
+                            // level dispatcher: on the asyncCommit path the
+                            // trashActs HTTP 200 returned and the rule is no
+                            // longer in trash-confirmation mode, so firing
+                            // cancelTrash here risks committing the pending
+                            // delete. Skip on async; recover normally on hard-fail.
+                            if (clearExc.message?.contains(getAsyncCommitMarker())) {
+                                def cleanForLog = clearExc.message?.replace(getAsyncCommitMarker(), "")
+                                mcpLog("warn", "rm-native", "patches[${pi}].clearActions: async-commit-likely path for app ${appId} (${cleanForLog}) -- skipping cancelTrash to avoid committing the pending delete")
+                            } else {
+                                try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
+                                catch (Exception cancelExc) {
+                                    mcpLog("warn", "rm-native", "patches[${pi}].clearActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                                }
                             }
                             throw clearExc
                         }
@@ -22629,9 +22669,16 @@ def toolUpdateNativeApp(args) {
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
                         catch (Exception clearExc) {
-                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
-                            catch (Exception cancelExc) {
-                                mcpLog("warn", "rm-native", "patches[${pi}].replaceActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                            // Same asyncCommit-vs-hard-fail split as the top-
+                            // level dispatcher and patches[clearActions] above.
+                            if (clearExc.message?.contains(getAsyncCommitMarker())) {
+                                def cleanForLog = clearExc.message?.replace(getAsyncCommitMarker(), "")
+                                mcpLog("warn", "rm-native", "patches[${pi}].replaceActions: async-commit-likely path for app ${appId} (${cleanForLog}) -- skipping cancelTrash to avoid committing the pending delete")
+                            } else {
+                                try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
+                                catch (Exception cancelExc) {
+                                    mcpLog("warn", "rm-native", "patches[${pi}].replaceActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                                }
                             }
                             throw clearExc
                         }
@@ -22664,16 +22711,15 @@ def toolUpdateNativeApp(args) {
                         patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
                     }
                 } catch (Exception subExc) {
-                    // Strip the internal [asyncCommitLikely] sentinel from the
-                    // user-visible error string. The patches branch doesn't yet
-                    // emit the structured envelope (scoped to the top-level
-                    // clearActions / replaceActions path), but the raw marker
-                    // shouldn't leak into the per-patch error either. Local name
-                    // distinct from the outer-closure `patchErr` so the
-                    // top-level result envelope still drives off the
-                    // post-trailing-updateRule aggregate, not the per-patch
-                    // exception text.
-                    def cleanedPatchErr = subExc.message?.replace(" [asyncCommitLikely]", "") ?: subExc.message
+                    // Strip the internal asyncCommit sentinel from the user-
+                    // visible error string. The patches branch doesn't emit the
+                    // structured envelope (scoped to the top-level clearActions
+                    // / replaceActions path), but the raw marker shouldn't leak
+                    // into per-patch error / warn-log either. Local name distinct
+                    // from the outer-closure `patchErr` so the top-level result
+                    // envelope still drives off the post-trailing-updateRule
+                    // aggregate, not the per-patch exception text.
+                    def cleanedPatchErr = subExc.message?.replace(getAsyncCommitMarker(), "") ?: subExc.message
                     patchResults << [success: false, op: pm.keySet().first(), error: cleanedPatchErr, spec: p]
                     mcpLog("warn", "rm-native", "patches[${pi}] (${pm.keySet().first()}) failed: ${cleanedPatchErr}")
                 }

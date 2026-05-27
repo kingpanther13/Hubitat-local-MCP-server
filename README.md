@@ -491,7 +491,7 @@ Both tools require Hub Admin Read. HPM itself must be installed on the hub.
 | `resume_rm_rule` | Resume a paused RM rule |
 | `set_rm_rule_boolean` | Set an RM rule's private boolean variable |
 | `create_native_app` | Create a new empty native automation app (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / etc.). Returns `appId`. |
-| `update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. |
+| `update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. On `clearActions` / `replaceActions`, retry-window exhaustion returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `get_app_config` rather than retrying or rolling back. |
 | `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
 | `export_native_app` | Export a classic SmartApp to JSON (round-trippable with `import_native_app`). |

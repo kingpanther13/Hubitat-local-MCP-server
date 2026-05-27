@@ -719,6 +719,7 @@ Rule Machine's trashActs delete path returns HTTP 200 immediately but commits th
   success: false,
   partial: true,
   asyncCommitLikely: true,
+  appId: <id>,
   stage: 'clearActions.verify_absent',
   httpWriteStatus: 200,
   actionsRequestedForRemoval: [1, 2, ...],
@@ -730,7 +731,7 @@ Rule Machine's trashActs delete path returns HTTP 200 immediately but commits th
     recommended: 'verify-then-decide',
     verifyVia: 'get_app_config(appId: <id>)',
     ifActionsAbsent: 'treat as success -- clearActions committed post-response',
-    ifActionsPresent: 'retry clearActions with longer wait, or use cancelAct path',
+    ifActionsPresent: "wait 15s, then call get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
     avoid: ['cancelTrash']
   },
   backup, restoreHint, verifyHint
@@ -739,7 +740,11 @@ Rule Machine's trashActs delete path returns HTTP 200 immediately but commits th
 
 The caller's recovery path is to call `get_app_config(appId)` and inspect the actions list. If absent, treat the operation as a delayed success. If still present, retry. **Do not** invoke `cancelTrash` to recover -- in trash-confirmation mode it can commit pending deletes rather than abort.
 
-For `replaceActions`, this same retry-window-expired case on the inner clearActions step yields `stage: 'replaceActions.clear_committed_late_no_add'`. The add half is **not attempted** -- because the clear may have committed asynchronously, completing the add would risk a double-write if the caller retries the whole replace after seeing the partial. The original action specs are echoed back as `pendingActionsToAdd` so the caller can finish the replace via `addAction` (or bulk `addActions`) once `get_app_config` confirms the clear committed. `clearActionsResult` exposes the inner clearActions fingerprint (same shape as the standalone clearActions partial).
+For `replaceActions`, this same retry-window-expired case on the inner clearActions step yields `stage: 'replaceActions.clear_committed_late_no_add'`. The add half is **not attempted** -- because the clear may have committed asynchronously, completing the add would risk a double-write if the caller retries the whole replace after seeing the partial. The original action specs are echoed back as `pendingActionsToAdd` so the caller can finish the replace via `addAction` (or bulk `addActions`) once `get_app_config` confirms the clear committed. `clearActionsResult` exposes the inner clearActions fingerprint (same shape as the standalone clearActions partial). On the replaceActions sub-shape, `verifyHint` AND `error` are replaced with copy that names the data-loss-protection rationale rather than echoing clearActions' diagnostic.
+
+`removeAction`, `removeTrigger`, and `modifyTrigger` remain on the legacy flat error shape (no `asyncCommitLikely` envelope) **because** each operates on a single row and the async-commit GC race is rare enough in practice that the data-loss case (add-half double-write on retry) that justifies the richer recovery contract does not apply.
+
+When `clearActions` / `replaceActions` appears inside a `patches` sub-spec and hits the retry-window-expired case, the raw `[asyncCommitLikely]` marker is stripped from the per-patch error **but** the structured envelope is NOT emitted -- the caller receives a flat `{success: false, op: '...', error: '...', spec: ...}` entry in `patches[i]` and should match on the "after 10s of retries" phrase to identify the eventual-consistency case.
 
 #### `create_native_app` reference
 

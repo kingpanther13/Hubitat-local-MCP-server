@@ -240,7 +240,7 @@ Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause/res
 | `resume_rm_rule` | Resume a paused RM rule. | Built-in App Tools |
 | `set_rm_rule_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Built-in App Tools |
 | `create_native_app` | Create a new empty classic SmartApp (RM 5.1 by default; `appType` enum extends to other types). Returns `appId`. | Built-in App Tools + Hub Admin Write |
-| `update_native_app` | Modify any classic native app by appId. Structured shortcuts: addTrigger, addAction, addRequiredExpression, clearActions, replaceActions, patches, etc. Auto-snapshots before writing. | Built-in App Tools + Hub Admin Write |
+| `update_native_app` | Modify any classic native app by appId. Structured shortcuts: addTrigger, addAction, addRequiredExpression, clearActions, replaceActions, patches, etc. Auto-snapshots before writing. On clearActions / replaceActions, retry-window exhaustion returns `partial:true, asyncCommitLikely:true` with `stage` discriminator + `safeRecovery` -- verify via `get_app_config` rather than retrying or rolling back. | Built-in App Tools + Hub Admin Write |
 | `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Built-in App Tools + Hub Admin Write |
 | `clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. | Built-in App Tools + Hub Admin Write |
 | `export_native_app` | Export a classic SmartApp to JSON, round-trippable with `import_native_app`. Useful for backup, sharing, or export-mutate-import editing of complex rules. | Built-in App Tools |
