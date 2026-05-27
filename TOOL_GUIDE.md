@@ -714,27 +714,29 @@ All four share `updateRuleFailed` and `updateRuleError` for the common facts. Th
 
 Rule Machine's trashActs delete path returns HTTP 200 immediately but commits the deletion asynchronously. The verification window is bounded at ~10s; the actual commit often lands 5-15s after that. When the verification window expires with actions still showing present, the tool returns an eventual-consistency partial response rather than treating it as a hard failure:
 
-```
+```json
 {
-  success: false,
-  partial: true,
-  asyncCommitLikely: true,
-  appId: <id>,
-  stage: 'clearActions.verify_absent',
-  httpWriteStatus: 200,
-  actionsRequestedForRemoval: [1, 2, ...],
-  actionsStillPresent: [1, 2, ...],
-  possibleStateEditAct: false,
-  wizardStuck: false,
-  error: '<existing diagnostic message>',
-  safeRecovery: {
-    recommended: 'verify-then-decide',
-    verifyVia: 'get_app_config(appId: <id>)',
-    ifActionsAbsent: 'treat as success -- clearActions committed post-response',
-    ifActionsPresent: "wait 15s, then call get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
-    avoid: ['cancelTrash']
+  "success": false,
+  "partial": true,
+  "asyncCommitLikely": true,
+  "appId": "<id>",
+  "stage": "clearActions.verify_absent",
+  "httpWriteStatus": 200,
+  "actionsRequestedForRemoval": [1, 2],
+  "actionsStillPresent": [1, 2],
+  "possibleStateEditAct": false,
+  "wizardStuck": false,
+  "error": "<existing diagnostic message>",
+  "safeRecovery": {
+    "recommended": "verify-then-decide",
+    "verifyVia": "get_app_config(appId: <id>)",
+    "ifActionsAbsent": "treat as success -- clearActions committed post-response",
+    "ifActionsPresent": "wait 15s, then call get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
+    "avoid": ["cancelTrash"]
   },
-  backup, restoreHint, verifyHint
+  "backup": "<backup>",
+  "restoreHint": "<restoreHint>",
+  "verifyHint": "<verifyHint>"
 }
 ```
 
