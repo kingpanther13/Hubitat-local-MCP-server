@@ -1796,7 +1796,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // response shape instead of a flat `success: false` error envelope.
     // Discriminator: `asyncCommitLikely: true` + `stage: 'clearActions.verify_absent'`
     // + `actionsRequestedForRemoval` + `actionsStillPresent` + `safeRecovery`.
-    // Both-ways pending (orchestrator).
     def "clearActions retry-window expired emits asyncCommitLikely structured response with safeRecovery"() {
         given:
         enableHubAdminWrite()
@@ -1861,7 +1860,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.safeRecovery?.recommended == 'verify-then-decide'
         result.safeRecovery?.avoid == ['cancelTrash']
         result.safeRecovery?.verifyVia == "get_app_config(appId: 100)"
-        result.safeRecovery?.ifActionsAbsent?.contains("committed post-response")
+        result.safeRecovery?.ifActionsAbsent == "treat as success -- clearActions committed post-response"
 
         and: "safeRecovery.ifActionsPresent gives an actionable wait-then-recheck path (NOT the misleading 'retry with longer wait'). Single anchored-phrase pin so a re-ordered wrong-impl can't satisfy three independent fragments out of sequence."
         result.safeRecovery?.ifActionsPresent?.contains("wait 15s, then call get_app_config to re-check")
@@ -1894,7 +1893,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // can complete the replace if get_app_config confirms the clear committed.
     // Discriminator: `stage: 'replaceActions.clear_committed_late_no_add'`
     // + `pendingActionsToAdd` + `clearActionsResult.asyncCommitLikely`.
-    // Both-ways pending (orchestrator).
     def "replaceActions skips the add half when inner clearActions returns asyncCommitLikely"() {
         given:
         enableHubAdminWrite()
@@ -1941,6 +1939,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.asyncCommitLikely == true
         result.stage == 'replaceActions.clear_committed_late_no_add'
 
+        and: "envelope structural fields mirror the clearActions-only branch (replaceActions doesn't drop them)"
+        result.appId == 100
+        result.httpWriteStatus == 200
+        result.wizardStuck == false
+
         and: "pendingActionsToAdd carries every replacement spec verbatim so the caller can finish the replace via addAction if get_app_config confirms the clear"
         result.pendingActionsToAdd == replacements
 
@@ -1967,6 +1970,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.safeRecovery?.recommended == 'verify-then-decide'
         result.safeRecovery?.avoid == ['cancelTrash']
         result.safeRecovery?.verifyVia == "get_app_config(appId: 100)"
+        result.safeRecovery?.ifActionsAbsent == "treat as success -- clearActions committed post-response"
+        result.safeRecovery?.ifActionsPresent?.contains("wait 15s, then call get_app_config to re-check")
 
         and: "cancelTrash was NOT auto-fired on the inner-clearActions async path (data-loss prevention)"
         posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelTrash" } == 0
@@ -1989,7 +1994,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // and the add half still does not run. Guards against the new branch
     // accidentally widening from async-commit-likely to all clearActions
     // failures, OR accidentally running the add half on a hard-fail.
-    // Both-ways pending (orchestrator).
     def "replaceActions hard-fail clearActions stays in legacy error shape and never runs the add half"() {
         given:
         enableHubAdminWrite()
@@ -2029,13 +2033,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the add half was not attempted (no actionDone clicks)"
         posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionDone" } == 0
+
+        and: "cancelTrash WAS auto-fired -- positive pin against a regression that widens the asyncCommit skip predicate to ALL exceptions and breaks recovery on real hard-fails"
+        posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelTrash" } >= 1
+
+        and: "the asyncCommit marker NEVER appears in the hard-fail error string (the strip path is unconditional today; this pins it against a future regression that conditionalizes the strip on isAsyncCommitLikely)"
+        !result.error?.contains("[asyncCommitLikely]")
     }
 
     // S2-replaceActions-clean-clearActions: when clearActions succeeds without
     // triggering the retry-window-expired path, replaceActions proceeds to add
     // the replacement specs normally. Guards against the new short-circuit
     // logic accidentally firing on the success path of clearActions.
-    // Both-ways pending (orchestrator).
     def "replaceActions clean clearActions still adds the replacement specs (no async-commit short-circuit)"() {
         given:
         enableHubAdminWrite()
@@ -2091,7 +2100,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // scoped to clearActions / replaceActions where the add-half data-loss
     // case is the load-bearing reason. A future widen to _rmDeleteAction
     // would silently change the response shape with no failing test; this
-    // spec is the discriminator. Both-ways pending (orchestrator).
+    // spec is the discriminator.
     def "removeAction retry-window exhaustion stays in legacy error shape (no asyncCommitLikely envelope)"() {
         given:
         enableHubAdminWrite()
@@ -2132,8 +2141,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.actionsRequestedForRemoval == null
         result.actionsStillPresent == null
 
-        and: "legacy diagnostic phrase + restoreHint hint shape still present"
+        and: "legacy diagnostic phrase + restoreHint hint shape still present, and the retry-exhaustion discriminator (_rmDeleteAction's 'waited 10 seconds' phrase) pins the spec to the EXHAUSTION path -- catches a wrong-impl that satisfies 'deletion may commit post-response' via an unrelated IllegalArgumentException"
         result.error?.contains("deletion may commit post-response")
+        result.error?.contains("waited 10 seconds")
         result.restoreHint != null
         result.verifyHint != null
         result.verifyHint?.contains("get_app_config")
@@ -2147,7 +2157,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // call), the catch falls back to actionsRequestedForRemoval=null while
     // still emitting the structured envelope with what it has from the
     // post-window re-fetch. Guards against a defensive-coding regression
-    // that emits [] or omits the field entirely. Both-ways pending (orchestrator).
+    // that emits [] or omits the field entirely.
     def "clearActions asyncCommitLikely: pre-write snapshot fetch failure leaves actionsRequestedForRemoval=null"() {
         given:
         enableHubAdminWrite()
@@ -2187,13 +2197,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "actionsStillPresent populates from the post-window re-fetch (still actionable diagnostic for the caller)"
         result.actionsStillPresent == [1]
+
+        and: "the targeted snapshot call did fire (smoke-check: spec discriminates the pre-clear-snapshot path from accidentally-succeeded fetches downstream)"
+        statusFetchCount >= 2
     }
 
     // S2-clearActions-actionsStillPresent-fetch-failure: post-catch
     // _rmCollectActionIndices re-fetch throws -> actionsStillPresent=null
     // while actionsRequestedForRemoval populates from the surviving pre-write
     // snapshot. Mirror of the snapshot-failure spec on the opposite slot.
-    // Both-ways pending (orchestrator).
     def "clearActions asyncCommitLikely: post-catch fetch failure leaves actionsStillPresent=null"() {
         given:
         enableHubAdminWrite()
@@ -2257,7 +2269,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // (graceful degradation) and the envelope still returns coherently.
     // Guards against a regression where an exception there nukes the whole
     // structured response or surfaces null instead of the safer-default
-    // false. Both-ways pending (orchestrator).
+    // false.
     def "clearActions asyncCommitLikely: _rmGetStateEditAct fetch failure defaults possibleStateEditAct to false"() {
         given:
         enableHubAdminWrite()
@@ -21339,7 +21351,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // schema WITHOUT trashActs (even after the trashAll click) hits this
         // path. Then stub the cancelTrash click to also throw so the inner
         // catch fires both warn-logs.
-        // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
         def warnLogs = []
@@ -21356,11 +21367,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson(100, [[name: "actType.1", value: "switchActs"]])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def cancelTrashAttempts = 0
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             // cancelTrash click throws -- triggers the inner warn-log path
             // (the patches branch wraps cancelTrash in a try/catch and emits
             // "cancelTrash recovery also failed").
             if (path == "/installedapp/btn" && body?.name == "cancelTrash") {
+                cancelTrashAttempts++
                 throw new RuntimeException("simulated hub 500 on cancelTrash click")
             }
             [status: 200, location: null, data: '']
@@ -21383,13 +21396,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it.msg?.contains("cancelTrash recovery also failed") &&
             it.msg?.contains("clearActions")
         }
+
+        and: "cancelTrash WAS attempted on the hard-fail path (positive pin against a regression that widens the asyncCommit skip predicate to ALL exceptions inside the patches branch)"
+        cancelTrashAttempts >= 1
     }
 
     def "patches[replaceActions]: cancelTrash recovery failure emits a discoverable warn log"() {
         // Sibling of the clearActions spec above. patches.replaceActions wraps
         // its own clearActions step in the same recovery pattern; the warn-log
         // substring differs by the patch-op qualifier.
-        // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
         def warnLogs = []
@@ -21407,8 +21422,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson(100, [[name: "actType.1", value: "switchActs"]])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def cancelTrashAttempts = 0
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/btn" && body?.name == "cancelTrash") {
+                cancelTrashAttempts++
                 throw new RuntimeException("simulated hub 500 on cancelTrash click")
             }
             [status: 200, location: null, data: '']
@@ -21430,13 +21447,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it.msg?.contains("cancelTrash recovery also failed") &&
             it.msg?.contains("replaceActions")
         }
+
+        and: "cancelTrash WAS attempted on the hard-fail path inside patches[replaceActions] too (sibling pin to spec above)"
+        cancelTrashAttempts >= 1
     }
 
     // S2-patches-asyncCommitLikely-marker-strip: the patches branch does NOT
     // emit the structured asyncCommitLikely envelope (scoped to top-level
     // clearActions / replaceActions), but the internal sentinel must still
     // be stripped from the per-patch error string before it reaches callers.
-    // Both-ways pending (orchestrator).
     def "patches[clearActions] retry-window expiration does not leak the [asyncCommitLikely] marker into per-patch error"() {
         given:
         enableHubAdminWrite()
@@ -21507,7 +21526,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the patches[clearActions] spec above. patches[replaceActions] wraps its
     // OWN _rmClearActions step (separate from the top-level replaceActions
     // shortcut) and must also strip the marker + skip cancelTrash on async.
-    // Both-ways pending (orchestrator).
     def "patches[replaceActions] retry-window expiration does not leak the [asyncCommitLikely] marker into per-patch error"() {
         given:
         enableHubAdminWrite()
@@ -21556,10 +21574,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         patchEntry.error?.contains("after 10s of retries")
         !patchEntry.error?.contains("[asyncCommitLikely]")
 
-        and: "the patches branch stays in the flat per-patch shape -- no envelope promotion"
+        and: "the patches branch stays in the flat per-patch shape -- no envelope promotion. Mirrors spec 10's key-absence pin set."
         !patchEntry.containsKey("asyncCommitLikely")
         !patchEntry.containsKey("stage")
         !patchEntry.containsKey("pendingActionsToAdd")
+        !patchEntry.containsKey("safeRecovery")
 
         and: "the per-patch warn-log carries the replaceActions op qualifier and is also marker-free"
         def patchWarn = warnLogs.find { it.msg?.contains("patches[") && it.msg?.contains("replaceActions") && it.msg?.contains("failed") }
