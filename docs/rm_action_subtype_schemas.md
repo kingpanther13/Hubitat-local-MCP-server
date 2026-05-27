@@ -517,8 +517,8 @@ comparator-based condition:
 | Capability | State values |
 |---|---|
 | `Water sensor` | `'wet'`, `'dry'` |
-| `Smoke detector` | `'detected'`, `'clear'`, `'tested'` |
-| `Carbon monoxide detector` | `'detected'`, `'clear'`, `'tested'` |
+| `Smoke detector` | `'detected'`, `'clear'` |
+| `Carbon monoxide detector` | `'detected'`, `'clear'` |
 | `Tamper alert` | `'detected'`, `'clear'` |
 | `Acceleration` | `'active'`, `'inactive'` |
 

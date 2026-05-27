@@ -1499,6 +1499,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "only 1 verification fetch: attempt 0 sees action gone immediately (no retry fired)"
         verificationFetches == 1
+
+        and: "rich-return surface from _rmDeleteAction is captured on the outer envelope"
+        // Regression guard for the action-mutation dispatcher capturing
+        // _rmDeleteAction's full rich return ({removedIndex, beforeIndices,
+        // afterIndices}) and surfacing it on the outer envelope. The
+        // pre-fix dispatcher discarded the helper's return entirely
+        // (`_rmDeleteAction(appId, idx)` bare statement); a regression that
+        // restores the discard would leave these fields null even though
+        // `removedIndices` and `note` continue to look correct. Pinning the
+        // index-list diff lets callers detect post-delete state without an
+        // extra get_app_config round-trip.
+        // Both-ways pending (orchestrator).
+        result.removedIndex == 1
+        result.beforeIndices instanceof List
+        (result.beforeIndices as List).contains(1)
+        result.afterIndices instanceof List
+        !((result.afterIndices as List).contains(1))
+
+        and: "outer partial stays falsy and the action-mutation inner-only hint is absent"
+        // Strict-negation pin paired with the action-mutation inner-only TN3
+        // contract. On the happy path nothing inner reported partial and the
+        // trailing updateRule landed clean, so the inner-only hint MUST stay
+        // absent and outer partial MUST stay falsy. A regression that
+        // unconditionally appends the inner-only hint on every action-mutation
+        // call would lint-green without this assertion.
+        result.partial != true
+        !((result.repairHints as List) ?: []).any { it?.toString()?.contains("One or more inner replaceActions items reported partial") }
     }
 
     def "removeAction succeeds on second check when deletion propagates after first retry (race recovery)"() {
@@ -1700,9 +1727,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.toLowerCase()?.contains("trashacts")
     }
 
-    // W-spec-clearActions-text (singular): the stillThereWord ternary at L16398 (production)
-    // routes the recovery-phrase "if the <action|actions> really did get clobbered". Pin
-    // the singular form when exactly 1 action stays stuck.
+    // W-spec-clearActions-text (singular): the stillThereWord ternary inside
+    // _rmClearActions routes the recovery-phrase "if the <action|actions>
+    // really did get clobbered". Pin the singular form when exactly 1 action
+    // stays stuck.
     // Both-ways pending (orchestrator).
     def "clearActions error text says 'if the action really did get clobbered' singular for one stuck action"() {
         given:
@@ -2003,6 +2031,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "note confirms the move direction"
         result.note?.contains("down")
+
+        and: "rich-return surface from _rmMoveAction is captured on the outer envelope"
+        // Regression guard for the action-mutation dispatcher capturing
+        // _rmMoveAction's full rich return ({beforePosition, afterPosition,
+        // indicesAfter}) and surfacing it on the outer envelope. A regression
+        // that drops the assignment (`moveResult = _rmMoveAction(...)` ->
+        // bare `_rmMoveAction(...)`) would leave these fields null even though
+        // the move itself succeeds and the note string is unchanged. Without
+        // this assertion only the unit-level success / note pins survive and
+        // the rich shape silently regresses to the pre-fix nulls.
+        // Both-ways pending (orchestrator).
+        result.beforePosition != null
+        result.afterPosition != null
+        // Tier-1 ordering: index 1 starts at slot 0, moves to slot 1 after
+        // arrowDn. Use abs-difference == 1 so the pin survives any future
+        // index-vs-position swap (arrowDn always shifts position by +1, but
+        // the assertion would also hold if the dispatcher swapped the order).
+        Math.abs((result.afterPosition as Integer) - (result.beforePosition as Integer)) == 1
+        result.indicesAfter instanceof List
+        (result.indicesAfter as List).size() > 0
     }
 
     def "moveAction arrowUp: action moves back one position using tier-1 ordering"() {
@@ -2048,6 +2096,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "note confirms the move direction"
         result.note?.contains("up")
+
+        and: "rich-return surface from _rmMoveAction is captured on the outer envelope"
+        // Sibling regression guard to the arrowDn spec above. Pins the same
+        // moveResult capture on the arrowUp dispatch path so a regression
+        // that drops the assignment on EITHER direction surfaces here.
+        // Both-ways pending (orchestrator).
+        result.beforePosition != null
+        result.afterPosition != null
+        Math.abs((result.afterPosition as Integer) - (result.beforePosition as Integer)) == 1
+        result.indicesAfter instanceof List
+        (result.indicesAfter as List).size() > 0
     }
 
     // ---------- state.editAct pre-flight guard (applies to removeAction AND moveAction) ----------
@@ -5618,16 +5677,40 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the pre-truth-up wrong-phrasings are absent from the addAction property"
         // Scope the negation to the addAction property's text so a legitimate
         // "button='updateRule'" reference inside a different property (e.g. the
-        // `button` enum description) doesn't false-fail this assertion. Extract
-        // the addAction property's description from the rendered schema text.
-        def addActionMatch = (schemaText =~ /addAction:\[[^\]]*?description:([^,]+(?:,[^=]+=[^,]+)*?)(?=,\s*\w+:\[)/)
-        // Fallback: extract a broad-but-bounded section around "addAction:" if the
-        // tight match misses (Groovy GString rendering of nested Maps varies).
-        def addActionDesc = addActionMatch.find()
-            ? addActionMatch.group(1)
-            : (schemaText.indexOf("addAction:") >= 0
-                ? schemaText.substring(schemaText.indexOf("addAction:"), Math.min(schemaText.length(), schemaText.indexOf("addAction:") + 4000))
-                : "")
+        // `button` enum description) doesn't false-fail this assertion.
+        //
+        // Extraction strategy: prefer the structured map walk over a regex over
+        // the rendered GString. The toString() form of nested Maps varies with
+        // Groovy version, key insertion order, and embedded special characters
+        // -- a regex over it is brittle. The structured walk pulls the
+        // addAction property's `description` value directly from the
+        // inputSchema map (W12: more robust than the prior regex fallback).
+        def addActionDesc = ""
+        try {
+            def schemaMap = updateNativeApp?.inputSchema
+            if (schemaMap instanceof Map) {
+                def props = schemaMap?.properties
+                if (props instanceof Map) {
+                    def addAction = props?.addAction
+                    if (addAction instanceof Map && addAction?.description != null) {
+                        addActionDesc = addAction.description.toString()
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // Fall through to the regex fallback below.
+        }
+        if (!addActionDesc) {
+            // Fallback: regex extraction with a tightened 1500-char window
+            // (W12 fix). The prior 4000-char fallback was wide enough to mask a
+            // negation hit if `inputSchema.toString()` rendering changed.
+            def addActionMatch = (schemaText =~ /addAction:\[[^\]]*?description:([^,]+(?:,[^=]+=[^,]+)*?)(?=,\s*\w+:\[)/)
+            addActionDesc = addActionMatch.find()
+                ? addActionMatch.group(1)
+                : (schemaText.indexOf("addAction:") >= 0
+                    ? schemaText.substring(schemaText.indexOf("addAction:"), Math.min(schemaText.length(), schemaText.indexOf("addAction:") + 1500))
+                    : "")
+        }
         // Precondition: confirm extraction actually captured the addAction property
         // text before asserting on negations. Without this, an extraction miss (regex
         // shape drift OR addAction property renamed/moved) would fall through to a
@@ -7802,7 +7885,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("removeTrigger.index 5 not found")
         // Exact phrase pinned (W-N.34): a loose .contains("2") would match the "2" in the
         // request's index 5 message or coincidental digit overlap. The distinctive
-        // "Existing indices: 2" comes from L16198's sort().join(', ') formatter.
+        // "Existing indices: 2" comes from _rmRemoveTrigger's
+        // sort().join(', ') formatter on the not-found throw.
         result.error?.contains("Existing indices: 2")
     }
 
@@ -7935,6 +8019,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "hasAll commit fired"
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+
+        and: "outer partial stays falsy on the happy path (strict-negation pin)"
+        // Strict-negation pin paired with the bubble-when-true spec at the
+        // trigInnerPartial OR-branch contract. The happy path has nothing
+        // inner-skipped and no verificationFetchFailed, so trigInnerPartial
+        // stays false and outer partial MUST stay falsy. A regression that
+        // default-inits trigInnerPartial=true (or unconditionally ORs it in)
+        // would lint-green here without this assertion.
+        result.partial != true
+
+        and: "modifyTrigger inner-partial hint is absent (strict-negation pin)"
+        // Strict-negation pin paired with the modifyTrigger inner-only TN3
+        // contract. On the happy path the inner-only hint MUST stay absent.
+        // A regression that unconditionally appends the inner-only hint on
+        // every modifyTrigger call would lint-green without this assertion.
+        !((result.repairHints as List) ?: []).any { it?.toString()?.contains("modifyTrigger reported inner partial") }
     }
 
     def "modifyTrigger returns success: false when triggerIdx not present"() {
@@ -7960,9 +8060,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "returns success: false with descriptive error listing existing indices"
         result.success == false
         result.error?.contains("modifyTrigger.index 7 not found")
-        // Exact phrase pinned (W-N.34): the distinctive "Existing indices: 2" comes
-        // from L16277's sort().join(', ') formatter; a loose .contains("2") would also
-        // match coincidental digit overlap (e.g. modifyTrigger.index 7 -> two-digit hits).
+        // Exact phrase pinned (W-N.34): the distinctive "Existing indices: 2"
+        // comes from _rmModifyTrigger's sort().join(', ') formatter on the
+        // not-found throw; a loose .contains("2") would also match coincidental
+        // digit overlap (e.g. modifyTrigger.index 7 -> two-digit hits).
         result.error?.contains("Existing indices: 2")
     }
 
@@ -10610,7 +10711,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        // Pin the distinctive phrase from the production message (L20011) -- not a loose 5-char substring.
+        // Pin the distinctive phrase from the production Mode-condition throw
+        // in _rmWalkConditionReveal -- not a loose 5-char substring.
         result.error?.toString()?.contains("'state' (mode name) or 'modeIds'")
     }
 
@@ -12505,7 +12607,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Custom Attribute: fail-loud when attribute set but comparator missing"() {
         // Custom Attribute validation: both attribute AND comparator required when one is present.
-        // This covers the first throw at L20246: attribute!=null && comparator==null.
+        // This covers the first throw inside _rmWalkConditionReveal's Custom
+        // Attribute branch: attribute!=null && comparator==null.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
@@ -14023,8 +14126,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the outer catch from issuing a redundant second cancelCapab click after the
     // walker has already cancelled. Without the guard the second click fails (nothing
     // to cancel) and flips wizardStuck to true erroneously. The fix point is the
-    // !cancelledByWalker conditional at L20800 (Round 11) -- this spec pins it
-    // (Round 12 B2).
+    // !cancelledByWalker conditional in _rmAddRequiredExpression's outer
+    // catch -- this spec pins the guard.
     // Both-ways pending (orchestrator).
     def "addRequiredExpression Mode: walker cancel succeeds -- outer catch does not issue a second cancelCapab"() {
         given:
@@ -15391,11 +15494,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //
         // Setup includes an existing open ifThen action (actType.1=condActs +
         // actSubType.1=getIfThen) so the new elseIf has a parent IF block --
-        // without it the structural-balance pre-flight at L17005 refuses the
-        // call before the walker fires ("would introduce a new structural-balance
-        // issue ... orphaned branch keyword"). The walker under test sits BEHIND
-        // the pre-flight; this seed simulates a real caller building up
-        // ifThen -> elseIf incrementally.
+        // without it the structural-balance pre-flight inside _rmAddAction
+        // refuses the call before the walker fires ("would introduce a new
+        // structural-balance issue ... orphaned branch keyword"). The walker
+        // under test sits BEHIND the pre-flight; this seed simulates a real
+        // caller building up ifThen -> elseIf incrementally.
         given:
         enableHubAdminWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -15780,13 +15883,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // _rmAddAction recursive subExpression normalization spec — limited form.
     //
-    // L16953-16967 defines a recursive normExprCondList closure that walks into
-    // subExpression.conditions[] and rewrites singular deviceId -> deviceIds: [N].
-    // However the SIBLING pre-validator at L16968-16972 is FLAT: it iterates the
-    // outer conditions only and never recurses. So a singular deviceId nested in
-    // a subExpression gets normalized but NOT pre-validated. (The downstream
-    // wizard write at L18085+ does not yet emit cond=b open-paren writes for
-    // addAction subExpressions, so the rule would fail at the write stage anyway.)
+    // _rmAddAction defines a recursive normExprCondList closure that walks
+    // into subExpression.conditions[] and rewrites singular deviceId ->
+    // deviceIds: [N]. However the sibling pre-validator in the same helper
+    // is FLAT: it iterates the outer conditions only and never recurses. So
+    // a singular deviceId nested in a subExpression gets normalized but NOT
+    // pre-validated. (The downstream wizard write in _rmAddAction's doActPage
+    // executor does not yet emit cond=b open-paren writes for addAction
+    // subExpressions, so the rule would fail at the write stage anyway.)
     //
     // This spec pins the limited contract that ACTUALLY exists today: the
     // recursive normalization MUST run without crashing the dispatcher, and the
@@ -16116,6 +16220,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // subExpression normalization must produce the same wire value as a top-level
         // singular deviceId would.
         writtenFields["rDev_1"] == "73"
+
+        and: "valid nested Map does NOT trip the recursive validator's not-a-Map throw (W7 negative pin)"
+        // Strict-negation pin paired with the W7 positive spec (non-Map nested
+        // entry throws with full path-prefix). The validator must NOT throw the
+        // "is not a Map" message on valid nested Maps. A regression that
+        // over-broadens the type guard to throw on every nested entry (or that
+        // mis-identifies a valid Map as a non-Map via wrong instanceof check)
+        // would surface here. Cheap to add because the existing fixture already
+        // exercises a valid nested subExpression all the way to success.
+        !result.error?.toString()?.contains("is not a Map")
     }
 
     // ---------- W-N.35-revealedAny-fallback: static-schema always-visible spec ----------
@@ -16407,13 +16521,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- W-multi-entry-condition: single condition producing multiple skipped entries
     //
-    // Regression guard for the unique-condIdx discrimination logic at L21006-21007.
-    // The buggy entry-count code would inflate "1 condition with 3 skipped fields" to
-    // "3 conditions"; the fixed unique-count logic must report "1 condition". The
-    // existing singular-degradation spec at L15069 produces exactly 1 skipped entry,
-    // so it cannot distinguish entry-count from unique-count. This spec forces 3
-    // skipped entries that all carry condIdx=0 (via rawSettings keys absent from
-    // the static schema) and pins the singular wording.
+    // Regression guard for the uniqueCondIdxs discrimination logic in the
+    // _rmAddRequiredExpression repairHints assembly. The buggy entry-count
+    // code would inflate "1 condition with 3 skipped fields" to "3 conditions";
+    // the fixed unique-count logic must report "1 condition". The existing
+    // singular-degradation spec (singular-state-without-comparator F3) produces
+    // exactly 1 skipped entry, so it cannot distinguish entry-count from
+    // unique-count. This spec forces 3 skipped entries that all carry condIdx=0
+    // (via rawSettings keys absent from the static schema) and pins the
+    // singular wording.
     // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: repairHints says '1 condition' when one condition produces multiple skipped entries"() {
@@ -16486,8 +16602,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- W-spec-addRE-note-text: count-aware Required Expression note ----------
     //
-    // L21617 emits "Required Expression added with N condition(s); updateRule fired."
-    // with a count-aware ternary on condition/conditions. Pin both forms so a regression
+    // toolUpdateNativeApp's addRequiredExpression dispatcher emits "Required
+    // Expression added with N condition(s); updateRule fired." with a count-
+    // aware ternary on condition/conditions. Pin both forms so a regression
     // that drops the discrimination is caught.
     // Both-ways pending (orchestrator).
 
@@ -16639,15 +16756,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- W-spec-subscriptionSettle: count-aware helper output (precursor) ----------
     //
-    // The subscription-settle WARN message at L21824 uses two count-aware phrasings
-    // for "trigger is" / "triggers are". The helper _rmCheckSubscriptionSettle
-    // determines the count via tDev<N> setting introspection. Pin both forms via the
+    // The subscription-settle WARN message inside toolUpdateNativeApp's
+    // button-handler dispatcher uses two count-aware phrasings for "trigger
+    // is" / "triggers are". The helper _rmCheckSubscriptionSettle determines
+    // the count via tDev<N> setting introspection. Pin both forms via the
     // helper output: triggerCount=1 (singular path) and triggerCount=2 (plural).
     // Both-ways pending (orchestrator).
     def "subscriptionSettle WARN message: singular 'trigger is' when triggerCount=1"() {
-        // Drive the count-aware trigVerb ternary at L21834 via a real statusJson
-        // stub returning one tDev entry + zero subscriptions. _rmCheckSubscriptionSettle
-        // reports unsettled=true twice (initial + post-retry), so the WARN string fires.
+        // Drive the count-aware trigVerb ternary inside toolUpdateNativeApp's
+        // button-handler post-updateRule branch via a real statusJson stub
+        // returning one tDev entry + zero subscriptions.
+        // _rmCheckSubscriptionSettle reports unsettled=true twice (initial +
+        // post-retry), so the WARN string fires.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
@@ -16682,7 +16802,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "subscriptionSettle WARN message: plural 'triggers are' when triggerCount=2"() {
-        // Plural-side regression pin for the trigVerb ternary at L21834.
+        // Plural-side regression pin for the trigVerb ternary in
+        // toolUpdateNativeApp's button-handler post-updateRule branch.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
@@ -17037,8 +17158,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             // _rmClickAppButton posts to /installedapp/btn with body["settings[<name>]"]="clicked"
-            // -- canonical discriminator pattern used by sibling specs (e.g. cancelCapab wizardStuck
-            // specs at L12527, L13021, L13086). NOT _action_button -- that key is never set.
+            // -- canonical discriminator pattern used by the sibling cancelCapab
+            // wizardStuck specs in this file. NOT _action_button -- that key is
+            // never set.
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
                 updateRuleAttempted = true
                 throw new RuntimeException("simulated updateRule rejection (firmware refused the click)")
@@ -17286,7 +17408,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: comparator '=' without state or value fails loud"() {
         // When the comparator requires RHS but neither state nor value is supplied, the
         // walker MUST cancel + throw rather than letting RM render against the field
-        // default (0). Mirrors the _rmBuildCondition (selectTriggers) fail-loud at L18557.
+        // default (0). Mirrors the _rmBuildCondition (selectTriggers) fail-loud
+        // for the Variable-comparator-missing-RHS case.
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -17443,8 +17566,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // lets the walker handle the shape would surface a different error string.
         result.error?.toString()?.contains("nested subExpression")
         result.error?.toString()?.contains("not yet supported")
-        // Pre-pass-distinctive substring: the addAction pre-pass throw at L16962 says
-        // "on this action type", while the in-walker throw at L18119 says "on this row".
+        // Pre-pass-distinctive substring: the addAction pre-pass throw inside
+        // _rmAddAction's nested-subExpression rejector says "on this action
+        // type", while the in-walker throw in _rmAddAction's doActPage executor
+        // says "on this row".
         // Pinning the pre-pass-specific phrase ensures the spec catches a regression
         // that moves the pre-pass reject (so the in-walker reject fires instead, AFTER
         // a partial wizard write has already landed). Both throws share the "nested
@@ -17885,7 +18010,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // detect without log-grep, and flip success=false + partial=true so they do
         // not treat the response as fully baked.
         // Uses the proven selectTriggersSchemaJson + mainPageJson helpers (same as
-        // the addTrigger full-success spec at L3521) so the call actually reaches the
+        // the addTrigger full-success spec) so the call actually reaches the
         // trailing updateRule click.
         // Both-ways pending (orchestrator).
         given:
@@ -17941,12 +18066,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.repairHints?.any { it?.toString()?.contains("updateRule click was rejected") }
 
         and: "note text reflects the FAILED outcome (consumer-visible response field)"
-        // Load-bearing discriminator: the note ternary at L21487 selects between
-        // "FAILED -- subscriptions may not be live" (failure branch) and "fired
-        // (subscriptions populated)" (success branch). A typo regression on either
-        // branch would pass the success/failure flag checks above but ship a
-        // mis-labelled note to the consumer. Pin the failure-branch wording here;
-        // the SUCCESS spec below pins the success-branch wording.
+        // Load-bearing discriminator: the note ternary in toolUpdateNativeApp's
+        // addTrigger dispatcher selects between "FAILED -- subscriptions may
+        // not be live" (failure branch) and "fired (subscriptions populated)"
+        // (success branch). A typo regression on either branch would pass the
+        // success/failure flag checks above but ship a mis-labelled note to
+        // the consumer. Pin the failure-branch wording here; the SUCCESS spec
+        // below pins the success-branch wording.
         result.note?.contains("FAILED -- subscriptions may not be live")
     }
 
@@ -18190,7 +18316,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "both"          | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"]], addActions: [[capability: "switch", action: "on", deviceIds: [8]]]]                                                                                                     | 1                 | 1
     }
 
-    def "update_native_app bulk addTriggers per-item partial with updateRule SUCCESS still flips partial:true"() {
+    @spock.lang.Unroll
+    def "update_native_app bulk #shape per-item partial with updateRule SUCCESS still flips partial:true (W7/W11)"() {
         // W7: pins the partial OR-branch (`itemsPartial || updateRuleFailed`) on the
         // SUCCESS path of the trailing updateRule. Sibling-coverage gap: the failure
         // @Unroll above always flips partial:true via updateRuleFailed; the success
@@ -18201,11 +18328,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // over by the otherwise-clean trailing click. A regression that flips the
         // OR to AND (`itemsPartial && updateRuleFailed`) would silently report
         // partial=false here.
+        //
+        // W11: the original W7 spec covered addTriggers ONLY. Convert to @Unroll
+        // matching the failure-pin's 3 shapes (triggers-only, actions-only, both)
+        // so the addActions-only and mixed-shape OR-branches are also pinned. A
+        // regression that fixes the OR for triggers but reverts it for actions
+        // (or vice versa) was previously invisible.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
         def updateRuleClicked = false
         def fetchSeq = 0
+        def doActSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
@@ -18214,6 +18348,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            doActSeq++
+            // Minimal doActPage schema that lets _rmAddAction reach the
+            // _rmValidateDeviceIdsExist call for switch.<N> -- the bogus
+            // device id below will then trip the validator inline.
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum"],
+                [name: "actSubType.1", type: "enum"],
+                [name: "actionDone", type: "button"]
+            ])
+        }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             fetchSeq++
             selectTriggersSchemaJson(100, fetchSeq)
@@ -18225,14 +18371,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99999') { params -> "" }
 
         when:
-        def result = script.toolUpdateNativeApp([
-            appId: 100,
-            addTriggers: [
-                [capability: "Switch", deviceIds: [8], state: "on"],
-                [capability: "Switch", deviceIds: [99999], state: "off"]
-            ],
-            confirm: true
-        ])
+        def result = script.toolUpdateNativeApp(args + [appId: 100, confirm: true])
 
         then: "trailing updateRule click succeeded -- precondition"
         // Without this, an earlier-throw regression would silently make the rest
@@ -18256,10 +18395,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "result.success flips false because per-item add failed"
         result.success == false
 
-        and: "per-item results reflect 1 success + 1 failure on triggers[]"
-        (result.triggers as List)?.size() == 2
-        result.triggers[0]?.success != false
-        result.triggers[1]?.success == false
+        where:
+        shape           | args
+        "addTriggers"   | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"], [capability: "Switch", deviceIds: [99999], state: "off"]]]
+        "addActions"    | [addActions:  [[capability: "switch", action: "on", deviceIds: [8]], [capability: "switch", action: "off", deviceIds: [99999]]]]
+        "both"          | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"]], addActions: [[capability: "switch", action: "on", deviceIds: [99999]]]]
     }
 
     // ---------- _rmBuildCondition deviceId normalize-before-validate ----------
@@ -18421,7 +18561,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- _rmAddTrigger.condition deviceId normalize-before-validate (A1) ----------
 
     def "_rmAddTrigger pre-validation observes deviceIds list when trigger.condition uses singular deviceId"() {
-        // A1: covers the wrapper call site at L14682-14689 (pre-validation MUST happen
+        // A1: covers the _rmAddTrigger wrapper call site (pre-validation MUST happen
         // AFTER the normalize). Production comment: "validator sees the raw .deviceIds
         // list, an absent value early-returns, and the bogus singular ID surfaces only
         // as a 'Broken Trigger' render later." Catches a regression to the call ordering
@@ -18472,7 +18612,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // on the un-normalized null .deviceIds list and the call would proceed past
         // pre-validation. The error message must name both the device ID AND the
         // addTrigger.condition.deviceIds context (proves it came from the
-        // trigger.condition validator at L14691, not the top-level deviceIds validator).
+        // trigger.condition validator inside _rmAddTrigger, not the top-level
+        // deviceIds validator).
         result.error?.toString()?.contains("99999")
         result.error?.toString()?.contains("addTrigger.condition.deviceIds")
     }
@@ -18480,7 +18621,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- STPage walker-cancel symmetry with doActPage (A3) ----------
 
     def "addRequiredExpression: STPage walker-thrown exception triggers exactly one cancelCapab via outer-catch fallback"() {
-        // A3: STPage analog of the doActPage F4 spec at L16153. When _rmFetchConfigJson
+        // A3: STPage analog of the doActPage F4 spec earlier in this file.
+        // When _rmFetchConfigJson
         // throws from inside _rmRevealStep (the post-trigger re-fetch) during STPage
         // walk, the walker never invokes its cancel closure -- the exception comes
         // from inside the reveal step's plumbing, not from a guarded validation path.
@@ -18577,8 +18719,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- F1: patches updateRule failure propagation ----------
 
     def "patches: trailing updateRule failure surfaces updateRuleFailed + patchesNotLive + repairHints"() {
-        // Sibling pattern from F2 addRequiredExpression propagation (L22091+) and
-        // its addTrigger counterpart at L21598+. When the post-patch updateRule
+        // Sibling pattern from the F2 addRequiredExpression propagation
+        // dispatcher and its addTrigger counterpart (both inside
+        // toolUpdateNativeApp). When the post-patch updateRule
         // click is rejected the patches landed but never bake; envelope MUST carry
         // dedicated slots (updateRuleFailed / patchesNotLive / updateRuleError),
         // flip success=false, and append a recovery repairHint.
@@ -18963,13 +19106,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- F7: addRequiredExpression verificationFetchFailed + hubRenderError outer-dispatcher coverage ----------
 
     def "addRequiredExpression surfaces verificationFetchFailed=true when post-commit mainPage fetch errors"() {
-        // Sibling pattern from the addTrigger spec at L3907. The
-        // verificationFetchFailed flag is set at L21452+ in _rmAddRequiredExpression
-        // when the post-commit "did the RE bake?" mainPage fetch throws. Outer
-        // dispatcher propagates it. _rmAddRequiredExpression also touches mainPage
-        // during the walk (via _rmWriteSettingOnPage useST=true), so the fixture
-        // uses a sequence counter to let the EARLY mainPage fetches succeed and
-        // throw only on the FINAL verification fetch.
+        // Sibling pattern from the addTrigger spec for
+        // verificationFetchFailed. The verificationFetchFailed flag is set
+        // inside _rmAddRequiredExpression when the post-commit "did the RE
+        // bake?" mainPage fetch throws. Outer dispatcher propagates it.
+        // _rmAddRequiredExpression also touches mainPage during the walk (via
+        // _rmWriteSettingOnPage useST=true), so the fixture uses a sequence
+        // counter to let the EARLY mainPage fetches succeed and throw only on
+        // the FINAL verification fetch.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
@@ -18978,7 +19122,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // doneST. The mainPage fetch handler uses this to throw ONLY after the
         // walk has completed -- pre-walk mainPage fetches (useST write etc.)
         // succeed normally so the call reaches the post-commit verification path
-        // at L21453 where verificationFetchFailed is set.
+        // inside _rmAddRequiredExpression where verificationFetchFailed is set.
         def doneSTClicked = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -19011,7 +19155,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         // mainPage: succeed during the walk (early useST=true write + sub-page
         // navigation); throw only AFTER the STPage Done back-nav fires (the
-        // verification fetch at L21453 happens immediately after sub-page Done).
+        // verification fetch inside _rmAddRequiredExpression happens immediately
+        // after sub-page Done).
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
             if (doneSTClicked) {
                 throw new RuntimeException("simulated post-commit mainPage fetch failure")
@@ -19663,7 +19808,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Carbon dioxide sensor (CarbonDioxideMeasurement capability) is
         // INTENTIONALLY ABSENT here -- RM treats CO2 as numeric ppm, not
         // discrete-event. See the DISCRETE_EVENT_CAPS comment in
-        // hubitat-mcp-server.groovy near L20492 for the capability-name pitfall.
+        // hubitat-mcp-server.groovy (inside _rmWalkConditionReveal's
+        // DISCRETE_EVENT_CAPS map) for the capability-name pitfall.
         // Carbon monoxide detector (CarbonMonoxideDetector capability, discrete)
         // is INCLUDED; the two look symmetric but are not.
         cap                            | validStates
@@ -19766,8 +19912,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
+        def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m) writtenFields[m[0][1]] = v
+                }
+            }
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params ->
@@ -19812,10 +19965,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Load-bearing discriminator: a regression that adds Carbon dioxide sensor
         // to DISCRETE_EVENT_CAPS would trip the guard here and the error would
         // name "discrete-event capability". The error MUST be either null or not
-        // carry that phrase. The static-schema stub does not advance far enough
-        // to make a result.success==true pin reliable, but the absence of the
-        // F18 error phrase is unambiguous.
+        // carry that phrase. Negation-only assertions are weak (W10): a
+        // regression that throws a different error message (e.g. "rCapab_1 not
+        // in schema") would silently pass this assertion, so pair with the
+        // positive success + wire-write pins below.
         !(result.error?.toString()?.contains("discrete-event capability"))
+
+        and: "call did not hard-fail (positive pin: paired with the F18-phrase negation above)"
+        // Load-bearing positive discriminator (W10): without this, a regression
+        // that returns success=false for an unrelated reason would silently
+        // satisfy the F18-negation above. result.success != false catches both
+        // explicit `success: false` and the case where the dispatcher errored
+        // through `_rmBuildUpdateErrorResponse` (which never sets `success`).
+        result.success != false
+
+        and: "rDev_1 wire-write captured the CO2 device (positive contract pin: W10)"
+        // Load-bearing positive discriminator: the walker MUST reach the device-
+        // selection write for the numeric-comparator path to be valid. A
+        // regression that adds CO2 to DISCRETE_EVENT_CAPS would throw BEFORE
+        // any rDev_1 write, so this assertion would fail even if the F18 phrase
+        // were silently rewritten. Pinning the actual device-id write (the
+        // bare CSV scalar "8") closes the W10 gap.
+        writtenFields["rDev_1"] == "8"
     }
 
     // ---------- W8: F18 cross-page invariant -- guard fires on doActPage too ----------
@@ -20169,6 +20340,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def hints = (result.repairHints as List) ?: []
         !hints.any { it?.toString()?.contains("updateRule click was rejected") }
 
+        and: "partial stays falsy on the dispatch shapes whose I6 fixture does not produce inner partial"
+        // removeAction / clearActions / moveAction flow through the same
+        // `partial: itemsPartial || updateRuleFailed` formula. On the happy
+        // path both flags are false, so partial MUST stay falsy. A regression
+        // flipping itemsPartial to default true (e.g. mis-initializing
+        // addedTotal) would surface here.
+        //
+        // replaceActions is EXCLUDED from this list because the I6 fixture's
+        // static doActPage schema causes the inner _rmAddAction call to route
+        // actType.1/actSubType.1 writes to silent_rejection (paragraphs don't
+        // shift, value not echoed), so the inner add returns partial:true and
+        // the outer partial naturally flips true even on the happy path. That
+        // inner-partial bubble is the contract the dedicated OR-clause spec
+        // (replaceActions: success:true + partial:true ... OR-clause) pins
+        // directly; duplicating it here would force a fixture rewrite without
+        // adding regression value.
+        //
+        // The trigger-mutation rows (removeTrigger / modifyTrigger) have their
+        // own partial-true regression pin in the C3 contract spec further down;
+        // do not duplicate that coverage here. modifyTrigger's I6 fixture echoes
+        // tstate1 via settingsLanded so settingsSkipped is empty, but the
+        // partial assertion is intentionally omitted here to keep this pin
+        // scoped to the action-mutation contract.
+        if (shape in ["removeAction", "clearActions", "moveAction"]) {
+            assert result.partial != true
+        }
+
         where:
         shape             | args
         "removeAction"    | [removeAction: [index: 1]]
@@ -20177,6 +20375,533 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "replaceActions"  | [replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]
         "removeTrigger"   | [removeTrigger: [index: 1]]
         "modifyTrigger"   | [modifyTrigger: [index: 1, mods: [state: "off"]]]
+    }
+
+    // ---------- patches per-entry rich-return pins (moveAction + removeAction) ----------
+
+    def "patches[moveAction]: per-patch entry surfaces beforePosition + afterPosition + indicesAfter"() {
+        // Regression guard for the patches dispatcher capturing _rmMoveAction's
+        // rich return on per-patch entries. The pre-fix path emitted a thin
+        // {success, op, index, direction} entry, forcing callers to re-fetch via
+        // get_app_config to see where the action moved. A regression that
+        // restores the thin entry would leave the rich slots null even though
+        // the move itself succeeds.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def clickFired = false
+        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
+        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
+        def makeStatus = { Map actMap ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "actType.1", value: "switchActs"],
+                    [name: "actType.2", value: "delayActs"],
+                    [name: "actType.3", value: "switchActs"]
+                ],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [:],
+                actions: actMap,
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            clickFired ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.stateAttribute == "arrowDn") clickFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [[moveAction: [index: 1, direction: "down"]]],
+            confirm: true
+        ])
+
+        then: "patch entry succeeds with the rich-return slots populated"
+        def entry = result.patches?.first()
+        entry != null
+        entry.success == true
+        entry.op == "moveAction"
+        // Load-bearing discriminators (W5 sibling): the rich-return slots come
+        // from the _rmMoveAction helper. A regression dropping the assignment
+        // would null these out even though success+op+index are unchanged.
+        entry.beforePosition != null
+        entry.afterPosition != null
+        Math.abs((entry.afterPosition as Integer) - (entry.beforePosition as Integer)) == 1
+        entry.indicesAfter instanceof List
+        (entry.indicesAfter as List).size() > 0
+    }
+
+    def "patches[removeAction]: per-patch entry surfaces removedIndex + beforeIndices + afterIndices (W5)"() {
+        // Regression guard for the patches dispatcher capturing _rmDeleteAction's
+        // rich return on per-patch entries. The pre-fix path discarded the
+        // helper return entirely (bare statement, then a thin {success, op,
+        // index} push), forcing callers to re-fetch via get_app_config to see
+        // the index-list diff. A regression that restores the discard would
+        // leave the rich slots null.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def delActFired = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActFired) {
+                statusJson(100, [[name: "actType.2", value: "switchActs"]])
+            } else {
+                statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [[removeAction: [index: 1]]],
+            confirm: true
+        ])
+
+        then: "patch entry succeeds with the rich-return slots populated"
+        def entry = result.patches?.first()
+        entry != null
+        entry.success == true
+        entry.op == "removeAction"
+        // Load-bearing discriminators: the rich-return slots come from the
+        // _rmDeleteAction helper. A regression dropping the assignment would
+        // null these out even though success+op+index are unchanged.
+        entry.removedIndex == 1
+        entry.beforeIndices instanceof List
+        (entry.beforeIndices as List).contains(1)
+        entry.afterIndices instanceof List
+        !((entry.afterIndices as List).contains(1))
+    }
+
+    // ---------- replaceActions inner-partial OR-clause (sibling of the addedOk!=addedTotal arm) ----------
+
+    def "replaceActions: success:true + partial:true inner item still flips outer partial via OR-clause"() {
+        // Pin the inner-partial OR-clause: `itemsPartial = ... addedOk != addedTotal
+        // || addedResults.any { it.partial == true }`. The pre-existing
+        // replaceActions partial spec covers the `addedOk != addedTotal` arm
+        // (one inner add fails outright). A row returning success:true +
+        // partial:true (verification_fetch_failed on doActPage) wouldn't trip
+        // that arm but the OR-clause should bubble it.
+        //
+        // Fixture: replaceActions [valid spec], where the inner _rmAddAction
+        // succeeds at the structural level but the post-commit mainPage
+        // verification fetch throws -- the inner result map is {success: true,
+        // partial: true, verificationFetchFailed: true}. The outer envelope's
+        // `itemsPartial` MUST flip true so the caller sees the failure
+        // without drilling into addedActions[].
+        //
+        // Why not mock _rmAddAction directly: bare-method metaClass stubs on
+        // `private` helpers (which _rmAddAction is) bypass dispatch on the
+        // Hubitat sandbox script class. Driving partial:true through the real
+        // helper via a deliberately-failing post-commit mainPage fetch is
+        // both robust and exercises the contract end-to-end.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        def cleared = false
+        def actionCommitted = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["switchActs"]],
+                [name: "trashActs", type: "enum", multiple: true]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            // doActPage advances every fetch so renderShifted keeps writes from
+            // routing to silent_rejection. paragraphs change on every fetch so
+            // each setting write registers as `applied`.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
+                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "switch.1", type: "capability.switch", multiple: true],
+                                 [name: "actionDone", type: "button"]
+                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
+                childApps: []
+            ])
+        }
+        // mainPage: throw on the post-commit verification fetch (called by
+        // _rmAddAction at the end). This makes the inner _rmAddAction return
+        // {success: true, partial: true, verificationFetchFailed: true}.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            if (actionCommitted) {
+                throw new RuntimeException("simulated post-commit mainPage fetch failure (verificationFetchFailed path)")
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], body: [[element: "paragraph",
+                                         description: "Switch on S1"]]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, cleared ? [] : [[name: "actType.1", value: "switchActs"]])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                cleared = true
+            }
+            // actionDone click signals action committed -- subsequent mainPage
+            // fetch is the verification fetch and MUST throw to drive
+            // verificationFetchFailed=true on the inner helper return.
+            if (path == "/installedapp/btn" && body?.name == "actionDone") {
+                actionCommitted = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]],
+            confirm: true
+        ])
+
+        then: "trailing updateRule click happened -- precondition (rules out earlier-throw vacuity)"
+        updateRuleClicked == true
+
+        and: "inner row IS success-true + partial-true (the OR-clause's discriminating arm)"
+        // Load-bearing precondition: this assertion fails if the fixture
+        // didn't actually produce a success-true-partial-true row, which would
+        // make the OR-clause assertion below vacuous (it would pass via the
+        // addedOk != addedTotal arm instead).
+        def inner = result.addedActions?.first()
+        inner?.success == true
+        inner?.partial == true
+
+        and: "outer partial flips true via the OR-clause even though inner success:true"
+        // Load-bearing discriminator: a regression that flips the OR to AND
+        // (e.g. `addedOk != addedTotal && addedResults.any { ... partial:true }`)
+        // would report partial:false here. The pre-fix code lacked the
+        // .any { partial:true } half of the OR; this spec proves both halves
+        // are required because the addedOk != addedTotal arm is FALSE here
+        // (inner success:true => addedOk == addedTotal).
+        result.partial == true
+
+        and: "outer success stays true (action structurally committed, partial+success co-exist)"
+        // The current contract is `success: (addedOk == addedTotal) && health.ok
+        // && !updateRuleFailed` -- inner partial alone does NOT flip success
+        // because the row IS committed (actType/actSubType written). partial is
+        // the orthogonal "needs repair" flag. A regression that ALSO flips
+        // success=false on inner-partial would change the contract and break
+        // existing callers that rely on success=true as "row exists, walk it
+        // back via repairHints". Pin the current behavior.
+        result.success == true
+    }
+
+    // ---------- TN3 contract: inner-only partial fires a repairHint on the outer envelope ----------
+
+    def "action-mutation replaceActions: inner-only partial (updateRule clean) emits inner-partial repairHint"() {
+        // Pin the inner-only repairHints contract added in this round. Pre-fix:
+        // when itemsPartial flipped true but updateRuleFailed stayed false, the
+        // outer envelope returned partial:true + success:false + repairHints:[]
+        // -- the caller had to drill into addedActions[] to discover why. This
+        // is the same C2 antipattern the rest of this PR has been closing on
+        // the *NotLive flags.
+        //
+        // Contract: `itemsPartial && !updateRuleFailed` MUST append a
+        // discoverable repairHint naming addedActions[] as the next inspection
+        // point. The OR-clause spec above pins partial:true; this spec pins
+        // the repairHint that makes partial:true actionable.
+        //
+        // Drives partial via the same verification-fetch-failed path the
+        // OR-clause spec uses (post-commit mainPage fetch throws).
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        def cleared = false
+        def actionCommitted = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["switchActs"]],
+                [name: "trashActs", type: "enum", multiple: true]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
+                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "switch.1", type: "capability.switch", multiple: true],
+                                 [name: "actionDone", type: "button"]
+                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            if (actionCommitted) {
+                throw new RuntimeException("simulated post-commit mainPage fetch failure (verificationFetchFailed path)")
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], body: [[element: "paragraph",
+                                         description: "Switch on S1"]]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, cleared ? [] : [[name: "actType.1", value: "switchActs"]])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                cleared = true
+            }
+            if (path == "/installedapp/btn" && body?.name == "actionDone") {
+                actionCommitted = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]],
+            confirm: true
+        ])
+
+        then: "preconditions: trailing updateRule click landed clean AND inner partial fired"
+        updateRuleClicked == true
+        result.partial == true
+        result.updateRuleFailed != true
+
+        and: "outer repairHints includes the new inner-only hint (load-bearing discriminator)"
+        // Load-bearing: a regression that drops the inner-only branch would
+        // return repairHints:[] here even though partial:true and
+        // updateRuleFailed:false both hold. The hint substring is the
+        // distinguishing characteristic.
+        def hints = (result.repairHints as List) ?: []
+        hints.any { it?.toString()?.contains("inner replaceActions items reported partial") }
+
+        and: "outer repairHints does NOT include the updateRule-rejected hint (cross-contract pin)"
+        // The trailing updateRule click succeeded so the rejection hint MUST
+        // stay absent. Without this assertion a regression that always-appends
+        // the rejection hint (the pre-R4 C1 shape) would silently lint-green.
+        !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+    }
+
+    def "modifyTrigger: inner-only partial (updateRule clean) emits inner-partial repairHint"() {
+        // Sibling of the action-mutation spec above. modifyTrigger's outer
+        // envelope has its own `trigInnerPartial && !updateRuleFailed` branch
+        // that fires a distinct repairHint pointing at settingsSkipped[] +
+        // removeTrigger/addTrigger as the rebuild path.
+        //
+        // Drives partial via verificationFetchFailed=true: throw on the
+        // POST-COMMIT selectTriggers fetch (after hasAll click) so
+        // _rmModifyTrigger's verify path sets verificationFetchFailed=true.
+        // The dispatcher then flips trigInnerPartial=true and the new
+        // inner-only hint should fire because updateRuleFailed stays false.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        def hasAllClicked = false
+        def selectTrigFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            selectTrigFetchSeq++
+            // After hasAll click, the next selectTriggers fetch is the
+            // verification fetch -- make it throw to drive verificationFetchFailed.
+            if (hasAllClicked) {
+                throw new RuntimeException("simulated post-commit selectTriggers fetch failure (verificationFetchFailed path)")
+            }
+            // Fixture: schema includes tstate1 so _rmModifyTrigger reaches the
+            // settings-write path. Paragraphs change every fetch so the write
+            // routes to settingsApplied (renderShifted=true).
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tstate1", type: "enum", options: ["on", "off"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${selectTrigFetchSeq}".toString()]]]],
+                settings: [tstate1: "off"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            if (path == "/installedapp/btn" && body?.name == "hasAll") {
+                hasAllClicked = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            modifyTrigger: [index: 1, mods: [state: "off"]],
+            confirm: true
+        ])
+
+        then: "preconditions: trailing updateRule click landed clean AND inner partial fired"
+        updateRuleClicked == true
+        result.partial == true
+        result.updateRuleFailed != true
+
+        and: "outer repairHints includes the modifyTrigger inner-partial hint"
+        def hints = (result.repairHints as List) ?: []
+        hints.any { it?.toString()?.contains("modifyTrigger reported inner partial") }
+
+        and: "outer repairHints does NOT include the updateRule-rejected hint"
+        !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+    }
+
+    // ---------- W9: patches cancelTrash recovery warn-log pins ----------
+
+    def "patches[clearActions]: cancelTrash recovery failure emits a discoverable warn log"() {
+        // R4 I9 replaced empty `catch (Exception cancelExc) {}` with a warn-log.
+        // Contract went from silent swallow to documented diagnostic; no spec
+        // pinned that the warn-log actually fires when cancelTrash itself
+        // throws. A regression that restores the empty catch would silently
+        // strip the operator-facing diagnostic.
+        //
+        // Fixture strategy: drive _rmClearActions to throw via its real code
+        // path. _rmClearActions clicks trashAll, then re-fetches selectActions
+        // schema; if trashActs still isn't present, it throws. Returning a
+        // schema WITHOUT trashActs (even after the trashAll click) hits this
+        // path. Then stub the cancelTrash click to also throw so the inner
+        // catch fires both warn-logs.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def warnLogs = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectActions schema NEVER contains trashActs, so _rmClearActions's
+        // post-trashAll-click schema check fails and throws.
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // cancelTrash click throws -- triggers the inner warn-log path
+            // (the patches branch wraps cancelTrash in a try/catch and emits
+            // "cancelTrash recovery also failed").
+            if (path == "/installedapp/btn" && body?.name == "cancelTrash") {
+                throw new RuntimeException("simulated hub 500 on cancelTrash click")
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [[clearActions: true]],
+            confirm: true
+        ])
+
+        then: "the warn-log fires with the cancelTrash recovery-failure substring"
+        // Load-bearing discriminator: the empty-catch pre-fix produced ZERO
+        // warn logs on this path; this assertion fails if the catch is
+        // restored to silent swallow. Substring is scoped to the patches
+        // branch's distinctive phrasing ("patches[N].clearActions").
+        warnLogs.any {
+            it.component == "rm-native" &&
+            it.msg?.contains("cancelTrash recovery also failed") &&
+            it.msg?.contains("clearActions")
+        }
+    }
+
+    def "patches[replaceActions]: cancelTrash recovery failure emits a discoverable warn log"() {
+        // Sibling of the clearActions spec above. patches.replaceActions wraps
+        // its own clearActions step in the same recovery pattern; the warn-log
+        // substring differs by the patch-op qualifier.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def warnLogs = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectActions schema NEVER contains trashActs -- same trick as the
+        // clearActions spec above. _rmClearActions's post-trashAll-click
+        // schema check fails and throws.
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "cancelTrash") {
+                throw new RuntimeException("simulated hub 500 on cancelTrash click")
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [[replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]],
+            confirm: true
+        ])
+
+        then: "the warn-log fires with the patches[N].replaceActions qualifier"
+        // Sibling load-bearing discriminator. Substring scope: "replaceActions"
+        // disambiguates from the clearActions warn-log site above; both fire
+        // through the patches dispatcher but with distinct op qualifiers.
+        warnLogs.any {
+            it.component == "rm-native" &&
+            it.msg?.contains("cancelTrash recovery also failed") &&
+            it.msg?.contains("replaceActions")
+        }
     }
 
     // ---------- I7: recursive deviceId existence validator on nested subExpression ----------
@@ -20233,6 +20958,63 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "STPage" }
     }
 
+    // ---------- W7: recursive validator non-Map shape throws with full path-prefix ----------
+
+    def "addRequiredExpression: nested non-Map entry throws with full path-prefix (W7)"() {
+        // Pin the W7 fix: validateDeviceIdsRecursive previously did a silent
+        // `if (!(condRaw instanceof Map)) return` -- multi-level nested bogus
+        // shapes (e.g. a non-Map at conditions[1].subExpression.conditions[0])
+        // fell through to walkConds at line ~21264 which throws with the
+        // LOCAL-INDEX path ("conditions[0] is not a Map"), losing the
+        // recursive context. The fix throws inline with the accumulated
+        // pathPrefix so callers see the full nesting site.
+        //
+        // Load-bearing discriminator: the error MUST name the full
+        // ${pathPrefix}[N] path. Without the path-prefix the assertion would
+        // see "conditions[0] is not a Map" (the silent-skip + downstream
+        // throw shape) instead of "addRequiredExpression.conditions[1].
+        // subExpression.conditions[0] is not a Map".
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when: "a non-Map sits at the nested conditions[1].subExpression.conditions[0] slot"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [
+                // Pass operator to bypass the early "2 conditions require
+                // operator" validator -- otherwise it short-circuits before
+                // the recursive walker runs.
+                operator: "AND",
+                conditions: [
+                    [capability: "Switch", deviceIds: [8], state: "on"],
+                    [subExpression: [conditions: [
+                        "this is a String, not a Map"  // non-Map nested 3 levels deep
+                    ]]]
+                ]
+            ],
+            confirm: true
+        ])
+
+        then: "the error names the FULL nested path, not just the local-index slot"
+        // Load-bearing: the substring MUST include the recursive path. A
+        // regression that restores `if (...) return` would let the bogus
+        // entry fall through to walkConds' throw, producing
+        // "conditions[0] is not a Map" (path-stripped) instead of the full
+        // path-prefixed message.
+        result.success == false
+        result.error?.toString()?.contains("subExpression.conditions[0]")
+        result.error?.toString()?.contains("is not a Map")
+    }
+
     // ---------- I8: addAction informational-sentinel exemption parity with addRequiredExpression (B6 sibling) ----------
 
     def "addAction ifThen Mode: static-schema informational-sentinel exemption does NOT flip partial:true (B6 addAction sibling -- I8)"() {
@@ -20278,7 +21060,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Paragraph counter increments on every fetch so _rmWriteSettingOnPage's
         // renderShifted detector returns true and each regular write lands in
         // `applied` (not `silent_rejection skipped`). Mirrors the B6 STPage
-        // fixture pattern at L10786+. Without this, every doActPage write
+        // fixture pattern used by the B6 addRequiredExpression spec. Without
+        // this, every doActPage write
         // (actType.1, actSubType.1, cond, rCapab_1, modes1) routes to skipped
         // with reason silent_rejection and floods settingsSkipped, swamping
         // the informational sentinel the spec is trying to exercise.
@@ -20590,5 +21373,219 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def silentRejectionCount = skips.count { it instanceof Map && it.reason == "silent_rejection" }
         informationalCount >= 1
         silentRejectionCount >= 1
+    }
+
+    // ---------- Bulk addTriggers/addActions inner-partial detection + inner-only repairHint ----------
+
+    def "bulk addActions: inner-only partial (updateRule clean) emits inner-partial repairHint"() {
+        // Sibling of the action-mutation replaceActions inner-only spec. The bulk
+        // addTriggers/addActions dispatcher previously computed itemsPartial as a
+        // count-only comparison (trigOk/actOk vs size) -- an inner item returning
+        // {success:true, partial:true} inflated trigOk/actOk and the size-equality
+        // missed the inner-partial signal. Outer partial dropped to updateRuleFailed
+        // only, hiding the inner partial. Two-part fix:
+        //   1. itemsPartial OR-clauses `any { ... partial == true }` on both result lists
+        //   2. inner-only branch appends a discoverable repairHint (matches the C2
+        //      antipattern this PR has been closing on the *NotLive flags)
+        //
+        // Drives partial via verificationFetchFailed: throw on the post-commit
+        // mainPage fetch (after the inner _rmAddAction's actionDone click) so
+        // _rmAddAction returns {success:true, partial:true}. Trailing updateRule
+        // click then lands clean. Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        def actionCommitted = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
+                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "switch.1", type: "capability.switch", multiple: true],
+                                 [name: "actionDone", type: "button"]
+                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            if (actionCommitted) {
+                throw new RuntimeException("simulated post-commit mainPage fetch failure (verificationFetchFailed path)")
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], body: [[element: "paragraph",
+                                         description: "Switch on S1"]]]]],
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            if (path == "/installedapp/btn" && body?.name == "actionDone") {
+                actionCommitted = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addActions: [[capability: "switch", action: "on", deviceIds: [8]]],
+            confirm: true
+        ])
+
+        then: "preconditions: trailing updateRule click landed clean AND inner partial fired"
+        updateRuleClicked == true
+        result.partial == true
+        result.updateRuleFailed != true
+
+        and: "outer repairHints includes the bulk inner-only hint (load-bearing discriminator)"
+        // Load-bearing: a regression that drops the inner-only branch OR drops the
+        // `any { ... partial == true }` clauses from itemsPartial would surface here:
+        // either repairHints stays [] (branch dropped) or partial silently goes false
+        // (itemsPartial clause dropped). The hint substring is the distinguisher.
+        def hints = (result.repairHints as List) ?: []
+        hints.any { it?.toString()?.contains("One or more bulk trigger/action items reported partial") }
+
+        and: "outer repairHints does NOT include the updateRule-rejected hint (cross-contract pin)"
+        // The trailing updateRule click succeeded so the rejection hint MUST stay
+        // absent. Without this assertion a regression that always-appends the
+        // rejection hint (pre-R4 C1 shape) would silently lint-green.
+        !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+
+        and: "inner actions[0] is the partial source (sanity-check the fixture)"
+        // Sanity discriminator: without this, an inner regression that stops emitting
+        // partial=true would make the outer partial-pin above vacuously satisfied via
+        // some other source. Pins the inner is the source of truth.
+        result.actions?.size() == 1
+        result.actions[0]?.partial == true
+    }
+
+    // ---------- Patches dispatcher inner-only repairHint (sibling of bulk + action-mutation) ----------
+
+    def "patches[addRequiredExpression]: inner-only partial (updateRule clean) emits inner-partial repairHint"() {
+        // Sibling of the action-mutation and bulk inner-only repairHint specs.
+        // The patches dispatcher already bubbles inner-partial via the
+        // `patchResults.any { ... partial == true }` clause (B1/C-W3 contract);
+        // this spec pins the new inner-only repairHint branch that makes the
+        // outer partial:true actionable. Pre-fix the outer envelope returned
+        // partial:true + repairHints:[] when an inner op self-reported partial
+        // but the trailing updateRule click landed clean -- caller had to drill
+        // into patches[] to discover why.
+        //
+        // Drives partial via the compareToDevice rhs_type_not_revealed fallback:
+        // STPage exposes RelrDev_1 (base write succeeds) but never reveals
+        // rhsType_<N> (old firmware), so the inner addRE returns
+        // {success:true, partial:true}. Trailing updateRule click lands clean.
+        // Both-ways pending (orchestrator).
+        given:
+        enableHubAdminWrite()
+        def updateRuleClicked = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                updateRuleClicked = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF Temperature > 20"]]]]],
+                settings: [useST: "true"], childApps: []
+            ])
+        }
+        // STPage: RelrDev_1 always present (base write succeeds); rhsType_<N>
+        // never appears (old-firmware shape) -> walker degrades with
+        // rhs_type_not_revealed sentinel + state literal fallback.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",      type: "enum",                options: ["a": "New condition"]],
+                [name: "rCapab_1",  type: "enum",                options: ["Temperature"]],
+                [name: "rDev_1",    type: "capability.sensor",   multiple: true],
+                [name: "RelrDev_1", type: "enum",                options: [">", "<", "="]],
+                [name: "state_1",   type: "number"],
+                [name: "hasAll",    type: "button"],
+                [name: "doneST",    type: "button"]
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when: "patches bundle with addRequiredExpression in compareToDevice fallback path"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            patches: [[addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                state: 70,
+                compareToDevice: [deviceId: 99, attribute: "temperature"]
+            ]]]]],
+            confirm: true
+        ])
+
+        then: "preconditions: trailing updateRule click landed clean AND inner partial fired"
+        updateRuleClicked == true
+        result.partial == true
+        result.updateRuleFailed != true
+        result.patchesNotLive != true
+
+        and: "outer repairHints includes the patches inner-only hint (load-bearing discriminator)"
+        // Load-bearing: a regression that drops the inner-only branch from the
+        // patches dispatcher would return repairHints:[] here even though
+        // partial:true and updateRuleFailed:false both hold. The hint substring
+        // is the distinguishing characteristic.
+        def hints = (result.repairHints as List) ?: []
+        hints.any { it?.toString()?.contains("One or more patch ops reported partial") }
+
+        and: "outer repairHints does NOT include the updateRule-rejected hint (cross-contract pin)"
+        !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+
+        and: "inner patches[0] is the partial source (sanity-check the fixture)"
+        // Sanity discriminator: pins the inner is the source of truth -- a regression
+        // that stops emitting partial=true from the inner addRE would make the outer
+        // partial-pin above vacuously satisfied via some other source.
+        result.patches?.size() == 1
+        result.patches[0]?.partial == true
     }
 }

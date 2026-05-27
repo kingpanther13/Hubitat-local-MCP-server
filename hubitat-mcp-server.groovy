@@ -14614,13 +14614,23 @@ String _rmNormalizeAtTime(String raw) {
 }
 
 /**
- * Single source of truth for the set of `settingsSkipped[].reason` codes that
- * are INFORMATIONAL (do NOT signal a genuine field-write failure). Consumed by
- * both `_rmAddRequiredExpression` and `_rmAddAction` partial gates -- the
- * shared `_rmWalkConditionReveal` walker emits the same sentinels on STPage and
- * doActPage, so both callsites need an identical exemption list. Centralising
- * it here means a future addition (a second informational reason code) lands
- * in one place rather than requiring lockstep edits in two helpers.
+ * Single source of truth for the PRODUCTION-CODE set of
+ * `settingsSkipped[].reason` codes that are INFORMATIONAL (do NOT signal a
+ * genuine field-write failure). Consumed by both `_rmAddRequiredExpression`
+ * and `_rmAddAction` partial gates -- the shared `_rmWalkConditionReveal`
+ * walker emits the same sentinels on STPage and doActPage, so both callsites
+ * need an identical exemption list. Centralising it here means a future
+ * addition (a second informational reason code) lands in one place inside
+ * production code rather than requiring lockstep edits in two helpers.
+ *
+ * SCOPE CAVEAT: this list is the source of truth for production behavior
+ * ONLY. Doc surfaces that name reason codes literally (inline schema
+ * descriptions in this file's tool registrations, the inline get_tool_guide
+ * content block, TOOL_GUIDE.md, etc.) still require manual sync when a new
+ * reason code is added -- there is no lint rule today that mirrors the
+ * discrete-event-caps-doc-parity check for reason codes. Adding such a lint
+ * would be the mechanical class-fix (PIPELINE.md Rule 13) that closes the
+ * remaining gap.
  *
  * Genuinely-partial reason codes (`silent_rejection`, `rhs_type_not_revealed`,
  * `offset_field_not_revealed`, `verification_fetch_failed`, `not_in_schema`,
@@ -21177,7 +21187,16 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     def validateDeviceIdsRecursive
     validateDeviceIdsRecursive = { List cl, String pathPrefix ->
         cl.eachWithIndex { condRaw, i ->
-            if (!(condRaw instanceof Map)) return  // shape errors caught later
+            if (!(condRaw instanceof Map)) {
+                // Throw with the accumulated path-prefix rather than silently
+                // skipping. Downstream walkConds' throw uses the local-index
+                // path ("conditions[${i}]") and loses any nested context, so a
+                // bogus shape at conditions[1].subExpression.conditions[0]
+                // would surface as the misleading top-level "conditions[0] is
+                // not a Map". Naming the full nesting site here gives callers
+                // an actionable error.
+                throw new IllegalArgumentException("${pathPrefix}[${i}] is not a Map")
+            }
             def m = condRaw as Map
             _rmValidateDeviceIdsExist("${pathPrefix}[${i}].deviceIds", m.deviceIds)
             if (m.subExpression instanceof Map) {
@@ -21745,6 +21764,10 @@ def toolUpdateNativeApp(args) {
         // moveAction rich return ({beforePosition, afterPosition, indicesAfter}).
         // Hoisted for the same block-scope reason as the others above.
         def moveResult = null
+        // removeAction rich return ({removedIndex, beforeIndices, afterIndices}).
+        // Surfaced on the outer envelope alongside moveAction's rich return so
+        // callers see the index list shift without re-fetching via get_app_config.
+        def removeResult = null
         // Trailing-updateRule failure propagation (sibling pattern from the
         // bulk addTriggers/addActions branch and the addTrigger single-spec
         // branch). When the post-mutation updateRule click is rejected, the
@@ -21775,7 +21798,11 @@ def toolUpdateNativeApp(args) {
             if (removeActionSpec) {
                 if (removeActionSpec.index == null) throw new IllegalArgumentException("removeAction.index is required")
                 def idx = (removeActionSpec.index as Integer)
-                _rmDeleteAction(appId, idx)
+                // Capture the helper's rich return ({removedIndex, beforeIndices,
+                // afterIndices}) so the outer response can surface the index list
+                // shift without forcing callers to re-fetch via get_app_config.
+                // Mirrors the moveAction rich-envelope propagation pattern above.
+                removeResult = _rmDeleteAction(appId, idx)
                 removed << idx
             }
             // Capture the helper's rich return ({beforePosition, afterPosition,
@@ -21846,10 +21873,6 @@ def toolUpdateNativeApp(args) {
         def addedOk = (addedResults ?: []).count { it?.success != false }
         def addedTotal = (replaceActionsList ?: []).size()
         def health = _rmCheckRuleHealth(appId)
-        def repairHints = []
-        if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
-        }
         // Bubble per-item partial:true (silent_rejection / verification_fetch_failed /
         // hubRenderError on inner field writes) up through the outer envelope. addedOk
         // counts success!=false, so a success:true + partial:true row inflates addedOk
@@ -21857,6 +21880,18 @@ def toolUpdateNativeApp(args) {
         // Sibling pattern: patches dispatcher's innerOk uses `every { ... && partial != true }`.
         def itemsPartial = replaceActionsList != null && (addedOk != addedTotal ||
             addedResults.any { it instanceof Map && it.partial == true })
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        // Inner-only partial (replaceActions list had partial inner items but the
+        // trailing updateRule click landed clean). Without this hint the outer
+        // envelope returned partial:true + success:false + repairHints:[] and the
+        // caller had to drill into addedActions[] to discover why -- the same C2
+        // antipattern this PR has been closing on the *NotLive flags.
+        if (itemsPartial && !updateRuleFailed) {
+            repairHints << "One or more inner replaceActions items reported partial. Drill into addedActions[] for per-item settingsSkipped + repairHints. Wait 5s and retry, or use removeAction/clearActions to clean up and re-add the failing spec."
+        }
         return [
             success: (addedOk == addedTotal) && health.ok && !updateRuleFailed,
             partial: itemsPartial || updateRuleFailed,
@@ -21870,6 +21905,12 @@ def toolUpdateNativeApp(args) {
             beforePosition: moveResult?.beforePosition,
             afterPosition: moveResult?.afterPosition,
             indicesAfter: moveResult?.indicesAfter,
+            // Surface removeAction's rich return alongside moveAction's; null when
+            // this dispatch path was not removeAction. beforeIndices/afterIndices
+            // let callers diff the index list without a re-fetch.
+            removedIndex: removeResult?.removedIndex,
+            beforeIndices: removeResult?.beforeIndices,
+            afterIndices: removeResult?.afterIndices,
             health: health,
             updateRuleFailed: updateRuleFailed,
             subscriptionsNotLive: subscriptionsNotLive,
@@ -21942,9 +21983,15 @@ def toolUpdateNativeApp(args) {
             repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         if (removeTriggerSpec) {
+            // Defense-in-depth: if _rmRemoveTrigger ever starts emitting partial
+            // (today it returns {success, removedIndex, beforeIndices, afterIndices}
+            // only), bubble it the same way modifyTrigger bubbles trigInnerPartial.
+            // Keeps the two trigger-mutation dispatch shapes aligned so a future
+            // helper-side addition does not silently drop the signal.
+            def removedInnerPartial = trigMutResult?.partial == true
             return [
                 success: trigMutResult.success != false && health.ok && !updateRuleFailed,
-                partial: updateRuleFailed,
+                partial: updateRuleFailed || removedInnerPartial,
                 appId: appId,
                 backup: backup,
                 removedIndex: trigMutResult.removedIndex,
@@ -21966,6 +22013,13 @@ def toolUpdateNativeApp(args) {
         // contract.
         def trigSkippedSize = (trigMutResult?.settingsSkipped as List)?.size() ?: 0
         def trigInnerPartial = trigSkippedSize > 0 || trigMutResult?.verificationFetchFailed == true
+        // Inner-only partial hint (trigger inner skipped/verify-failed BUT the
+        // trailing updateRule landed clean). Mirrors the action-mutation
+        // dispatcher's inner-only repairHint above; without it the caller has to
+        // drill into settingsSkipped[] to discover why partial flipped true.
+        if (trigInnerPartial && !updateRuleFailed) {
+            repairHints << "modifyTrigger reported inner partial (settingsSkipped or verificationFetchFailed). Inspect settingsSkipped[] for per-field silent_rejection reasons. Re-attempt the modifyTrigger call, or use removeTrigger + addTrigger to rebuild the trigger atomically."
+        }
         return [
             success: trigMutResult.success != false && health.ok && !updateRuleFailed,
             partial: updateRuleFailed || trigInnerPartial,
@@ -22158,8 +22212,19 @@ def toolUpdateNativeApp(args) {
                         patchResults << ([op: "addLocalVariable"] + _rmAddLocalVariable(appId, pm.addLocalVariable as Map))
                     } else if (pm.containsKey("removeAction")) {
                         if (pm.removeAction.index == null) throw new IllegalArgumentException("removeAction.index required")
-                        _rmDeleteAction(appId, pm.removeAction.index as Integer)
-                        patchResults << [success: true, op: "removeAction", index: pm.removeAction.index]
+                        // Capture the helper's rich return so per-patch entries
+                        // surface the index list shift the same way the action-
+                        // mutation envelope does. Mirrors the moveAction sibling
+                        // below.
+                        def rmRes = _rmDeleteAction(appId, pm.removeAction.index as Integer)
+                        patchResults << [
+                            success: true,
+                            op: "removeAction",
+                            index: pm.removeAction.index,
+                            removedIndex: rmRes?.removedIndex,
+                            beforeIndices: rmRes?.beforeIndices,
+                            afterIndices: rmRes?.afterIndices
+                        ]
                     } else if (pm.containsKey("clearActions")) {
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
@@ -22249,6 +22314,16 @@ def toolUpdateNativeApp(args) {
         def repairHints = []
         if (updateRuleFailed) {
             repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        // Inner-only partial hint (one or more patch ops self-reported partial:true BUT
+        // the trailing updateRule click landed clean). Outer partial: already bubbles
+        // the inner-partial signal via `patchResults.any { ... partial == true }` in the
+        // OR-clause below; without this hint the outer repairHints stayed empty and the
+        // caller had to drill into patches[] to discover why partial flipped true.
+        // Sibling pattern from the action-mutation and modifyTrigger dispatchers'
+        // inner-only branches -- closes the same C2 antipattern at this dispatch site.
+        if (patchResults.any { it instanceof Map && it.partial == true } && !updateRuleFailed) {
+            repairHints << "One or more patch ops reported partial. Drill into patches[] for per-op settingsSkipped + repairHints. The patch ops landed but some inner fields didn't; address the per-op partials directly or re-issue the patches batch."
         }
         return [
             success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok && !updateRuleFailed,
@@ -22483,7 +22558,24 @@ def toolUpdateNativeApp(args) {
         if (updateRuleFailed) {
             repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
-        def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size())
+        // Bubble per-item partial:true (silent_rejection / verification_fetch_failed /
+        // hubRenderError on inner field writes) up through the outer envelope. trigOk
+        // and actOk count success!=false, so a success:true + partial:true row inflates
+        // the count and the size-equality check alone misses the inner-partial signal.
+        // Sibling pattern: action-mutation dispatcher's itemsPartial and patches
+        // dispatcher's partial OR-clause both use `any { ... partial == true }`.
+        def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size()) ||
+            triggerResults.any { it instanceof Map && it.partial == true } ||
+            actionResults.any { it instanceof Map && it.partial == true }
+        // Inner-only partial hint (bulk inner items reported partial BUT the trailing
+        // updateRule click landed clean). Without this hint the outer envelope returned
+        // partial:true + repairHints:[] (when updateRuleFailed is false) and the caller
+        // had to drill into triggers[]/actions[] to discover why -- same C2 antipattern
+        // the rest of this PR has been closing on the *NotLive flags. Sibling pattern
+        // from the action-mutation and modifyTrigger dispatchers' inner-only branches.
+        if (itemsPartial && !updateRuleFailed) {
+            repairHints << "One or more bulk trigger/action items reported partial. Drill into triggers[] and actions[] for per-item settingsSkipped + repairHints. Wait 5s and retry the affected items, or use removeAction/removeTrigger to clean up and re-add."
+        }
         return [
             success: trigOk == triggerResults.size() && actOk == actionResults.size() && health.ok && !updateRuleFailed,
             partial: itemsPartial || updateRuleFailed,

@@ -1439,11 +1439,23 @@ def check_discrete_event_caps_doc_parity(
     docs/rm_action_subtype_schemas.md) MUST cite a subset of that production
     set -- otherwise agents copy a doc example that the live walker rejects.
 
-    Failure mode this catches: a future contributor adding (or removing) a
-    capability from DISCRETE_EVENT_CAPS without propagating to the 4 doc
-    surfaces, OR a doc surface listing a capability as discrete-event when
-    production treats it as numeric (the CO2-symmetric-to-CO pitfall the
-    DISCRETE_EVENT_CAPS comment warns about).
+    Scope of what this rule catches: capability-NAME presence parity ONLY.
+    The lint extracts capability keys from the DISCRETE_EVENT_CAPS map and
+    flags any cap name in a doc-surface positive-claim region that is NOT in
+    that canonical set (e.g. the CO2-symmetric-to-CO pitfall). It catches:
+    (a) adding a new doc cap that production does not accept,
+    (b) the well-known pitfall caps drift (Carbon dioxide sensor).
+    It does NOT catch: state-value drift (doc says `'tested'` but production
+    only accepts `["detected", "clear"]`); removal drift (cap dropped from
+    production but still in docs flags only as a no-finding because the doc
+    cap is no longer in the canonical set and is silently treated as
+    out-of-scope). State-value parity + removal parity are TODO -- track
+    those separately rather than overclaiming this rule.
+
+    Implementation note: the doc-surface scan uses a fixed 800-char window
+    after a discrete-event phrase to bound the search; a markdown table
+    spanning more than ~30 rows could trail past the window. The known doc
+    surfaces today are all under that limit.
 
     src_override / doc_surfaces_override let the self-test drive this with
     synthetic corpora. doc_surfaces_override is a dict {label: text}.
@@ -1697,10 +1709,14 @@ def check_trailing_updaterule_envelope_parity(
     the response never surfaces the regression, so callers cannot detect the
     not-live state without log-grep -- the exact bug class B3 fixed.
 
-    Conservative scope: we scan the ~120 lines following each
-    `catch (Exception updateExc)` block, looking for the 5 envelope slots
-    appearing in the same vicinity. If any of the 5 are missing, flag the
-    catch block as incomplete.
+    Known scope caveat: this is a textual proximity check, not an AST walk.
+    The check uses a fixed 4500-char vicinity window around each catch block
+    to detect required slots. A dispatcher whose try / catch / return spans
+    more than 4500 chars (roughly 120 lines of Groovy with comments) could
+    silently lint-pass even if the return shape is missing slots. Today's
+    dispatchers all fit. If the codebase outgrows the window, replace the
+    fixed-char scan with brace-balanced block detection rather than just
+    enlarging the window.
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
@@ -1831,6 +1847,29 @@ ENVELOPE_PARITY_SELF_TEST_CASES = [
         "no `catch (Exception updateExc)` block at all -- no finding (rule never fires)",
         "def foo = 1\ntry { stuff() } catch (Exception e) { log.error e.message }",
         set(),
+    ),
+    (
+        "missing `partial` slot in envelope -- flags incomplete (must-catch)",
+        """
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+        }
+        def repairHints = []
+        return [
+            success: false,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints
+        ]
+        """,
+        {"trailing-updaterule-envelope-incomplete"},
     ),
 ]
 
