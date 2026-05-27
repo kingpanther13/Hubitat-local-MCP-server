@@ -718,7 +718,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('get_debug_log_state', [mode: 'logs'])
+        def response = mcpDriver.callTool('get_debug_logs', [:])
 
         then:
         response.error == null
@@ -846,7 +846,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('update_debug_logs', [action: 'clear'])
+        def response = mcpDriver.callTool('clear_debug_logs', [:])
 
         then:
         response.error == null
@@ -889,7 +889,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('update_debug_logs', [action: 'setLevel', level: 'trace'])
+        def response = mcpDriver.callTool('set_log_level', [level: 'trace'])
 
         then:
         response.error != null
@@ -922,7 +922,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
 
         when:
-        def response = mcpDriver.callTool('update_debug_logs', [action: 'setLevel', level: 'warn'])
+        def response = mcpDriver.callTool('set_log_level', [level: 'warn'])
 
         then:
         response.error == null
@@ -983,7 +983,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('get_debug_log_state', [mode: 'status'])
+        def response = mcpDriver.callTool('get_logging_status', [:])
 
         then:
         response.error == null

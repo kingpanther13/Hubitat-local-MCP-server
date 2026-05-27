@@ -12,7 +12,7 @@ import support.ToolSpecBase
 /**
  * Spec for the manage_diagnostics gateway tools (hubitat-mcp-server.groovy):
  *
- * - toolGetHubInfo   -> get_hub_info
+ * - toolGetHubPerformance   -> get_set_hub_metrics
  * - toolGetMemoryHistory    -> get_memory_history
  * - toolForceGarbageCollection -> force_garbage_collection
  * - toolDeviceHealthCheck   -> device_health_check
@@ -61,32 +61,18 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
-    // -------- toolGetHubInfo (get_hub_info) --------
+    // -------- toolGetHubPerformance (get_set_hub_metrics) --------
 
-    def "get_hub_info bare call does NOT require Hub Admin Read (matches pre-merge get_hub_info)"() {
-        // Bare reads stay open; only CSV recording (recordSnapshot=true) gates on Hub Admin Read.
-        given:
-        sharedLocation.hub = new TestHub()
-
+    def "get_set_hub_metrics throws when Hub Admin Read is disabled"() {
         when:
-        def result = script.toolGetHubInfo([:])
-
-        then: 'no throw — call succeeds with default no-PII fields'
-        notThrown(IllegalArgumentException)
-        result.hubAdminReadRequired != null  // PII gating note present
-    }
-
-    def "get_hub_info with recordSnapshot=true throws when Hub Admin Read is disabled"() {
-        // recordSnapshot is the write side (appends a CSV row to File Manager); gate it.
-        when:
-        script.toolGetHubInfo([recordSnapshot: true])
+        script.toolGetHubPerformance([:])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Hub Admin Read')
     }
 
-    def "get_hub_info with recordSnapshot=true reads memory/temp/db (flat) and records a CSV row"() {
+    def "get_set_hub_metrics snapshots memory/temp/db and records a CSV row"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 172800G)  // 2 days
@@ -103,30 +89,25 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
             uploaded[fileName] = new String(content, 'UTF-8')
         }
 
-        when: 'recordSnapshot is opt-in (default false) so request it explicitly'
-        def result = script.toolGetHubInfo([recordSnapshot: true])
+        when:
+        def result = script.toolGetHubPerformance([:])
 
-        then: 'fields live at the top level on the merged get_hub_info response'
-        result.freeMemoryKB == '123456'
-        result.internalTempCelsius == '45.5'
-        result.databaseSizeKB == '200000'
-        result.uptimeSeconds == 172800G
-        result.uptimeFormatted == '2d 0h 0m'
+        then:
+        result.current.freeMemoryKB == '123456'
+        result.current.internalTempC == '45.5'
+        result.current.databaseSizeKB == '200000'
+        result.current.uptimeSeconds == 172800G
+        result.current.uptimeFormatted == '2d 0h 0m'
         result.historyFile == 'mcp-performance-history.csv'
         result.trendPointsAvailable == 1
-        result.snapshotRecorded == true
 
         and: 'the CSV snapshot was written to File Manager'
         uploaded['mcp-performance-history.csv']?.contains('freeMemoryKB')
         uploaded['mcp-performance-history.csv']?.contains('123456')
     }
 
-    // Dispatch-routing tests preserved from main, converted from the removed
-    // get_set_hub_metrics tool name to its replacement: get_hub_info with
-    // recordSnapshot=true (the equivalent CSV-recording invocation). Response
-    // shape changed from nested {current: {...}, trends: [...]} to flat fields.
     @spock.lang.Unroll
-    def "get_hub_info via dispatch snapshots memory/temp/db (useGateways=#useGateways)"() {
+    def "get_set_hub_metrics via dispatch snapshots memory/temp/db (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -137,30 +118,28 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
-        when: 'get_hub_info is core (top-level) — both gateway modes reach the same dispatcher'
-        def response = mcpDriver.callTool('get_hub_info', [recordSnapshot: true])
+        when:
+        def response = mcpDriver.callTool('get_set_hub_metrics', [:])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.freeMemoryKB == '123456'
-        inner.internalTempCelsius == '45.5'
-        inner.uptimeFormatted == '2d 0h 0m'
+        inner.current.freeMemoryKB == '123456'
+        inner.current.internalTempC == '45.5'
+        inner.current.uptimeFormatted == '2d 0h 0m'
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "get_hub_info(recordSnapshot=true) via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "get_set_hub_metrics via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        // Bare get_hub_info() does NOT require Hub Admin Read (matches pre-merge
-        // behavior); the gate fires only when recordSnapshot=true.
 
         when:
-        def response = mcpDriver.callTool('get_hub_info', [recordSnapshot: true])
+        def response = mcpDriver.callTool('get_set_hub_metrics', [:])
 
         then:
         response.error != null
@@ -171,7 +150,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_hub_info warns on high temperature"() {
+    def "get_set_hub_metrics warns on high temperature"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
@@ -182,14 +161,14 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
         when:
-        def result = script.toolGetHubInfo([recordSnapshot: false])
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
 
         then:
-        result.temperatureWarning.contains('HIGH TEMPERATURE')
-        result.temperatureWarning.contains('75')
+        result.current.temperatureWarning.contains('HIGH TEMPERATURE')
+        result.current.temperatureWarning.contains('75')
     }
 
-    def "get_hub_info warns on large database"() {
+    def "get_set_hub_metrics warns on large database"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
@@ -200,13 +179,13 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
         when:
-        def result = script.toolGetHubInfo([recordSnapshot: false])
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
 
         then:
-        result.databaseWarning.contains('LARGE DATABASE')
+        result.current.databaseWarning.contains('LARGE DATABASE')
     }
 
-    def "get_hub_info warns on low memory"() {
+    def "get_set_hub_metrics warns on low memory"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
@@ -217,14 +196,14 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
         when:
-        def result = script.toolGetHubInfo([recordSnapshot: false])
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
 
         then:
-        result.memoryWarning.contains('LOW MEMORY')
-        result.memoryWarning.contains('40000')
+        result.current.memoryWarning.contains('LOW MEMORY')
+        result.current.memoryWarning.contains('40000')
     }
 
-    def "get_hub_info with default args skips File Manager entirely (recordSnapshot=false, trendPoints=0)"() {
+    def "get_set_hub_metrics respects recordSnapshot=false (no CSV write)"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 0G)
@@ -232,40 +211,17 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
         hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
         def downloadCalled = false
-        def uploadCalled = false
         script.metaClass.downloadHubFile = { String fileName -> downloadCalled = true; null }
+        def uploadCalled = false
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> uploadCalled = true }
 
-        when: 'no opt-ins: both recordSnapshot and trendPoints default off'
-        def result = script.toolGetHubInfo([:])
-
-        then: 'no CSV read or write occurred — File Manager skipped entirely'
-        !downloadCalled
-        !uploadCalled
-        result.trends == null
-        result.trendPointsAvailable == null
-        result.snapshotRecorded == null
-    }
-
-    def "get_hub_info with trendPoints>0 reads CSV and returns trends"() {
-        given:
-        settingsMap.enableHubAdminRead = true
-        sharedLocation.hub = new TestHub(uptime: 0G)
-        hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
-        hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
-        hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
-        def downloadCalled = false
-        script.metaClass.downloadHubFile = { String fileName -> downloadCalled = true; null }
-        script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
-
         when:
-        def result = script.toolGetHubInfo([trendPoints: 5])
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
 
-        then: 'CSV download fired (no rows because no prior history) but no upload'
+        then: 'the CSV read still runs (trend points come from prior runs), but no write'
         downloadCalled
-        result.trends == []
+        !uploadCalled
         result.trendPointsAvailable == 0
-        result.snapshotRecorded == null
     }
 
     // -------- toolGetMemoryHistory --------

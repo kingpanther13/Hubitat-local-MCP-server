@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 95 tools (34 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 103 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 95 tools (34 on tools/list + gateways)  │  │
+│  │  - 103 tools (36 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,19 +93,19 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 95 items to 34. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 103 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 13 gateways, each with a description, tools list, and summaries map
-- `getToolDefinitions()` — returns 21 core tools + 13 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 95 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getToolDefinitions()` — returns 23 core tools + 13 gateway tool definitions (client-visible)
+- `getAllToolDefinitions()` — returns all 103 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
 
-**13 gateways (74 proxied tools):**
+**13 gateways (80 proxied tools):**
 | Gateway | Tools | Domain |
 |---------|-------|--------|
 | `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
@@ -113,16 +113,16 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 | `manage_rooms` | 5 | Room CRUD |
 | `manage_destructive_hub_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
 | `manage_apps_drivers` | 7 | List/get apps, drivers, libraries, backups (read-only) |
-| `manage_app_driver_code` | 7 | Install/update/delete apps+drivers+libraries, restore backup (write) |
-| `manage_logs` | 6 | Logs, monitoring, performance stats, hub jobs, debug tools |
-| `manage_diagnostics` | 10 | Diagnostics, state capture, zwave/zigbee details, zwave repair, memory history, GC |
+| `manage_app_driver_code` | 10 | Install/update/delete apps+drivers+libraries, restore backup (write) |
+| `manage_logs` | 8 | Logs, monitoring, performance stats, hub jobs, debug tools |
+| `manage_diagnostics` | 11 | Diagnostics, state capture, zwave/zigbee details, zwave repair, memory history, GC |
 | `manage_files` | 4 | File Manager CRUD |
 | `manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
 | `manage_hpm` | 2 | HPM package state introspection (list tracked packages, drift signals) -- read-only, Hub Admin Read |
 | `manage_native_rules_and_apps` | 12 | Rule Machine interop (RMUtils: list/run/pause/resume/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete/clone/export/import_native_app + check_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
 | `manage_mcp_self` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |
 
-**Core tools:** `list_devices`, `get_device`, `get_attribute` (read-then-wait: provide `expectedValue=...` to block-poll until match or timeout; supersedes the removed `poll_until_attribute`), `send_command` (command-then-wait: provide `waitFor={attribute, expectedValue, ...}` to block until the device confirms the resulting state; supersedes the removed `poll_until_attribute`), `get_device_events`, `custom_get_rule` (omit `ruleId` for list mode, provide `ruleId` for detail mode; supersedes the removed `custom_list_rules`), `custom_create_rule`, `custom_update_rule` (the MCP custom rule engine — distinct from native Rule Machine; native-RM CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `manage_native_rules_and_apps` gateway via `create_native_app` / `update_native_app` / `delete_native_app` / `check_rule_health`), `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`, `search_tools` (BM25 natural language search across all tools)
+**Core tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `poll_until_attribute` (block-poll attribute until expected value or timeout; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; at least one of `expectedValue`/`expectedValues` required; BLOCKS the MCP request -- use sparingly, prefer event-driven flows), `custom_list_rules`, `custom_get_rule`, `custom_create_rule`, `custom_update_rule` (the MCP custom rule engine — distinct from native Rule Machine; native-RM CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `manage_native_rules_and_apps` gateway via `create_native_app` / `update_native_app` / `delete_native_app` / `check_rule_health`), `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`, `search_tools` (BM25 natural language search across all tools)
 
 **Safety gates are preserved:** All Hub Admin Read/Write checks live in the handler functions (e.g., `requireHubAdminRead()`, `requireHubAdminWrite(args.confirm)`), not in the dispatch layer. The gateway simply calls `executeTool()`, which calls the handler, which enforces the gate. No safety check is bypassed.
 
@@ -282,7 +282,7 @@ Three tiers of access control:
 Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup operation, so it can't require a prior backup).
 
 **`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
-- Called by `save_app` (update mode — `appId` provided), `save_driver` (update mode — `driverId` provided), `delete_app`, `delete_driver` before making changes
+- Called by `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` before making changes
 - Fetches current source code and saves as a `.groovy` file in the hub's local File Manager via `uploadHubFile()`
 - Metadata (type, id, version, timestamp, fileName, sourceLength) stored in `state.itemBackupManifest` keyed by `"app_<id>"` or `"driver_<id>"`
 - 1-hour window: if a backup of the same item exists within the last hour, it is kept (preserves the pre-edit original across a series of edits)
@@ -295,7 +295,7 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 **Item Backup Tools** (3 tools, always available without Hub Admin Read/Write):
 - `list_item_backups` — lists all backups with metadata (type, id, version, age, size) and direct download URLs
 - `get_item_backup` — retrieves full source code from a backup via `downloadHubFile()` by key (e.g., `app_123`); returns source inline for files ≤60KB, otherwise provides download URL
-- `restore_item_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `save_app(appId=..., ...)` / `save_driver(driverId=..., ...)` (requires Hub Admin Write); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
+- `restore_item_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `update_app_code`/`update_driver_code` (requires Hub Admin Write); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
 - Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
 - All operations are fully local — no cloud involvement
 
@@ -328,7 +328,7 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Restore via: `read_file(fileName)` → `custom_import_rule(exportData: <json>)`
 - **Test rules**: Set `testRule: true` in `custom_create_rule` or `custom_update_rule` to skip backup on deletion
 - `skipBackupCheck: true` parameter forces skip regardless of testRule flag (rarely needed)
-- Test rule flag visible in `custom_get_rule` responses (both list mode — no `ruleId` — and detail mode)
+- Test rule flag visible in `custom_get_rule` and `custom_list_rules` responses
 - No Hub Admin Write required (rules are MCP-managed, not hub-level resources)
 
 ### Hub Internal API Helpers

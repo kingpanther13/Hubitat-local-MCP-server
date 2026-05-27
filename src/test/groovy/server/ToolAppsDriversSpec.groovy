@@ -893,7 +893,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.directDownload.contains('mcp-backup-library-42.groovy')
 
         and: 'restore path names update_library_code as the action; restore_item_backup mentioned only as not applicable'
-        result.howToRestore.contains('save_library')
+        result.howToRestore.contains('update_library_code')
         result.howToRestore.contains('cannot be restored via restore_item_backup')
 
         and: 'restore path includes the correct library ID and file reference'
@@ -926,7 +926,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         inner.version == 3
         inner.source == 'library(name:"Foo")'
         inner.directDownload.contains('mcp-backup-library-42.groovy')
-        inner.howToRestore.contains('save_library')
+        inner.howToRestore.contains('update_library_code')
         inner.howToRestore.contains('cannot be restored via restore_item_backup')
         inner.howToRestore.contains("libraryId='42'")
         inner.howToRestore.contains("sourceFile='mcp-backup-library-42.groovy'")

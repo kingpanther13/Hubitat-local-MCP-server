@@ -4,13 +4,13 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 34 items (21 core + 13 gateways) covering 95 total tools. Use `search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (23 core + 13 gateways) covering 103 total tools. Use `search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (7), `manage_logs` (6), `manage_diagnostics` (10), `manage_files` (4), `manage_installed_apps` (4), `manage_hpm` (2), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
+**Gateways:** `manage_rules_admin` (5), `manage_hub_variables` (8), `manage_rooms` (5), `manage_destructive_hub_ops` (3), `manage_apps_drivers` (7), `manage_app_driver_code` (10), `manage_logs` (8), `manage_diagnostics` (11), `manage_files` (4), `manage_installed_apps` (4), `manage_hpm` (2), `manage_native_rules_and_apps` (12), `manage_mcp_self` (1)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -55,7 +55,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `list_hub_drivers` | 50 | Catalog of installable drivers. |
 | `list_hpm_packages` | 25 | Smaller page because each HPM entry carries the full app/driver/file inventory. |
 | `list_rm_rules` | 50 | RM 4.x + 5.x deduplicated rules. |
-| `custom_get_rule` (list mode) | 50 | Legacy MCP rule engine. Cursor pagination available when `ruleId` is omitted. |
+| `custom_list_rules` | 50 | Legacy MCP rule engine. |
 | `list_variables` | 100 | Pages `hubVariables`; `ruleVariables` stays in full alongside the page. |
 | `list_captured_states` | 50 | Capacity warnings still emitted regardless of pagination. |
 | `list_item_backups` | 50 | Sorted newest-first; page boundaries are stable as long as the manifest doesn't change. |
@@ -66,7 +66,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `get_device_in_use_by` | 100 | Pages `appsUsing`. |
 | `get_hub_logs` | 100 | Filters + `limit` apply first; cursor pages within the filtered result. |
 | `get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
-| `get_debug_log_state` (mode='logs') | 100 | Filters apply first; cursor pages within. |
+| `get_debug_logs` | 100 | Filters apply first; cursor pages within. |
 
 Tools without cursor support (`get_app_config`, `export_native_app`, `get_app_source`, `get_driver_source`, `get_library_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `list_files`/`read_file` round-trip) plus the universal size guard as the backstop.
 
@@ -129,26 +129,35 @@ All Hub Admin Write tools require these steps:
 - List affected devices to user before proceeding
 - Dashboard layouts and automations referencing room may be affected
 
-**save_app** (via `manage_app_driver_code`)
-- Install or update mode: omit `appId` to install a new app, provide `appId` to update an existing one.
-- Accepts `source` (inline Groovy) OR `sourceFile` (filename in File Manager) OR `resave` (re-save existing source, update mode only). Provide exactly one of source/sourceFile for install; one of source/sourceFile/resave for update.
-- Token-economy tip: upload large source via local CLI first, then pass the filename as `sourceFile`. Avoids re-sending multi-KB source strings on each call.
-- Performs post-write verification: after the hub creates or updates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `appId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_app_source`. If the hub returns no item ID at all on install (no `Location` header), `appId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
-- **Update-mode self-update guard:** applies only when `appId` matches this MCP server's own app instance. Refuses to overwrite that source unless **Enable Developer Mode Tools** is on in the MCP Rule Server app settings (a bad self-update bricks the MCP loop; recovery requires the Hubitat UI or SSH). Every self-update attempt — blocked OR allowed — is audit-logged at WARN under the `hub-admin` component. If the app context is unavailable at call time (rare lifecycle window) the guard fails closed with an ERROR audit log; retry the call.
-- **Update-mode optimistic-lock** (`expectedVersion`, integer, optional): when supplied and the hub's version differs, the update returns `success: false` + `conflict: true` with both `expectedVersion` and `currentVersion` echoed. Use when an agent's read-modify-write spans turns or runs alongside other agents/tools that could mutate the same app. Backup still happens on conflict (intentional: `backupItemSource` has a 1h cache so the parallel-agent retry costs nothing, and the first caller losing the race still has a recovery point). Stringified integers are coerced; explicit `null` is rejected (omit the field entirely to skip the lock).
+**install_app** (via `manage_app_driver_code`)
+- Accepts `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
+- Token-economy tip: upload large source via local CLI first, then pass the filename as `sourceFile`. Avoids re-sending multi-KB source strings on each install attempt.
+- Performs post-install verification: after the hub creates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `appId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_app_source`. If the hub returns no item ID at all (no `Location` header), `appId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
-**save_driver** (via `manage_app_driver_code`)
-- Install or update mode: omit `driverId` to install a new driver, provide `driverId` to update an existing one.
-- Single-driver mode: supply `source` (inline Groovy) OR `sourceFile` (filename in File Manager) OR `resave` (update mode only). Provide exactly one. Optional `expectedVersion` (integer): same optimistic-lock semantics as save_app — conflict envelope carries `driverId` instead of `appId`.
-- Bulk install mode: supply an `installs` array of objects, each with `source` or `sourceFile`. Cannot combine with single-driver fields.
-- Bulk update mode: supply an `updates` array of objects, each with `driverId` and one of `sourceFile` / `source` / `resave`, plus optional per-item `expectedVersion`. Cannot combine with single-driver fields (including a top-level `expectedVersion` — put it on each entry instead).
-  - Continue-on-error: errors on individual items do not abort remaining items. Returns a per-item status array with each item's `driverId`. Per-item conflicts (failed lock) carry `conflict: true` + `expectedVersion` + `currentVersion`; per-item thrown errors carry `error` + `errorClass`. Other items in the batch still apply.
+**install_driver** (via `manage_app_driver_code`)
+- Single-driver mode: supply `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
+- Bulk mode: supply an `installs` array of objects, each with `source` or `sourceFile`. Cannot combine with single-driver fields.
+  - Continue-on-error: errors on individual items do not abort remaining installs. Returns a per-item status array with each item's `driverId`.
   - Top-level `success: true` only if ALL items succeeded.
-  - Practical limit: ~10-20 drivers per call (each operation is a sequential on-hub compilation, ~1-5 seconds each).
-  - Token-economy pattern: upload all driver source files via local CLI, then call bulk `save_driver` once with all `{sourceFile}` or `{driverId, sourceFile}` entries.
-- Performs post-write verification: after the hub creates or updates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_driver_source`. If the hub returns no item ID at all on install (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
+  - Practical limit: ~10-20 drivers per call (each install is a sequential on-hub compilation, ~1-5 seconds each).
+  - Token-economy pattern: upload all driver source files via local CLI, then call bulk `install_driver` once with all `{sourceFile}` entries.
+- Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_driver_source`. If the hub returns no item ID at all (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
+
+**update_app_code** (via `manage_app_driver_code`)
+- Supply `appId` + one of `source` / `sourceFile` / `resave`.
+- Self-update guard: applies only when `appId` matches this MCP server's own app instance. Refuses to overwrite that source unless **Enable Developer Mode Tools** is on in the MCP Rule Server app settings (a bad self-update bricks the MCP loop; recovery requires the Hubitat UI or SSH). Every self-update attempt — blocked OR allowed — is audit-logged at WARN under the `hub-admin` component. If the app context is unavailable at call time (rare lifecycle window) the guard fails closed with an ERROR audit log; retry the call.
+- Optional `expectedVersion` (integer): optimistic-lock guard. When supplied and the hub's version differs, the update returns `success: false` + `conflict: true` with both `expectedVersion` and `currentVersion` echoed. Use when an agent's read-modify-write spans turns or runs alongside other agents/tools that could mutate the same app. Backup still happens on conflict (intentional: `backupItemSource` has a 1h cache so the parallel-agent retry costs nothing, and the first caller losing the race still has a recovery point). Stringified integers are coerced; explicit `null` is rejected (omit the field entirely to skip the lock).
+- Requires Hub Admin Write + confirm + backup <24h.
+
+**update_driver_code** (via `manage_app_driver_code`)
+- Single-driver mode (unchanged): supply `driverId` + one of `source` / `sourceFile` / `resave`. Optional `expectedVersion` (integer): same optimistic-lock semantics as `update_app_code` — conflict envelope carries `driverId` instead of `appId`.
+- Bulk mode: supply an `updates` array of objects, each with `driverId` and one of `sourceFile` / `source` / `resave`, plus optional per-item `expectedVersion`. Cannot combine with single-driver fields (including a top-level `expectedVersion` — put it on each entry instead).
+  - Continue-on-error: errors on individual items do not abort remaining updates. Returns a per-item status array. Per-item conflicts (failed lock) carry `conflict: true` + `expectedVersion` + `currentVersion`; per-item thrown errors carry `error` + `errorClass`. Other items in the batch still apply.
+  - Top-level `success: true` only if ALL items succeeded.
+  - Practical limit: ~20 drivers per call (each update is a sequential on-hub compilation, ~1-5 seconds each).
+  - Token-economy pattern: upload all updated driver files via local CLI (curl -F / PowerShell Invoke-RestMethod), then call bulk `update_driver_code` once with all `{driverId, sourceFile}` pairs.
 
 **delete_app / delete_driver / delete_library** (via `manage_app_driver_code`)
 - Remove app instances via Hubitat UI first (for apps)
@@ -312,7 +321,8 @@ Auto-backs up before modifying. Rapid edits within 1 hour preserve the original.
 
 ### Libraries
 Hubitat Groovy libraries are shared code modules included by drivers and apps via `#include namespace.LibraryName`. The library management tools mirror the app/driver pattern:
-- `save_library` - Install a new library (omit `libraryId`) or update an existing one (provide `libraryId`) from Groovy source (inline `source`, File Manager `sourceFile`, or `resave` for update mode)
+- `install_library` - Install a new library from Groovy source (inline or via File Manager file)
+- `update_library_code` - Update existing library source (source/sourceFile/resave modes)
 - `delete_library` - Delete a library (auto-backs up source first)
 - `get_library_source` - Read library source with chunked reading support
 
@@ -327,9 +337,9 @@ curl -F "uploadFile=@mylib.groovy" -F "folder=/" http://<HUB_IP>/hub/fileManager
 curl -c cookies.txt -d "username=USER&password=PASS" http://<HUB_IP>/login
 curl -b cookies.txt -F "uploadFile=@mylib.groovy" -F "folder=/" http://<HUB_IP>/hub/fileManager/upload
 ```
-Then call `save_library` with `sourceFile: 'mylib.groovy'` (omit `libraryId` to install, provide it to update).
+Then call `install_library` or `update_library_code` with `sourceFile: 'mylib.groovy'`.
 
-Note: `get_library_source` (read-only, Hub Admin Read) lives in `manage_apps_drivers` alongside `get_app_source` and `get_driver_source`. The write operations (`save_library`, `delete_library`) live in `manage_app_driver_code` (Hub Admin Write).
+Note: `get_library_source` (read-only, Hub Admin Read) lives in `manage_apps_drivers` alongside `get_app_source` and `get_driver_source`. The write operations (`install_library`, `update_library_code`, `delete_library`) live in `manage_app_driver_code` (Hub Admin Write).
 
 ### After Installation
 - Apps: Add via Apps > Add User App in Hubitat web UI
@@ -346,7 +356,7 @@ Note: `get_library_source` (read-only, Hub Admin Read) lives in `manage_apps_dri
 - Only Hub Admin Write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)
-- Created automatically when using save_app (update mode), save_driver (update mode), save_library (update mode), delete_app, delete_driver, delete_library
+- Created automatically when using update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, delete_library
 - Stored in File Manager as `.groovy` files
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned
@@ -376,7 +386,7 @@ Example redirect message:
 - Delete verb (`custom_delete_rule`): points to `manage_native_rules_and_apps -> delete_native_app` for programmatic deletion.
 - Test verb (`custom_test_rule`): points to `manage_installed_apps -> get_app_config` for inspection. For Rule Machine rules specifically, the hint also includes a pointer to `manage_native_rules_and_apps -> run_rm_rule` to trigger them; non-RM rule-likes (Room Lighting, Basic Rules, Visual Rule Builder) receive only the `get_app_config` pointer because `run_rm_rule` routes through `RMUtils.sendAction` and is RM-only.
 - The redirect check is best-effort: if the hub appsList call fails, a plain "Rule not found" message is returned with no secondary error.
-- `custom_get_rule` in list mode (no `ruleId`) and `custom_create_rule` are not affected (they do not take a rule id as input).
+- `custom_list_rules` and `custom_create_rule` are not affected (they do not take a rule id as input).
 
 ---
 
@@ -414,18 +424,17 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - Default limit 10, recommended max 50
 - Higher values (100+) may cause delays on busy devices
 
-**get_attribute (poll mode) / send_command (waitFor):**
-- For read-then-wait: call `get_attribute(deviceId, attribute, expectedValue=...)` (or `expectedValues=[...]`) to block until the attribute matches.
-- For command-then-wait: call `send_command(..., waitFor={attribute, expectedValue, ...})` to send a command and block until the resulting attribute transition is observed.
-- Both modes BLOCK the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.
-- Concurrent MCP requests queue while a poll blocks; avoid parallel blocking calls.
+**poll_until_attribute:**
+- BLOCKS the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.
+- Concurrent MCP requests queue while this call blocks; avoid parallel `poll_until_attribute` calls.
 - At least one of `expectedValue` or `expectedValues` must be provided. Both may be set simultaneously -- the poll succeeds if the current value matches either (OR semantics, not XOR).
 - Re-reads the attribute every `pollIntervalMs` MILLISECONDS (default 200ms, min 50ms, max 5000ms)
 - Returns `success: true` with `finalValue`, `elapsedMs`, `polledCount`, `timedOut: false` when the value matches
 - Returns `success: false` with `timedOut: true` and the last-read `finalValue` on timeout; adds `neverReported: true` if the attribute never returned a non-null value during the entire poll window
 - Returns `success: false` with `interrupted: true` (plus `finalValue`, `elapsedMs`, `polledCount`) if the hub interrupted the sleep (e.g. app reload during poll)
 - `pollIntervalMs` is automatically clamped to `timeoutMs` if larger, ensuring at least one poll
-- For passive one-shot reads, call `get_attribute` without `expectedValue` -- the poll-mode args are what trigger blocking behavior.
+- For passive one-shot reads, use `get_attribute` instead -- this tool is for waiting on state transitions
+- Common pattern after `send_command`: poll for the resulting attribute state rather than sleeping client-side
 
 **get_hub_logs:**
 - Returns most recent entries first
@@ -511,7 +520,7 @@ HPM package state introspection. Both tools require **Hub Admin Read** and HPM i
   - Files are not checked for drift **because** HPM tracks file components by name only (no heID), so there is no registry membership to verify; `skippedFileCount` is accordingly not emitted on drift entries
   - Top-level `skippedMalformed[]`: manifest URLs whose value was not a Map (symmetric with `list_hpm_packages`)
   - When `packageFilter` matched nothing: `filterMatchedZero=true` plus `availablePackages[]` for filter-spelling sanity check; in this case `packagesChecked == 0` and `summary` reads `"No drift detected across 0 tracked packages."`
-  - Limitation: heID-presence-only. HPM stores no source hashes, so post-install edits via `save_app` (update mode) are not detectable.
+  - Limitation: heID-presence-only. HPM stores no source hashes, so post-install edits via `update_app_code` are not detectable.
   - Example call: `manage_hpm(tool="get_hpm_drift", args={packageFilter: "BOND"})` — checks only packages whose name contains "BOND"
   - Design note: `list_hpm_packages` emits `_warning` inline on each component **because** consumers typically enumerate components per-package; `get_hpm_drift` emits `dataQualityWarnings[]` as a separate aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count
 
