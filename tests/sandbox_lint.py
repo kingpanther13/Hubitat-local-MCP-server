@@ -1175,11 +1175,19 @@ def check_tool_name_consistency() -> list[dict]:
 IS_CI = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
 
 
-def check_tool_guide_pointers() -> list[dict]:
+def check_tool_guide_pointers(src_override: str | None = None,
+                              tg_override: str | None = None,
+                              anchors_override: dict | None = None) -> list[dict]:
     """Verify every get_tool_guide(section='X') pointer in the .groovy schemas
     references a section key that actually exists in getToolGuideSections().
 
-    Three failure modes this catches:
+    src_override / tg_override let the self-test drive this function with
+    synthetic corpora -- routes the must-catch / must-not-catch fixtures
+    through the production dispatch + finding-dict construction so a missing
+    key in any appended dict surfaces in the self-test rather than at first
+    real-failure time.
+
+    Failure modes this catches:
 
     1. **Broken pointer.** Schema description says "Call
        `get_tool_guide(section='X')` for the foo reference" but X is not a
@@ -1198,15 +1206,28 @@ def check_tool_guide_pointers() -> list[dict]:
        skipping the drift check for that key. Forces the contributor adding
        the section to also add the hint. Emitted as
        `tool-guide-no-heading-hint`.
+
+    4. **Content-anchor drift.** Per-section anchor strings (declared in
+       `key_to_content_anchors` below) must appear in BOTH the source
+       doc-block AND TOOL_GUIDE.md. Catches in-body prose drift that the
+       heading-presence check at step 2/3 cannot see. Emitted as one of
+       `tool-guide-anchor-missing-{both,source,doc}`.
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
     tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
-    if not server.exists() or not tool_guide.exists():
-        return findings
-
-    src = server.read_text(encoding="utf-8", errors="replace")
-    tg = tool_guide.read_text(encoding="utf-8", errors="replace")
+    if src_override is not None:
+        src = src_override
+    else:
+        if not server.exists():
+            return findings
+        src = server.read_text(encoding="utf-8", errors="replace")
+    if tg_override is not None:
+        tg = tg_override
+    else:
+        if not tool_guide.exists():
+            return findings
+        tg = tool_guide.read_text(encoding="utf-8", errors="replace")
 
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
@@ -1220,8 +1241,9 @@ def check_tool_guide_pointers() -> list[dict]:
             "file": str(server.relative_to(REPO_ROOT)),
             "line": 1,
             "severity": "error",
-            "code": "tool-guide-no-sections",
-            "message": "Could not locate getToolGuideSections() return literal — has the function shape changed?",
+            "rule": "tool-guide-no-sections",
+            "message": "Could not locate getToolGuideSections() return literal -- has the function shape changed?",
+            "source": "",
         })
         return findings
 
@@ -1230,6 +1252,20 @@ def check_tool_guide_pointers() -> list[dict]:
     # `something: '''` inside one of the baked markdown bodies (deeper indentation, or
     # mid-paragraph) can't be mistaken for a real section key.
     section_keys = set(re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*'''", sections_block, re.MULTILINE))
+    # Extract each section's full body too so the content-anchor check below can verify
+    # specific anchor strings exist in BOTH the source doc-block AND TOOL_GUIDE.md. The
+    # heading-presence check at L1252 only protects against renames/deletions; without a
+    # content check, in-body prose can drift silently between the two files (live failure
+    # mode: content-body drift -- heading-presence check passes but a specific entry is
+    # absent from the source doc-block, so agents calling get_tool_guide see stale text).
+    # Non-greedy match to next 8-space key, or end-of-block.
+    section_bodies = {}
+    body_re = re.compile(
+        r"^ {8}([a-z_][a-z0-9_]*):\s*'''(.*?)'''(?=\s*(?:,|$|\n\s{0,8}[a-z_]+:))",
+        re.MULTILINE | re.DOTALL,
+    )
+    for m in body_re.finditer(sections_block):
+        section_bodies[m.group(1)] = m.group(2)
 
     # 2. Extract every get_tool_guide(section='X') reference from the .groovy.
     #    Tolerate both single and double quotes; whitespace around the `=`.
@@ -1241,12 +1277,13 @@ def check_tool_guide_pointers() -> list[dict]:
                     "file": str(server.relative_to(REPO_ROOT)),
                     "line": line_no,
                     "severity": "error",
-                    "code": "tool-guide-broken-pointer",
+                    "rule": "tool-guide-broken-pointer",
                     "message": (
                         f"get_tool_guide(section='{ptr}') points at a section that is NOT a key "
                         f"in getToolGuideSections(). Either add the section to the dispatcher or "
                         f"fix the pointer. Known sections: {sorted(section_keys)}."
                     ),
+                    "source": line.strip()[:200],
                 })
 
     # 3. Drift check: every section key should have a matching heading anchor in TOOL_GUIDE.md.
@@ -1270,17 +1307,18 @@ def check_tool_guide_pointers() -> list[dict]:
         hint = key_to_heading_hint.get(key)
         if hint is None:
             # New section added to the .groovy without a hint mapping above.
-            # Fail loud rather than silently skip — keeps this lint honest.
+            # Fail loud rather than silently skip -- keeps this lint honest.
             findings.append({
                 "file": str(server.relative_to(REPO_ROOT)),
                 "line": 1,
                 "severity": "error",
-                "code": "tool-guide-no-heading-hint",
+                "rule": "tool-guide-no-heading-hint",
                 "message": (
                     f"getToolGuideSections key '{key}' has no entry in key_to_heading_hint "
                     f"(in tests/sandbox_lint.py). Add a mapping so the TOOL_GUIDE.md drift "
                     f"check can verify the heading still exists."
                 ),
+                "source": "",
             })
             continue
         if hint not in tg:
@@ -1288,15 +1326,587 @@ def check_tool_guide_pointers() -> list[dict]:
                 "file": str(tool_guide.relative_to(REPO_ROOT)),
                 "line": 1,
                 "severity": "error",
-                "code": "tool-guide-heading-missing",
+                "rule": "tool-guide-heading-missing",
                 "message": (
                     f"getToolGuideSections key '{key}' baked into the .groovy, but the matching "
                     f"heading '{hint}' is not present in TOOL_GUIDE.md. Either restore the heading "
                     f"or update key_to_heading_hint in tests/sandbox_lint.py."
                 ),
+                "source": "",
+            })
+
+    # 4. Content anchors: per-section list of substrings that MUST appear in both the
+    #    source doc-block and TOOL_GUIDE.md. Catches in-body prose drift that the
+    #    heading-presence check at step 3 cannot see -- e.g. a new addAction capability
+    #    family added to TOOL_GUIDE.md but never ported back into the source doc-block.
+    #    Add one anchor per facts-section worth pinning; do NOT pin prose unless it
+    #    represents a load-bearing API surface fact (capability name, error keyword,
+    #    API endpoint slug, etc.).
+    default_anchors = {
+        "update_native_app_reference": [
+            # setVariable / Hub Variable addAction family
+            "setVariable",
+            # Mode action's modeName-resolution behavior
+            "modeName",
+            # Discrete-event sensor note for STPage capability list
+            "discrete events",
+            # Variable comparison capability for STPage
+            "Variable comparison",
+            # Lowercase parameter type validator only accepts these
+            "lowercase",
+            # Extended per-capability shapes heading (was a dangling cross-reference
+            # before -- pin both surfaces now so future drift fires the anchor lint).
+            "Extended per-capability spec shapes",
+            # addTrigger.condition narrowness vs the wider expression conditions.
+            # The selectTriggers narrowness phrasing was overclaimed before; pin both
+            # surfaces so a future "all extended shapes apply here" regression fires.
+            "selectTriggers",
+            # Nested subExpression rejection on addAction (F7 scope-document).
+            # The reject is in production today; both surfaces must keep advertising it.
+            "nested subExpression",
+            # Trailing-updateRule failure response slots (F2 addRequiredExpression
+            # + B5 addTrigger parity). Pin one slot name per side.
+            "expressionNotLive",
+            "subscriptionsNotLive",
+        ],
+    }
+    key_to_content_anchors = anchors_override if anchors_override is not None else default_anchors
+    for key, anchors in key_to_content_anchors.items():
+        if key not in section_bodies:
+            # Either the body extractor regex shape changed, or the key is unmapped.
+            # The unmapped-key path is already covered by step 3's tool-guide-no-heading-hint.
+            continue
+        body = section_bodies[key]
+        for anchor in anchors:
+            in_body = anchor in body
+            in_tg = anchor in tg
+            if not in_body and not in_tg:
+                findings.append({
+                    "file": "tests/sandbox_lint.py",
+                    "line": 1,
+                    "severity": "error",
+                    "rule": "tool-guide-anchor-missing-both",
+                    "message": (
+                        f"Content anchor '{anchor}' (key='{key}') is missing from BOTH the source "
+                        f"doc-block in hubitat-mcp-server.groovy AND TOOL_GUIDE.md. Either remove "
+                        f"the anchor from key_to_content_anchors (no longer load-bearing) or "
+                        f"restore the content in both files."
+                    ),
+                    "source": "",
+                })
+            elif not in_body:
+                findings.append({
+                    "file": str(server.relative_to(REPO_ROOT)),
+                    "line": 1,
+                    "severity": "error",
+                    "rule": "tool-guide-anchor-missing-source",
+                    "message": (
+                        f"Content anchor '{anchor}' (key='{key}') is present in TOOL_GUIDE.md but "
+                        f"NOT in the source doc-block in hubitat-mcp-server.groovy. Agents calling "
+                        f"get_tool_guide(section='{key}') will not see this fact. Port the text "
+                        f"into the doc-block or drop the anchor from key_to_content_anchors."
+                    ),
+                    "source": "",
+                })
+            elif not in_tg:
+                findings.append({
+                    "file": str(tool_guide.relative_to(REPO_ROOT)),
+                    "line": 1,
+                    "severity": "error",
+                    "rule": "tool-guide-anchor-missing-doc",
+                    "message": (
+                        f"Content anchor '{anchor}' (key='{key}') is present in the source "
+                        f"doc-block but NOT in TOOL_GUIDE.md. Add it to keep the human-readable "
+                        f"reference in sync, or drop the anchor from key_to_content_anchors."
+                    ),
+                    "source": "",
+                })
+
+    return findings
+
+
+def check_discrete_event_caps_doc_parity(
+    src_override: str | None = None,
+    doc_surfaces_override: dict | None = None,
+) -> list[dict]:
+    """Verify every doc surface that lists discrete-event sensor capabilities
+    only names capabilities that are in production's DISCRETE_EVENT_CAPS map.
+
+    Production code's authoritative class predicate lives in the
+    DISCRETE_EVENT_CAPS map literal in hubitat-mcp-server.groovy. Doc surfaces
+    that list capabilities as discrete-event (the inline addRE schema
+    description, the inline get_tool_guide content block, TOOL_GUIDE.md, and
+    docs/rm_action_subtype_schemas.md) MUST cite a subset of that production
+    set -- otherwise agents copy a doc example that the live walker rejects.
+
+    Scope of what this rule catches: capability-NAME presence parity ONLY.
+    The lint extracts capability keys from the DISCRETE_EVENT_CAPS map and
+    flags any cap name in a doc-surface positive-claim region that is NOT in
+    that canonical set (e.g. the CO2-symmetric-to-CO pitfall). It catches:
+    (a) adding a new doc cap that production does not accept,
+    (b) the well-known pitfall caps drift (Carbon dioxide sensor).
+    It does NOT catch: state-value drift (doc says `'tested'` but production
+    only accepts `["detected", "clear"]`); removal drift (cap dropped from
+    production but still in docs flags only as a no-finding because the doc
+    cap is no longer in the canonical set and is silently treated as
+    out-of-scope). State-value parity + removal parity are TODO -- track
+    those separately rather than overclaiming this rule.
+
+    Implementation note: the doc-surface scan uses a fixed 800-char window
+    after a discrete-event phrase to bound the search; a markdown table
+    spanning more than ~30 rows could trail past the window. The known doc
+    surfaces today are all under that limit.
+
+    src_override / doc_surfaces_override let the self-test drive this with
+    synthetic corpora. doc_surfaces_override is a dict {label: text}.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if src_override is not None:
+        src = src_override
+    else:
+        if not server.exists():
+            return findings
+        src = server.read_text(encoding="utf-8", errors="replace")
+
+    # 1. Extract the canonical DISCRETE_EVENT_CAPS set from production.
+    #    The map literal shape is:
+    #        def DISCRETE_EVENT_CAPS = [
+    #            "Water sensor":                ["wet", "dry"],
+    #            ...
+    #        ]
+    map_match = re.search(
+        r"def\s+DISCRETE_EVENT_CAPS\s*=\s*\[(.*?)\n\s*\]",
+        src,
+        re.DOTALL,
+    )
+    if not map_match:
+        findings.append({
+            "file": str(server.relative_to(REPO_ROOT)),
+            "line": 1,
+            "severity": "error",
+            "rule": "discrete-event-caps-no-map",
+            "message": (
+                "Could not locate `def DISCRETE_EVENT_CAPS = [ ... ]` literal -- "
+                "has the map shape changed? Update the check_discrete_event_caps_doc_parity "
+                "extractor regex or remove the lint rule if intentionally restructured."
+            ),
+            "source": "",
+        })
+        return findings
+    canonical_caps = set(re.findall(r'"([^"]+)"\s*:', map_match.group(1)))
+    if not canonical_caps:
+        findings.append({
+            "file": str(server.relative_to(REPO_ROOT)),
+            "line": 1,
+            "severity": "error",
+            "rule": "discrete-event-caps-empty",
+            "message": "DISCRETE_EVENT_CAPS map literal parsed but yielded zero capabilities.",
+            "source": "",
+        })
+        return findings
+
+    # 2. Build the doc-surface map. Each surface is the full text of the source
+    #    block to scan; the check is "for each capability mentioned in a
+    #    discrete-event context, verify it's in canonical_caps".
+    if doc_surfaces_override is not None:
+        doc_surfaces = doc_surfaces_override
+    else:
+        tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
+        action_schemas = REPO_ROOT / "docs" / "rm_action_subtype_schemas.md"
+        doc_surfaces = {}
+        # Two inline surfaces in the server source: extract narrow scope so we
+        # only scan the "discrete events" / "discrete-event" notes, not the
+        # whole 800KB file (which mentions caps in many unrelated contexts).
+        for m in re.finditer(
+            r"(?:report discrete events|discrete-event capability|some sensor capabilities).{0,800}",
+            src,
+            re.DOTALL,
+        ):
+            label = f"hubitat-mcp-server.groovy:{src[:m.start()].count(chr(10)) + 1}"
+            doc_surfaces[label] = m.group(0)
+        if tool_guide.exists():
+            tg = tool_guide.read_text(encoding="utf-8", errors="replace")
+            for m in re.finditer(
+                r"(?:report discrete events|discrete-event capability|some sensor capabilities).{0,800}",
+                tg,
+                re.DOTALL,
+            ):
+                label = f"TOOL_GUIDE.md:{tg[:m.start()].count(chr(10)) + 1}"
+                doc_surfaces[label] = m.group(0)
+        if action_schemas.exists():
+            as_text = action_schemas.read_text(encoding="utf-8", errors="replace")
+            # The discrete-event table in this file is the authoritative table.
+            m = re.search(
+                r"###\s*Sensor capabilities with discrete event states.*?(?=\n##|\Z)",
+                as_text,
+                re.DOTALL,
+            )
+            if m:
+                label = f"docs/rm_action_subtype_schemas.md:{as_text[:m.start()].count(chr(10)) + 1}"
+                doc_surfaces[label] = m.group(0)
+
+    # 3. The set of all capability names this lint cares about: production's
+    #    canonical set + the well-known pitfall caps that are NOT in production
+    #    but might be accidentally added to a doc surface (Carbon dioxide sensor
+    #    is the documented pitfall).
+    pitfall_caps = {"Carbon dioxide sensor"}
+    caps_to_check = canonical_caps | pitfall_caps
+
+    # 4. For each doc surface, isolate the *positive claim* region -- the
+    #    parenthesized list of capabilities adjacent to the "report discrete
+    #    events" phrase, OR the markdown-table rows under a "discrete event"
+    #    heading. Only claims inside that narrow region count as the doc
+    #    asserting the capability is discrete-event. Mentions in surrounding
+    #    explanatory / exclusion text (e.g. "Carbon dioxide sensor is
+    #    intentionally EXCLUDED because ...") do NOT count.
+    #
+    #    Two positive-claim shapes we recognize:
+    #    (a) "(Water sensor, Smoke detector, ...) report discrete events"
+    #        -- the parenthetical immediately preceding the phrase.
+    #    (b) "report discrete events" with no parenthetical immediately
+    #        before -- treat the immediately-following inline list (up to
+    #        the next sentence-end period) as the positive claim region.
+    #    (c) Markdown-table rows of the form `| `<cap>` |` under a heading
+    #        that contains "discrete event" -- the table rows are the
+    #        positive claim region.
+    paren_before_phrase_re = re.compile(
+        r"\(([^()]*?)\)\s*report discrete events"
+    )
+    table_row_re = re.compile(r"\|\s*`([^`]+)`\s*\|")
+    for label, surface_text in doc_surfaces.items():
+        positive_claim_regions = []
+        for m in paren_before_phrase_re.finditer(surface_text):
+            positive_claim_regions.append(m.group(1))
+        # Markdown-table form (only fires when surface starts with the table heading)
+        if "discrete event" in surface_text.lower() and "|" in surface_text:
+            for tr in table_row_re.finditer(surface_text):
+                positive_claim_regions.append(tr.group(1))
+        positive_claim_text = " ".join(positive_claim_regions)
+        if not positive_claim_text:
+            # No positive-claim region detected -- this doc surface mentions
+            # discrete events but doesn't carry a parenthetical / table-row
+            # cap list. Skip; the heading-presence checks elsewhere cover
+            # structural drift.
+            continue
+        for cap in caps_to_check:
+            if cap in positive_claim_text and cap not in canonical_caps:
+                file_part, _, line_part = label.partition(":")
+                findings.append({
+                    "file": file_part,
+                    "line": int(line_part) if line_part.isdigit() else 1,
+                    "severity": "error",
+                    "rule": "discrete-event-caps-doc-drift",
+                    "message": (
+                        f"Doc surface lists capability '{cap}' as a discrete-event "
+                        f"capability (inside a positive-claim region), but '{cap}' "
+                        f"is NOT in production's DISCRETE_EVENT_CAPS map (canonical "
+                        f"set: {sorted(canonical_caps)}). Agents copying this doc "
+                        f"would build a condition the live walker rejects. Either "
+                        f"remove '{cap}' from the positive-claim list or add it to "
+                        f"the production DISCRETE_EVENT_CAPS map."
+                    ),
+                    "source": positive_claim_text[:160].replace("\n", " "),
+                })
+
+    return findings
+
+
+# Self-test fixtures for check_discrete_event_caps_doc_parity. Drives the real
+# check function with synthetic corpora to cover must-catch + must-not-catch
+# cases (PIPELINE.md Rule 13).
+DISCRETE_EVENT_CAPS_SELF_TEST_CASES = [
+    # (description, synthetic_src, doc_surfaces, expected_codes)
+    (
+        "doc surface positive-claim region lists only canonical caps -- no finding (must-not-catch)",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"],\n    "Smoke detector": ["detected", "clear"]\n]',
+        {"surface1": "some sensor capabilities (Water sensor, Smoke detector) report discrete events"},
+        set(),
+    ),
+    (
+        "positive-claim region lists pitfall cap NOT in canonical -- flags drift (must-catch)",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
+        {"surface_drift": "some sensor capabilities (Water sensor, Carbon dioxide sensor) report discrete events"},
+        {"discrete-event-caps-doc-drift"},
+    ),
+    (
+        "no DISCRETE_EVENT_CAPS map in synthetic source -- flags no-map (extractor regression guard)",
+        "def someOtherMap = [:]",
+        {"surface_noop": "some sensor capabilities report discrete events"},
+        {"discrete-event-caps-no-map"},
+    ),
+    (
+        "explanatory-exclusion text mentioning pitfall cap OUTSIDE positive-claim region -- no false positive",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
+        # The positive-claim region is just `(Water sensor)`; the explanatory text after
+        # mentions Carbon dioxide sensor but to explain its EXCLUSION, not to claim it as
+        # discrete-event. The classifier must scope to the parenthetical region only.
+        {"surface_exclusion": "some sensor capabilities (Water sensor) report discrete events. Carbon dioxide sensor is intentionally EXCLUDED because CarbonDioxideMeasurement is numeric ppm."},
+        set(),
+    ),
+    (
+        "markdown-table positive-claim region with pitfall cap row -- flags drift (must-catch)",
+        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
+        {"surface_table": "### Sensor capabilities with discrete event states\n\n| Capability | State values |\n|---|---|\n| `Water sensor` | wet, dry |\n| `Carbon dioxide sensor` | detected, clear |\n"},
+        {"discrete-event-caps-doc-drift"},
+    ),
+]
+
+
+def _run_discrete_event_caps_self_test() -> int:
+    """Drive check_discrete_event_caps_doc_parity with synthetic corpora and verify:
+    (a) the right rule codes fire (dispatch correctness)
+    (b) every finding is format_finding-renderable (finding-dict shape correctness)
+    """
+    failures = 0
+    for i, (desc, src, surfaces, expected_codes) in enumerate(
+        DISCRETE_EVENT_CAPS_SELF_TEST_CASES, start=1
+    ):
+        findings = check_discrete_event_caps_doc_parity(
+            src_override=src,
+            doc_surfaces_override=surfaces,
+        )
+        # Shape check first (same pattern as _run_tool_guide_anchor_self_test).
+        shape_ok = True
+        for f in findings:
+            try:
+                _ = format_finding(f)
+            except KeyError as ke:
+                failures += 1
+                shape_ok = False
+                print(
+                    f"DISCRETE-EVENT-CAPS-SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  finding dict missing required key for format_finding: {ke}\n"
+                    f"  finding keys present: {sorted(f.keys())}\n"
+                    f"  finding: {f!r}"
+                )
+        if not shape_ok:
+            continue
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"DISCRETE-EVENT-CAPS-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}\n"
+                f"  all findings: {findings!r}"
+            )
+    return failures
+
+
+def check_trailing_updaterule_envelope_parity(
+    src_override: str | None = None,
+) -> list[dict]:
+    """Verify every `catch (Exception updateExc)` block in the RM dispatcher
+    is followed by the full 5-slot trailing-updateRule envelope shape:
+    `updateRuleFailed`, one of the `*NotLive` slots (subscriptionsNotLive /
+    expressionNotLive / variableNotLive / patchesNotLive), `updateRuleError`,
+    `repairHints`, and `partial`.
+
+    Failure mode this catches: a future dispatcher that wires a trailing
+    updateRule click + catch block but forgets to thread the dedicated slots
+    into the return shape. The catch block silently sets a local boolean and
+    the response never surfaces the regression, so callers cannot detect the
+    not-live state without log-grep -- the exact bug class B3 fixed.
+
+    Known scope caveat: this is a textual proximity check, not an AST walk.
+    The check uses a fixed 4500-char vicinity window around each catch block
+    to detect required slots. A dispatcher whose try / catch / return spans
+    more than 4500 chars (roughly 120 lines of Groovy with comments) could
+    silently lint-pass even if the return shape is missing slots. Today's
+    dispatchers all fit. If the codebase outgrows the window, replace the
+    fixed-char scan with brace-balanced block detection rather than just
+    enlarging the window.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if src_override is not None:
+        src = src_override
+    else:
+        if not server.exists():
+            return findings
+        src = server.read_text(encoding="utf-8", errors="replace")
+
+    # Each match marks the start of a trailing-updateRule catch block. Scope
+    # to the literal handler shape so we don't false-positive on broader
+    # catch-Exception patterns elsewhere in the file.
+    catch_pattern = re.compile(r"catch\s*\(\s*Exception\s+updateExc\s*\)")
+    # Required envelope slots. At least one of NOTLIVE_SLOT_VARIANTS must
+    # appear in the vicinity (different dispatchers use different slot names).
+    REQUIRED_SLOTS = ["updateRuleFailed", "updateRuleError", "repairHints", "partial"]
+    NOTLIVE_SLOT_VARIANTS = [
+        "subscriptionsNotLive",
+        "expressionNotLive",
+        "variableNotLive",
+        "patchesNotLive",
+    ]
+    # Vicinity window: large enough to span declaration -> catch -> return,
+    # small enough to avoid bleeding into the next dispatcher's return shape.
+    LOOKAHEAD_CHARS = 4500
+
+    for m in catch_pattern.finditer(src):
+        # Also look BEHIND a bit because some dispatchers declare the booleans
+        # before the try (so updateRuleFailed/etc. live in the def block above
+        # the catch). Use a small backward window plus the forward window.
+        scope_start = max(0, m.start() - 1500)
+        scope_end = min(len(src), m.end() + LOOKAHEAD_CHARS)
+        vicinity = src[scope_start:scope_end]
+
+        missing = [slot for slot in REQUIRED_SLOTS if slot not in vicinity]
+        if not any(slot in vicinity for slot in NOTLIVE_SLOT_VARIANTS):
+            missing.append(f"one of {NOTLIVE_SLOT_VARIANTS}")
+
+        if missing:
+            line_no = src[:m.start()].count("\n") + 1
+            findings.append({
+                "file": str(server.relative_to(REPO_ROOT)),
+                "line": line_no,
+                "severity": "error",
+                "rule": "trailing-updaterule-envelope-incomplete",
+                "message": (
+                    f"`catch (Exception updateExc)` at L{line_no} is missing one or more "
+                    f"trailing-updateRule envelope slots in its return shape: {missing}. "
+                    f"Callers cannot detect the not-live state without log-grep. Pattern "
+                    f"reference: addRequiredExpression / addTrigger / bulk addTriggers "
+                    f"dispatchers all set the 5-slot envelope on the catch path."
+                ),
+                "source": src[m.start():m.start() + 120].replace("\n", " "),
             })
 
     return findings
+
+
+# Self-test fixtures for check_trailing_updaterule_envelope_parity. Drives
+# the real check function with synthetic corpora to cover must-catch +
+# must-not-catch cases (PIPELINE.md Rule 13).
+ENVELOPE_PARITY_SELF_TEST_CASES = [
+    # (description, synthetic_src, expected_codes)
+    (
+        "complete envelope -- no finding (must-not-catch)",
+        """
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+        }
+        def repairHints = []
+        return [
+            success: false,
+            partial: true,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints
+        ]
+        """,
+        set(),
+    ),
+    (
+        "missing repairHints in envelope -- flags incomplete (must-catch)",
+        """
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+        }
+        return [
+            success: false,
+            partial: true,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: null
+        ]
+        """,
+        {"trailing-updaterule-envelope-incomplete"},
+    ),
+    (
+        "missing ANY NotLive slot -- flags incomplete (must-catch)",
+        """
+        def updateRuleFailed = false
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+        }
+        return [
+            success: false,
+            partial: true,
+            updateRuleFailed: updateRuleFailed,
+            updateRuleError: null,
+            repairHints: []
+        ]
+        """,
+        {"trailing-updaterule-envelope-incomplete"},
+    ),
+    (
+        "no `catch (Exception updateExc)` block at all -- no finding (rule never fires)",
+        "def foo = 1\ntry { stuff() } catch (Exception e) { log.error e.message }",
+        set(),
+    ),
+    (
+        "missing `partial` slot in envelope -- flags incomplete (must-catch)",
+        """
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+        }
+        def repairHints = []
+        return [
+            success: false,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints
+        ]
+        """,
+        {"trailing-updaterule-envelope-incomplete"},
+    ),
+]
+
+
+def _run_envelope_parity_self_test() -> int:
+    """Drive check_trailing_updaterule_envelope_parity with synthetic corpora
+    and verify dispatch correctness + finding-dict shape correctness.
+    """
+    failures = 0
+    for i, (desc, src, expected_codes) in enumerate(
+        ENVELOPE_PARITY_SELF_TEST_CASES, start=1
+    ):
+        findings = check_trailing_updaterule_envelope_parity(src_override=src)
+        shape_ok = True
+        for f in findings:
+            try:
+                _ = format_finding(f)
+            except KeyError as ke:
+                failures += 1
+                shape_ok = False
+                print(
+                    f"ENVELOPE-PARITY-SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  finding dict missing required key for format_finding: {ke}\n"
+                    f"  finding keys present: {sorted(f.keys())}"
+                )
+        if not shape_ok:
+            continue
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"ENVELOPE-PARITY-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}\n"
+                f"  all findings: {findings!r}"
+            )
+    return failures
 
 
 def format_finding(f: dict) -> str:
@@ -1927,6 +2537,130 @@ def _run_count_self_test() -> int:
     return failures
 
 
+# (anchor, body_text, tg_text, expected_rule_codes) -- must-catch / must-not-catch
+# fixtures for the content-anchor drift check inside check_tool_guide_pointers (step 4).
+# Each fixture exercises one of the four outcome paths:
+#   - missing in BOTH -> tool-guide-anchor-missing-both
+#   - missing in source only -> tool-guide-anchor-missing-source
+#   - missing in doc only -> tool-guide-anchor-missing-doc
+#   - present in both -> no finding (must-not-catch case)
+#
+# Fixtures route through the REAL check_tool_guide_pointers via synthetic corpus
+# overrides (src_override / tg_override / anchors_override). This catches not just
+# the anchor-dispatch correctness but also the finding-dict shape (rule/source keys
+# must be present so format_finding does not KeyError downstream).
+TOOL_GUIDE_ANCHOR_SELF_TEST_CASES = [
+    (
+        "anchor present in both source body and TOOL_GUIDE.md -- no finding",
+        "modeName",
+        "Mode action takes modeName for resolution",
+        "Mode capability uses modeName lookup",
+        set(),
+    ),
+    (
+        "anchor missing from BOTH source and doc -- flags missing-both",
+        "ghostAnchor",
+        "Body has no reference to it",
+        "Doc has no reference to it",
+        {"tool-guide-anchor-missing-both"},
+    ),
+    (
+        "anchor present in doc but missing from source body -- flags missing-source",
+        "setVariable",
+        "Mode and modeName references",
+        "Hub Variable (capability='setVariable') is documented",
+        {"tool-guide-anchor-missing-source"},
+    ),
+    (
+        "anchor present in source body but missing from doc -- flags missing-doc",
+        "discrete events",
+        "Sensors report discrete events here",
+        "STPage list contains no such note",
+        {"tool-guide-anchor-missing-doc"},
+    ),
+]
+
+
+def _build_synthetic_groovy_corpus(section_key: str, body: str) -> str:
+    """Construct a minimal Groovy corpus that satisfies check_tool_guide_pointers'
+    parser: a getToolGuideSections() return literal with exactly ONE section whose
+    key + body match the test fixture. The body is wrapped in a triple-single-quoted
+    Groovy heredoc with the same 8-space indentation the production regex matches.
+    """
+    # Indent the body so any embedded ''' won't terminate the heredoc accidentally
+    # (we keep the fixture bodies simple -- plain text without ''' or backticks).
+    return (
+        "def getToolGuideSections() {\n"
+        "    return [\n"
+        f"        {section_key}: '''{body}''',\n"
+        "    ]\n"
+        "}\n"
+    )
+
+
+def _run_tool_guide_anchor_self_test() -> int:
+    """Drive check_tool_guide_pointers with synthetic corpora and verify both:
+    (a) the right rule codes fire (dispatch correctness), AND
+    (b) every finding can be rendered by format_finding without KeyError
+        (finding-dict shape correctness -- catches missing 'rule'/'source' keys).
+    """
+    failures = 0
+    # Use a synthetic section key + heading hint pair so the real heading-presence
+    # check at step 3 does not fire for these fixtures. The hint must appear in the
+    # synthetic TG corpus to pass step 3; we prepend it to every fixture's tg_text.
+    synthetic_key = "selftest_anchor_section"
+    synthetic_hint = "selftest_anchor_section"  # any unique substring works
+    # Step 3 (heading-hint mapping) checks via the hardcoded `key_to_heading_hint`
+    # in production code. A synthetic key not in that map would fire
+    # tool-guide-no-heading-hint; we filter that code out of the actual-set so the
+    # self-test only asserts on step 4's anchor codes. (Alternatives: make
+    # key_to_heading_hint injectable too. Filter is simpler and the noise is local.)
+    irrelevant_rules = {"tool-guide-no-heading-hint"}
+    for i, (desc, anchor, body, tg, expected_codes) in enumerate(
+        TOOL_GUIDE_ANCHOR_SELF_TEST_CASES, start=1
+    ):
+        synthetic_src = _build_synthetic_groovy_corpus(synthetic_key, body)
+        synthetic_tg = f"{synthetic_hint}\n{tg}\n"
+        synthetic_anchors = {synthetic_key: [anchor]}
+        findings = check_tool_guide_pointers(
+            src_override=synthetic_src,
+            tg_override=synthetic_tg,
+            anchors_override=synthetic_anchors,
+        )
+        # Shape check FIRST: every finding the production path appended must be
+        # format_finding-renderable. Catches the missing-'rule'/'source' bug class
+        # that crashes the CLI output path. Done before the rule-code comparison
+        # so a shape failure prints a clean structured message instead of letting
+        # the rule-code accessor below crash with a bare KeyError.
+        shape_ok = True
+        for f in findings:
+            try:
+                _ = format_finding(f)
+            except KeyError as ke:
+                failures += 1
+                shape_ok = False
+                print(
+                    f"TOOL-GUIDE-ANCHOR-SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  finding dict missing required key for format_finding: {ke}\n"
+                    f"  finding keys present: {sorted(f.keys())}\n"
+                    f"  finding: {f!r}"
+                )
+        if not shape_ok:
+            # Shape failures already reported; skip the dispatch-correctness check
+            # for this fixture to avoid noisy compound failures from key accesses.
+            continue
+        actual_codes = {f["rule"] for f in findings if f["rule"] not in irrelevant_rules}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"TOOL-GUIDE-ANCHOR-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}\n"
+                f"  all-finding-rules: {sorted({f['rule'] for f in findings})}"
+            )
+    return failures
+
+
 def run_self_test() -> int:
     """Scan inline fixtures through scan_source and confirm each rule
     triggers where expected. Uses scan_source (not strip_comments_and_strings
@@ -2022,13 +2756,38 @@ def run_self_test() -> int:
     count_failures = _run_count_self_test()
     failures += count_failures
 
+    # Tool-guide-anchor must-catch / must-not-catch fixtures (PIPELINE.md Rule 13:
+    # the anchor-drift check inside check_tool_guide_pointers is a class-wide
+    # mechanism; it ships with positive + negative fixtures so a future regression
+    # in the dispatch logic surfaces here rather than silently weakening the lint).
+    anchor_failures = _run_tool_guide_anchor_self_test()
+    failures += anchor_failures
+
+    # Discrete-event-caps must-catch / must-not-catch fixtures (PIPELINE.md Rule 13).
+    discrete_event_failures = _run_discrete_event_caps_self_test()
+    failures += discrete_event_failures
+
+    # Trailing-updateRule envelope parity must-catch / must-not-catch fixtures
+    # (PIPELINE.md Rule 13).
+    envelope_parity_failures = _run_envelope_parity_self_test()
+    failures += envelope_parity_failures
+
     if failures:
         print(f"--- {failures} self-test failure(s) ---")
         return 1
-    total_cases = len(SELF_TEST_CASES) + len(COUNT_SELF_TEST_CASES)
+    total_cases = (
+        len(SELF_TEST_CASES)
+        + len(COUNT_SELF_TEST_CASES)
+        + len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)
+        + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
+        + len(ENVELOPE_PARITY_SELF_TEST_CASES)
+    )
     print(
         f"Self-test: {total_cases} case(s) passed "
-        f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count)."
+        f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count, "
+        f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor, "
+        f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
+        f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity)."
     )
     return 0
 
@@ -2060,6 +2819,19 @@ def main() -> int:
     # Catches the silent-truncation regression class of "trim points caller
     # at get_tool_guide(section=Y), but Y was never added to the dispatcher".
     all_findings.extend(check_tool_guide_pointers())
+
+    # Check that every doc surface that lists discrete-event sensor capabilities
+    # only names capabilities that are in production's DISCRETE_EVENT_CAPS map.
+    # Catches the "doc surface drifts ahead of production" class -- agents
+    # copying a stale-doc example would build a condition the live walker rejects.
+    all_findings.extend(check_discrete_event_caps_doc_parity())
+
+    # Check that every `catch (Exception updateExc)` block in the RM dispatcher
+    # is followed by the full 5-slot trailing-updateRule envelope shape.
+    # Catches the "dispatcher catches the click rejection but forgets to thread
+    # the dedicated slots into the return shape" class -- callers cannot detect
+    # the not-live state without log-grep otherwise.
+    all_findings.extend(check_trailing_updaterule_envelope_parity())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))

@@ -1334,9 +1334,10 @@ def handleGateway(gatewayName, toolName, toolArgs) {
                 else if (pDef.description) hint += " — ${pDef.description}"
                 hint
             }.join("\n")
+            def paramWord = (missing.size() == 1) ? "parameter" : "parameters"
             return [
                 isError: true,
-                error: "Missing required parameter(s): ${missing.join(', ')}",
+                error: "Missing required ${paramWord}: ${missing.join(', ')}",
                 tool: toolName,
                 parameters: paramList
             ]
@@ -2965,7 +2966,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
                     ],
                     actions: [
                         type: "array",
-                        description: "Optional list of action specs to populate after creating the rule (and any bundled triggers). Each spec follows the same shape as update_native_app(addAction=…). The tool creates the rule, adds every trigger, then every action sequentially, then fires updateRule once at the end so subscriptions and the actions[] map bake from a fully-loaded rule. Pairs naturally with the triggers array — pass both to build a complete rule (trigger + actions) in a single call. Empty/omitted = no actions added.",
+                        description: "Optional list of action specs to populate after creating the rule (and any bundled triggers). Each spec follows the same shape as update_native_app(addAction=…). The tool creates the rule, adds every trigger, then every action sequentially (actions self-bake via doActPage->selectActions per-item), then fires updateRule once at the end so subscriptions populate from a fully-loaded rule. Pairs naturally with the triggers array -- pass both to build a complete rule (trigger + actions) in a single call. Empty/omitted = no actions added.",
                         items: [type: "object"]
                     ],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
@@ -3014,7 +3015,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed. (Bulk addTriggers[] fires updateRule once at the end of the batch.)
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -3052,16 +3053,16 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`). Distinct from addRequiredExpression conditions: this sub-wizard supports Variable comparisons that the required-expression page does not.
+  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) is currently only available on `addTrigger.condition` **because** the `selectTriggers` sub-wizard exposes the `xVarR_<N>` field for variable-vs-variable comparison, while the STPage and doActPage wizard schemas do not expose an equivalent field in tested firmware versions. `addRequiredExpression` and `addAction` IF-expressions support a Variable LHS with a literal numeric RHS via `value` only.[[/FLAT_TRIM]]
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure."""
+PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`. (`subscriptionsNotLive` rather than `expressionNotLive` because the failure consequence is device-event subscription, not gate-evaluator re-pick-up -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]"""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.",
+                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
@@ -3083,25 +3084,59 @@ Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR 
 
 Per-condition spec fields:
   - capability — required. Call `get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
-  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, time-based).
+  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N] because RM 5.1 expects the array form in rDev_<N> -- passing a bare integer bypasses the pre-validation device-exist check and silently stores {N: null} in the setting (rule renders but never fires). If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
-  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).
+  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).[[FLAT_TRIM]] ASCII forms '!=' / '<>' / '==' are accepted and auto-mapped to RM's Unicode glyphs '≠' / '='. ALSO required together with `variable` and `value` when capability='Variable'; state-change comparators ('*changed*' / '*became*') are the only exemption from the RHS-value requirement on Variable conditions.[[/FLAT_TRIM]]
   - value — numeric threshold paired with comparator.
   - attribute — for capability='Custom Attribute', the attribute name (e.g., 'humidity', 'energy', any attribute exposed by the device). REQUIRED when using Custom Attribute; must be paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
   - not — boolean (default false). Set true to invert this condition.
   - rawSettings — escape hatch dict {fieldName: value} for fields not yet mapped above.
 
-Sub-expressions (parens) — for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
+Extended per-capability spec shapes:
+
+Mode: {capability:'Mode', state:'Night'} or {capability:'Mode', modeIds:['3']}
+  The walker resolves mode names to IDs via location.modes and writes the firmware-assigned
+  modes<N> picker (e.g. modes1) discovered from the live schema (not hardcoded).
+  Note: triggers use modesX<N>; STPage/doActPage conditions use modes<N> (no X prefix).
+
+Between two times: {capability:'Between two times',
+  start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>},
+  end:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}}
+  time is required when type='clock' (walker converts HH:mm to ISO datetime with hub-local TZ offset internally);
+  offset is required when type='sunrise' or 'sunset'.
+  User-supplied HH:mm is interpreted as hub-local wall-clock time; the walker constructs ISO datetime with the
+  anchor-date timezone offset internally so DST shifts between now and the January anchor do not affect rendering.
+  Firmware fields: starting<N> (type enum), startingA<N> (clock time), ending<N>, endingA<N>/endSunriseOffset<N>.[[FLAT_TRIM]]
+  Precondition: hub timezone must be configured (Settings > Location and Modes). If location.timeZone is null, the walker throws before touching the wizard -- set hub timezone first.[[/FLAT_TRIM]]
+
+Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
+  Writes the firmware-assigned variable-name picker discovered from the live schema.
+  Fail-loud if the variable name is not in the revealed enum.
+
+Device-relative comparison: {capability:'Temperature', deviceIds:[N], comparator:'>',
+  compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
+  Compares a device's attribute to another device's attribute (with optional numeric offset)
+  rather than a literal threshold. The RHS-type selector is discovered from the live schema.[[FLAT_TRIM]]
+  (Firmware-variant field names the walker discovers between: rDev2_<N>/refDev_<N>/compareDevId_<N> for reference-device, rCustomAttr2_<N>/refAttr_<N>/compareAttr_<N> for reference-attribute, offset_<N>/devOffset_<N> for optional offset; the walker fails loud if reference-device or reference-attribute is absent post-rhsType, and degrades with `offset_field_not_revealed` sentinel if offset is absent.)[[/FLAT_TRIM]]
+
+Sub-expressions (parens) -- for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
   {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
 The walker recursively handles nested sub-expressions of arbitrary depth.
 
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, the expression was constructed but some condition fields didn't land. The result includes settingsSkipped with the available-options list at the time of the failed write. Common repair: pass the missing field via rawSettings on the affected condition spec, or rebuild the expression."""
+PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.[[FLAT_TRIM]] Sentinel reasons callers may see in settingsSkipped: `rhs_type_not_revealed` (compareToDevice RHS-type toggle absent on firmware; entry also carries fallbackApplied: true if a literal state_<N> fallback was written, or false if neither state nor value was available and the condition will be incomplete), `offset_field_not_revealed` (compareToDevice optional offset field absent; degrades partial:true with the offset value preserved on the entry), `api_unavailable` paired with `key: "variable-validation"` (Variable picker returned an empty option list so the schema-side name validation was skipped; write still proceeds), `reveal_fallback_to_existing_field` (walker matched an already-visible field instead of a newly-revealed one -- INFORMATIONAL, does NOT flip partial by itself).[[/FLAT_TRIM]]
+
+On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.[[FLAT_TRIM]]
+
+Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `update_native_app(button='updateRule', confirm=true)`. (`expressionNotLive` rather than `subscriptionsNotLive` because the failure consequence is gate-evaluator re-pick-up, not device-event subscription -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]
+
+Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper).[[FLAT_TRIM]] Carbon dioxide sensor is intentionally EXCLUDED: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; CO2 looks superficially symmetric to CO but RM 5.1 rejects the state-based shape.[[/FLAT_TRIM]] Full table in TOOL_GUIDE.md."""
                     ],
+
                     addActions: [
                         type: "array",
-                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so the actions[] map and subscriptions bake atomically. Pairs naturally with addTriggers — pass both to add many triggers + many actions in a single tool call.",
+                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
@@ -3115,7 +3150,7 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     patches: [
                         type: "array",
-                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Useful for combined "change RE + add action + edit local var" patterns. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
+                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Useful for combined "add RE + add action + edit local var" patterns. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -3177,7 +3212,7 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. Caller should still issue a final update_native_app(button='updateRule') after adding all actions to bake the actions[] map and fire initialize().
+                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. No trailing updateRule call is needed from the caller: doActPage->selectActions navigation self-bakes the action into the rule's actions[] map.
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -3302,8 +3337,10 @@ Capability families and the spec fields each accepts:
 [[/FLAT_TRIM]]
 
   Per-condition shape inside any expression:
-    {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}
-    Capability options match RM 5.1's IF expression list (Switch, Motion, Contact, Lock, Presence, Mode, etc. — Private Boolean is NOT in the IF list, only in Required Expressions).
+    {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
+    Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes because RM 5.1 expects the array form in rDev_<N> (bare integer bypasses pre-validation and silently stores {N: null}, rule renders but never fires). If both are provided, deviceIds wins.[[/FLAT_TRIM]]
+    [[FLAT_TRIM]]Nested subExpression: NOT supported on addAction -- rejected with a targeted error. Use addRequiredExpression for nested expressions, or flatten. The doActPage walker rejects nested subExpression with the message "nested subExpression on this row is not yet supported"; the addAction pre-pass also rejects to surface a clear error before any wizard write. addRequiredExpression supports nesting of arbitrary depth today.[[/FLAT_TRIM]]
+    Extended per-capability shapes (Mode modeIds, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: see addRequiredExpression's "Extended per-capability spec shapes" above -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ (see PARTIAL-SUCCESS HANDLING for each tool's specific response shape). Full discrete-event state-value table in TOOL_GUIDE.md.
 
 Variable-sourced values (works on dimmer.setLevel, delay):
   - dimmer.setLevel: pass `levelVariable: '<hubVarName>'` instead of `level`
@@ -3327,7 +3364,9 @@ Wire-format quirks the helper handles for you (so callers don't need to know):
   2. doActPage's schema is incremental: actionDone only appears AFTER all required type-specific fields are set. The helper re-fetches the schema before each write.
   3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST.
 
-PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the action skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land. A `success: true, partial: true` result is the normal partial-success state -- the action row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: 1) update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema (settingsSkipped[].available shows what fields ARE present), then write the missing fields one at a time via update_native_app(settings=...). 2) For unrecoverable rows (hubRenderError=true), use removeAction(index:N) to clear the broken action then retry with a different shape. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure."""
+PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent in an expression condition, settingsSkipped entries carry fallbackApplied: true/false (true = literal state_<N> was written as fallback; false = no fallback available, condition is incomplete). For expression-action conditions (ifThen/elseIf/repeatWhile/waitExpression), settingsSkipped sentinel reasons are the same set the shared `_rmWalkConditionReveal` walker emits on the addRequiredExpression side -- see addRequiredExpression PARTIAL-SUCCESS HANDLING above for the full enumeration (`rhs_type_not_revealed`, `offset_field_not_revealed`, `api_unavailable` paired with `variable-validation`, `reveal_fallback_to_existing_field`). Naming-divergence rationale (one slot per dispatcher, picked to name the caller-visible consequence): `expressionNotLive` (addRequiredExpression -- gate evaluator does not re-pick-up the new expression), `subscriptionsNotLive` (addTrigger / bulk addTriggers+addActions / action-mutation / trigger-mutation -- rule does not re-subscribe to device events), `variableNotLive` (addLocalVariable -- variable created but rule action map cannot read it), `patchesNotLive` (patches -- catch-all because patches can bundle any mix). All four share `updateRuleFailed` and `updateRuleError` for the common facts.[[/FLAT_TRIM]]
+
+On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
                     ],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
@@ -5797,12 +5836,14 @@ def toolDeleteHubVariable(args) {
         logDebug("delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
     }
     if (consumers && !force) {
+        def consumerCount = consumers.size()
+        def consumerWord = consumerCount == 1 ? "rule" : "rules"
         throw new IllegalArgumentException(
-            "Variable '${varName}' is referenced by ${consumers.size()} rule(s): " +
+            "Variable '${varName}' is referenced by ${consumerCount} ${consumerWord}: " +
             "${consumers.collect { "${it.label} (id=${it.id})" }.join(', ')}. " +
-            "Deleting will silently break those rules (null lookups, false conditions, " +
+            "Deleting will silently break ${consumerCount == 1 ? 'that rule' : 'those rules'} (null lookups, false conditions, " +
             "literal %${varName}% in substitutions). Pass force=true to proceed anyway, " +
-            "or update/remove the consuming rules first."
+            "or update/remove the consuming ${consumerWord} first."
         )
     }
 
@@ -5842,7 +5883,11 @@ def toolDeleteHubVariable(args) {
         def prevStr = previousValue?.toString()
         def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
         def connectorNote = hadConnector ? " (connector deviceId=${hubVar.deviceId} also deleted)" : ""
-        def consumerNote  = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
+        def consumerNote = ""
+        if (consumers) {
+            def cc = consumers.size()
+            consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
+        }
         mcpLog("warn", "developer-mode", "delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
         return [
             success: true,
@@ -5866,7 +5911,11 @@ def toolDeleteHubVariable(args) {
 
     def prevStr = previousValue?.toString()
     def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
-    def consumerNote = consumers ? " (forced; ${consumers.size()} rule(s) now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})" : ""
+    def consumerNote = ""
+    if (consumers) {
+        def cc = consumers.size()
+        consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
+    }
     mcpLog("warn", "developer-mode", "delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
@@ -5953,10 +6002,12 @@ def toolUpdateMcpSettings(args) {
 
     mcpLog("warn", "developer-mode", "update_mcp_settings: applied=${updates}")
 
+    def updateCount = updates.size()
+    def settingWord = updateCount == 1 ? "setting" : "settings"
     return [
         success: true,
         updated: updates,
-        message: "Updated ${updates.size()} setting(s). MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
+        message: "Updated ${updateCount} ${settingWord}. MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
     ]
 }
 
@@ -12023,7 +12074,7 @@ def toolListVirtualDevices(args) {
     def result = [
         devices: paged.page,
         count: paged.page.size(),
-        message: "Found ${devices.size()} MCP-managed virtual device(s). These are automatically accessible to all MCP device tools."
+        message: "Found ${devices.size()} MCP-managed virtual ${devices.size() == 1 ? 'device' : 'devices'}. These are automatically accessible to all MCP device tools."
     ]
     if (cursor != null) {
         result.total = devices.size()
@@ -12424,8 +12475,8 @@ def toolUpdateDevice(args) {
         changes: changes,
         errors: errors.isEmpty() ? null : errors,
         message: errors.isEmpty()
-            ? "Successfully updated ${changes.size()} property/properties on device '${deviceLabel}'."
-            : "Updated ${changes.size()} property/properties with ${errors.size()} error(s) on device '${deviceLabel}'."
+            ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}'."
+            : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}'."
     ]
 }
 
@@ -12656,11 +12707,13 @@ def toolDeleteRoom(args) {
     }
 
     mcpLog("info", "room", "Deleted room '${roomName}' (ID: ${roomId}), ${deviceCount} devices unassigned")
+    def deviceWord = deviceCount == 1 ? "device" : "devices"
+    def verbForm = deviceCount == 1 ? "is" : "are"
     return [
         success: true,
         deletedRoom: [id: roomId.toString(), name: roomName],
         devicesUnassigned: deviceCount,
-        message: "Room '${roomName}' deleted. ${deviceCount} device(s) are now unassigned."
+        message: "Room '${roomName}' deleted. ${deviceCount} ${deviceWord} ${verbForm} now unassigned."
     ]
 }
 
@@ -14561,6 +14614,35 @@ String _rmNormalizeAtTime(String raw) {
 }
 
 /**
+ * Single source of truth for the PRODUCTION-CODE set of
+ * `settingsSkipped[].reason` codes that are INFORMATIONAL (do NOT signal a
+ * genuine field-write failure). Consumed by both `_rmAddRequiredExpression`
+ * and `_rmAddAction` partial gates -- the shared `_rmWalkConditionReveal`
+ * walker emits the same sentinels on STPage and doActPage, so both callsites
+ * need an identical exemption list. Centralising it here means a future
+ * addition (a second informational reason code) lands in one place inside
+ * production code rather than requiring lockstep edits in two helpers.
+ *
+ * SCOPE CAVEAT: this list is the source of truth for production behavior
+ * ONLY. Doc surfaces that name reason codes literally (inline schema
+ * descriptions in this file's tool registrations, the inline get_tool_guide
+ * content block, TOOL_GUIDE.md, etc.) still require manual sync when a new
+ * reason code is added -- there is no lint rule today that mirrors the
+ * discrete-event-caps-doc-parity check for reason codes. Adding such a lint
+ * would be the mechanical class-fix (PIPELINE.md Rule 13) that closes the
+ * remaining gap.
+ *
+ * Genuinely-partial reason codes (`silent_rejection`, `rhs_type_not_revealed`,
+ * `offset_field_not_revealed`, `verification_fetch_failed`, `not_in_schema`,
+ * `api_unavailable`, etc.) are NOT in this list and continue to flip `partial`.
+ * Reason-code is the disambiguator -- doc contract at the inline get_tool_guide
+ * content block calls this list out by name.
+ */
+private List _rmInformationalSkippedReasons() {
+    return ["reveal_fallback_to_existing_field"]
+}
+
+/**
  * Validate that every device ID in `ids` resolves on the hub. RM 5.1
  * silently stores `{<bogusId>: null}` for unknown IDs in any device
  * setting (rDev_<N>, tDev_<N>, switch.<N>, etc.) -- the write returns
@@ -14631,7 +14713,16 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // trigger renders as "Broken Trigger" with no event subscriptions.
     _rmValidateDeviceIdsExist("addTrigger.deviceIds", triggerSpec.deviceIds)
     if (triggerSpec.condition instanceof Map) {
-        _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", (triggerSpec.condition as Map).deviceIds)
+        // Normalize singular deviceId -> deviceIds on the trigger.condition Map BEFORE
+        // pre-validation runs **because** _rmBuildCondition's internal normalization runs
+        // too late to protect _rmValidateDeviceIdsExist: validator sees the raw .deviceIds
+        // list, an absent value early-returns, and the bogus singular ID surfaces only
+        // as a "Broken Trigger" render later.
+        def cm = triggerSpec.condition as Map
+        if (cm.deviceIds == null && cm.deviceId != null) {
+            cm.deviceIds = [cm.deviceId]
+        }
+        _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds)
     }
 
     // Snapshot committed trigger indices (settings) BEFORE clicking moreCond.
@@ -16366,7 +16457,8 @@ private List _rmClearActions(Integer appId) {
         // RM didn't enter trash mode after the trashAll click. Don't pretend
         // success — caller (patches handler, replaceActions, etc.) needs to
         // know nothing was deleted so success aggregation is correct.
-        throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} -- RM didn't enter trash mode. The rule has ${indices.size()} action(s) at indices ${indices.sort()} that were NOT deleted.")
+        def actCountMsg = "${indices.size()} ${indices.size() == 1 ? 'action' : 'actions'}"
+        throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} -- RM didn't enter trash mode. The rule has ${actCountMsg} at indices ${indices.sort()} that were NOT deleted.")
     }
     // Write trashActs with the indices as a multi-enum value. RM applies
     // the deletion immediately (submitOnChange).
@@ -16395,7 +16487,9 @@ private List _rmClearActions(Integer appId) {
         stillThere = remaining.intersect(indices)
         if (!stillThere) return indices
     }
-    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the action(s) really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
+    def stillThereCount = stillThere.size()
+    def stillThereWord = stillThereCount == 1 ? "action" : "actions"
+    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
 }
 
 /**
@@ -16972,6 +17066,33 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     if (actionSpec.expression instanceof Map) {
         def exprConds = (actionSpec.expression as Map).conditions
         if (exprConds instanceof List) {
+            // Pre-pass: reject nested subExpression at the top level rather than
+            // recursing into a shape the doActPage walker does not yet support. The
+            // walker also rejects subExpression with a targeted message at the first
+            // condition site, but catching it here is cheaper and produces a clearer
+            // error before any wizard write hits the hub (the backup on disk is
+            // already taken by the outer dispatcher at this point; fail-fast here
+            // means RM's wizard state stays untouched). _rmAddRequiredExpression
+            // supports nested subExpression today; _rmAddAction's doActPage walker
+            // is flat-only.
+            exprConds.eachWithIndex { entry, idx ->
+                if (entry instanceof Map && (entry as Map).subExpression != null) {
+                    throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
+                }
+            }
+            // Normalize singular deviceId -> deviceIds before pre-validation **because**
+            // _rmBuildCondition's internal normalization runs too late to protect
+            // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
+            // and would silently skip a singular deviceId.
+            // Flat-only normalization; subExpression is rejected at the pre-pass above --
+            // if that gate is ever relaxed, restore a recursive walk-in here.
+            exprConds.each { entry ->
+                if (!(entry instanceof Map)) return
+                def em = entry as Map
+                if (em.deviceIds == null && em.deviceId != null) {
+                    em.deviceIds = [em.deviceId]
+                }
+            }
             exprConds.eachWithIndex { c, cIdx ->
                 if (c instanceof Map) {
                     _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
@@ -18061,11 +18182,61 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 }
             }
         }
+        // writeAct: doActPage field-write closure -- same signature as writeST (STPage
+        // caller), with hrefParams accepted and ignored since _rmWriteSettingOnPage
+        // derives page context from its pageName argument. Routes into the shared
+        // applied/skipped accumulators owned by _rmAddAction's outer scope.
+        def writeAct = { Map params, String fieldKey, Object fieldValue, String label = null ->
+            _rmWriteSettingOnPage(appId, "doActPage", fieldKey, fieldValue, applied, null, skipped)
+        }
+        // cancelInFlightActCond: cancel the in-flight condition wizard on doActPage.
+        // Invoked by _rmWalkConditionReveal before throwing on validation failure so
+        // the caller does not leave the wizard half-open. Track cleanup failure so the
+        // outer error result can surface wizardStuck for the caller.
+        // actCancelledByWalker mirrors STPage's cancelledByWalker flag -- without it,
+        // a walker-side throw + outer-catch fallback would issue two cancelCapab clicks
+        // back-to-back (the walker's own call inside cancelInFlightActCond, then the
+        // outer catch's redundant call). The second always fails (nothing to cancel),
+        // setting actWizardCleanupFailed=true and surfacing a false wizardStuck=true.
+        // currentActCondIdx is updated by the per-condition loop below so cancel-cleanup
+        // warn messages name the in-flight condition index -- without it, N back-to-back
+        // failures produce N indistinguishable log entries.
+        def actWizardCleanupFailed = false
+        def actWizardCleanupErr = null
+        def actCancelledByWalker = false
+        def currentActCondIdx = -1
+        def cancelInFlightActCond = {
+            actCancelledByWalker = true
+            try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
+            catch (Exception cancelExc) {
+                actWizardCleanupFailed = true
+                actWizardCleanupErr = cancelExc.message
+                mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage at conditions[${currentActCondIdx}]: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
+            }
+        }
+        // doActPage condition-wizard walk: write cond=a, discover the firmware-assigned
+        // cIdx from the schema (the slot number RM assigns is unpredictable), validate
+        // the capability option, then delegate the per-capability reveal sequence to
+        // _rmWalkConditionReveal (handles rCapab->rDev->comparator->state->hasAll in
+        // the correct progressive-disclosure order, same invariants as STPage).
+        // The condition-wizard field names are identical on both pages (RelrDev_<N>,
+        // rCustomAttr_<N>, state_<N>, etc.) -- only the page name differs.
         conditions.eachWithIndex { condRaw, i ->
+            currentActCondIdx = i
             if (!(condRaw instanceof Map)) {
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}] is not a Map")
             }
             def cond = condRaw as Map
+            // Reject subExpression on this path until the recursive walker lands -- the
+            // doActPage walker only handles the flat condition shape today (the pre-pass in
+            // `_rmAddAction`'s subExpression rejection also catches this before reaching
+            // here, but this in-walker check is the defense-in-depth half of the gate).
+            // Surface a targeted message rather
+            // than the generic "capability is required" that the next check would produce.
+            // _rmAddRequiredExpression (STPage) supports nested subExpression today.
+            if (cond.subExpression != null) {
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: nested subExpression on this row is not yet supported. _rmAddRequiredExpression (addRequiredExpression) supports nested expressions; on ${cap} rows, either flatten the condition list, or capture the sub-expression as a Required Expression instead.")
+            }
             def ccap = cond.capability?.toString()?.trim()
             if (!ccap) throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability is required")
             _rmWriteSettingOnPage(appId, "doActPage", "cond", "a", applied, null, skipped)
@@ -18082,79 +18253,37 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             def capOptions = (rCapabInput.options ?: []) as List
             def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(ccap) }
             if (!capCanonical) {
-                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
+                cancelInFlightActCond()
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
             }
-            _rmWriteSettingOnPage(appId, "doActPage", "rCapab_${cIdx}", capCanonical, applied, null, skipped)
-            if (cond.deviceIds != null) {
-                _rmWriteSettingOnPage(appId, "doActPage", "rDev_${cIdx}", cond.deviceIds, applied, null, skipped)
-            }
-            // Custom Attribute / numeric comparator path:
-            // The condition-wizard comparator field is RelrDev_<N> (lowercase r
-            // in "Relr"), NOT ReltDev_<N> (which is the TRIGGER-row comparator
-            // on selectTriggers -- a different wizard context). Field naming
-            // divergence: trigger wizard = ReltDev${idx} (no underscore, "Relt");
-            // condition wizard = RelrDev_${cIdx} (underscore, "Relr"). Applies
-            // to all condition wizards regardless of page (doActPage and STPage
-            // use the same condition-wizard field names). Empirically confirmed
-            // on live hub: schema's available list shows RelrDev_<N> after
-            // rCustomAttr_<N> is written; writing the wrong name silently rejects.
-            // Canonical doActPage Custom Attribute wizard sequence:
-            //   cond=a -> rCapab_N=Custom Attribute -> rDev_N=[ids]
-            //   -> rCustomAttr_N=attrName -> RelrDev_N=comparator -> state_N=value
-            //
-            // Fail-loud validation: Custom Attribute requires BOTH attribute AND
-            // comparator. RM 5.1 silently accepts either half and renders the
-            // condition incomplete. Surface the error immediately so the caller
-            // doesn't discover a broken condition via get_app_config.
-            // Both directions are checked: attribute-only and comparator-only.
-            if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
-                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
-                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-            }
-            if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
-                try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
-                throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-            }
-            if (cond.comparator != null) {
-                if (cond.attribute != null) {
-                    _rmWriteSettingOnPage(appId, "doActPage", "rCustomAttr_${cIdx}", cond.attribute, applied, null, skipped)
+            actCancelledByWalker = false
+            try {
+                _rmWalkConditionReveal(appId, [
+                    page: "doActPage",
+                    writeST: writeAct,
+                    cancelInFlightCondition: cancelInFlightActCond,
+                    condIdx: i,
+                    cap: cap,
+                    capCanonical: capCanonical,
+                    hrefParams: [unUsed: null],
+                    skipped: skipped
+                ], cond, cIdx)
+            } catch (Exception perCondExc) {
+                // Mirror STPage outer-catch symmetry: only cancel if the walker did not
+                // already do so before throwing. _rmFetchConfigJson exceptions from inside
+                // _rmRevealStep propagate out of the walker WITHOUT calling cancelInFlightCondition,
+                // so the outer catch must issue the cancel itself. Without this fallback the
+                // wizard stays half-open and the next addAction starts in a broken state.
+                if (!actCancelledByWalker) {
+                    cancelInFlightActCond()
                 }
-                _rmWriteSettingOnPage(appId, "doActPage", "RelrDev_${cIdx}", cond.comparator, applied, null, skipped)
-            }
-            // state_<N> holds either the enum state value (Switch on/off, Motion
-            // active/inactive) or the numeric threshold (Custom Attribute,
-            // numeric capabilities). Accept `state` (preferred) or `value`
-            // (numeric-comparison alias) -- mirrors the trigger-side
-            // _rmBuildCondition fallback.
-            def condStateOrValue = cond.state != null ? cond.state : cond.value
-            if (condStateOrValue != null) {
-                // Validate against the schema's enum options if present.
-                def stateCfg = _rmFetchConfigJson(appId, "doActPage")
-                def stateInputs = (stateCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-                def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
-                if (stateInput?.options) {
-                    def opts = (stateInput.options ?: []).collect { o ->
-                        (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
-                    }.findAll { it }
-                    def matched = opts.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
-                    if (!matched && opts) {
-                        try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") }
-                catch (Exception cancelExc) { mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId}: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits") }
-                        throw new IllegalArgumentException("${cap}.expression.conditions[${i}].state '${condStateOrValue}' is not in capability '${ccap}' domain. Valid: ${opts.sort().join(', ')}")
-                    }
-                    if (matched) condStateOrValue = matched
+                if (actWizardCleanupFailed) {
+                    // Both the per-condition write AND the cancel cleanup failed --
+                    // embed the marker so the dispatcher's catch can surface wizardStuck.
+                    throw new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${actWizardCleanupErr}]")
                 }
-                _rmWriteSettingOnPage(appId, "doActPage", "state_${cIdx}", condStateOrValue, applied, null, skipped)
+                throw perCondExc
             }
-            if (cond.not == true) {
-                _rmWriteSettingOnPage(appId, "doActPage", "not${cIdx}", true, applied, "bool", skipped)
-            }
-            // Click hasAll to commit this condition.
-            _rmClickAppButton(appId, "hasAll", null, "doActPage")
             // Joining operator for non-last conditions.
             if (i < conditions.size() - 1) {
                 def gapOp = opsList ? opsList[i] : operator
@@ -18251,22 +18380,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 pType = "string"
             }
 
-            // Step 1: snapshot existing cpType<P>.N names, then click moreParams
-            // to allocate the next param slot. P is always schema-discovered (step 2).
-            def preCfg = _rmFetchConfigJson(appId, "doActPage")
-            def preNames = (preCfg?.configPage?.sections ?: []).collectMany { sec ->
-                (sec?.input ?: []).collect { it?.name?.toString() }
-            }
-            def preCpTypeNames = preNames.findAll { it?.matches("cpType\\d+\\.${idx}") } as Set
-            _rmClickAppButton(appId, "moreParams", null, "doActPage")
-
-            // Step 2: re-introspect and identify the newly-revealed cpType<P>.N field.
-            def postCfg = _rmFetchConfigJson(appId, "doActPage")
-            def postInputs = (postCfg?.configPage?.sections ?: []).collectMany { sec ->
-                (sec?.input ?: [])
-            }
-            def postNames = postInputs.collect { it?.name?.toString() }
-            def newCpTypeField = postNames.find { it?.matches("cpType\\d+\\.${idx}") && !preCpTypeNames.contains(it) }
+            // Step 1+2: snapshot doActPage schema, click moreParams to allocate the next
+            // param slot, re-fetch and identify the newly-revealed cpType<P>.N field.
+            // _rmRevealStep encapsulates the pre-snapshot/trigger/post-fetch/diff sequence.
+            def cpTypeReveal = _rmRevealStep(appId, "doActPage", "cpType\\d+\\.${idx}".toString(), {
+                _rmClickAppButton(appId, "moreParams", null, "doActPage")
+            })
+            def newCpTypeField = cpTypeReveal.input?.name?.toString()
             if (!newCpTypeField) {
                 mcpLog("warn", "rm-native", "runCommand[${actionSpec.command}]: moreParams click did not reveal a new cpType<P> field for action ${idx} param ${paramIdx + 1}; param skipped")
                 // Add a sentinel so skipped is non-empty, which drives partial=true at result assembly.
@@ -18445,16 +18565,33 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // worth retrying via update_native_app(walkStep) or replaceActions.
     // health.brokenMarkers non-empty means a PRIOR action/trigger is already
     // broken; the new action committed but the rule is in a known-bad state.
-    def partial = (skipped != null && !skipped.isEmpty()) || actionNotBaked ||
+    // INFORMATIONAL sentinels (reveal_fallback_to_existing_field) are excluded
+    // from the partial computation -- they signal a static-schema or already-
+    // revealed-field walker path, NOT a genuine field-write failure. Mirrors
+    // the exemption in _rmAddRequiredExpression's partial gate; the shared
+    // _rmWalkConditionReveal walker emits the same sentinels on both pages,
+    // so both call sites need the same exemption to match the documented
+    // "INFORMATIONAL -- does NOT flip partial by itself" contract. Set sourced
+    // from _rmInformationalSkippedReasons() so a future addition lands in one
+    // place rather than requiring lockstep edits in both helpers.
+    def informationalReasons = _rmInformationalSkippedReasons()
+    def genuineSkipped = (skipped ?: []).findAll {
+        !(it instanceof Map) || it.reason == null || !(it.reason in informationalReasons)
+    }
+    def partial = !genuineSkipped.isEmpty() || actionNotBaked ||
                   ((health?.brokenMarkers as List)?.size() > 0)
-    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
+    def hubRenderError = err != null || (genuineSkipped.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
     def repairHints = []
     if (actionNotBaked) {
         repairHints << "Action did not bake — mainPage still shows 'Define Actions' placeholder. Common causes: required field for the (capability, action) pair was omitted (e.g. dimmer.setLevel needs 'level'; switch.setPerMode needs 'perMode'; runCommand needs 'command'), invalid deviceIds, or value out of range. Inspect the rule via get_app_config(includeSettings=true) — settings.actType.<idx> set without matching subtype-specific fields means the action was registered but not committed. Use removeAction(${idx}) to clean up, then rebuild."
     }
     if (partial) {
-        if (skipped != null && !skipped.isEmpty()) {
-            repairHints << "Some settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
+        // Use genuineSkipped (excluding informational sentinels) so the repair
+        // hint only names keys that actually failed to land. An informational
+        // fallback entry would otherwise be reported as "didn't land" when in
+        // fact the field was written via the already-revealed path.
+        if (!genuineSkipped.isEmpty()) {
+            repairHints << "Some settings didn't land: ${genuineSkipped*.key.join(', ')}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
             if (hubRenderError) {
                 repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
             }
@@ -18497,6 +18634,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
  * advances state.moreCond by one index — _rmAddTrigger then re-opens the
  * trigger editor at idx+1 to actually build the conditional trigger.
  *
+ * Uses static direct-write order (no _rmRevealStep) **because** the
+ * selectTriggers condition sub-wizard exposes a narrower capability set than
+ * the expression-wizard pages (STPage/doActPage) and all supported fields
+ * are reliably schema-visible without progressive disclosure. Migrate to
+ * _rmRevealStep if Mode/Between two times/compareToDevice support is added here.
+ *
  * Returns the condition's auto-assigned ID (currently equal to the index
  * passed in, since RM allocates condition IDs sequentially starting at 1).
  *
@@ -18526,8 +18669,14 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     // tDev<N> / tstate<N> without).
     _rmWriteSettingOnPage(appId, "selectTriggers", "rCapab_${idx}", condCap, applied, null, skipped)
 
-    if (condSpec.deviceIds != null) {
-        _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condSpec.deviceIds, applied, null, skipped)
+    // Normalize singular deviceId -> deviceIds so callers that pass
+    // deviceId: N (integer) get the same behaviour as deviceIds: [N].
+    def condDevIds = condSpec.deviceIds
+    if (condDevIds == null && condSpec.deviceId != null) {
+        condDevIds = [condSpec.deviceId]
+    }
+    if (condDevIds != null) {
+        _rmWriteSettingOnPage(appId, "selectTriggers", "rDev_${idx}", condDevIds, applied, null, skipped)
     }
     // Hub Variable condition: rCapab_<N>=Variable exposes xVar_<N>
     // (variable picker, no device IDs). Verified live 2026-05-17.
@@ -18980,20 +19129,34 @@ private Map _rmFetchSettingsByName(Integer appId) {
  * refusal, also attaches the current health so the caller sees existing
  * structural issues that motivated the refusal.
  */
-private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup) {
-    def isPreflightRefusal = msg?.contains("RM is not touched")
+private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
+    def msgStr = msg?.toString() ?: ""
+    def isPreflightRefusal = msgStr.contains("RM is not touched")
+    // wizardStuck: mid-walk cancelCapab cleanup may have failed leaving the wizard
+    // half-open. Independent of preflight refusal (preflight never opens the wizard).
+    def wizardStuck = msgStr.contains("wizardStuck") || msgStr.contains("cancelCapab cleanup failed")
     def healthOnRefusal = null
     if (isPreflightRefusal) {
         try { healthOnRefusal = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort */ }
+    }
+    def restoreHint
+    if (isPreflightRefusal) {
+        restoreHint = "Pre-flight refusal -- RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
+    } else if (wizardStuck) {
+        // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
+        // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
+        // themselves carry no page info, so callers thread it in.
+        restoreHint = "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
+    } else {
+        restoreHint = "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
     }
     def result = [
         success: false,
         appId: appId,
         error: msg,
+        wizardStuck: wizardStuck,
         backup: backup,
-        restoreHint: isPreflightRefusal ?
-            "Pre-flight refusal — RM was not touched; the saved backup is identical to the current rule and does not need to be restored." :
-            "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+        restoreHint: restoreHint
     ]
     if (healthOnRefusal != null) result.health = healthOnRefusal
     result
@@ -19306,7 +19469,8 @@ private Map _rmWalkStep(Integer appId, Map spec) {
             def values = (writtenValue instanceof List) ? writtenValue.collect { it?.toString() } : [writtenStr]
             def invalid = values.findAll { v -> v != null && !validValues.contains(v) }
             if (invalid) {
-                throw new IllegalArgumentException("walkStep.write enum validation failed: value(s) ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
+                def valueWord = (invalid.size() == 1) ? "value" : "values"
+                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
             }
         }
         // Build the schema map _rmUpdateAppSettings expects.
@@ -19656,8 +19820,9 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
         }
     }
     if (poisoned) {
+        def settingWord = (poisoned.size() == 1) ? "setting" : "settings"
         throw new IllegalStateException(
-            "MarshalFlagDivergenceException: multiple=true flag flipped to false on setting(s) ${poisoned} " +
+            "MarshalFlagDivergenceException: multiple=true flag flipped to false on ${settingWord} ${poisoned} " +
             "for app ${appId}. This corrupts RM's device-list rendering. Caller should re-POST with the full " +
             "3-field group (settings[name], name.type, name.multiple=true) to recover.")
     }
@@ -19914,8 +20079,9 @@ def toolCreateNativeApp(args) {
 
         // Optional bulk-action creation. Mirrors the triggers path but
         // for actions. Each spec follows update_native_app's addAction
-        // shape. After all are committed, fire updateRule once so the
-        // actions[] map bakes from a fully-loaded rule.
+        // shape. After all are committed, fire updateRule so the rule
+        // re-subscribes from a fully-loaded state (actions self-bake via
+        // doActPage->selectActions per-item).
         def actionSpecs = args?.actions instanceof List ? (args.actions as List) : []
         def actionResults = []
         if (actionSpecs) {
@@ -20200,6 +20366,745 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 }
 
 /**
+ * Low-level reveal-step primitive for RM 5.1 progressive-disclosure wizard pages.
+ *
+ * Snapshot field names on a page, execute a trigger closure (button click or
+ * setting write), re-fetch the page, then find and return the newly-revealed
+ * input field whose name matches the given Java regex pattern.
+ *
+ * Callers rely on this when RM's next field name is firmware-assigned and must
+ * be schema-discovered rather than hardcoded -- for example, the cpType<P>.N
+ * slot allocated by moreParams, the xVar<digits>.N enum revealed after a
+ * uVar toggle, or any per-capability sub-picker that appears only after the
+ * capability selector commits. Returns the newly-revealed field if one appears;
+ * falls back to any matching field in the post-fetch schema (covers static schemas
+ * and always-visible-field paths). Returns null if no matching field exists at all.
+ *
+ * The fallback path (revealedNew ?: revealedAny) exists **because** some firmware
+ * versions expose fields unconditionally in the schema regardless of preceding writes
+ * (e.g. firmware that does not use progressive disclosure for a given capability).
+ * Without the fallback, a hub where the field is always visible would return null and
+ * fail-loud even though the field is present and writable. The primary path (revealedNew)
+ * handles the normal progressive-disclosure case; the fallback keeps the walker
+ * functional on static-schema firmware paths.
+ *
+ * @param appId    Rule Machine app ID
+ * @param page     Wizard page name (e.g. "doActPage", "STPage")
+ * @param pattern  Java regex the target field name must match
+ * @param trigger  Closure that causes the field to appear (write or click)
+ * @return         Map with three keys:
+ *                   input: matching input Map (or null if no match)
+ *                   visibleNames: List<String> of all input names in the post-trigger schema
+ *                   fallbackToExisting: Boolean -- true when the match came from the
+ *                     fallback "any matching field" path (revealedAny only, not
+ *                     revealedNew). Signals that the field was already visible BEFORE
+ *                     the trigger ran; callers tracking progressive-disclosure vs
+ *                     static-schema behaviour read this to emit informational
+ *                     sentinels. Does NOT imply failure.
+ */
+private Map _rmRevealStep(Integer appId, String page, String pattern, Closure trigger) {
+    def preCfg = _rmFetchConfigJson(appId, page)
+    def preNames = (preCfg?.configPage?.sections ?: []).collectMany { sec ->
+        (sec?.input ?: []).collect { it?.name?.toString() }
+    }.findAll { it } as Set
+    trigger.call()
+    def postCfg = _rmFetchConfigJson(appId, page)
+    def postInputs = (postCfg?.configPage?.sections ?: []).collectMany { sec ->
+        (sec?.input ?: [])
+    }
+    // Prefer newly-revealed (the typical case) but fall back to any matching field
+    // in postInputs (covers static schemas and always-visible-field paths).
+    def revealedNew = postInputs.find { inp ->
+        def n = inp?.name?.toString()
+        n && n.matches(pattern) && !preNames.contains(n)
+    }
+    def revealedAny = postInputs.find { inp ->
+        def n = inp?.name?.toString()
+        n && n.matches(pattern)
+    }
+    def revealed = revealedNew ?: revealedAny
+    // fallbackToExisting signals "matched only via revealedAny" -- the field was already
+    // visible BEFORE the trigger closure ran. Callers that care (e.g. a walker tracking
+    // whether a trigger write actually advanced the schema vs returning a stale leftover
+    // from a prior slot/run) can surface this as an informational sentinel. Does NOT
+    // imply failure: static-schema firmware legitimately exposes always-visible fields
+    // and this path is the only way the walker reaches them.
+    def fallbackToExisting = (revealedNew == null) && (revealedAny != null)
+    return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it }, fallbackToExisting: fallbackToExisting]
+}
+
+/**
+ * Condition-field writer for RM 5.1's wizard pages (STPage and doActPage).
+ *
+ * Handles the full field-write sequence for a single plain condition after the
+ * capability index (cIdx) has been discovered from the page schema. Dispatches
+ * to a per-capability reveal sequence (each modelled as a chain of _rmRevealStep
+ * calls that expose the next field only after the preceding write commits), then
+ * writes optional negation and raw-settings overrides, and clicks hasAll to seal
+ * the slot.
+ *
+ * The per-capability sequences (static bounds: Mode=2, Between-two-times=4, Variable=3,
+ * Custom Attribute=2, compareToDevice=variable but bounded by firmware-revealed fields):
+ *   Mode              -- rCapab -> re-fetch -> discover modes<N> picker -> write IDs -> hasAll
+ *   Between two times -- rCapab -> re-fetch -> startType (clock|sunrise|sunset) ->
+ *                        re-fetch -> start field -> re-fetch -> endType -> re-fetch ->
+ *                        end field -> hasAll
+ *   Variable          -- rCapab -> re-fetch -> discover variable picker -> write name ->
+ *                        re-fetch -> RelrDev_<N> -> re-fetch -> state_<N> -> hasAll
+ *   Custom Attribute  -- rCapab -> rDev_<N> -> rCustomAttr_<N> -> re-fetch ->
+ *                        RelrDev_<N> -> re-fetch -> state_<N> -> hasAll
+ *                        (the re-fetch between rCustomAttr and RelrDev is the bug fix:
+ *                        the old code wrote both back-to-back and RelrDev was silently
+ *                        rejected because the page had not yet revealed it)
+ *   Device-relative   -- rCapab -> rDev_<N> -> re-fetch -> RelrDev_<N> -> re-fetch ->
+ *                        RHS-type reveal -> if compareToDevice: write device/attr/offset;
+ *                        else: state_<N> literal -> hasAll
+ *   Enum/default      -- rCapab -> rDev_<N> -> state_<N> -> hasAll
+ *                        (unchanged direct-write path for simple enum/numeric capabilities)
+ *
+ * ctx keys:
+ *   writeST                 - Closure(Map params, String key, Object value, String label=null)
+ *                             that writes a field and routes into the caller's
+ *                             applied/skipped accumulators.
+ *   cancelInFlightCondition - Closure() that clicks cancelCapab on failure.
+ *   condIdx                 - Integer: 0-based condition position for error messages.
+ *   cap                     - String: human-readable capability name for error messages.
+ *   capCanonical            - String: capability value as returned by the page option list.
+ *   hrefParams              - Map passed through to writeST.
+ *   page                    - String: wizard page name (STPage or doActPage); defaults to
+ *                             STPage when absent for backwards compatibility.
+ *
+ * Throws IllegalArgumentException or IllegalStateException on validation failure;
+ * the cancel closure is invoked before throwing so the caller's wizard is left
+ * in a clean state.
+ */
+private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cIdx) {
+    def writeST               = ctx.writeST as Closure
+    def cancelInFlightCond    = ctx.cancelInFlightCondition as Closure
+    def condIdx               = ctx.condIdx as Integer
+    def cap                   = ctx.cap?.toString()
+    def capCanonical          = ctx.capCanonical?.toString()
+    def hrefParams            = ctx.hrefParams as Map
+    def skippedAccum          = ctx.skipped as List
+    def page                  = ctx.page?.toString() ?: "STPage"
+    // _rmRevealStep returns fallbackToExisting=true when only revealedAny matched (a
+    // matching field was already visible BEFORE the trigger closure ran). On static-schema
+    // firmware this is normal; on progressive-disclosure firmware it can mask a silent
+    // trigger rejection if a same-named field is left over from a prior slot or run.
+    // The walker pushes an informational sentinel so callers can detect the fallback path
+    // -- does NOT set partial=true by itself (legitimate static-schema operation).
+    // Wrapper deliberately mirrors the _rmRevealStep signature so future maintenance can
+    // search-and-replace either direction without arg-list edits.
+    //
+    // Sentinel scoping: only fire on revealStep() calls whose trigger closure WRITES a
+    // setting. Empty-trigger calls (used for "discover already-revealed field" -- they
+    // exist purely to fetch the latest schema after a previous write committed the field)
+    // would otherwise emit false positives because their preNames == postNames by design.
+    // Empty-trigger callers use the discoverField() helper below which routes through
+    // _rmRevealStep directly without the sentinel push.
+    def revealStep = { Integer aId, String pg, String pattern, Closure trigger ->
+        def step = _rmRevealStep(aId, pg, pattern, trigger)
+        if (step?.fallbackToExisting == true && skippedAccum != null) {
+            skippedAccum << [key: pattern, reason: "reveal_fallback_to_existing_field", condIdx: condIdx]
+        }
+        return step
+    }
+    // discoverField: empty-trigger reveal for fields already-revealed by a prior write.
+    // Same return shape as revealStep but does NOT push the reveal-fallback sentinel
+    // (these calls are by design discovery-only and would emit false positives).
+    def discoverField = { Integer aId, String pg, String pattern ->
+        return _rmRevealStep(aId, pg, pattern, {})
+    }
+
+    // ---- Pre-walker guard: discrete-event sensor capabilities ----
+    // Water sensor / Smoke detector / CO / CO2 / Tamper alert / Acceleration report
+    // discrete enum events (wet/dry, detected/clear, active/inactive) -- they do NOT
+    // accept the comparator+value path that numeric capabilities do.
+    //
+    // RM's runtime DOES validate two of the three shapes:
+    //   (a) comparator='=', value=1  -- value coerces to state and the state-domain
+    //       validator rejects loudly with "state '1' not in capability 'Water sensor'
+    //       domain. Valid: dry, wet".
+    //   (b) comparator='>', value=5  -- same path, same loud reject.
+    //
+    // The third shape (comparator with NO state and NO value) slips past RM's
+    // validation and silently degrades: success=true, partial=true, settingsSkipped
+    // entry [{key:'RelrDev_<N>', reason:'silent_rejection'}], with health.ok=true and
+    // no broken markers. The condition is CREATED (capability + device written) but
+    // has no comparator and no state value -- functionally meaningless, will evaluate
+    // to false on every check. Live-probed on test hub (rule 169, RM 5.1.8).
+    //
+    // Code-side reject closes the gap RM's runtime does not catch. Caller gets a
+    // targeted error pointing at the right state-value enumeration instead of a
+    // generic silent_rejection sentinel they might dismiss as minor partial.
+    // Capability-name pitfall: `Carbon monoxide detector` (CarbonMonoxideDetector
+    // capability -- discrete enum events) is IN the map; `Carbon dioxide sensor`
+    // (CarbonDioxideMeasurement capability -- numeric ppm value) is INTENTIONALLY
+    // OMITTED. The two capabilities look superficially symmetric but RM's STPage
+    // wizard treats CO2 as numeric (comparator + value path) and live-rejects the
+    // `state: 'detected'/'clear'` shape -- including CO2 here would over-zealously
+    // reject valid numeric usage AND direct callers to a path the wizard refuses.
+    // Tamper alert is included per the Hubitat TamperAlert capability docs but
+    // is not present in STPage's option list on every firmware (untestable on
+    // some hubs); the guard is defensible per docs and harmless when the
+    // capability never appears in capCanonical.
+    def DISCRETE_EVENT_CAPS = [
+        "Water sensor":                ["wet", "dry"],
+        "Smoke detector":              ["detected", "clear"],
+        "Carbon monoxide detector":    ["detected", "clear"],
+        "Tamper alert":                ["detected", "clear"],
+        "Acceleration":                ["active", "inactive"]
+    ]
+    def discreteValid = DISCRETE_EVENT_CAPS[capCanonical]
+    if (discreteValid != null && cond.comparator != null && cond.state == null && cond.value == null) {
+        cancelInFlightCond()
+        def validValues = discreteValid.collect { "'${it}'" }.join(" or ")
+        throw new IllegalArgumentException("conditions[${condIdx}]: ${capCanonical} is a discrete-event capability -- pass state: ${validValues} instead of a comparator+value pair. The comparator-without-value shape silently degrades on RM 5.1 (no broken marker, but the condition is functionally meaningless). See rCapab_<N> capability list for the full state-value table.")
+    }
+
+    // ---- Mode capability ----
+    // RM reveals a modes<cIdx> picker (e.g. modes6) after rCapab is committed --
+    // the exact name is firmware-assigned and must be discovered, not hardcoded.
+    // Note: triggers use modesX<N>; STPage conditions use modes<N> (no X prefix).
+    // Spec: {capability:'Mode', state:'Night'} (single mode by name) or
+    // {capability:'Mode', modeIds:['3']} (by ID).
+    if (capCanonical == "Mode") {
+        def modeIdsToWrite
+        if (cond.modeIds != null) {
+            modeIdsToWrite = (cond.modeIds instanceof List) ? (cond.modeIds as List).collect { it?.toString() } : [cond.modeIds.toString()]
+        } else if (cond.state != null) {
+            // Resolve name(s) to IDs via _rmResolveModeIds.
+            def stateVal = cond.state
+            def names = (stateVal instanceof List) ? (stateVal as List) : [stateVal]
+            modeIdsToWrite = _rmResolveModeIds(names)
+        }
+        if (!modeIdsToWrite) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Mode condition requires 'state' (mode name) or 'modeIds' (list of mode IDs). Neither was provided.")
+        }
+        // _rmRevealStep: snapshot pre-state, then write rCapab (the revealing trigger),
+        // then re-fetch and return the newly-appeared modes<cIdx> picker.
+        def capKey = "rCapab_${cIdx}".toString()
+        def modesReveal = revealStep(appId, page, /modes\d+/, {
+            writeST(hrefParams, capKey, capCanonical)
+        })
+        if (!modesReveal.input) {
+            cancelInFlightCond()
+            def visible = modesReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Mode: expected modes<N> picker after rCapab='Mode' but it did not appear. Visible fields: ${visible}")
+        }
+        def modesField = modesReveal.input.name.toString()
+        writeST(hrefParams, modesField, modeIdsToWrite)
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, page)
+        return
+    }
+
+    // ---- Between two times capability ----
+    // Spec: {capability:'Between two times',
+    //        start:{type:'clock'|'sunrise'|'sunset', time:'HH:mm', offset?:N},
+    //        end:{type:'clock'|'sunrise'|'sunset', time:'HH:mm', offset?:N}}
+    // Firmware field names (verified live on RM 5.1.8):
+    //   starting<cIdx>  -- start-type enum ('A specific time'|'Sunrise'|'Sunset')
+    //   startingA<cIdx> -- start clock-time (ISO datetime with hub-local TZ offset: 2000-01-01THH:mm:00.000±HHMM)
+    //   ending<cIdx>    -- end-type enum ('A specific time'|'Sunrise'|'Sunset')
+    //   endingA<cIdx>   -- end clock-time (ISO datetime)
+    //   endSunriseOffset<cIdx> -- end sunrise/sunset offset (minutes, number)
+    // Chain: rCapab -> starting<N> selector -> startingA<N> -> ending<N> -> endingA<N>/endSunriseOffset<N>
+    if (capCanonical == "Between two times") {
+        def startSpec = cond.start instanceof Map ? (cond.start as Map) : null
+        def endSpec   = cond.end   instanceof Map ? (cond.end   as Map) : null
+        if (!startSpec || !endSpec) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' requires 'start' and 'end' Maps each with {type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:N}")
+        }
+        def allowedTypes = ["clock", "sunrise", "sunset"]
+        def startType = startSpec.type?.toString()?.toLowerCase()
+        def endType   = endSpec.type?.toString()?.toLowerCase()
+        if (!startType || !(startType in allowedTypes)) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' start.type must be 'clock', 'sunrise', or 'sunset' (got '${startSpec.type}')")
+        }
+        if (!endType || !(endType in allowedTypes)) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' end.type must be 'clock', 'sunrise', or 'sunset' (got '${endSpec.type}')")
+        }
+        // Map caller-facing type names to firmware enum values.
+        def typeToWire = [clock: "A specific time", sunrise: "Sunrise", sunset: "Sunset"]
+        def startTypeWire = typeToWire[startType]
+        def endTypeWire   = typeToWire[endType]
+
+        // Validate that the required time/offset values are present before any hub writes.
+        // Validating here (not after reveals) avoids hub round-trips on a caller error.
+        def startValRaw = (startType == "clock") ? startSpec.time : startSpec.offset
+        if (startValRaw == null) {
+            cancelInFlightCond()
+            def fieldHint = (startType == "clock") ? "'time' (HH:mm)" : "'offset' (minutes)"
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' start.${fieldHint} is required for start.type='${startType}'")
+        }
+        def endValRaw = (endType == "clock") ? endSpec.time : endSpec.offset
+        if (endValRaw == null) {
+            cancelInFlightCond()
+            def fieldHint = (endType == "clock") ? "'time' (HH:mm)" : "'offset' (minutes)"
+            throw new IllegalArgumentException("conditions[${condIdx}]: 'Between two times' end.${fieldHint} is required for end.type='${endType}'")
+        }
+        // Convert HH:mm clock times to the ISO datetime format RM's wizard expects.
+        // The date component is a fixed dummy (2000-01-01); RM only uses the time portion.
+        // The TZ offset must be computed for the ANCHOR DATE (2000-01-01), not for today,
+        // because DST may differ between now and January. Example: a Denver hub in May is
+        // MDT (-0600), but 2000-01-01 in Denver is MST (-0700). Using getOffset(now()) would
+        // embed -0600; the hub interprets the datetime with the January offset, shifting the
+        // display by 1 hour. anchorMs = 2000-01-01T00:00:00.000Z epoch.
+        def toIsoTime = { String hhmm ->
+            long anchorMs = 946684800000L  // 2000-01-01T00:00:00.000Z
+            def tz = location.timeZone
+            if (!tz) {
+                // Every other throw in _rmWalkConditionReveal precedes itself with
+                // cancelInFlightCond() so the wizard does not stay half-open. This
+                // path inside the toIsoTime closure must do the same.
+                cancelInFlightCond()
+                throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': location.timeZone is null -- set hub timezone in Settings > Location and Modes before using clock-based conditions.")
+            }
+            long offsetMs = tz.getOffset(anchorMs)
+            long offsetMinutes = offsetMs / 60000L
+            String sign = (offsetMinutes >= 0) ? "+" : "-"
+            long absMin = Math.abs(offsetMinutes)
+            String hh = "${(absMin / 60 as long)}".padLeft(2, '0')
+            String mm = "${(absMin % 60 as long)}".padLeft(2, '0')
+            "2000-01-01T${hhmm}:00.000${sign}${hh}${mm}".toString()
+        }
+        def startValToWrite = (startType == "clock") ? toIsoTime(startValRaw.toString()) : startValRaw
+        def endValToWrite   = (endType   == "clock") ? toIsoTime(endValRaw.toString())   : endValRaw
+
+        // Reveal 1: write rCapab as the trigger -> starting<cIdx> type selector appears
+        def capKey = "rCapab_${cIdx}".toString()
+        def startTypeReveal = revealStep(appId, page, /starting\d+/, {
+            writeST(hrefParams, capKey, capCanonical)
+        })
+        if (!startTypeReveal.input) {
+            cancelInFlightCond()
+            def visible = startTypeReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start-type selector (starting<N>) not revealed after rCapab write. Visible fields: ${visible}")
+        }
+        def startTypeField = startTypeReveal.input.name.toString()
+
+        // Reveal 2: write start type as the trigger -> startingA<cIdx> value field appears
+        def startValReveal = revealStep(appId, page, /startingA\d+/, {
+            writeST(hrefParams, startTypeField, startTypeWire)
+        })
+        if (!startValReveal.input) {
+            cancelInFlightCond()
+            def visible = startValReveal.visibleNames?.join(', ') ?: "(none)"
+            def startFieldHint = (startType == "clock") ? "'time' field (startingA<N>)" : "'offset' field (firmware-assigned)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': start ${startFieldHint} not revealed after start-type='${startType}'. Visible fields: ${visible}")
+        }
+        def startValField = startValReveal.input.name.toString()
+
+        // Reveal 3: write start value as the trigger -> ending<cIdx> end-type selector appears
+        def endTypeReveal = revealStep(appId, page, /ending\d+/, {
+            writeST(hrefParams, startValField, startValToWrite)
+        })
+        if (!endTypeReveal.input) {
+            cancelInFlightCond()
+            def visible = endTypeReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end-type selector (ending<N>) not revealed after start fields. Visible fields: ${visible}")
+        }
+        def endTypeField = endTypeReveal.input.name.toString()
+
+        // Reveal 4: write end type as the trigger -> endingA<cIdx> or endSunriseOffset<cIdx> appears
+        // Clock: endingA<cIdx>; sunrise/sunset: endSunriseOffset<cIdx> for offset minutes.
+        def endValReveal = revealStep(appId, page, /endingA\d+|endSunriseOffset\d+/, {
+            writeST(hrefParams, endTypeField, endTypeWire)
+        })
+        if (!endValReveal.input) {
+            cancelInFlightCond()
+            def visible = endValReveal.visibleNames?.join(', ') ?: "(none)"
+            // Symmetric phrasing with the start-side hint above. The walker's regex
+            // /endingA\d+|endSunriseOffset\d+/ captures both shapes; naming a single
+            // candidate would mislead callers when the firmware variant of the field
+            // is the other branch. Mirror startFieldHint exactly.
+            def endFieldHint = (endType == "clock") ? "'time' field (endingA<N>)" : "'offset' field (firmware-assigned)"
+            throw new IllegalStateException("conditions[${condIdx}]: 'Between two times': end ${endFieldHint} not revealed after end-type='${endType}'. Visible fields: ${visible}")
+        }
+        def endValField = endValReveal.input.name.toString()
+        writeST(hrefParams, endValField, endValToWrite)
+
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, page)
+        return
+    }
+
+    // ---- Variable comparison capability ----
+    // Spec: {capability:'Variable', variable:'myVar', comparator:'=', value:<v>}
+    // Each _rmRevealStep trigger writes the field that causes the next field to appear.
+    // Chain: rCapab -> variable-name picker -> RelrDev_<N> comparator -> state_<N> value
+    if (capCanonical == "Variable") {
+        if (!cond.variable) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable condition requires 'variable' (the hub variable name) and 'comparator'. Got: ${cond}")
+        }
+        if (!cond.comparator) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable condition requires 'comparator' (e.g. '=', '!=', '<', '>'). Got: ${cond}")
+        }
+        def varName = cond.variable.toString()
+        def capKey = "rCapab_${cIdx}".toString()
+
+        // Reveal 1: write rCapab as the trigger -> variable-name picker appears
+        // (e.g. lVar_<N> or varX_<N>; exact name is firmware-assigned)
+        def varPickerReveal = revealStep(appId, page, /[a-zA-Z]+Var[a-zA-Z]*_\d+|varName_\d+|rVar_\d+/, {
+            writeST(hrefParams, capKey, capCanonical)
+        })
+        if (!varPickerReveal.input) {
+            cancelInFlightCond()
+            def visible = varPickerReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Variable: variable-name picker not revealed after rCapab='Variable'. Visible fields: ${visible}")
+        }
+        def varPickerField = varPickerReveal.input.name.toString()
+        // Validate variable name against the schema's option list.
+        // Hub options for variable pickers are Maps keyed by variable name (the throw
+        // in the Variable-picker validation branch below emits "hub variable
+        // '${varName}' not in the revealed picker" -- varName IS the key).
+        // Map.Entry.toString() would produce "key=value" strings
+        // that never match a bare name; use .keySet() to extract the names.
+        def varOptsRaw = varPickerReveal.input.options
+        def varOpts = (varOptsRaw instanceof Map)
+            ? (varOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
+            : (varOptsRaw ?: []).collect { it?.toString() }.findAll { it }
+        if (!varOpts) {
+            // Schema's option list came back empty -- could be a hub with no variables defined,
+            // a firmware version that lazily-populates the enum, or a probe-timing race. The
+            // walker cannot disambiguate, so it MUST signal degradation rather than silently
+            // accept a name that may not resolve. Mirrors the addAction setVariable
+            // api_unavailable sentinel pattern emitted by `_rmAddAction`'s setVariable
+            // branch when the variable picker returns an empty option list. The write
+            // still proceeds because the
+            // caller-supplied varName is the only signal we have; partial=true tells them the
+            // schema-side validation was skipped so they can verify post-write.
+            mcpLog("warn", "rm-native", "conditions[${condIdx}]: Variable: picker '${varPickerField}' returned an empty option list -- variable-name validation skipped; write will proceed unvalidated")
+            if (skippedAccum != null) {
+                skippedAccum << [key: "variable-validation", reason: "api_unavailable", condIdx: condIdx, varName: varName, pickerField: varPickerField]
+            }
+        } else if (!varOpts.any { it == varName }) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable: hub variable '${varName}' not in the revealed picker for '${varPickerField}'. Available: ${varOpts.sort().join(', ')}")
+        }
+
+        // Reveal 2: write variable name as the trigger -> RelrDev_<N> comparator appears
+        def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
+        def relrReveal = revealStep(appId, page, /RelrDev_\d+/, {
+            writeST(hrefParams, varPickerField, varName)
+        })
+        if (!relrReveal.input) {
+            cancelInFlightCond()
+            def visible = relrReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Variable: RelrDev_<N> (comparator) not revealed after variable name write. Visible fields: ${visible}")
+        }
+        // Use the firmware-assigned field name discovered from the live schema.
+        def relrField = relrReveal.input.name.toString()
+
+        // Reveal 3: write RelrDev as the trigger -> state_<N> value appears
+        def condStateOrValue = cond.state != null ? cond.state : cond.value
+        def stateKey = "state_${cIdx}".toString()
+        def stateReveal = revealStep(appId, page, /state_\d+/, {
+            writeST(hrefParams, relrField, normalizedComparator)
+        })
+        if (!stateReveal.input) {
+            cancelInFlightCond()
+            def visible = stateReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: Variable: state_<N> (value field) not revealed after RelrDev write. Visible fields: ${visible}")
+        }
+        // Fail loud when the comparator requires an RHS value but the caller did not
+        // supply one. Without this guard the state_<N> write is skipped (null check
+        // below) and RM renders the comparator against the field's default (0), producing
+        // a condition like "myVar = 0" when the caller intended "myVar = <something>".
+        // Mirrors the _rmBuildCondition (selectTriggers) fail-loud which throws when
+        // xVarR_<N> did not land for the same conceptual reason. State-change
+        // comparators ('*changed*', '*became*' family) legitimately omit RHS, so accept
+        // those without a value.
+        def comparatorIsRhsOptional = normalizedComparator?.toString()?.toLowerCase()?.contains("changed") ||
+                                      normalizedComparator?.toString()?.toLowerCase()?.contains("became")
+        if (condStateOrValue == null && !comparatorIsRhsOptional) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable: comparator '${cond.comparator}' requires an RHS value, but neither 'state' nor 'value' was provided. Without an RHS, RM renders the comparator against the field default (0). Either supply 'value: <constant>' / 'state: <variableName>' or use a state-change comparator ('*changed*' / '*became*').")
+        }
+        if (condStateOrValue != null) {
+            writeST(hrefParams, stateKey, condStateOrValue)
+        }
+
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, page)
+        return
+    }
+
+    // ---- Custom Attribute capability ----
+    // Write order: rCapab -> rDev_<N> -> rCustomAttr_<N> (as reveal trigger) ->
+    //              RelrDev_<N> (as reveal trigger) -> state_<N>
+    // Each _rmRevealStep trigger writes the field that causes the next field to appear.
+    // The key fix: RelrDev_<N> is only visible after rCustomAttr_<N> commits;
+    // the old code wrote both back-to-back with no re-fetch and RelrDev silently rejected.
+    if (capCanonical == "Custom Attribute") {
+        if (cond.attribute != null && cond.comparator == null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+        }
+        if (cond.comparator != null && cond.attribute == null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+        }
+        writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
+        if (cond.deviceIds != null) {
+            writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
+        }
+        if (cond.comparator != null) {
+            def customAttrKey = "rCustomAttr_${cIdx}".toString()
+            def attrVal = cond.attribute
+
+            // _rmRevealStep: write rCustomAttr_<N> as the trigger -> RelrDev_<N> appears.
+            // Pre-snapshot sees the schema without RelrDev; trigger writes rCustomAttr;
+            // post-fetch confirms RelrDev appeared. Use the discovered field name (not a
+            // hardcoded slot) and normalize the comparator token the same way as Variable.
+            def relrReveal = revealStep(appId, page, /RelrDev_\d+/, {
+                if (attrVal != null) {
+                    writeST(hrefParams, customAttrKey, attrVal)
+                }
+            })
+            if (!relrReveal.input) {
+                cancelInFlightCond()
+                def visible = relrReveal.visibleNames?.join(', ') ?: "(none)"
+                throw new IllegalStateException("conditions[${condIdx}]: Custom Attribute: RelrDev_<N> (comparator) not revealed after rCustomAttr_<N> write. Visible fields: ${visible}")
+            }
+            def relrField = relrReveal.input.name.toString()
+            def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
+
+            // _rmRevealStep: write RelrDev_<N> as the trigger -> state_<N> appears.
+            def condStateOrValue = cond.state != null ? cond.state : cond.value
+            def stateKey = "state_${cIdx}".toString()
+            def stateReveal = revealStep(appId, page, /state_\d+/, {
+                writeST(hrefParams, relrField, normalizedComparator)
+            })
+            if (!stateReveal.input) {
+                cancelInFlightCond()
+                def visible = stateReveal.visibleNames?.join(', ') ?: "(none)"
+                throw new IllegalStateException("conditions[${condIdx}]: Custom Attribute: state_<N> (value) not revealed after RelrDev write. Visible fields: ${visible}")
+            }
+            if (condStateOrValue != null) {
+                writeST(hrefParams, stateKey, condStateOrValue)
+            }
+        } else if (cond.attribute != null) {
+            // No comparator -- just write the attribute (e.g. presence-style custom attr check)
+            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
+            def condStateOrValue = cond.state != null ? cond.state : cond.value
+            if (condStateOrValue != null) {
+                writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
+            }
+        }
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, page)
+        return
+    }
+
+    // ---- Device-relative numeric comparison ----
+    // When cond.compareToDevice is set, the RHS is another device's attribute
+    // (optionally with an offset) rather than a literal threshold.
+    // Spec: {capability:'Temperature', deviceIds:[N], comparator:'>',
+    //        compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
+    // Each _rmRevealStep trigger writes the field that reveals the next field.
+    if (cond.compareToDevice instanceof Map) {
+        def ctd = cond.compareToDevice as Map
+        if (!ctd.deviceId) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'deviceId' (the reference device ID). Got: ${ctd}")
+        }
+        if (!ctd.attribute) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'attribute' (the attribute to compare to, e.g. 'temperature'). Got: ${ctd}")
+        }
+        // Write rCapab and rDev as plain writes (no progressive-disclosure on these for numeric caps).
+        writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
+        if (cond.deviceIds != null) {
+            writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
+        }
+        if (cond.attribute != null) {
+            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
+        }
+        // Reveal RelrDev_<N> by writing the last of rCapab/rDev/rCustomAttr as trigger.
+        // For this path the preceding writes have already landed; the re-fetch in
+        // _rmRevealStep with an empty trigger confirms the current schema, then a no-op
+        // trigger allows checking what's already visible vs what appeared after the
+        // previous writes.  Since we cannot know which write gated RelrDev_<N>, we use
+        // a direct fetch to check for it and fail-loud if absent.
+        def afterBaseFields = _rmFetchConfigJson(appId, page)
+        def afterBaseInputs = (afterBaseFields?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        if (cond.comparator != null) {
+            def relrInput = afterBaseInputs.find { it?.name?.toString() ==~ /RelrDev_\d+/ }
+            if (!relrInput) {
+                cancelInFlightCond()
+                def visible = afterBaseInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none)"
+                throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible}")
+            }
+            // Reveal the RHS-type selector by writing RelrDev as the trigger.
+            def rhsTypeReveal = revealStep(appId, page, /stateType_\d+|rhsType_\d+/, {
+                writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+            })
+            if (!rhsTypeReveal.input) {
+                // RHS-type selector not revealed -- fall back to writing literal state_<N>.
+                // Some firmware versions don't expose the device-relative RHS type toggle.
+                // Surface a degradation sentinel so callers can detect the partial write.
+                def fallbackNote = (cond.state != null || cond.value != null)
+                    ? "writing literal state_${cIdx} as fallback"
+                    : "no state/value to fall back to -- condition will be incomplete"
+                mcpLog("warn", "rm-native", "conditions[${condIdx}]: compareToDevice: RHS-type selector not revealed after RelrDev write (firmware may not expose device-relative toggle); ${fallbackNote}")
+                if (skippedAccum != null) {
+                    // fallbackApplied=true: state/value was available and written as literal state_<N>.
+                    // fallbackApplied=false: no state/value provided -- condition will be incomplete.
+                    skippedAccum << [key: "compareToDevice", reason: "rhs_type_not_revealed", condIdx: condIdx,
+                                     fallbackApplied: (cond.state != null || cond.value != null)]
+                }
+                def condStateOrValue = cond.state != null ? cond.state : cond.value
+                if (condStateOrValue != null) {
+                    writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
+                }
+            } else {
+                def rhsTypeField = rhsTypeReveal.input.name.toString()
+                // Write the "another device" option value -- validated against schema.
+                // Hub options arrive as Maps (key=id, value=label); normalise to [key:,value:] pairs.
+                def rhsTypeOptsRaw = rhsTypeReveal.input.options
+                def rhsTypeOpts = (rhsTypeOptsRaw instanceof Map)
+                    ? (rhsTypeOptsRaw as Map).collect { k, v -> [key: k?.toString(), value: v?.toString()] }
+                    : (rhsTypeOptsRaw ?: []).collect { o -> [key: o?.toString(), value: o?.toString()] }
+                def anotherDevOption = rhsTypeOpts.find { it.key?.toLowerCase()?.contains("device") || it.value?.toLowerCase()?.contains("device") }
+                if (!anotherDevOption) {
+                    cancelInFlightCond()
+                    def optStrs = rhsTypeOpts.collect { it.key }.join(', ')
+                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: could not find 'another device' option in RHS-type selector '${rhsTypeField}'. Options: ${optStrs}")
+                }
+                writeST(hrefParams, rhsTypeField, anotherDevOption.key)
+                // After choosing "another device", the reference device and attribute fields appear.
+                // refDev and refAttr are spec-required (validated at the top of this block).
+                // If the reveal returns null the firmware did not expose the picker even though
+                // the "another device" option was selected -- the only recoverable outcome is
+                // to fail loud + cancel the wizard. A silent no-op would write a Map condition
+                // with no reference device and render success:true, partial:false, which is a
+                // lie. Mirror the rhsTypeReveal pattern's failure surface above.
+                def refDevReveal = discoverField(appId, page, /rDev2_\d+|refDev_\d+|compareDevId_\d+/)
+                if (!refDevReveal.input) {
+                    cancelInFlightCond()
+                    def visible = refDevReveal.visibleNames?.join(', ') ?: "(none)"
+                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-device picker not revealed after selecting 'another device' in RHS-type field '${rhsTypeField}'. Expected one of rDev2_<N>/refDev_<N>/compareDevId_<N>. Visible fields: ${visible}")
+                }
+                writeST(hrefParams, refDevReveal.input.name.toString(), [ctd.deviceId.toString()])
+                def refAttrReveal = discoverField(appId, page, /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/)
+                if (!refAttrReveal.input) {
+                    cancelInFlightCond()
+                    def visible = refAttrReveal.visibleNames?.join(', ') ?: "(none)"
+                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-attribute picker not revealed after writing reference device. Expected one of rCustomAttr2_<N>/refAttr_<N>/compareAttr_<N>. Visible fields: ${visible}")
+                }
+                writeST(hrefParams, refAttrReveal.input.name.toString(), ctd.attribute.toString())
+                // Optional offset field -- if caller passed offset and the field did not appear,
+                // degrade with partial:true rather than throw (offset is optional in the spec).
+                if (ctd.offset != null) {
+                    def offsetReveal = discoverField(appId, page, /offset_\d+|devOffset_\d+/)
+                    if (offsetReveal.input) {
+                        writeST(hrefParams, offsetReveal.input.name.toString(), ctd.offset)
+                    } else {
+                        mcpLog("warn", "rm-native", "conditions[${condIdx}]: compareToDevice: offset field not revealed after reference-attribute write (firmware may not expose the offset slot for this attribute); offset=${ctd.offset} dropped")
+                        if (skippedAccum != null) {
+                            skippedAccum << [key: "compareToDevice", reason: "offset_field_not_revealed", condIdx: condIdx, offset: ctd.offset]
+                        }
+                    }
+                }
+            }
+        }
+        if (cond.not == true) {
+            writeST(hrefParams, "not${cIdx}".toString(), true)
+        }
+        if (cond.rawSettings instanceof Map) {
+            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+        }
+        _rmClickAppButton(appId, "hasAll", null, page)
+        return
+    }
+
+    // ---- Default path: enum / numeric device capabilities ----
+    // Covers Switch, Motion, Contact, Lock, Temperature, Humidity, etc.
+    // Write order: rCapab -> rDev_<N> -> rCustomAttr_<N> (if attribute set) ->
+    //              RelrDev_<N> (if comparator set; NO re-fetch needed here for non-CustomAttr
+    //              because state_<N> is already in the schema for numeric caps) ->
+    //              state_<N> -> hasAll.
+    writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
+    if (cond.deviceIds != null) {
+        writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
+    }
+    // Write order MATTERS: STPage (like doActPage) uses progressive disclosure.
+    // state_<N> does not appear in the schema until RelrDev_<N> commits --
+    // empirically confirmed live (rule 1377, 2026-04-28): after rCustomAttr_<N>
+    // the schema shows RelrDev_<N>; only after RelrDev_<N> commits does
+    // state_<N> appear. Writing state_<N> before RelrDev_<N> silently rejects.
+    // Order: rCustomAttr_<N> -> RelrDev_<N> -> state_<N>.
+    // For enum capabilities (no comparator), state_<N> appears immediately
+    // after rDev_<N>, so the comparator block is a no-op for those paths.
+    if (cond.comparator != null) {
+        if (cond.attribute != null) {
+            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
+        }
+        // Condition-wizard comparator field is RelrDev_<N> ("Relr"),
+        // not ReltDev_<N> ("Relt" = trigger-row comparator).
+        writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+    }
+    // state and value both write to state_${cIdx} -- STPage has no separate
+    // value_<N> field. state (enum string) takes priority; value (numeric
+    // threshold) is the alias for Custom Attribute and numeric comparator paths.
+    def condStateOrValue = cond.state != null ? cond.state : cond.value
+    if (condStateOrValue != null) {
+        def stateNavResp = _rmFetchConfigJson(appId, page)
+        def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
+        if (stateInput?.options) {
+            def stateOptions = (stateInput.options ?: []).collect { o ->
+                (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
+            }.findAll { it }
+            def matched = stateOptions.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
+            if (!matched && stateOptions) {
+                cancelInFlightCond()
+                throw new IllegalArgumentException("conditions[${condIdx}].state '${condStateOrValue}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
+            }
+            if (matched) condStateOrValue = matched
+        }
+        writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
+    }
+    if (cond.not == true) {
+        writeST(hrefParams, "not${cIdx}".toString(), true)
+    }
+    if (cond.rawSettings instanceof Map) {
+        (cond.rawSettings as Map).each { rk, rv ->
+            writeST(hrefParams, rk.toString(), rv)
+        }
+    }
+    _rmClickAppButton(appId, "hasAll", null, page)
+}
+
+/**
  * High-level structured Required Expression creation for Rule Machine 5.1.
  * Replaces the 7+ manual wizard calls with one orchestrated call.
  * STPage wire-format internals and spec shape: docs/rm_wire_format.md#_rmAddRequiredExpression.
@@ -20244,6 +21149,27 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     def applied = []
     def skipped = []
 
+    // Normalize singular deviceId -> deviceIds array for every plain condition in the
+    // tree (including inner conditions of subExpressions). Agents occasionally pass
+    // deviceId: N (singular) when the contract is deviceIds: [N] (array). Normalizing
+    // before the pre-validation loop means validation also covers the normalized form.
+    // If both deviceId and deviceIds are provided, deviceIds (explicit array) wins.
+    def normCondList
+    normCondList = { List cl ->
+        cl.eachWithIndex { entry, idx ->
+            if (!(entry instanceof Map)) return
+            def m = entry as Map
+            if (m.deviceIds == null && m.deviceId != null) {
+                m.deviceIds = [m.deviceId]
+            }
+            if (m.subExpression instanceof Map) {
+                def sub = (m.subExpression as Map).conditions
+                if (sub instanceof List) normCondList.call(sub as List)
+            }
+        }
+    }
+    normCondList.call(conditions as List)
+
     // Pre-validate every condition's deviceIds exist on the hub. RM 5.1
     // silently accepts unknown device IDs at the field-write level (stores
     // {<bogusId>: null} in rDev_<N>) but the resulting expression doesn't
@@ -20251,10 +21177,37 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // callers see a clear error instead of a phantom in-flight rule.
     // Verified live: rDev_1={99999: null} written but
     // expression didn't commit.
-    conditions.eachWithIndex { condRaw, i ->
-        if (!(condRaw instanceof Map)) return  // shape errors caught later
-        _rmValidateDeviceIdsExist("addRequiredExpression.conditions[${i}].deviceIds", (condRaw as Map).deviceIds)
+    //
+    // Recursive: the STPage executor walks nested subExpression.conditions[]
+    // and the deviceId normalizer above already walks the same tree, but the
+    // existence validator was originally flat -- nested bogus deviceIds
+    // bypassed the fail-loud guard. Walk the same shape here so every
+    // condition's deviceIds get pre-validated, with a path string that names
+    // the exact nesting site so the error message is actionable.
+    def validateDeviceIdsRecursive
+    validateDeviceIdsRecursive = { List cl, String pathPrefix ->
+        cl.eachWithIndex { condRaw, i ->
+            if (!(condRaw instanceof Map)) {
+                // Throw with the accumulated path-prefix rather than silently
+                // skipping. Downstream walkConds' throw uses the local-index
+                // path ("conditions[${i}]") and loses any nested context, so a
+                // bogus shape at conditions[1].subExpression.conditions[0]
+                // would surface as the misleading top-level "conditions[0] is
+                // not a Map". Naming the full nesting site here gives callers
+                // an actionable error.
+                throw new IllegalArgumentException("${pathPrefix}[${i}] is not a Map")
+            }
+            def m = condRaw as Map
+            _rmValidateDeviceIdsExist("${pathPrefix}[${i}].deviceIds", m.deviceIds)
+            if (m.subExpression instanceof Map) {
+                def sub = (m.subExpression as Map).conditions
+                if (sub instanceof List) {
+                    validateDeviceIdsRecursive.call(sub as List, "${pathPrefix}[${i}].subExpression.conditions")
+                }
+            }
+        }
     }
+    validateDeviceIdsRecursive.call(conditions as List, "addRequiredExpression.conditions")
 
     // Closure that wraps _rmWriteSubPageField with applied/skipped routing
     // based on the helper's persistence verification (Map return). Use this
@@ -20293,12 +21246,23 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // pageName='STPage') before issuing the next write.
     def wizardCleanupFailed = false
     def wizardCleanupErr = null
+    // cancelledByWalker is reset to false before each per-condition try block
+    // (see below). _rmWalkConditionReveal calls cancelInFlightCondition before
+    // every throw; the outer catch checks this flag so it does not issue a
+    // redundant second cancelCapab click.
+    // currentCondIdx is updated by the walkConds per-condition loop so cancel-cleanup
+    // warn messages name the in-flight condition index -- without it, N back-to-back
+    // failures produce N indistinguishable log entries. Mirrors doActPage's
+    // currentActCondIdx pattern in `_rmAddAction` (same per-condition log-naming guard).
+    def cancelledByWalker = false
+    def currentCondIdx = -1
     def cancelInFlightCondition = {
+        cancelledByWalker = true
         try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") }
         catch (Exception cancelExc) {
             wizardCleanupFailed = true
             wizardCleanupErr = cancelExc.message
-            mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
+            mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on STPage at conditions[${currentCondIdx}]: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
         }
     }
 
@@ -20314,6 +21278,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     def walkConds
     walkConds = { List condList, String outerOp, List outerOpsList ->
         condList.eachWithIndex { condRaw, i ->
+            currentCondIdx = i
             if (!(condRaw instanceof Map)) {
                 throw new IllegalArgumentException("conditions[${i}] is not a Map")
             }
@@ -20361,13 +21326,21 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 // value, so the label IS the value here).
                 writeST(hrefParams, "oper", "end-sub-expression )", "oper(close-paren)")
             } else {
-                // Plain condition: cond=a, then walk fields, then hasAll.
+                // Plain condition: cond=a, discover the RM-assigned cIdx, validate
+                // the capability option, then delegate all field writes to
+                // _rmWalkConditionReveal (handles the rCapab->rDev->comparator->
+                // state->hasAll sequence in the correct progressive-disclosure order).
                 def cap = cond.capability?.toString()?.trim()
                 if (!cap) {
                     throw new IllegalArgumentException("conditions[${i}].capability is required")
                 }
                 writeST(hrefParams, "cond", "a", "cond")
+                cancelledByWalker = false
                 try {
+                    // Step 1: re-fetch STPage to discover the RM-assigned condition
+                    // slot index (cIdx). The cond=a write above causes RM to allocate
+                    // a new rCapab_<N>/rDev_<N>/... slot; N is firmware-assigned and
+                    // must be read from the schema rather than assumed.
                     def navResp = _rmFetchConfigJson(appId, "STPage")
                     def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                     def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
@@ -20380,78 +21353,48 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                         throw new IllegalStateException("addRequiredExpression: couldn't parse condition index from '${rCapabInput.name}'")
                     }
                     conditionIndices << cIdx
+                    // Step 2: validate the capability value against the schema option list.
                     def capOptions = (rCapabInput.options ?: []) as List
                     def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
                     if (!capCanonical) {
                         throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
                     }
-                    writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
-                    if (cond.deviceIds != null) {
-                        writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
-                    }
-                    // Write order MATTERS: STPage (like doActPage) uses
-                    // progressive disclosure. state_<N> does not appear in
-                    // the schema until RelrDev_<N> commits -- empirically
-                    // confirmed live (rule 1377, 2026-04-28): after
-                    // rCustomAttr_<N> the schema shows RelrDev_<N>; only
-                    // after RelrDev_<N> commits does state_<N> appear.
-                    // Writing state_<N> before RelrDev_<N> silently rejects.
-                    // Order: rCustomAttr_<N> -> RelrDev_<N> -> state_<N>.
-                    // For enum capabilities (no comparator), state_<N> appears
-                    // immediately after rDev_<N>, so the comparator block is
-                    // a no-op and write order has no effect.
-                    //
-                    // Fail-loud validation: Custom Attribute requires BOTH attribute
-                    // AND comparator. RM 5.1 silently accepts either half but renders
-                    // the condition incomplete. Both directions are checked.
-                    if (capCanonical == "Custom Attribute" && cond.attribute != null && cond.comparator == null) {
-                        cancelInFlightCondition()
-                        throw new IllegalArgumentException("conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-                    }
-                    if (capCanonical == "Custom Attribute" && cond.comparator != null && cond.attribute == null) {
-                        cancelInFlightCondition()
-                        throw new IllegalArgumentException("conditions[${i}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
-                    }
-                    if (cond.comparator != null) {
-                        if (cond.attribute != null) {
-                            writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
-                        }
-                        // Condition-wizard comparator is RelrDev_<N> ("Relr"),
-                        // not ReltDev_<N> ("Relt" = trigger-row comparator).
-                        writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
-                    }
-                    // state and value both write to state_${cIdx} — STPage has
-                    // no separate value_<N> field. Mirror the doActPage fallback:
-                    // state (enum string) takes priority; value (numeric threshold)
-                    // is the alias for Custom Attribute and numeric comparator paths.
-                    def condStateOrValue = cond.state != null ? cond.state : cond.value
-                    if (condStateOrValue != null) {
-                        def stateNavResp = _rmFetchConfigJson(appId, "STPage")
-                        def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-                        def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
-                        if (stateInput?.options) {
-                            def stateOptions = (stateInput.options ?: []).collect { o ->
-                                (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
-                            }.findAll { it }
-                            def matched = stateOptions.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
-                            if (!matched && stateOptions) {
-                                throw new IllegalArgumentException("conditions[${i}].state '${condStateOrValue}' not in capability '${cap}' domain. Valid: ${stateOptions.sort().join(', ')}")
-                            }
-                            if (matched) condStateOrValue = matched
-                        }
-                        writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
-                    }
-                    if (cond.not == true) {
-                        writeST(hrefParams, "not${cIdx}".toString(), true)
-                    }
-                    if (cond.rawSettings instanceof Map) {
-                        (cond.rawSettings as Map).each { rk, rv ->
-                            writeST(hrefParams, rk.toString(), rv)
+                    // Steps 3-N: write the capability, devices, comparator chain, and state
+                    // in the correct progressive-disclosure order, then click hasAll.
+                    // Snapshot the skipped list size so we can stamp condIdx onto every
+                    // walker-side skipped entry after the walk returns. _rmRevealStep and
+                    // writeST do not carry condIdx themselves; without this stamping,
+                    // multi-field-per-condition degradations (e.g. static-schema test
+                    // stubs or firmware-version mismatches) inflate the per-condition
+                    // count reported in repairHints (e.g. "7 conditions" for 7 skipped
+                    // entries that all belonged to the same in-flight condition).
+                    def skippedBefore = skipped.size()
+                    _rmWalkConditionReveal(appId, [
+                        writeST: writeST,
+                        cancelInFlightCondition: cancelInFlightCondition,
+                        condIdx: i,
+                        cap: cap,
+                        capCanonical: capCanonical,
+                        hrefParams: hrefParams,
+                        skipped: skipped
+                    ], cond, cIdx)
+                    for (int sIdx = skippedBefore; sIdx < skipped.size(); sIdx++) {
+                        def sEntry = skipped[sIdx]
+                        if (sEntry instanceof Map && sEntry.condIdx == null) {
+                            sEntry.condIdx = i
                         }
                     }
-                    _rmClickAppButton(appId, "hasAll", null, "STPage")
                 } catch (Exception perCondExc) {
-                    cancelInFlightCondition()
+                    // Only cancel if the walker did not already do so before throwing.
+                    // _rmWalkConditionReveal calls cancelInFlightCondition() before every
+                    // throw it raises; cancelledByWalker is set true inside that closure.
+                    // Without this guard a walker-initiated throw would issue two
+                    // back-to-back cancelCapab clicks, the second of which always fails
+                    // (nothing to cancel), setting wizardCleanupFailed=true and surfacing
+                    // a false wizardStuck=true in the result.
+                    if (!cancelledByWalker) {
+                        cancelInFlightCondition()
+                    }
                     if (wizardCleanupFailed) {
                         // Both the per-condition write AND the cancel cleanup
                         // failed — the wizard is still open. Embed the marker
@@ -20633,6 +21576,51 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         ]
     }
 
+    // `reveal_fallback_to_existing_field` is INFORMATIONAL only -- it signals
+    // the walker matched a field that was already visible BEFORE the trigger
+    // closure ran (normal on static-schema firmware, AND normal on Between-two-times
+    // where multiple stage reveals naturally land on already-revealed fields after
+    // the previous stage committed). The doc contract at the inline get_tool_guide
+    // content block says these sentinels do NOT flip `partial` by themselves;
+    // production must match. Other reason codes (silent_rejection,
+    // rhs_type_not_revealed, offset_field_not_revealed, verification_fetch_failed,
+    // not_in_schema, etc.) ARE genuine degradation and continue to flip `partial`.
+    // Reason-code is the disambiguator -- compareToDevice's genuinely-partial paths
+    // use distinct codes (rhs_type_not_revealed / offset_field_not_revealed), so a
+    // single-code exemption here is safe and contract-aligned. Set sourced from
+    // _rmInformationalSkippedReasons() so the doActPage callsite in _rmAddAction
+    // sees the exact same exemption list without lockstep edits.
+    def informationalReasons = _rmInformationalSkippedReasons()
+    def hasDegradation = skipped.any {
+        it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
+    }
+    if (hasDegradation) {
+        return [
+            success: true,
+            partial: true,
+            conditionIndices: conditionIndices,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            repairHints: [{
+                // Count UNIQUE conditions that had any degraded write, not raw entry
+                // count -- a single condition can produce many skipped entries (one per
+                // walker field that hit silent_rejection / verification_fetch_failed /
+                // not_in_schema). Per-condition stamping (condIdx) happens in the
+                // walkConds loop above; entries that still lack condIdx came from
+                // outside any per-condition walk (e.g. the useST=true mainPage write).
+                // Filter out informational reasons here too so the count matches the
+                // partial gate's count -- otherwise a fallback entry inflates the
+                // "N conditions used a degraded write path" number.
+                def degEntries = skipped.findAll {
+                    it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
+                }
+                def uniqueCondIdxs = degEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
+                def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : degEntries.size()
+                def cw = (deg == 1) ? "condition" : "conditions"
+                "${deg} ${cw} used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."
+            }()]
+        ]
+    }
     return [
         success: true,
         conditionIndices: conditionIndices,
@@ -20640,6 +21628,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         settingsSkipped: skipped
     ]
 }
+
 
 /**
  * update_native_app — two modes, caller picks one (settings OR button):
@@ -20763,14 +21752,34 @@ def toolUpdateNativeApp(args) {
     }
 
     // Action mutation paths — single delete, clear-all, replace-all, move.
-    // All re-fire updateRule at the end so actions[] map and subscriptions
-    // bake from the new state.
+    // All re-fire updateRule at the end so the rule re-subscribes from a
+    // fully-loaded state (actions self-bake via doActPage->selectActions
+    // per-item).
     if (removeActionSpec || clearActionsFlag || replaceActionsList != null || moveActionSpec) {
         // Hoisted out of the try block — Groovy `def` is block-scoped, so
         // declaring inside try would leave these undefined for the return
         // statement below.
         def removed = []
         def addedResults = []
+        // moveAction rich return ({beforePosition, afterPosition, indicesAfter}).
+        // Hoisted for the same block-scope reason as the others above.
+        def moveResult = null
+        // removeAction rich return ({removedIndex, beforeIndices, afterIndices}).
+        // Surfaced on the outer envelope alongside moveAction's rich return so
+        // callers see the index list shift without re-fetching via get_app_config.
+        def removeResult = null
+        // Trailing-updateRule failure propagation (sibling pattern from the
+        // bulk addTriggers/addActions branch and the addTrigger single-spec
+        // branch). When the post-mutation updateRule click is rejected, the
+        // mutations IS in the rule's appSettings but the running rule
+        // instance never re-subscribes to its trigger events. Surface this
+        // via dedicated slots so callers can detect without log-grep.
+        // subscriptionsNotLive is the slot name because every action-mutation
+        // path here ultimately affects the trigger->action wiring that the
+        // trailing updateRule re-initializes.
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
         try {
             // Pre-flight: walk the replaceActions spec list's capability
             // sequence and refuse the call before clearActions runs if the
@@ -20789,14 +21798,22 @@ def toolUpdateNativeApp(args) {
             if (removeActionSpec) {
                 if (removeActionSpec.index == null) throw new IllegalArgumentException("removeAction.index is required")
                 def idx = (removeActionSpec.index as Integer)
-                _rmDeleteAction(appId, idx)
+                // Capture the helper's rich return ({removedIndex, beforeIndices,
+                // afterIndices}) so the outer response can surface the index list
+                // shift without forcing callers to re-fetch via get_app_config.
+                // Mirrors the moveAction rich-envelope propagation pattern above.
+                removeResult = _rmDeleteAction(appId, idx)
                 removed << idx
             }
+            // Capture the helper's rich return ({beforePosition, afterPosition,
+            // indicesAfter}) so the outer response can surface it without forcing
+            // callers to re-fetch via get_app_config. Mirrors the addLocalVariable
+            // rich-envelope propagation pattern.
             if (moveActionSpec) {
                 if (moveActionSpec.index == null) throw new IllegalArgumentException("moveAction.index is required")
                 def dir = moveActionSpec.direction?.toString()
                 if (!(dir in ["up", "down"])) throw new IllegalArgumentException("moveAction.direction must be 'up' or 'down'")
-                _rmMoveAction(appId, moveActionSpec.index as Integer, dir)
+                moveResult = _rmMoveAction(appId, moveActionSpec.index as Integer, dir)
             }
             if (clearActionsFlag || replaceActionsList != null) {
                 try {
@@ -20829,7 +21846,6 @@ def toolUpdateNativeApp(args) {
                     }
                 }
             }
-            _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${e.message}")
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
@@ -20842,65 +21858,94 @@ def toolUpdateNativeApp(args) {
             }
             return result
         }
+        // Trailing updateRule fires AFTER mutation block completes. Hoisted
+        // out of the per-item try so a rejection here doesn't get routed
+        // through the generic "mutation errored partway" shape -- the mutation
+        // state IS committed and callers need the dedicated failure slots to
+        // detect the subscriptions-not-live consequence without log-grep.
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+            mcpLog("warn", "rm-native", "action mutation: trailing updateRule click failed for app ${appId} -- mutations committed but subscriptions may not populate: ${updateExc.message}")
+        }
         def addedOk = (addedResults ?: []).count { it?.success != false }
         def addedTotal = (replaceActionsList ?: []).size()
         def health = _rmCheckRuleHealth(appId)
+        // Bubble per-item partial:true (silent_rejection / verification_fetch_failed /
+        // hubRenderError on inner field writes) up through the outer envelope. addedOk
+        // counts success!=false, so a success:true + partial:true row inflates addedOk
+        // and the size-equality check alone misses the inner-partial signal.
+        // Sibling pattern: patches dispatcher's innerOk uses `every { ... && partial != true }`.
+        def itemsPartial = replaceActionsList != null && (addedOk != addedTotal ||
+            addedResults.any { it instanceof Map && it.partial == true })
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        // Inner-only partial (replaceActions list had partial inner items but the
+        // trailing updateRule click landed clean). Without this hint the outer
+        // envelope returned partial:true + success:false + repairHints:[] and the
+        // caller had to drill into addedActions[] to discover why -- the same C2
+        // antipattern this PR has been closing on the *NotLive flags.
+        if (itemsPartial && !updateRuleFailed) {
+            repairHints << "One or more inner replaceActions items reported partial. Drill into addedActions[] for per-item settingsSkipped + repairHints. Wait 5s and retry, or use removeAction/clearActions to clean up and re-add the failing spec."
+        }
         return [
-            success: (addedOk == addedTotal) && health.ok,
+            success: (addedOk == addedTotal) && health.ok && !updateRuleFailed,
+            partial: itemsPartial || updateRuleFailed,
             appId: appId,
             backup: backup,
             removedIndices: removed ?: null,
             addedActions: addedResults ?: null,
+            // Surface moveAction's rich return so callers can see the new position
+            // without a follow-up get_app_config. Null when this dispatch path was
+            // not moveAction.
+            beforePosition: moveResult?.beforePosition,
+            afterPosition: moveResult?.afterPosition,
+            indicesAfter: moveResult?.indicesAfter,
+            // Surface removeAction's rich return alongside moveAction's; null when
+            // this dispatch path was not removeAction. beforeIndices/afterIndices
+            // let callers diff the index list without a re-fetch.
+            removedIndex: removeResult?.removedIndex,
+            beforeIndices: removeResult?.beforeIndices,
+            afterIndices: removeResult?.afterIndices,
             health: health,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
             note: replaceActionsList != null
-                ? "Replaced actions: removed ${removed?.size() ?: 0}, added ${addedOk}/${addedTotal}; updateRule fired."
-                : (clearActionsFlag ? "Cleared ${removed?.size() ?: 0} actions; updateRule fired."
-                : (moveActionSpec ? "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule fired."
-                : "Removed action ${removeActionSpec?.index}; updateRule fired."))
+                ? "Replaced actions: removed ${removed?.size() ?: 0}, added ${addedOk}/${addedTotal}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+                : (clearActionsFlag ? "Cleared ${removed?.size() ?: 0} actions; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+                : (moveActionSpec ? "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+                : "Removed action ${removeActionSpec?.index}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."))
         ]
     }
 
     // Trigger mutation paths — single delete or single field-edit.
     // updateRule fires after each so subscriptions bake from the
-    // updated trigger state.
+    // updated trigger state. Trailing-updateRule failure propagation is
+    // wired the same way as the action-mutation block above and the bulk
+    // addTriggers/addActions branch -- if the trailing click is rejected,
+    // the mutation IS committed but the rule never re-subscribes, so the
+    // envelope surfaces dedicated slots (updateRuleFailed /
+    // subscriptionsNotLive / updateRuleError) and flips success=false +
+    // partial=true.
     if (removeTriggerSpec || modifyTriggerSpec) {
+        def trigMutResult = null
+        def trigIdxOut = null
         try {
             if (removeTriggerSpec) {
                 if (removeTriggerSpec.index == null) throw new IllegalArgumentException("removeTrigger.index is required")
-                def trigIdx = (removeTriggerSpec.index as Integer)
-                def result = _rmRemoveTrigger(appId, trigIdx)
-                _rmClickAppButton(appId, "updateRule")
-                def health = _rmCheckRuleHealth(appId)
-                return [
-                    success: result.success != false && health.ok,
-                    appId: appId,
-                    backup: backup,
-                    removedIndex: result.removedIndex,
-                    beforeIndices: result.beforeIndices,
-                    afterIndices: result.afterIndices,
-                    health: health,
-                    note: "Removed trigger ${trigIdx}; updateRule fired."
-                ]
-            }
-            if (modifyTriggerSpec) {
+                trigIdxOut = (removeTriggerSpec.index as Integer)
+                trigMutResult = _rmRemoveTrigger(appId, trigIdxOut)
+            } else if (modifyTriggerSpec) {
                 if (modifyTriggerSpec.index == null) throw new IllegalArgumentException("modifyTrigger.index is required")
                 if (!(modifyTriggerSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})")
-                def trigIdx = (modifyTriggerSpec.index as Integer)
-                def result = _rmModifyTrigger(appId, trigIdx, modifyTriggerSpec.mods as Map)
-                _rmClickAppButton(appId, "updateRule")
-                def health = _rmCheckRuleHealth(appId)
-                return [
-                    success: result.success != false && health.ok,
-                    appId: appId,
-                    backup: backup,
-                    modifiedIndex: result.modifiedIndex,
-                    verifiedState: result.verifiedState,
-                    verificationFetchFailed: result.verificationFetchFailed,
-                    settingsApplied: result.settingsApplied,
-                    settingsSkipped: result.settingsSkipped,
-                    health: health,
-                    note: "Modified trigger ${trigIdx}; updateRule fired."
-                ]
+                trigIdxOut = (modifyTriggerSpec.index as Integer)
+                trigMutResult = _rmModifyTrigger(appId, trigIdxOut, modifyTriggerSpec.mods as Map)
             }
         } catch (Exception e) {
             mcpLog("error", "rm-native", "trigger mutation failed for app ${appId}: ${e.message}")
@@ -20919,6 +21964,79 @@ def toolUpdateNativeApp(args) {
             }
             return trigResult
         }
+        // Trailing updateRule fires AFTER the mutation completes. Hoisted out
+        // of the per-mutation try so a rejection here doesn't get routed
+        // through the generic "trigger mutation failed" error response.
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+            mcpLog("warn", "rm-native", "trigger mutation: trailing updateRule click failed for app ${appId} -- mutation committed but subscriptions may not populate: ${updateExc.message}")
+        }
+        def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        if (removeTriggerSpec) {
+            // Defense-in-depth: if _rmRemoveTrigger ever starts emitting partial
+            // (today it returns {success, removedIndex, beforeIndices, afterIndices}
+            // only), bubble it the same way modifyTrigger bubbles trigInnerPartial.
+            // Keeps the two trigger-mutation dispatch shapes aligned so a future
+            // helper-side addition does not silently drop the signal.
+            def removedInnerPartial = trigMutResult?.partial == true
+            return [
+                success: trigMutResult.success != false && health.ok && !updateRuleFailed,
+                partial: updateRuleFailed || removedInnerPartial,
+                appId: appId,
+                backup: backup,
+                removedIndex: trigMutResult.removedIndex,
+                beforeIndices: trigMutResult.beforeIndices,
+                afterIndices: trigMutResult.afterIndices,
+                updateRuleFailed: updateRuleFailed,
+                subscriptionsNotLive: subscriptionsNotLive,
+                updateRuleError: updateRuleError,
+                repairHints: repairHints,
+                health: health,
+                note: "Removed trigger ${trigIdxOut}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+            ]
+        }
+        // Bubble inner settingsSkipped + verificationFetchFailed into outer partial.
+        // A modifyTrigger where tstate<N> was silent-rejected (settingsSkipped
+        // non-empty) OR post-commit verification failed previously returned
+        // {success:false, partial:false}; every other dispatcher returns
+        // partial:true on either of those conditions. Match the dispatcher-wide
+        // contract.
+        def trigSkippedSize = (trigMutResult?.settingsSkipped as List)?.size() ?: 0
+        def trigInnerPartial = trigSkippedSize > 0 || trigMutResult?.verificationFetchFailed == true
+        // Inner-only partial hint (trigger inner skipped/verify-failed BUT the
+        // trailing updateRule landed clean). Mirrors the action-mutation
+        // dispatcher's inner-only repairHint above; without it the caller has to
+        // drill into settingsSkipped[] to discover why partial flipped true.
+        if (trigInnerPartial && !updateRuleFailed) {
+            repairHints << "modifyTrigger reported inner partial (settingsSkipped or verificationFetchFailed). Inspect settingsSkipped[] for per-field silent_rejection reasons. Re-attempt the modifyTrigger call, or use removeTrigger + addTrigger to rebuild the trigger atomically."
+        }
+        return [
+            success: trigMutResult.success != false && health.ok && !updateRuleFailed,
+            partial: updateRuleFailed || trigInnerPartial,
+            appId: appId,
+            backup: backup,
+            modifiedIndex: trigMutResult.modifiedIndex,
+            verifiedState: trigMutResult.verifiedState,
+            verificationFetchFailed: trigMutResult.verificationFetchFailed,
+            settingsApplied: trigMutResult.settingsApplied,
+            settingsSkipped: trigMutResult.settingsSkipped,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
+            health: health,
+            note: "Modified trigger ${trigIdxOut}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+        ]
     }
 
     if (addTriggerSpec) {
@@ -20942,15 +22060,36 @@ def toolUpdateNativeApp(args) {
         // (trigger row exists but some fields didn't land) fire updateRule
         // anyway -- the trigger IS in the rule and subscriptions should bake
         // from whatever committed, matching the addAction pattern.
+        //
+        // Symmetric with addRequiredExpression: if the trigger row commits but
+        // updateRule is rejected, eventSubscriptions never populate -- the trigger
+        // is in the rule's appSettings but the running rule instance never
+        // re-subscribes to the device events that fire it. Surface this via
+        // dedicated response slots (updateRuleFailed / subscriptionsNotLive /
+        // updateRuleError) so callers can detect without log-grep, and flip
+        // success=false + partial=true so they do not treat the response as
+        // fully baked. Mirrors the propagation pattern in the
+        // addRequiredExpression dispatcher branch (`_rmAddRequiredExpression`
+        // trailing-updateRule catch block).
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
         if (trigResult?.success != false) {
             try { _rmClickAppButton(appId, "updateRule") }
             catch (Exception updateExc) {
+                updateRuleFailed = true
+                subscriptionsNotLive = true
+                updateRuleError = updateExc.message
                 mcpLog("warn", "rm-native", "addTrigger: trailing updateRule click failed for app ${appId} -- trigger committed but subscriptions may not populate until the next updateRule: ${updateExc.message}")
             }
         }
+        def trigRepairHints = (trigResult?.repairHints as List) ?: []
+        if (updateRuleFailed) {
+            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+        }
         return [
-            success: trigResult?.success != false,
-            partial: trigResult?.partial,
+            success: (trigResult?.success != false) && !updateRuleFailed,
+            partial: (trigResult?.partial == true) || updateRuleFailed,
             appId: appId,
             backup: backup,
             triggerIndex: trigResult?.triggerIndex,
@@ -20958,19 +22097,22 @@ def toolUpdateNativeApp(args) {
             settingsSkipped: trigResult?.settingsSkipped,
             configPageError: trigResult?.configPageError,
             hubRenderError: trigResult?.hubRenderError,
-            repairHints: trigResult?.repairHints,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: trigRepairHints,
             health: trigResult?.health,
             verificationFetchFailed: trigResult?.verificationFetchFailed,
-            note: "Trigger added + updateRule fired (subscriptions populated). Successive addTrigger calls now self-contain their re-init -- no manual updateRule needed."
+            note: "Trigger added + updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired (subscriptions populated). Successive addTrigger calls now self-contain their re-init -- no manual updateRule needed'}."
         ]
     }
 
     if (addActionSpec) {
         // High-level structured action creation. Mirrors addTrigger:
         // replaces the 6-7 wizard calls of the manual doActPage flow
-        // with one orchestrated call. After the helper commits, the
-        // caller still issues update_native_app(button='updateRule') to
-        // bake the actions[] map.
+        // with one orchestrated call. Action committed via
+        // doActPage->selectActions navigation; no trailing updateRule
+        // click is issued or required for action bake.
         def actResult
         try {
             actResult = _rmAddAction(appId, addActionSpec)
@@ -20995,7 +22137,7 @@ def toolUpdateNativeApp(args) {
             repairHints: actResult?.repairHints,
             health: actResult?.health,
             verificationFetchFailed: actResult?.verificationFetchFailed,
-            note: "Action added + updateRule fired (action baked into actions[] map). Successive addAction calls now self-contain their bake -- no manual updateRule needed."
+            note: "Action added + committed (baked into actions[] map). No trailing updateRule needed; doActPage->selectActions navigation finalizes."
         ]
     }
 
@@ -21016,6 +22158,13 @@ def toolUpdateNativeApp(args) {
         // Operations are atomic from the rule's perspective.
         def patchResults = []
         def patchErr = null
+        // Trailing-updateRule failure propagation: when the post-patch updateRule
+        // click is rejected, the patches landed but the rule never bakes them. The
+        // catch in the trailing-updateRule block below sets these so the response
+        // surfaces dedicated slots (sibling pattern from F2 addRequiredExpression).
+        def updateRuleFailed = false
+        def patchesNotLive = false
+        def updateRuleError = null
         try {
             patchesList.eachWithIndex { p, pi ->
                 if (!(p instanceof Map)) {
@@ -21063,15 +22212,32 @@ def toolUpdateNativeApp(args) {
                         patchResults << ([op: "addLocalVariable"] + _rmAddLocalVariable(appId, pm.addLocalVariable as Map))
                     } else if (pm.containsKey("removeAction")) {
                         if (pm.removeAction.index == null) throw new IllegalArgumentException("removeAction.index required")
-                        _rmDeleteAction(appId, pm.removeAction.index as Integer)
-                        patchResults << [success: true, op: "removeAction", index: pm.removeAction.index]
+                        // Capture the helper's rich return so per-patch entries
+                        // surface the index list shift the same way the action-
+                        // mutation envelope does. Mirrors the moveAction sibling
+                        // below.
+                        def rmRes = _rmDeleteAction(appId, pm.removeAction.index as Integer)
+                        patchResults << [
+                            success: true,
+                            op: "removeAction",
+                            index: pm.removeAction.index,
+                            removedIndex: rmRes?.removedIndex,
+                            beforeIndices: rmRes?.beforeIndices,
+                            afterIndices: rmRes?.afterIndices
+                        ]
                     } else if (pm.containsKey("clearActions")) {
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
                         catch (Exception clearExc) {
                             // Auto-recover: cancel trash mode so the next
-                            // patch doesn't open into a broken page.
-                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") } catch (Exception ignored2) { }
+                            // patch doesn't open into a broken page. Mirror the
+                            // action-mutation branch's warn-on-recovery-failure
+                            // shape so operators have a signal if trash-confirmation
+                            // no longer renders cancelTrash OR the hub blips mid-recovery.
+                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
+                            catch (Exception cancelExc) {
+                                mcpLog("warn", "rm-native", "patches[${pi}].clearActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                            }
                             throw clearExc
                         }
                         patchResults << [success: true, op: "clearActions", removedIndices: cleared]
@@ -21085,7 +22251,10 @@ def toolUpdateNativeApp(args) {
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
                         catch (Exception clearExc) {
-                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") } catch (Exception ignored2) { }
+                            try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
+                            catch (Exception cancelExc) {
+                                mcpLog("warn", "rm-native", "patches[${pi}].replaceActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                            }
                             throw clearExc
                         }
                         def innerResults = []
@@ -21099,8 +22268,20 @@ def toolUpdateNativeApp(args) {
                         if (pm.moveAction.index == null) throw new IllegalArgumentException("moveAction.index required")
                         def dir = pm.moveAction.direction?.toString()
                         if (!(dir in ["up", "down"])) throw new IllegalArgumentException("moveAction.direction must be up|down")
-                        _rmMoveAction(appId, pm.moveAction.index as Integer, dir)
-                        patchResults << [success: true, op: "moveAction", index: pm.moveAction.index, direction: dir]
+                        // Capture the helper's rich return ({beforePosition, afterPosition,
+                        // indicesAfter}) so per-patch entries surface the move outcome the
+                        // same way the action-mutation envelope does. Without these, callers
+                        // would need a separate get_app_config to see where the action moved.
+                        def mvRes = _rmMoveAction(appId, pm.moveAction.index as Integer, dir)
+                        patchResults << [
+                            success: true,
+                            op: "moveAction",
+                            index: pm.moveAction.index,
+                            direction: dir,
+                            beforePosition: mvRes?.beforePosition,
+                            afterPosition: mvRes?.afterPosition,
+                            indicesAfter: mvRes?.indicesAfter
+                        ]
                     } else {
                         patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
                     }
@@ -21111,11 +22292,17 @@ def toolUpdateNativeApp(args) {
             }
             // Fire updateRule once at the end so the rule's actions[]
             // map and event subscriptions bake from the fully-loaded
-            // post-patch state. Log on failure — this is a commit, not
-            // an idempotent tickle, and silent failure here means the
-            // patches landed but never bake into the running rule.
+            // post-patch state. Honour the comment: silent failure here means
+            // the patches landed but never bake into the running rule, so
+            // surface via dedicated envelope slots (sibling pattern from F2:
+            // addRequiredExpression slot propagation in the
+            // `addRequiredExpressionSpec` dispatcher branch and F1's
+            // counterpart in the `addTriggerSpec` dispatcher branch).
             try { _rmClickAppButton(appId, "updateRule") }
             catch (Exception updateExc) {
+                updateRuleFailed = true
+                patchesNotLive = true
+                updateRuleError = updateExc.message
                 mcpLog("warn", "rm-native", "patches: trailing updateRule click failed for app ${appId} -- patches may not be live: ${updateExc.message}")
             }
         } catch (Exception e) {
@@ -21124,14 +22311,42 @@ def toolUpdateNativeApp(args) {
         }
         def opsOk = patchResults.count { it?.success != false }
         def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        // Inner-only partial hint (one or more patch ops self-reported partial:true BUT
+        // the trailing updateRule click landed clean). Outer partial: already bubbles
+        // the inner-partial signal via `patchResults.any { ... partial == true }` in the
+        // OR-clause below; without this hint the outer repairHints stayed empty and the
+        // caller had to drill into patches[] to discover why partial flipped true.
+        // Sibling pattern from the action-mutation and modifyTrigger dispatchers'
+        // inner-only branches -- closes the same C2 antipattern at this dispatch site.
+        if (patchResults.any { it instanceof Map && it.partial == true } && !updateRuleFailed) {
+            repairHints << "One or more patch ops reported partial. Drill into patches[] for per-op settingsSkipped + repairHints. The patch ops landed but some inner fields didn't; address the per-op partials directly or re-issue the patches batch."
+        }
         return [
-            success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok,
+            success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok && !updateRuleFailed,
+            // `partial` is ORTHOGONAL to success: a patches call where every op
+            // landed but one carried partial:true (e.g. trailing-updateRule
+            // failure on an inner addRequiredExpression, or settingsSkipped on
+            // an inner addTrigger), or a call where the outer trailing-updateRule
+            // failed, or a call where any op returned success=false -- all must
+            // surface `partial: true` so callers do not silently treat the
+            // response as fully baked. Mirrors the bulk path at the
+            // addTriggers/addActions branch and the addRequiredExpression /
+            // addTrigger single-spec branches.
+            partial: (patchErr != null) || (opsOk != patchResults.size()) || patchResults.any { it instanceof Map && (it.partial == true) } || updateRuleFailed,
             appId: appId,
             backup: backup,
             patches: patchResults,
             health: health,
             error: patchErr,
-            note: "Applied ${opsOk}/${patchResults.size()} patch ops; updateRule fired once."
+            updateRuleFailed: updateRuleFailed,
+            patchesNotLive: patchesNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
+            note: "Applied ${opsOk}/${patchResults.size()} patch ops; updateRule ${updateRuleFailed ? 'FAILED -- patches may not be live' : 'fired once'}."
         ]
     }
 
@@ -21146,20 +22361,53 @@ def toolUpdateNativeApp(args) {
             mcpLog("error", "rm-native", "addLocalVariable failed for app ${appId}: ${e.message}")
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
+        // Trailing-updateRule failure propagation (sibling pattern from F2 on
+        // the addRequiredExpression dispatcher branch's trailing-updateRule catch
+        // block). variableNotLive: the variable was
+        // created on the hub (varResult is non-null) but the rule's action map
+        // never re-evaluates against the new variable until updateRule fires.
+        def updateRuleFailed = false
+        def variableNotLive = false
+        def updateRuleError = null
         try { _rmClickAppButton(appId, "updateRule") }
         catch (Exception updateExc) {
+            updateRuleFailed = true
+            variableNotLive = true
+            updateRuleError = updateExc.message
             mcpLog("warn", "rm-native", "addLocalVariable: trailing updateRule click failed for app ${appId} -- variable may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        // Propagate partial/error/hubRenderError/repairHints from the inner
+        // helper. _rmAddLocalVariable's commit-verification path can return
+        // {success:false, partial:true, hubRenderError:true, error:..., repairHints:[...]}
+        // when the variable settings persist but the rule status never picks
+        // them up. Without the propagation here the outer envelope clobbered
+        // those slots with updateRuleFailed-only signals -- callers had no
+        // way to distinguish "trailing updateRule rejected" from "variable
+        // never rendered into appState". Mirrors the addRequiredExpression
+        // dispatcher branch below (`addRequiredExpressionSpec` block --
+        // same {success / partial / repairHints / *NotLive / updateRule*}
+        // propagation shape).
         return [
-            success: (varResult?.success != false) && health.ok,
+            success: (varResult?.success != false) && health.ok && !updateRuleFailed,
+            partial: (varResult?.partial == true) || updateRuleFailed,
             appId: appId,
             backup: backup,
             variable: [name: varResult?.name, type: varResult?.type, value: varResult?.value],
             settingsApplied: varResult?.settingsApplied,
             settingsSkipped: varResult?.settingsSkipped,
+            error: varResult?.error,
+            hubRenderError: varResult?.hubRenderError,
+            updateRuleFailed: updateRuleFailed,
+            variableNotLive: variableNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: ((varResult?.repairHints as List) ?: []) + repairHints,
             health: health,
-            note: "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule fired."
+            note: "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired'}."
         ]
     }
 
@@ -21181,42 +22429,59 @@ def toolUpdateNativeApp(args) {
             reResult = _rmAddRequiredExpression(appId, addRequiredExpressionSpec)
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addRequiredExpression failed for app ${appId}: ${e.message}")
-            // The exception may carry a wizardStuck signal if the in-flight
-            // cancelCapab cleanup also failed. Detect that pattern in the
-            // message so callers know to manually fire cancelCapab before
-            // their next write OR restore from backup.
-            def msg = e.message?.toString() ?: ""
-            def wizardStuck = msg.contains("wizardStuck") ||
-                              msg.contains("cancelCapab cleanup failed")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message,
-                wizardStuck: wizardStuck,
-                backup: backup,
-                restoreHint: wizardStuck ?
-                    "Backup saved before write — restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) to manually close the in-flight wizard." :
-                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
-            ]
+            // STPage is the wizard page this branch operates on; the helper threads it
+            // into the wizardStuck restoreHint and surfaces preflight refusals with the
+            // current health block (which a future preflight on this branch would set).
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "STPage")
         }
         // Fire updateRule so the expression takes effect on the running
         // rule instance. Mirrors addTrigger's "caller fires updateRule"
-        // contract — for addRequiredExpression we do it here since the
+        // contract -- for addRequiredExpression we do it here since the
         // expression is a leaf operation (no expected follow-on).
+        // _rmCheckRuleHealth inspects configPage.error / *BROKEN* markers /
+        // render markers / multiple-flag poison but does NOT detect that
+        // updateRule itself was rejected. Capture the failure here and
+        // propagate via dedicated response slots so callers do not have to
+        // grep log lines to discover the expression is not live. Mirrors
+        // the wizardStuck propagation pattern on the addAction branch.
+        def updateRuleFailed = false
+        def expressionNotLive = false
+        def updateRuleError = null
         try { _rmClickAppButton(appId, "updateRule") }
         catch (Exception updateExc) {
+            updateRuleFailed = true
+            expressionNotLive = true
+            updateRuleError = updateExc.message
             mcpLog("warn", "rm-native", "addRequiredExpression: trailing updateRule click failed for app ${appId} -- expression may not be live: ${updateExc.message}")
         }
         def health = _rmCheckRuleHealth(appId)
+        def reCondCount = reResult?.conditionIndices?.size() ?: 0
+        def repairHints = (reResult?.repairHints as List) ?: []
+        if (updateRuleFailed) {
+            repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+        }
+        // Propagate partial/repairHints and all failure fields from the underlying
+        // result so callers can detect degraded writes and verification failures
+        // without re-parsing settingsSkipped. Mirrors the addAction dispatcher
+        // branch (same {success / partial / settingsApplied / settingsSkipped /
+        // verificationFetchFailed / hubRenderError / repairHints} forwarding).
         return [
-            success: (reResult?.success != false) && health.ok,
+            success: (reResult?.success != false) && health.ok && !updateRuleFailed,
+            partial: (reResult?.partial == true) || updateRuleFailed,
             appId: appId,
             backup: backup,
             conditionIndices: reResult?.conditionIndices,
             settingsApplied: reResult?.settingsApplied,
             settingsSkipped: reResult?.settingsSkipped,
+            error: reResult?.error,
+            verificationFetchFailed: reResult?.verificationFetchFailed,
+            hubRenderError: reResult?.hubRenderError,
+            updateRuleFailed: updateRuleFailed,
+            expressionNotLive: expressionNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
             health: health,
-            note: "Required Expression added with ${reResult?.conditionIndices?.size() ?: 0} condition(s); updateRule fired."
+            note: "Required Expression added with ${reCondCount} ${reCondCount == 1 ? 'condition' : 'conditions'}; updateRule ${updateRuleFailed ? 'FAILED -- expression may not be live' : 'fired'}."
         ]
     }
 
@@ -21225,8 +22490,21 @@ def toolUpdateNativeApp(args) {
         // then fire updateRule once at the end. This is the efficient
         // shape for callers who already know all the triggers/actions
         // they want — collapses N tool calls into 1.
+        // Trailing-updateRule failure propagation: when the post-bulk
+        // updateRule click is rejected, the per-item adds landed but the
+        // rule never re-subscribes. The catch in the trailing-updateRule
+        // block below sets these so the response surfaces dedicated slots
+        // (sibling pattern from F1 in the `patches` dispatcher branch and F2
+        // in the `addLocalVariableSpec` dispatcher branch -- both apply the
+        // same trailing-updateRule failure-propagation shape).
+        // subscriptionsNotLive captures the trigger-side
+        // consequence (actions self-bake via doActPage->selectActions, so
+        // the trailing updateRule's only effect is subscription re-init).
         def triggerResults = []
         def actionResults = []
+        def updateRuleFailed = false
+        def subscriptionsNotLive = false
+        def updateRuleError = null
         try {
             (addTriggersList ?: []).eachWithIndex { spec, i ->
                 if (!(spec instanceof Map)) {
@@ -21250,13 +22528,6 @@ def toolUpdateNativeApp(args) {
                     mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                 }
             }
-            // One updateRule fires after everything to populate
-            // eventSubscriptions and re-run initialize(). Each
-            // _rmAddAction self-bakes its own action via the
-            // doActPage→selectActions navigation, so this trailing
-            // click is just for the final re-init (mirrors the UI's
-            // top-level "Update Rule" / "Done" press).
-            _rmClickAppButton(appId, "updateRule")
         } catch (Exception e) {
             mcpLog("error", "rm-native", "addTriggers/addActions bulk failed for app ${appId}: ${e.message}")
             def bulkResult = _rmBuildUpdateErrorResponse(appId, e.message, backup)
@@ -21264,17 +22535,60 @@ def toolUpdateNativeApp(args) {
             bulkResult.actionResults = actionResults
             return bulkResult
         }
+        // Trailing updateRule fires AFTER per-item adds complete. Hoisted out
+        // of the per-item try so a rejection here doesn't get routed through
+        // the generic "bulk path errored partway" shape -- per-item state IS
+        // committed and callers need the dedicated failure slots to detect
+        // the subscriptions-not-live consequence without log-grep. Each
+        // _rmAddAction self-bakes its own action via the doActPage->
+        // selectActions navigation, so this trailing click is just for the
+        // final re-init (mirrors the UI's top-level "Update Rule" / "Done"
+        // press, which populates eventSubscriptions from the trigger rows).
+        try { _rmClickAppButton(appId, "updateRule") }
+        catch (Exception updateExc) {
+            updateRuleFailed = true
+            subscriptionsNotLive = true
+            updateRuleError = updateExc.message
+            mcpLog("warn", "rm-native", "addTriggers/addActions bulk: trailing updateRule click failed for app ${appId} -- per-item adds committed but subscriptions may not populate: ${updateExc.message}")
+        }
         def trigOk = triggerResults.count { it?.success != false }
         def actOk = actionResults.count { it?.success != false }
         def health = _rmCheckRuleHealth(appId)
+        def repairHints = []
+        if (updateRuleFailed) {
+            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        // Bubble per-item partial:true (silent_rejection / verification_fetch_failed /
+        // hubRenderError on inner field writes) up through the outer envelope. trigOk
+        // and actOk count success!=false, so a success:true + partial:true row inflates
+        // the count and the size-equality check alone misses the inner-partial signal.
+        // Sibling pattern: action-mutation dispatcher's itemsPartial and patches
+        // dispatcher's partial OR-clause both use `any { ... partial == true }`.
+        def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size()) ||
+            triggerResults.any { it instanceof Map && it.partial == true } ||
+            actionResults.any { it instanceof Map && it.partial == true }
+        // Inner-only partial hint (bulk inner items reported partial BUT the trailing
+        // updateRule click landed clean). Without this hint the outer envelope returned
+        // partial:true + repairHints:[] (when updateRuleFailed is false) and the caller
+        // had to drill into triggers[]/actions[] to discover why -- same C2 antipattern
+        // the rest of this PR has been closing on the *NotLive flags. Sibling pattern
+        // from the action-mutation and modifyTrigger dispatchers' inner-only branches.
+        if (itemsPartial && !updateRuleFailed) {
+            repairHints << "One or more bulk trigger/action items reported partial. Drill into triggers[] and actions[] for per-item settingsSkipped + repairHints. Wait 5s and retry the affected items, or use removeAction/removeTrigger to clean up and re-add."
+        }
         return [
-            success: trigOk == triggerResults.size() && actOk == actionResults.size() && health.ok,
+            success: trigOk == triggerResults.size() && actOk == actionResults.size() && health.ok && !updateRuleFailed,
+            partial: itemsPartial || updateRuleFailed,
             appId: appId,
             backup: backup,
             triggers: triggerResults,
             actions: actionResults,
             health: health,
-            note: "Bulk update committed: ${trigOk}/${triggerResults.size()} triggers + ${actOk}/${actionResults.size()} actions; updateRule fired once at the end."
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: subscriptionsNotLive,
+            updateRuleError: updateRuleError,
+            repairHints: repairHints,
+            note: "Bulk update committed: ${trigOk}/${triggerResults.size()} triggers + ${actOk}/${actionResults.size()} actions; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired once at the end'}."
         ]
     }
 
@@ -21329,7 +22643,9 @@ def toolUpdateNativeApp(args) {
             result.settingsApplied = knownSettings.keySet().toList()
             if (unknownSettings) {
                 result.settingsSkipped = unknownSettings
-                result.unknownSettingsWarning = "Setting(s) ${unknownSettings} are not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental — e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
+                def settingWord = (unknownSettings.size() == 1) ? "Setting" : "Settings"
+                def beVerb = (unknownSettings.size() == 1) ? "is" : "are"
+                result.unknownSettingsWarning = "${settingWord} ${unknownSettings} ${beVerb} not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental -- e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
             }
             if (!isMainPage) {
                 result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call update_native_app(button='updateRule') to commit."
@@ -21415,8 +22731,14 @@ def toolUpdateNativeApp(args) {
                 mcpLog("info", "rm-native", "updateRule subscription settle lag on app ${appId} -- retrying")
                 _rmClickAppButton(appId, "updateRule")
                 settleStatus = _rmCheckSubscriptionSettle(appId)
+                def trigCount = settleStatus.triggerCount
+                def trigWord = trigCount == 1 ? "trigger" : "triggers"
+                // Discriminate on count, not on stringified word: trigWord=="trigger"
+                // could in theory drift if the assignment above changed, and at count==0
+                // ("triggers", plural by default) the "triggers are" verb is correct anyway.
+                def trigVerb = (trigCount == 1) ? "trigger is" : "triggers are"
                 result.subscriptionSettle = settleStatus?.unsettled ?
-                    "WARN: rule has ${settleStatus.triggerCount} trigger(s) but eventSubscriptions=0 after two updateRule clicks. The trigger is likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
+                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigVerb} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
                     "OK after auto-retry"
             } else if (settleStatus != null) {
                 result.subscriptionSettle = "OK"
@@ -22936,14 +24258,15 @@ For the live machine-readable per-field schema (action enums, required and optio
   - `stopColorTempFade` (no fields)
   - `setColorTempPerMode` + `deviceIds` + `perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}`
 - **Button** (`capability='button'`, pushable-button devices): `push` + `deviceIds` + `buttonNumber`. `pushPerMode` + `deviceIds` + `perMode={modeIdOrName: buttonNumber, ...}`. `choosePerMode` + `buttonNumber` + `perMode={modeIdOrName: [deviceIds], ...}`.
-- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'NUMBER',value:75},...]` + optional `useLastEventDevice`. Calls any device-driver command (`off`, `on`, `setLevel`, `flashOff`, `refresh`, custom-driver verbs, etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings.
+- **Run Custom Action** (`capability='runCommand'`): `command` + `deviceIds` + `capabilityFilter` (default `'Switch'`) + optional `parameters=[{type:'number',value:75},...]` + optional `useLastEventDevice`. Each parameter entry may be a literal (`{type:'number', value:75}`) or variable-sourced (`{type:'number', variable:'myVar'}`); the two forms may be mixed across slots. The `type` field is lowercase (`number`, `decimal`, `string`) -- the validator at `_rmAddAction` only accepts lowercase. Calls any device-driver command (`off`, `on`, `setLevel`, `flashOff`, `refresh`, custom-driver verbs, etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings.
 - **File IO** (`capability='fileWrite'`/`'fileAppend'`/`'fileDelete'`): `fileWrite` + `fileName` + `content` (overwrites). `fileAppend` + `fileName` + `content` (file must exist; `localFile` is an enum picker). `fileDelete` + `fileName`.
 - **Z-Wave Polling** (`capability='zwavePoll'`): `action='start'`/`'stop'` + `deviceIds` (Z-Wave switches/dimmers only) + `target='switches'|'dimmers'`.
 - **Lock** (`capability='lock'`): `action='lock'`/`'unlock'` + `deviceIds`.
 - **Thermostat** (`capability='thermostat'`): `action=(any)` + `deviceIds` + optional `mode`/`fanMode`/`heatingSetpoint`/`coolingSetpoint`/`adjustHeating`/`adjustCooling`.
 - **Shade/blind** (`capability='shade'`): `open`/`close`/`stop` + `deviceIds`. `setPosition` + `deviceIds` + `position` (0–100).
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
-- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) or `modeName` (String).
+- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `get_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
+- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` + `value` (numeric constant) OR `sourceVariable` (copy from another hub variable). Both `variable` and `sourceVariable` must be existing hub variable names -- unknown names are rejected before any write. `value` and `sourceVariable` are mutually exclusive; providing both is rejected. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
 - **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`.
@@ -22970,9 +24293,40 @@ RM 5.1 Required Expression conditions accept these `capability` values (per-cond
 - **Numeric**: `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`
 - **Time-based**: `Days of week`, `Between two dates`, `Between two times`, `On a Day`
 - **Hub state**: `Mode`, `Private Boolean`
+- **Variable comparison**: `Variable`
 - **Custom / other**: `Custom Attribute`, `Last Event Device`, `Lock codes`
 
-Note: `Private Boolean` is only valid in Required Expressions — it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.''',
+Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
+
+Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types (Smoke, CO, Tamper), `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. Carbon dioxide sensor is intentionally EXCLUDED from the discrete-event list: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; the names look superficially symmetric to Carbon monoxide detector but RM 5.1 treats them differently. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
+
+### Extended per-capability spec shapes
+
+Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expression.conditions[]` (doActPage); the shared walker `_rmWalkConditionReveal` handles every per-capability reveal sequence below. `addTrigger.condition` has a narrower support list (see selectTriggers note below).
+
+- **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema.
+- **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
+- **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}`. Fail-loud when name is not in the schema enum AND the option list is non-empty; degrades with `variable-validation` / `api_unavailable` sentinel when the enum is empty.
+- **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}`. Firmware-variant field names: `rDev2_<N>`/`refDev_<N>`/`compareDevId_<N>`, `rCustomAttr2_<N>`/`refAttr_<N>`/`compareAttr_<N>`, `offset_<N>`/`devOffset_<N>`.
+- **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
+
+`addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker.
+
+### Partial-success and trailing-updateRule response slots
+
+`settingsSkipped[]` sentinel reasons callers may see:
+- `rhs_type_not_revealed` -- compareToDevice RHS-type toggle absent on firmware. Entry also carries `fallbackApplied: true|false` (literal state_<N> fallback applied vs none available).
+- `offset_field_not_revealed` -- compareToDevice optional offset field absent. Flips `partial:true`.
+- `api_unavailable` paired with `key: "variable-validation"` -- Variable picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
+- `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
+
+Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):
+- `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. `repairHints` adds a recovery line pointing at `update_native_app(button='updateRule', confirm=true)`.
+- `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to its device events -- retry `updateRule` to populate subscriptions.
+- `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
+- `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
+- `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above.
+- `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.''',
 
         create_native_app_reference: '''## `create_native_app` reference
 

@@ -448,7 +448,7 @@ def someTool() {
     tool_guide_md = "## Device Authorization (CRITICAL)\nStuff.\n"
     _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
     findings = sl.check_tool_guide_pointers()
-    broken = [f for f in findings if f["code"] == "tool-guide-broken-pointer"]
+    broken = [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
     assert broken, f"expected tool-guide-broken-pointer finding, got: {findings}"
     assert "nonexistent_section" in broken[0]["message"]
 
@@ -471,7 +471,7 @@ Body.'''
     tool_guide_md = "## Device Authorization (CRITICAL)\nStuff.\n\n## Some New Heading\nStuff.\n"
     _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
     findings = sl.check_tool_guide_pointers()
-    missing_hint = [f for f in findings if f["code"] == "tool-guide-no-heading-hint"]
+    missing_hint = [f for f in findings if f["rule"] == "tool-guide-no-heading-hint"]
     assert missing_hint, f"expected tool-guide-no-heading-hint finding, got: {findings}"
     assert "brand_new_section_added_by_a_future_pr" in missing_hint[0]["message"]
 
@@ -491,7 +491,7 @@ Body.'''
     tool_guide_md = "## Some Unrelated Section\nStuff.\n"
     _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
     findings = sl.check_tool_guide_pointers()
-    missing_heading = [f for f in findings if f["code"] == "tool-guide-heading-missing"]
+    missing_heading = [f for f in findings if f["rule"] == "tool-guide-heading-missing"]
     assert missing_heading, f"expected tool-guide-heading-missing finding, got: {findings}"
     assert "device_authorization" in missing_heading[0]["message"]
 
@@ -504,7 +504,7 @@ def test_check_tool_guide_pointers_no_dispatcher_function_flagged(monkeypatch, t
     tool_guide_md = "## Whatever\n"
     _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
     findings = sl.check_tool_guide_pointers()
-    no_sections = [f for f in findings if f["code"] == "tool-guide-no-sections"]
+    no_sections = [f for f in findings if f["rule"] == "tool-guide-no-sections"]
     assert no_sections, f"expected tool-guide-no-sections finding, got: {findings}"
 
 
@@ -534,6 +534,6 @@ def test_check_tool_guide_pointers_8space_indent_required(monkeypatch, tmp_path)
     tool_guide_md = "## Device Authorization\nStuff.\n"
     _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
     findings = sl.check_tool_guide_pointers()
-    broken = [f for f in findings if f["code"] == "tool-guide-broken-pointer"]
+    broken = [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
     assert broken, f"expected the nested_fake_key pointer to flag as broken, got: {findings}"
     assert "nested_fake_key" in broken[0]["message"]
