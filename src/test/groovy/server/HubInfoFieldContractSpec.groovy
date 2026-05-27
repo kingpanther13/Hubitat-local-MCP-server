@@ -7,7 +7,8 @@ import support.ToolSpecBase
 
 /**
  * Contract spec asserting that {@code customRuleEngineEnabled} and
- * {@code developerModeEnabled} are present in {@code getHubInfo()} responses.
+ * {@code developerModeEnabled} are present in both {@code getHubInfo()} and
+ * {@code getHubDetails()} responses.
  *
  * Both fields are read by {@code .github/scripts/mcp_setup_env.sh} to capture
  * pre-run state before enabling toggles. If either field is dropped or renamed,
@@ -16,6 +17,7 @@ import support.ToolSpecBase
  *
  * Mocking strategy:
  *   - location.hub -> appExecutor.getLocation() returns sharedLocation
+ *   - toolGetHubDetails requires enableHubAdminRead; set in given: per-test
  */
 class HubInfoFieldContractSpec extends ToolSpecBase {
 
@@ -74,7 +76,6 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
     }
 
     // -------- toolGetHubInfo identify-LED --------
-    // (Kept from main — new identifyHub feature lives on toolGetHubInfo.)
 
     def "getHubInfo identifyHub=true fires /hub/advanced/blinkLED and reports identifyHubTriggered=true"() {
         given:
@@ -145,7 +146,62 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.identifyHubError.toLowerCase().contains('ioexception')
     }
 
-    // toolGetHubDetails tests removed — function was orphaned (not dispatched) and
-    // this PR deletes the function body. Equivalent coverage lives on
-    // toolGetHubInfo above.
+    // -------- toolGetHubDetails --------
+
+    def "getHubDetails includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        settingsMap.enableCustomRuleEngine = true
+        sharedLocation.hub = new TestHub()
+
+        when:
+        def result = script.toolGetHubDetails([:])
+
+        then:
+        result.containsKey('customRuleEngineEnabled')
+        result.customRuleEngineEnabled == true
+    }
+
+    def "getHubDetails includes developerModeEnabled=true when enableDeveloperMode is true"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        settingsMap.enableDeveloperMode = true
+        sharedLocation.hub = new TestHub()
+
+        when:
+        def result = script.toolGetHubDetails([:])
+
+        then:
+        result.containsKey('developerModeEnabled')
+        result.developerModeEnabled == true
+    }
+
+    def "getHubDetails includes both fields as false when toggles are off"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableDeveloperMode = false
+        sharedLocation.hub = new TestHub()
+
+        when:
+        def result = script.toolGetHubDetails([:])
+
+        then:
+        result.containsKey('customRuleEngineEnabled')
+        result.customRuleEngineEnabled == false
+        result.containsKey('developerModeEnabled')
+        result.developerModeEnabled == false
+    }
+
+    def "getHubDetails throws when Hub Admin Read is disabled"() {
+        given:
+        // enableHubAdminRead not set
+
+        when:
+        script.toolGetHubDetails([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Hub Admin Read')
+    }
 }

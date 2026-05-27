@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 95 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **21 core tools** (always visible) plus **13 domain-named gateways** that proxy 74 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 103 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **13 domain-named gateways** that proxy 80 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
@@ -48,7 +48,7 @@ Use `send_command` with the device ID and command name. Common commands:
 
 Always check the device's `supportedCommands` (from `get_device`) before sending commands.
 
-After sending a command, verify the state change took effect in a single round-trip rather than sleeping and re-polling. For a command-then-wait flow, pass `waitFor={attribute, expectedValue, ...}` to `send_command` (e.g. `send_command(deviceId, "on", waitFor={attribute: "switch", expectedValue: "on", timeoutMs: 5000})`). For a read-then-wait flow on an attribute you're not commanding, pass `expectedValue=` (or `expectedValues=`) to `get_attribute`. Note: `timeoutMs` is in MILLISECONDS (default 5000 = 5 seconds, max 60000ms). These wait paths BLOCK the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running them in parallel with other MCP calls.
+After sending a command, use `poll_until_attribute` to verify the state change took effect rather than sleeping and calling `get_attribute`. Example: after `send_command(on)` poll `attribute=switch, expectedValue="on", timeoutMs=5000`. Note: `timeoutMs` is in MILLISECONDS (5000 = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` is required. This tool BLOCKS the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running it in parallel with other MCP calls.
 
 ### Virtual Devices
 
@@ -121,7 +121,7 @@ Use `custom_create_rule` with a JSON structure. For the complete rule structure 
 ### Rule Management
 
 Core tools (always visible):
-- `custom_get_rule` - View rules and their configuration. Omit `ruleId` for list mode (returns all rules with status/last-triggered); provide `ruleId` for detail mode (full triggers, conditions, actions)
+- `custom_list_rules` / `custom_get_rule` - View rules and their configuration
 - `custom_update_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
 
 Via `manage_rules_admin` gateway:
@@ -149,12 +149,13 @@ Destructive write operations (require Hub Admin Write): `reboot_hub`, `shutdown_
 
 `list_hub_apps`, `list_hub_drivers`, `get_app_source`, `get_driver_source`, `get_library_source`, `list_item_backups`, `get_item_backup`
 
-### Via `manage_app_driver_code` gateway (7 tools — write operations)
+### Via `manage_app_driver_code` gateway (10 tools — write operations)
 
-`save_app`, `save_driver`, `save_library`, `delete_app`, `delete_driver`, `delete_library`, `restore_item_backup`
+`install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`, `restore_item_backup`, `install_library`, `update_library_code`, `delete_library`
 
-- `save_app` / `save_driver` / `save_library` accept `source` (inline) OR `sourceFile` (File Manager filename). Omit the id arg (`appId` / `driverId` / `libraryId`) to install; provide it to update existing code. Token-economy tip: upload source via local CLI first, then pass filename. Includes post-install verification -- returns `success: false` if the Groovy failed to compile, even when the hub returned a redirect.
-- `save_driver` supports bulk install via an `installs` array of `{source|sourceFile}` objects and bulk update via an `updates` array of `{driverId, sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields. Returns per-item `driverId`. Practical limit ~10-20 drivers/call. (`save_app` is single-item only -- apps are typically one-of-a-kind installs.)
+- `install_app` / `install_driver` accept `source` (inline) OR `sourceFile` (File Manager filename). Token-economy tip: upload source via local CLI first, then pass filename. Includes post-install verification -- returns `success: false` if the Groovy failed to compile, even when the hub returned a redirect.
+- `install_driver` supports bulk mode via an `installs` array of `{source|sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields. Returns per-item `driverId`. Practical limit ~10-20 drivers/call. (`install_app` is single-item only -- apps are typically one-of-a-kind installs.)
+- `update_driver_code` supports bulk mode via an `updates` array of `{driverId, sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields.
 
 ### Pre-flight checklist for ALL write operations
 
@@ -176,17 +177,19 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 
 Core tool: `get_device_events` (always visible)
 
-Via `manage_logs` gateway (6 tools):
+Via `manage_logs` gateway (8 tools):
 - `get_hub_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
 - `get_device_history` - Device event history (up to 7 days)
 - `get_performance_stats` - Device/app performance stats (count, % busy, total ms, state size, events). Sortable by pct/count/stateSize/totalMs/name
 - `get_hub_jobs` - Scheduled jobs, running jobs, and hub actions
-- `get_debug_log_state` - Read MCP debug state. `mode='logs'` returns log entries (filter by `level`, `component`, `ruleId`, `limit`); `mode='status'` returns logging system statistics
-- `update_debug_logs` - Write MCP debug state. `action='clear'` clears MCP debug logs; `action='setLevel'` with `level=` sets the MCP log level
+- `get_debug_logs` / `clear_debug_logs` - MCP-specific debug logs
+- `set_log_level` - Set MCP log level
+- `get_logging_status` - View logging system statistics
 
-Via `manage_diagnostics` gateway (10 tools):
-- `force_garbage_collection` - Force JVM garbage collection on the hub. Returns before/after free memory and delta (Hub Admin Read)
+Via `manage_diagnostics` gateway (11 tools):
+- `get_set_hub_metrics` - Record/retrieve hub metrics with CSV trend history
 - `get_memory_history` - Free OS memory and CPU load history with summary stats (Hub Admin Read)
+- `force_garbage_collection` - Force JVM GC; returns before/after free memory (Hub Admin Read)
 - `device_health_check` - Find stale/offline devices; optional ICMP ping for arbitrary IPs
 - `custom_get_rule_diagnostics` - Comprehensive diagnostics for a specific rule
 - `get_zwave_details` / `get_zigbee_details` - Radio info (Z-Wave and Zigbee)
@@ -199,12 +202,12 @@ Via `manage_files` gateway: `list_files`, `read_file`, `write_file`, `delete_fil
 
 ## Item Backup System
 
-Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup` (via `manage_apps_drivers` gateway) to view backups, and `restore_item_backup` (via `manage_app_driver_code` gateway) to restore apps and drivers. For libraries, restore via `save_library(libraryId=..., sourceFile=...)` with the backup file.
+Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup` (via `manage_apps_drivers` gateway) to view backups, and `restore_item_backup` (via `manage_app_driver_code` gateway) to restore apps and drivers. For libraries, restore via `update_library_code` with the backup file.
 
 ## System Tools
 
 Core tools (always visible):
-- `get_hub_info` - Comprehensive hub info (hardware, health — memory, temp, DB size — MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read. Optional `recordSnapshot=true` appends a row to the rolling CSV trend file; `trends`/`trendPointsAvailable` are returned in every call (folds in former `hub_metrics`)
+- `get_hub_info` - Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read
 - `get_modes` / `set_mode` - Location modes (Home, Away, Night, etc.)
 - `get_hsm_status` / `set_hsm` - Home Security Monitor
 

@@ -1278,7 +1278,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('get_attribute', [
+        def response = mcpDriver.callTool('poll_until_attribute', [
             deviceId      : '1010',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1311,7 +1311,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('get_attribute', [
+        def response = mcpDriver.callTool('poll_until_attribute', [
             deviceId      : '1020',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1339,7 +1339,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         settingsMap.selectedDevices = []
 
         when:
-        def response = mcpDriver.callTool('get_attribute', [
+        def response = mcpDriver.callTool('poll_until_attribute', [
             deviceId      : '9999',
             attribute     : 'switch',
             expectedValue : 'on'
@@ -1366,7 +1366,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('get_attribute', [
+        def response = mcpDriver.callTool('poll_until_attribute', [
             deviceId : '1030',
             attribute: 'switch',
             timeoutMs: 1000
@@ -1393,7 +1393,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('get_attribute', [
+        def response = mcpDriver.callTool('poll_until_attribute', [
             deviceId       : '1040',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -1426,7 +1426,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_attribute', [
+        def response = mcpDriver.callTool('poll_until_attribute', [
             deviceId      : '1050',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1463,7 +1463,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_attribute', [
+        def response = mcpDriver.callTool('poll_until_attribute', [
             deviceId      : '1060',
             attribute     : 'switch',
             expectedValue : 'on',

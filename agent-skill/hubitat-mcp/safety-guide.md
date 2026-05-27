@@ -75,27 +75,27 @@ ALL Hub Admin Write tools require these steps in order:
 #### delete_library
 - Source code is auto-backed up before deletion
 - Check that no apps or drivers reference the library via `#include namespace.LibraryName` before deleting -- deletion breaks any code that still includes it
-- Deletion is permanent; restore requires save_library with the backup source
+- Deletion is permanent; restore requires `update_library_code` with the backup source
 
 #### delete_room
 - Devices become unassigned (not deleted)
 - List affected devices to the user before proceeding
 - Dashboard layouts referencing the room may be affected
 
-#### save_app / save_driver
+#### install_app / install_driver
 - Verify source code looks reasonable before installing
 - Warn about namespace conflicts with existing apps/drivers
 
-#### save_library (install mode)
+#### install_library
 - Verify source includes a valid `library()` definition block before installing
 - Warn about namespace conflicts with existing libraries (`#include namespace.LibraryName` references must match exactly)
 
-#### save_app / save_driver (update mode)
+#### update_app_code / update_driver_code
 - Source is auto-backed up before update (1-hour protection window preserves original)
 - Uses optimistic locking to prevent concurrent edit conflicts
 - Supports three modes: `source` (direct), `sourceFile` (from File Manager), `resave` (recompile)
 
-#### save_library (update mode)
+#### update_library_code
 - Source is auto-backed up before update (1-hour protection window preserves original); backup failure aborts the update
 - Uses optimistic locking to prevent concurrent edit conflicts
 - Supports three modes: `source` (direct), `sourceFile` (from File Manager), `resave` (recompile)
