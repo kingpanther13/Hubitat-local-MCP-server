@@ -433,7 +433,7 @@ def helperMethod() { return "ok" }
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('not both')
+        ex.message.contains('exactly one')
     }
 
     @spock.lang.Unroll
@@ -447,7 +447,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error.code == -32602
-        response.error.message.contains('not both')
+        response.error.message.contains('exactly one')
 
         where:
         useGateways << [true, false]
