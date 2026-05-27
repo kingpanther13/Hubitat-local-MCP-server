@@ -1480,6 +1480,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.4.2** - feat: importUrl + installAsUserApp + triggerUpdated for app/driver/library install + update tools. PRs: [#213](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/213)
 - **v1.4.1** - Revert "refactor: flat-mode tool surface reduction (103 → 95 tools)". PRs: [#216](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/216)
 - **v1.4.0** - refactor: flat-mode tool surface reduction (103 → 95 tools). PRs: [#208](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/208)
 - **v1.3.15** - docs: codify MCP tool design rules in AGENTS.md + derivative docs (part of #105); docs: vendor hub2 Vue SPA source as reference resource; docs: add PR1 (issue #105 tool audit) game plan to docs/; feat: per-capability reveal walker fixes Required Expression & ifThen Broken Conditions (issue #195 Group A). PRs: [#210](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/210), [#211](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/211), [#214](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/214), [#203](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/203)
