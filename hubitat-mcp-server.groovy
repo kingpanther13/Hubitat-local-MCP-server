@@ -3153,11 +3153,11 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. updateRule fires after the clear."
+                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. updateRule fires after the clear.[[FLAT_TRIM]] Async-commit recovery: if the trash op exhausts the verification window before the hub commits (rare; RM applies the delete async after returning HTTP 200) the response carries `asyncCommitLikely: true, partial: true, stage: 'clearActions.verify_absent'` plus `actionsRequestedForRemoval` / `actionsStillPresent` and a `safeRecovery` block. Recovery: call `get_app_config(appId)` to check whether the clear committed post-response. Do NOT call `cancelTrash` -- in trash-confirmation mode it may commit pending deletes rather than abort.[[/FLAT_TRIM]]"
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions, then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).",
+                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions, then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).[[FLAT_TRIM]] Async-commit recovery: if the inner clearActions exhausts its verification window the response carries `asyncCommitLikely: true, partial: true, stage: 'replaceActions.clear_committed_late_no_add'` and the add half is NOT attempted (prevents double-write if the clear committed asynchronously). Original specs are echoed as `pendingActionsToAdd`. Recovery: call `get_app_config(appId)`; if actions are absent the clear committed, call `addAction` (or bulk `addActions`) with the echoed specs to finish the replace. Do NOT call `cancelTrash`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     moveAction: [
@@ -16773,7 +16773,12 @@ private List _rmClearActions(Integer appId) {
     }
     def stillThereCount = stillThere.size()
     def stillThereWord = stillThereCount == 1 ? "action" : "actions"
-    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.")
+    // [asyncCommitLikely] marker tells the dispatcher catch that this is the
+    // documented retry-window-expired case (HTTP 200 + verification window
+    // exhausted), not a hard wizard / schema failure. Distinct from the
+    // wizardStuck marker pattern but follows the same precedent of encoding
+    // a recoverable-shape hint in the exception message.
+    throw new IllegalStateException("clearActions: trashActs write returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or extreme RM GC propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions. [asyncCommitLikely]")
 }
 
 /**
@@ -22064,6 +22069,12 @@ def toolUpdateNativeApp(args) {
         def updateRuleFailed = false
         def subscriptionsNotLive = false
         def updateRuleError = null
+        // Pre-clearActions indices snapshot. Captured here (not inside the
+        // try block) so the eventual-consistency catch can echo it back as
+        // `actionsRequestedForRemoval` without a second hub fetch on the
+        // success path -- the snapshot is consumed only on the async-commit
+        // failure path. Null when no clear/replace is requested.
+        def preClearIndicesSnapshot = null
         try {
             // Pre-flight: walk the replaceActions spec list's capability
             // sequence and refuse the call before clearActions runs if the
@@ -22100,6 +22111,14 @@ def toolUpdateNativeApp(args) {
                 moveResult = _rmMoveAction(appId, moveActionSpec.index as Integer, dir)
             }
             if (clearActionsFlag || replaceActionsList != null) {
+                // Capture pre-write indices so the eventual-consistency catch
+                // can echo them back as `actionsRequestedForRemoval`. Best
+                // effort -- if the fetch itself fails, the catch falls back to
+                // null and still emits the structured shape with what it has.
+                try { preClearIndicesSnapshot = _rmCollectActionIndices(appId) }
+                catch (Exception snapExc) {
+                    mcpLog("debug", "rm-native", "pre-clearActions snapshot fetch failed for app ${appId}: ${snapExc.message} -- actionsRequestedForRemoval will be null on failure path")
+                }
                 try {
                     def cleared = _rmClearActions(appId) ?: []
                     removed = (removed + cleared).unique()
@@ -22132,9 +22151,76 @@ def toolUpdateNativeApp(args) {
             }
         } catch (Exception e) {
             mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${e.message}")
+            // Eventual-consistency response shape for the documented
+            // clearActions retry-window-expired case: trashActs write returned
+            // HTTP 200, but the GC verification window exhausted before the
+            // delete settled. The deletion typically commits 5-15s after our
+            // window ends. Callers verify via get_app_config and treat absent
+            // as success. replaceActions does NOT proceed to add when this
+            // fires -- the clear may have committed and we can't tell yet, so
+            // adding would risk double-write if the caller retries the whole
+            // op after seeing the partial.
+            def isAsyncCommitLikely = e.message?.contains("[asyncCommitLikely]") &&
+                                      (clearActionsFlag || replaceActionsList != null)
+            if (isAsyncCommitLikely) {
+                def cleanedError = e.message?.replace(" [asyncCommitLikely]", "")
+                def actionsStillPresent = null
+                try { actionsStillPresent = _rmCollectActionIndices(appId) }
+                catch (Exception fetchExc) {
+                    mcpLog("debug", "rm-native", "asyncCommitLikely: actionsStillPresent fetch failed for app ${appId}: ${fetchExc.message}")
+                }
+                def possibleStateEditAct = false
+                try { possibleStateEditAct = (_rmGetStateEditAct(appId) != null) }
+                catch (Exception ignored) {
+                    // Best-effort diagnostic; absence does not affect the
+                    // structured response's correctness.
+                }
+                def shape = [
+                    success: false,
+                    partial: true,
+                    asyncCommitLikely: true,
+                    appId: appId,
+                    httpWriteStatus: 200,
+                    actionsRequestedForRemoval: preClearIndicesSnapshot,
+                    actionsStillPresent: actionsStillPresent,
+                    possibleStateEditAct: possibleStateEditAct,
+                    wizardStuck: false,
+                    backup: backup,
+                    restoreHint: "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}').",
+                    verifyHint: "Call get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call restore_item_backup.",
+                    safeRecovery: [
+                        recommended: 'verify-then-decide',
+                        verifyVia: "get_app_config(appId: ${appId})",
+                        ifActionsAbsent: 'treat as success -- clearActions committed post-response',
+                        ifActionsPresent: "retry clearActions with longer wait, or use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear state.editAct first",
+                        avoid: ['cancelTrash']
+                    ]
+                ]
+                if (replaceActionsList != null) {
+                    shape.stage = 'replaceActions.clear_committed_late_no_add'
+                    shape.pendingActionsToAdd = replaceActionsList
+                    shape.clearActionsResult = [
+                        stage: 'clearActions.verify_absent',
+                        asyncCommitLikely: true,
+                        actionsRequestedForRemoval: preClearIndicesSnapshot,
+                        actionsStillPresent: actionsStillPresent,
+                        error: cleanedError
+                    ]
+                    shape.error = "Clear half may have committed asynchronously. Add half not attempted to prevent data loss if clear actually succeeded."
+                    shape.verifyHint = "Call get_app_config to confirm clear state. If actions absent (clear succeeded), call addAction (or bulk addActions) to complete the replacement. If actions still present (clear genuinely failed), call replaceActions again."
+                } else {
+                    shape.stage = 'clearActions.verify_absent'
+                    shape.error = cleanedError
+                }
+                return shape
+            }
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
             // The "deletion may commit post-response" exhaustion path needs
-            // an extra hint that the helper doesn't know about.
+            // an extra hint that the helper doesn't know about. This branch
+            // now only fires for removeAction exhaustion: the clearActions /
+            // replaceActions async-commit case is handled by the structured
+            // envelope above. removeAction stays on the legacy flat shape
+            // because it's single-row and the async race is rarer in practice.
             def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
             if (isRetryExhaustion) {
                 result.restoreHint = "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}')."
@@ -22233,6 +22319,14 @@ def toolUpdateNativeApp(args) {
             }
         } catch (Exception e) {
             mcpLog("error", "rm-native", "trigger mutation failed for app ${appId}: ${e.message}")
+            // removeTrigger / modifyTrigger retry-exhaustion stays on the legacy
+            // flat error shape (success:false + restoreHint hint). The structured
+            // asyncCommitLikely envelope -- with safeRecovery, actionsRequestedForRemoval,
+            // pendingActionsToAdd, etc. -- is scoped to the action-mutation branch
+            // (clearActions / replaceActions) where the async-GC race is
+            // live-verified and the replace-half data-loss case justifies the
+            // richer recovery contract. Trigger-mutation exhaustion is rare and
+            // single-row, so the flat shape stays sufficient here.
             def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
             def trigResult = [
                 success: false,
@@ -22570,8 +22664,18 @@ def toolUpdateNativeApp(args) {
                         patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
                     }
                 } catch (Exception subExc) {
-                    patchResults << [success: false, op: pm.keySet().first(), error: subExc.message, spec: p]
-                    mcpLog("warn", "rm-native", "patches[${pi}] (${pm.keySet().first()}) failed: ${subExc.message}")
+                    // Strip the internal [asyncCommitLikely] sentinel from the
+                    // user-visible error string. The patches branch doesn't yet
+                    // emit the structured envelope (scoped to the top-level
+                    // clearActions / replaceActions path), but the raw marker
+                    // shouldn't leak into the per-patch error either. Local name
+                    // distinct from the outer-closure `patchErr` so the
+                    // top-level result envelope still drives off the
+                    // post-trailing-updateRule aggregate, not the per-patch
+                    // exception text.
+                    def cleanedPatchErr = subExc.message?.replace(" [asyncCommitLikely]", "") ?: subExc.message
+                    patchResults << [success: false, op: pm.keySet().first(), error: cleanedPatchErr, spec: p]
+                    mcpLog("warn", "rm-native", "patches[${pi}] (${pm.keySet().first()}) failed: ${cleanedPatchErr}")
                 }
             }
             // Fire updateRule once at the end so the rule's actions[]

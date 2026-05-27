@@ -710,6 +710,37 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 
 All four share `updateRuleFailed` and `updateRuleError` for the common facts. The slot-name divergence is intentional -- a caller-facing diagnostic, not a code-side typology. Single-name unification was considered and rejected because it would force every caller to read the operation-type to interpret the consequence.
 
+##### `clearActions` / `replaceActions` eventual-consistency response
+
+Rule Machine's trashActs delete path returns HTTP 200 immediately but commits the deletion asynchronously. The verification window is bounded at ~10s; the actual commit often lands 5-15s after that. When the verification window expires with actions still showing present, the tool returns an eventual-consistency partial response rather than treating it as a hard failure:
+
+```
+{
+  success: false,
+  partial: true,
+  asyncCommitLikely: true,
+  stage: 'clearActions.verify_absent',
+  httpWriteStatus: 200,
+  actionsRequestedForRemoval: [1, 2, ...],
+  actionsStillPresent: [1, 2, ...],
+  possibleStateEditAct: false,
+  wizardStuck: false,
+  error: '<existing diagnostic message>',
+  safeRecovery: {
+    recommended: 'verify-then-decide',
+    verifyVia: 'get_app_config(appId: <id>)',
+    ifActionsAbsent: 'treat as success -- clearActions committed post-response',
+    ifActionsPresent: 'retry clearActions with longer wait, or use cancelAct path',
+    avoid: ['cancelTrash']
+  },
+  backup, restoreHint, verifyHint
+}
+```
+
+The caller's recovery path is to call `get_app_config(appId)` and inspect the actions list. If absent, treat the operation as a delayed success. If still present, retry. **Do not** invoke `cancelTrash` to recover -- in trash-confirmation mode it can commit pending deletes rather than abort.
+
+For `replaceActions`, this same retry-window-expired case on the inner clearActions step yields `stage: 'replaceActions.clear_committed_late_no_add'`. The add half is **not attempted** -- because the clear may have committed asynchronously, completing the add would risk a double-write if the caller retries the whole replace after seeing the partial. The original action specs are echoed back as `pendingActionsToAdd` so the caller can finish the replace via `addAction` (or bulk `addActions`) once `get_app_config` confirms the clear committed. `clearActionsResult` exposes the inner clearActions fingerprint (same shape as the standalone clearActions partial).
+
 #### `create_native_app` reference
 
 ##### appType options
