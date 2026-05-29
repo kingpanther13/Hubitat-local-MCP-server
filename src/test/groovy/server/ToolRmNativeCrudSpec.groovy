@@ -1619,6 +1619,320 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         verificationFetches == 3
     }
 
+    // S2-clearActions-synchronous-success: the headline behavior. The trashActs
+    // delete commits synchronously via the full selectActions page-form submit,
+    // so the FIRST verification fetch sees the rule empty -- no retry, no
+    // asyncCommitLikely envelope. This is the common-case path.
+    def "clearActions commits synchronously: first verification sees the rule empty (== [], no retry, no asyncCommit envelope)"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        // configPage carries app.version so the full-form submit can replay the
+        // hub's concurrent-edit token (mirrors the live config response shape).
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                // Seed a real current value for the non-button input so the
+                // wholesale-replace re-emission has a value to preserve. The
+                // preservation assertion below proves the helper emits this real
+                // value, not the "" blank-default the old code path produced.
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // Synchronous commit: the action is gone on the first post-write check.
+            statusJson(100, trashActsWritten ? [] : [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "synchronous success -- no asyncCommitLikely envelope"
+        result.success == true
+        result.asyncCommitLikely != true
+        result.partial != true
+        (result.removedIndices ?: []).collect { it.toString() } == ["1"]
+
+        and: "the rule is now empty -- collected action indices are [] (not null)"
+        script._rmCollectActionIndices(100) == []
+
+        and: "trashActs was committed via a FULL page-form submit to /installedapp/update/json (not a bare settings-write)"
+        def trashPost = posts.find { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+        trashPost != null
+        trashPost.body["formAction"] == "update"
+        trashPost.body["currentPage"] == "selectActions"
+        trashPost.body["pageBreadcrumbs"] == '["mainPage"]'
+        trashPost.body["version"] == "7"
+        trashPost.body["appTypeId"] == ""
+        trashPost.body["appTypeName"] == ""
+        trashPost.body["paramsForPage"] == '{"label":"r"}'
+
+        and: "the full-page form state was serialized across input TYPES -- both the button (cancelTrash) and the non-button enum (actType.1) are re-emitted alongside trashActs, so a regression that only re-emits the explicitly-written key would fail (wholesale-replace fidelity)"
+        trashPost.body["settings[cancelTrash]"] != null
+        trashPost.body["cancelTrash.type"] == "button"
+        trashPost.body["actType.1.type"] == "enum"
+
+        and: "the seeded non-button value is preserved EXACTLY -- the wholesale-replace re-emits the real current value, not the empty-string blank-default a fail-open re-emission would produce (regression guard for the fail-loud field re-emission)"
+        trashPost.body["settings[actType.1]"] == "switchActs"
+
+        and: "trashActs itself is sent as a JSON-array enum value with its sidecars"
+        trashPost.body["settings[trashActs]"] == '["1"]'
+        trashPost.body["trashActs.type"] == "enum"
+        trashPost.body["trashActs.multiple"] == "true"
+    }
+
+    // S2-fullform-absent-input-fail-loud: the wholesale-replace submit warns
+    // (does NOT silently blank) when a NON-BUTTON page input is absent from the
+    // configPage settings map. The discriminator vs the old silent ternary is the
+    // warn emission itself: with a non-button input missing from settings, the
+    // old `: ""` path emitted nothing and blanked it; the fail-loud branch logs a
+    // warn naming the input. Buttons (silent-empty) and inputs supplied via
+    // extraSettings (trashActs) must NOT warn -- only non-button absent inputs do.
+    def "full-form submit warns (not silently blanks) on a non-button input absent from configPage settings"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                // actType.1 (non-button enum) is ABSENT from settings -- this is
+                // the input the fail-loud branch must warn about.
+                settings: [:],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, trashActsWritten ? [] : [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            [status: 200, location: null, data: '']
+        }
+        def warnLogs = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "a warn fires from _rmSubmitFullPageForm naming the absent non-button input"
+        def absentWarn = warnLogs.find {
+            it.msg?.contains("_rmSubmitFullPageForm") &&
+            it.msg?.contains("actType.1") &&
+            it.msg?.contains("absent from configPage settings")
+        }
+        absentWarn != null
+
+        and: "NO such absent-input warn fires for trashActs -- it is supplied via extraSettings, not a missing page input"
+        warnLogs.count {
+            it.msg?.contains("_rmSubmitFullPageForm") &&
+            it.msg?.contains("'trashActs'") &&
+            it.msg?.contains("absent from configPage settings")
+        } == 0
+
+        and: "NO such absent-input warn fires for the cancelTrash button -- buttons take the silent-empty branch"
+        warnLogs.count {
+            it.msg?.contains("_rmSubmitFullPageForm") &&
+            it.msg?.contains("'cancelTrash'") &&
+            it.msg?.contains("absent from configPage settings")
+        } == 0
+    }
+
+    // S2-replaceActions-empty-normalizes-to-clear: `replaceActions: []` is
+    // semantically "clear and add nothing" == clearActions. The dispatcher-top
+    // normalization rewrites it to the clearActions path so the response reports
+    // the clear-only stage, NOT replaceActions.clear_committed_late_no_add with
+    // an empty pendingActionsToAdd. Driven on the defensive async-commit path
+    // (actions never disappear) so the stage discriminator is observable: a
+    // regression that left it on the replace branch would emit the
+    // replaceActions.* stage instead.
+    def "replaceActions:[] normalizes to the clearActions path (clear-only stage, no replaceActions stage / pendingActionsToAdd)"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // Action never disappears -- the verify-retry exhausts and the
+            // helper throws the asyncCommit marker, surfacing the envelope so
+            // the stage discriminator can be asserted.
+            statusJson(100, [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, replaceActions: [], confirm: true])
+
+        then: "the trashActs submit fired -- the clear path actually ran"
+        trashActsWritten
+
+        and: "routed through the clear path: clearActions stage, NOT the replaceActions stage"
+        result.asyncCommitLikely == true
+        result.stage == 'clearActions.verify_absent'
+        result.stage != 'replaceActions.clear_committed_late_no_add'
+
+        and: "no replaceActions-only envelope fields -- the empty list is not treated as an add half"
+        !result.containsKey('pendingActionsToAdd')
+        !result.containsKey('clearActionsResult')
+
+        and: "no add half ran -- no actionDone clicks (proves the replace branch was not entered)"
+        posts.count { it.path == "/installedapp/btn" && it.body?.stateAttribute == "actionDone" } == 0
+    }
+
+    // S2-patches-clearActions-synchronous-success: the synchronous full-form
+    // submit holds through the patches call site too -- same _rmClearActions /
+    // _rmSubmitFullPageForm helpers, different rollup. Mirrors the top-level
+    // synchronous-success spec but drives via patches[[clearActions:true]].
+    def "patches clearActions commits synchronously: full-form submit, seeded value preserved, clean per-patch result"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                // Seed a real current value so the wholesale-replace re-emission
+                // has a value to preserve (regression guard for fail-loud re-emit).
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // Synchronous commit: the action is gone on the first post-write check.
+            statusJson(100, trashActsWritten ? [] : [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, patches: [[clearActions: true]], confirm: true])
+
+        then: "synchronous success -- no asyncCommitLikely leakage at the rollup"
+        result.success == true
+        result.partial != true
+        result.asyncCommitLikely != true
+
+        and: "the per-patch result reports the clear op with the exact removed-index set"
+        def clearPatch = result.patches?.find { it.op == "clearActions" }
+        clearPatch != null
+        clearPatch.success == true
+        (clearPatch.removedIndices ?: []).collect { it.toString() } == ["1"]
+
+        and: "the rule is now empty -- collected action indices are [] (not null)"
+        script._rmCollectActionIndices(100) == []
+
+        and: "trashActs committed via a FULL page-form submit (envelope present, seeded value preserved exactly)"
+        def trashPost = posts.find { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+        trashPost != null
+        trashPost.body["formAction"] == "update"
+        trashPost.body["currentPage"] == "selectActions"
+        trashPost.body["version"] == "7"
+        trashPost.body["settings[actType.1]"] == "switchActs"
+        trashPost.body["settings[trashActs]"] == '["1"]'
+    }
+
+    // S2-patches-replaceActions-empty-normalizes-to-clear: the patches branch
+    // must apply the SAME `replaceActions:[]` -> clearActions normalization the
+    // top-level dispatcher does, so an empty list reports the clear-only op (not
+    // a replaceActions op with an empty add half). Pairs with the patches-branch
+    // normalization fix.
+    def "patches replaceActions:[] normalizes to the clearActions path (clear-only op, no replaceActions add half)"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, trashActsWritten ? [] : [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, patches: [[replaceActions: []]], confirm: true])
+
+        then: "the trashActs submit fired -- the clear path actually ran"
+        trashActsWritten
+
+        and: "the per-patch op is clearActions, NOT replaceActions (empty list normalized to clear)"
+        def patch = result.patches?.first()
+        patch != null
+        patch.op == "clearActions"
+        result.patches.count { it.op == "replaceActions" } == 0
+
+        and: "no replaceActions add half -- no addedResults slot, no add-half action clicks"
+        !patch.containsKey("addedResults")
+        !patch.containsKey("pendingActionsToAdd")
+        posts.count { it.path == "/installedapp/btn" && it.body?.stateAttribute == "actionDone" } == 0
+    }
+
     def "clearActions succeeds on second check when trashActs propagation lags (race-recovery path)"() {
         given:
         enableHubAdminWrite()
@@ -2218,19 +2532,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
         // Fixture strategy: count post-trashActs statusJson calls. The
         // asyncCommitLikely throw fires after _rmClearActions's retry loop
-        // exhausts. Production sequence after trashActs POST commits:
-        //   call 1: _rmVerifyMultipleFlags inside _rmUpdateAppSettings
-        //   calls 2-5: 4 retry-loop _rmCollectActionIndices fetches
+        // exhausts. Production sequence after the trashActs full-form submit
+        // (no _rmVerifyMultipleFlags fetch -- the synchronous submit path does
+        // not call it):
+        //   calls 1-4: 4 retry-loop _rmCollectActionIndices fetches
         //   helper throws asyncCommitLikely marker here
-        //   call 6: dispatcher catch's actionsStillPresent re-fetch  <-- TARGET
-        // Throw on call 6 to fail the post-catch fetch while every earlier
+        //   call 5: dispatcher catch's actionsStillPresent re-fetch  <-- TARGET
+        // Throw on call 5 to fail the post-catch fetch while every earlier
         // call succeeds (helper reaches the marker throw cleanly).
         def trashActsWritten = false
         def postTrashStatusCalls = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             if (trashActsWritten) {
                 postTrashStatusCalls++
-                if (postTrashStatusCalls == 6) {
+                if (postTrashStatusCalls == 5) {
                     throw new RuntimeException("simulated hub blip on post-catch actionsStillPresent fetch")
                 }
             }
@@ -2261,7 +2576,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.actionsRequestedForRemoval == [1, 2]
 
         and: "the targeted call did fire (smoke-check: spec discriminates the dispatcher's catch path from accidentally-succeeded re-fetch)"
-        postTrashStatusCalls >= 6
+        postTrashStatusCalls >= 5
     }
 
     // S2-clearActions-stateEditAct-fetch-failure: when _rmGetStateEditAct
@@ -2278,10 +2593,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (level == "debug") debugLogs << [level: level, component: component, msg: msg]
         }
         // Same post-trashActs call counting as the sibling spec, but throw
-        // on call 7 instead of 6: call 6 is the catch's actionsStillPresent
-        // re-fetch (let it succeed), call 7 is _rmGetStateEditAct's underlying
+        // on call 6 instead of 5: call 5 is the catch's actionsStillPresent
+        // re-fetch (let it succeed), call 6 is _rmGetStateEditAct's underlying
         // _rmFetchStatusJson (throw). The catch's possibleStateEditAct try /
-        // catch should swallow that and emit the debug breadcrumb.
+        // catch should swallow that and emit the debug breadcrumb. (Counts are
+        // one lower than the pre-synchronous-submit version: the full-form
+        // submit path drops the _rmVerifyMultipleFlags status fetch.)
         def trashActsWritten = false
         def postTrashStatusCalls = 0
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -2294,7 +2611,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params ->
             if (trashActsWritten) {
                 postTrashStatusCalls++
-                if (postTrashStatusCalls == 7) {
+                if (postTrashStatusCalls == 6) {
                     throw new RuntimeException("simulated hub blip on appState fetch for state.editAct")
                 }
             }
@@ -2316,11 +2633,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.stage == 'clearActions.verify_absent'
         result.possibleStateEditAct == false
 
-        and: "actionsStillPresent populates (the FIRST post-throw fetch succeeded -- call 6)"
+        and: "actionsStillPresent populates (the actionsStillPresent re-fetch succeeded -- call 5)"
         result.actionsStillPresent == [1]
 
         and: "the targeted _rmGetStateEditAct call did fire (smoke-check)"
-        postTrashStatusCalls >= 7
+        postTrashStatusCalls >= 6
 
         and: "the debug breadcrumb fires so operators can see why the diagnostic defaulted (not silent swallow)"
         debugLogs.any {
