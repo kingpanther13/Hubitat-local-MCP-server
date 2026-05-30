@@ -1480,6 +1480,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v1.4.3** - docs: introducing security policy; Potential fix for code scanning alerts: Workflow does not contain permissions; fix: commit clearActions/replaceActions delete synchronously via full page-form submit (closes #172). PRs: [#218](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/218), [#219](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/219), [#217](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/217)
 - **v1.4.2** - feat: importUrl + installAsUserApp + triggerUpdated for app/driver/library install + update tools. PRs: [#213](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/213)
 - **v1.4.1** - Revert "refactor: flat-mode tool surface reduction (103 → 95 tools)". PRs: [#216](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/216)
 - **v1.4.0** - refactor: flat-mode tool surface reduction (103 → 95 tools). PRs: [#208](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/208)
