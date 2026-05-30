@@ -710,6 +710,54 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 
 All four share `updateRuleFailed` and `updateRuleError` for the common facts. The slot-name divergence is intentional -- a caller-facing diagnostic, not a code-side typology. Single-name unification was considered and rejected because it would force every caller to read the operation-type to interpret the consequence.
 
+##### `clearActions` / `replaceActions` commit semantics + rare defensive partial
+
+Arg shapes: `clearActions: true` (boolean, no index -- removes every action). `replaceActions: [<spec>, ...]` (array; each entry takes the same shape as an `addAction` item). `replaceActions: []` clears all actions without adding any -- equivalent to `clearActions: true`.
+
+`clearActions` / `replaceActions` commit the trashActs delete **synchronously**: the tool submits the full selectActions page form (the complete form-action envelope plus the serialized page state, exactly as the native UI does), which makes Rule Machine run its `trashActs` submitOnChange handler in-band during the POST. The selected actions are deleted by the time the call returns, so the common-case response is a normal success with the actions gone.
+
+A bare settings-write of `trashActs` (the prior approach) stored the value but never ran the handler, so the delete could strand. The full-form submit fixes that root cause.
+
+The tool keeps a thin defensive net: it still verifies the delete via a short retry loop after the submit. In the rare residual case where verification keeps seeing the actions present (a stuck `state.editAct` no-op, or an uncommon firmware commit lag), the tool returns the eventual-consistency partial below rather than a hard failure. This should almost never fire now that the handler runs synchronously:
+
+```json
+{
+  "success": false,
+  "partial": true,
+  "asyncCommitLikely": true,
+  "appId": "<id>",
+  "stage": "clearActions.verify_absent",
+  "httpWriteStatus": 200,
+  "actionsRequestedForRemoval": [1, 2],
+  "actionsStillPresent": [1, 2],
+  "possibleStateEditAct": false,
+  "wizardStuck": false,
+  "error": "<existing diagnostic message>",
+  "safeRecovery": {
+    "recommended": "verify-then-decide",
+    "verifyVia": "get_app_config(appId: <id>)",
+    "ifActionsAbsent": "treat as success -- clearActions committed post-response",
+    "ifActionsPresent": "wait 15s, then call get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
+    "avoid": ["cancelTrash"]
+  },
+  "backup": "<backup>",
+  "restoreHint": "<restoreHint>",
+  "verifyHint": "<verifyHint>"
+}
+```
+
+The caller's recovery path is to call `get_app_config(appId)` and inspect the actions list. If absent, treat the operation as a success -- the delete committed between the POST return and this verify fetch. If still present, retry. **Do not** invoke `cancelTrash` to recover -- in trash-confirmation mode it can commit pending deletes rather than abort.
+
+For `replaceActions`, this same retry-window-expired case on the inner clearActions step yields `stage: 'replaceActions.clear_committed_late_no_add'`. The add half is **not attempted** -- because the clear may have committed asynchronously, completing the add would risk a double-write if the caller retries the whole replace after seeing the partial. The original action specs are echoed back as `pendingActionsToAdd` so the caller can finish the replace via `addAction` (or bulk `addActions`) once `get_app_config` confirms the clear committed. `clearActionsResult` exposes a fingerprint subset of the standalone clearActions partial: `{stage, asyncCommitLikely, actionsRequestedForRemoval, actionsStillPresent, error}` -- the outer envelope carries the `safeRecovery` / `backup` / `restoreHint` / `verifyHint` slots. On the replaceActions sub-shape, `verifyHint` AND `error` are replaced with copy that names the data-loss-protection rationale rather than echoing clearActions' diagnostic.
+
+`removeAction`, `removeTrigger`, and `modifyTrigger` remain on the legacy flat error shape (no `asyncCommitLikely` envelope) **because** each operates on a single row and there is no add half, so the data-loss case (add-half double-write on retry) that justifies the richer recovery contract does not apply.
+
+When `clearActions` / `replaceActions` appears inside a `patches` sub-spec and hits the retry-window-expired case, the raw `[asyncCommitLikely]` marker is stripped from the per-patch error **but** the structured envelope is NOT emitted -- because patches continues over subsequent ops and the per-patch `success: false` plus the outer `partial:` flag already surface the failure, the caller instead receives a flat `{success: false, op: '...', error: '...', spec: ...}` entry in `patches[i]` and should match on the "after 10s of retries" phrase to identify the eventual-consistency case.
+
+Implication: when a `patches` sub-spec containing `clearActions` / `replaceActions` hits the async-commit case, subsequent patch ops in the same call still execute and the trailing `updateRule` still fires. The first patch is reported as failed in `patches[i]` but the call is not aborted. For atomic clear-then-add semantics, use top-level `replaceActions` (which skips the add half on async-commit) rather than chaining patches.
+
+Degenerate-case semantics: `actionsRequestedForRemoval: null` indicates the pre-write snapshot fetch failed; `actionsStillPresent: null` indicates the post-window re-fetch failed; `possibleStateEditAct: false` is the safe default when `_rmGetStateEditAct` fails. These three are best-effort diagnostic slots -- `null` does NOT mean "field absent," it means "fetch failed on this side; the structured envelope is still actionable via the other fields and `safeRecovery`."
+
 #### `create_native_app` reference
 
 ##### appType options
