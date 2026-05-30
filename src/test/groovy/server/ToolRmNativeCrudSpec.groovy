@@ -6392,6 +6392,69 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: result.success == true
     }
 
+    def "addTrigger.condition Variable: compareToVariable combined with value is rejected (mutually exclusive)"() {
+        // LOAD-BEARING negative guard for the _rmBuildCondition (selectTriggers) path.
+        // Supplying both a variable RHS (compareToVariable) and a constant RHS (value) is
+        // ambiguous; before the fix the static helper wrote BOTH xVar_<N> and state_<N>,
+        // contradicting the doc's "mutually exclusive" claim. The reject must fire before
+        // any write -- the IllegalArgumentException is caught by toolUpdateNativeApp's
+        // backup-and-catch wrapper and surfaced as [success:false, error:...].
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Variable"]],
+                                 [name: "xVar1", type: "enum", options: ["A"]],
+                                 [name: "ReltDev1", type: "enum", options: ["*changed*"]],
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "condTrig.1", type: "enum", options: ["a"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Variable"]],
+                                 [name: "xVar_1", type: "enum", options: ["A", "B"]],
+                                 [name: "RelrDev_1", type: "enum", options: ["=", ">"]],
+                                 [name: "isVar_1", type: "bool"],
+                                 [name: "state_1", type: "number"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Variable",
+                variable: "A",
+                comparator: "*changed*",
+                condition: [capability: "Variable", variable: "A", comparator: ">", compareToVariable: "B", value: 50]
+            ],
+            confirm: true
+        ])
+
+        then: "the helper rejects the ambiguous combination -- success=false with a mutual-exclusivity error"
+        result.success == false
+        result.error.toString().toLowerCase().contains("mutually exclusive")
+
+        and: "neither the variable RHS (xVarR_1) nor the constant RHS (state_1) was written"
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[xVarR_1]") }
+        !posts.any { it.path == "/installedapp/update/json" && it.body["settings[state_1]"]?.toString() == "50" }
+    }
+
     def "condition.variable is required when condition.capability='Variable'"() {
         // Symmetric guard with the trigger-side missing-variable error.
         // The condition can't be built without a hub variable name on the
@@ -7353,6 +7416,703 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "RelrDev_1 was NOT written -- no comparator means no comparator write"
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("RelrDev") } }
+    }
+
+    // ---------- compareToVariable on the walker pages (STPage / doActPage) ----------
+
+    def "addAction ifThen Variable compareToVariable: walker writes isVar_N + discovered RHS-variable field with the variable name"() {
+        // LOAD-BEARING regression guard for the Variable-vs-Variable RHS on doActPage.
+        // Before the fix the walker's Variable branch had no compareToVariable handling,
+        // so it silently fell through to the constant-RHS state_<N> path and the
+        // condition rendered "A is > null". After the fix the walker toggles isVar_1=true
+        // to reveal the right-hand variable picker, discovers its firmware-assigned name
+        // from the live schema, validates the variable, and writes it.
+        given:
+        enableHubAdminWrite()
+        def isVarWritten = false
+        def daSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        // doActPage: Variable LHS picker + comparator visible immediately; the
+        // right-hand variable picker (xVarR_1) only appears after isVar_1=true.
+        // Incrementing seq -> every write observes a render shift -> routes to applied.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "≠", "<", ">"]],
+                [name: "isVar_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"]
+            ]
+            if (isVarWritten) {
+                inputs = inputs + [[name: "xVarR_1", type: "enum", options: ["A": "A", "B": "B"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF A > B THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF A > B THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Variable",
+                    variable: "A",
+                    comparator: ">",
+                    compareToVariable: "B"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "isVar_1=true is written to reveal the right-hand variable picker"
+        result.success == true
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[isVar_1]"]?.toString() == "true" }
+
+        and: "the discovered RHS-variable field (xVarR_1) carries the compareToVariable name exactly"
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[xVarR_1]"]?.toString() == "B" }
+
+        and: "no numeric state_1 RHS is written -- constant path is bypassed for variable-vs-variable"
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[state_1]") }
+    }
+
+    def "addAction ifThen Variable compareToVariable: empty RHS-picker option list emits api_unavailable sentinel and flips partial"() {
+        // LOAD-BEARING guard for the RHS empty-options degradation path. When the revealed
+        // right-hand picker has NO options (hub with no vars / lazily-populated enum / probe
+        // race), the walker must NOT write the variable name silently-unvalidated. It logs +
+        // appends an api_unavailable sentinel for the RHS picker so the skip flows into
+        // settingsSkipped and flips partial. Mirrors the LHS variable-validation fallback.
+        given:
+        enableHubAdminWrite()
+        def isVarWritten = false
+        def daSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        // xVarR_1 reveals after isVar_1=true but with an EMPTY options list.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", ">"]],
+                [name: "isVar_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"]
+            ]
+            if (isVarWritten) {
+                inputs = inputs + [[name: "xVarR_1", type: "enum", options: []]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF A > B THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF A > B THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Variable",
+                    variable: "A",
+                    comparator: ">",
+                    compareToVariable: "B"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the RHS-picker empty-options path surfaces an api_unavailable sentinel for the RHS, not a silent success"
+        (result.settingsSkipped ?: []).any {
+            it instanceof Map && it.reason == "api_unavailable" && it.key == "compareToVariable-validation"
+        }
+
+        and: "partial is flipped by the degradation sentinel"
+        result.partial == true
+
+        and: "the variable name still writes (best-effort, the only signal we have)"
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[xVarR_1]"]?.toString() == "B" }
+    }
+
+    def "addAction ifThen Variable compareToVariable: RHS picker discovered when named rVarR_N (not hardcoded xVarR)"() {
+        // Guard that the discovery regex resolves a non-xVarR firmware field name. The
+        // walker must NOT hardcode xVarR_<N>; it discovers whatever the live schema reveals.
+        given:
+        enableHubAdminWrite()
+        def isVarWritten = false
+        def daSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        // RHS picker reveals as rVarR_1 (a firmware-variant name), NOT xVarR_1.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", ">"]],
+                [name: "isVar_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"]
+            ]
+            if (isVarWritten) {
+                inputs = inputs + [[name: "rVarR_1", type: "enum", options: ["A": "A", "B": "B"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF A > B THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF A > B THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Variable",
+                    variable: "A",
+                    comparator: ">",
+                    compareToVariable: "B"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the variable name lands in the discovered rVarR_1 field -- not hardcoded to xVarR_1"
+        result.success == true
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[rVarR_1]"]?.toString() == "B" }
+
+        and: "no write went to xVarR_1 -- the hardcoded slot is never assumed"
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[xVarR_1]") }
+    }
+
+    def "addRequiredExpression Variable compareToVariable: walker writes isVar_N + RHS-variable field on STPage too"() {
+        // Parity guard: the same Variable-vs-Variable RHS must work on the STPage
+        // (required-expression) walker path, not just doActPage.
+        given:
+        enableHubAdminWrite()
+        def isVarWritten = false
+        def stSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "A > B"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // Incrementing seq -> every write observes a render shift -> routes to applied.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stSeq++
+            def inputs = [
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "≠", "<", ">"]],
+                [name: "isVar_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"],
+                [name: "doneST", type: "button"]
+            ]
+            if (isVarWritten) {
+                inputs = inputs + [[name: "xVarR_1", type: "enum", options: ["A": "A", "B": "B"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["A > B (seq ${stSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Variable",
+                variable: "A",
+                comparator: ">",
+                compareToVariable: "B"
+            ]]],
+            confirm: true
+        ])
+
+        then: "isVar_1 + xVarR_1 both land on STPage"
+        result.success == true
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[isVar_1]"]?.toString() == "true" }
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[xVarR_1]"]?.toString() == "B" }
+    }
+
+    def "addRequiredExpression Variable constant value: walker writes state_N and does NOT touch isVar_N/xVarR_N (negative pin)"() {
+        // NEGATIVE pin for the constant-RHS walker path: when the caller passes `value`
+        // (numeric RHS) and NO compareToVariable, the walker must take the state_<N> path
+        // and must NOT toggle isVar_<N> or write xVarR_<N>. Guards against a regression
+        // where the new compareToVariable branch always fires and renders "A > B" when the
+        // caller asked for "A > 50".
+        given:
+        enableHubAdminWrite()
+        def stSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "A > 50"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // isVar_1 is present in the schema (so a regression that wrote it would land),
+        // but the constant-RHS path must leave it alone. Incrementing seq -> writes land.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                                 [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                                 [name: "RelrDev_1", type: "enum", options: ["=", ">"]],
+                                 [name: "isVar_1", type: "bool"],
+                                 [name: "state_1", type: "number"],
+                                 [name: "hasAll", type: "button"],
+                                 [name: "doneST", type: "button"]
+                             ], paragraphs: ["A > 50 (seq ${stSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Variable",
+                variable: "A",
+                comparator: ">",
+                value: 50
+            ]]],
+            confirm: true
+        ])
+
+        then: "state_1 carries the numeric value"
+        result.success == true
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[state_1]"]?.toString() == "50" }
+
+        and: "isVar_1 is never written TRUE -- constant-RHS path leaves the compare-to-variable toggle off"
+        // The walker's post-commit cleanup form blanks every schema field (isVar_1 included)
+        // with an empty value, so assert on the VALUE the regression would write (true),
+        // not mere key presence.
+        !posts.any { it.path == "/installedapp/update/json" && it.body["settings[isVar_1]"]?.toString() == "true" }
+
+        and: "xVarR_1 is never written with the variable name -- no variable RHS on the constant path"
+        !posts.any { it.path == "/installedapp/update/json" && (it.body["settings[xVarR_1]"]?.toString() ?: "") != "" }
+    }
+
+    def "addAction ifThen Variable: compareToVariable combined with value is rejected (mutually exclusive)"() {
+        // Negative guard: supplying both a variable RHS (compareToVariable) and a
+        // constant RHS (value) is ambiguous -- the walker must reject it before any write.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Variable"]],
+                                 [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                                 [name: "RelrDev_1", type: "enum", options: ["=", ">"]],
+                                 [name: "isVar_1", type: "bool"],
+                                 [name: "state_1", type: "number"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Variable",
+                    variable: "A",
+                    comparator: ">",
+                    compareToVariable: "B",
+                    value: 50
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the walker rejects the ambiguous combination -- success=false with a mutual-exclusivity error"
+        // The IllegalArgumentException from the walker is caught by toolUpdateNativeApp's
+        // backup-and-catch wrapper and surfaced as a structured [success:false, error:...]
+        // map (with backup/restoreHint), not the JSON-RPC isError envelope.
+        result.success == false
+        result.error.toString().toLowerCase().contains("mutually exclusive")
+
+        and: "no condition fields were written -- the reject fired before any hub write"
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[isVar_1]") }
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[xVarR_1]") }
+    }
+
+    // ---------- compareToDevice missing-comparator guard ----------
+
+    def "addAction ifThen compareToDevice without comparator throws before any hub write"() {
+        // Negative guard: a device RHS (compareToDevice) with no comparator leaves a
+        // half-written condition (rCapab/rDev but no operator/RHS) that silently passes
+        // through hasAll. The walker must reject it before touching the hub.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Temperature", "Switch"]],
+                                 [name: "rDev_1", type: "capability.sensor", multiple: true],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Temperature",
+                    deviceIds: [8],
+                    compareToDevice: [deviceId: 9, attribute: "temperature"]
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the walker rejects the missing comparator -- success=false with a comparator error"
+        // IllegalArgumentException from the walker is caught by toolUpdateNativeApp's
+        // backup-and-catch wrapper and surfaced as a structured [success:false, error:...] map.
+        result.success == false
+        result.error.toString().toLowerCase().contains("requires 'comparator'")
+
+        and: "no rCapab/rDev condition fields were written -- reject fired before any hub write"
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[rCapab_1]") }
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[rDev_1]") }
+    }
+
+    // ---------- _rmAddTrigger informational-skipped partial filter ----------
+
+    def "addTrigger Custom Attribute changed: informational not_in_schema skip does NOT flip partial"() {
+        // POSITIVE guard for the cosmetic-partial fix. A Custom-Attribute '*changed*'
+        // trigger needs no comparator RHS, so ReltDev_1 / tCustomAttr_1 are legitimately
+        // absent from the trigger schema and skip with not_in_schema. The trigger bakes
+        // correctly; not_in_schema must NOT flip partial.
+        given:
+        enableHubAdminWrite()
+        def trigSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectTriggers: tCapab1 + tDev1 + tCustomAttr1 (attribute picker) present and
+        // landing (incrementing seq -> renderShifted -> applied); but ReltDev1 (comparator)
+        // is NOT in schema -- a '*changed*' trigger has no RHS comparator, so writing it
+        // skips with not_in_schema. That cosmetic skip must NOT flip partial.
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            trigSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Custom Attribute", "Switch"]],
+                                 [name: "tDev1", type: "capability.sensor", multiple: true],
+                                 [name: "tCustomAttr1", type: "enum", options: ["water"]],
+                                 [name: "moreCond", type: "button"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${trigSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // mainPage shows the trigger DID bake (no "Define Triggers" placeholder).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["Custom Attr water changed"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "water",
+                comparator: "*changed*"
+            ],
+            confirm: true
+        ])
+
+        then: "trigger committed and partial is NOT set -- the not_in_schema skip is cosmetic"
+        result.success == true
+        result.partial == false
+    }
+
+    def "addTrigger genuine silent_rejection still flips partial (negative pin)"() {
+        // NEGATIVE pin: a real value that the schema accepts but the hub silently rejects
+        // (schema unchanged on re-fetch, value not echoed) produces silent_rejection, which
+        // is genuine degradation and MUST continue to flip partial even after the
+        // not_in_schema/informational filter is applied.
+        given:
+        enableHubAdminWrite()
+        // tDev1 stays in the schema and never reflects the written value, and the schema
+        // never advances -> _rmWriteSettingOnPage routes tDev1 to silent_rejection.
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Switch", "Motion"]],
+                                 [name: "tDev1", type: "capability.switch", multiple: true],
+                                 [name: "tstate1", type: "enum", options: ["on", "off"]],
+                                 [name: "moreCond", type: "button"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["static"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["Switch1 on"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [8],
+                state: "on"
+            ],
+            confirm: true
+        ])
+
+        then: "a genuine silent_rejection skip flips partial=true"
+        (result.settingsSkipped ?: []).any { it.reason == "silent_rejection" }
+        result.partial == true
     }
 
     // ---------- Custom Engine toggle visibility + source marker + read-only gate ----------
