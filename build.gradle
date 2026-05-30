@@ -97,8 +97,9 @@ dependencies {
     testImplementation 'net.bytebuddy:byte-buddy:1.18.8'
 
     // Security pin: commons-collections 3.2.x carries the InvokeTransformer
-    // deserialization RCE (CVE-2015-7501, CVE-2015-6420). 3.2.2 is a same-line,
-    // drop-in patch — adds FunctorUtils serialization guards, no API change.
+    // deserialization RCE (CVE-2015-7501, CVE-2015-6420). 3.2.2 is a drop-in
+    // patch on the same 3.2.x release line — adds FunctorUtils serialization
+    // guards, no API change.
     // Reaches the test classpath transitively only
     // (hubitat_ci -> http-builder -> json-lib -> commons-collections) and is
     // never shipped — packageManifest.json deploys only the two .groovy files.
