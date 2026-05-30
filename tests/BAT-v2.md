@@ -3196,8 +3196,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create two hub variables (number type) named 'BatVarA' and 'BatVarB'. Create RM rule 'BAT VarVsVar'."
-,
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create two hub variables (number type) named 'BatVarA' and 'BatVarB'. Create RM rule 'BAT VarVsVar'.",
   "test_prompt": "Add a Required Expression to 'BAT VarVsVar' using addRequiredExpression: {conditions:[{capability:'Variable', variable:'BatVarA', comparator:'>', compareToVariable:'BatVarB'}]}. Then inspect the rule paragraph on mainPage and result.settingsApplied.",
   "teardown_prompt": "Delete 'BAT VarVsVar' and remove BatVarA / BatVarB."
 }
@@ -3215,8 +3214,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify two Temperature-capable devices (deviceA + deviceB). Create RM rule 'BAT CtdNoComp'."
-,
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify two Temperature-capable devices (deviceA + deviceB). Create RM rule 'BAT CtdNoComp'.",
   "test_prompt": "Add a Required Expression to 'BAT CtdNoComp' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], compareToDevice:{deviceId:<deviceB>, attribute:'temperature'}}]} -- deliberately OMITTING comparator. Observe the error.",
   "teardown_prompt": "Delete 'BAT CtdNoComp'."
 }
@@ -3232,8 +3230,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device exposing a custom attribute (e.g. a sensor with a 'water' attribute). Create RM rule 'BAT CustomChanged'."
-,
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device exposing a custom attribute (e.g. a sensor with a 'water' attribute). Create RM rule 'BAT CustomChanged'.",
   "test_prompt": "Add a trigger to 'BAT CustomChanged' using addTrigger: {capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'water', comparator:'*changed*'}. Inspect result.partial and result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CustomChanged'."
 }
