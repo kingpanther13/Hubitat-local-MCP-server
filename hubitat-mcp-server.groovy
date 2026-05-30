@@ -20157,7 +20157,9 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
  * unit. Every input on the page schema is re-emitted, taking its value from
  * currentSettings. Inputs present in currentSettings are preserved exactly;
  * inputs absent from currentSettings are submitted empty (buttons silently,
- * non-button inputs with a warn log). Because the submit is wholesale, any
+ * non-button inputs with a warn log AND their names returned in the response
+ * `blankedInputs` list so a caller can refuse a silently-blanked write).
+ * Because the submit is wholesale, any
  * non-button input the caller wants preserved MUST appear in currentSettings --
  * pass the COMPLETE configPage settings map for any page where untouched fields
  * must survive, or the submit may blank them. extraSettings carries the inputs
@@ -20174,6 +20176,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     // drop untouched fields, then overlay the inputs being changed. Inputs are
     // enumerated from the page schema; each takes its value from currentSettings.
     def fullMap = [:]
+    def blankedInputs = []
     schema?.each { name, meta ->
         if (currentSettings?.containsKey(name)) {
             fullMap[name] = currentSettings[name]
@@ -20188,6 +20191,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
             // extraSettings are being set deliberately (not blanked), so they do
             // not warn. (Harmless for the trashActs delete path either way.)
             if (!extraSettings?.containsKey(name)) {
+                blankedInputs << name
                 mcpLog("warn", "rm-native", "_rmSubmitFullPageForm: page input '${name}' (type=${meta?.type}) on ${pageName} for app ${appId} is absent from configPage settings -- submitting empty; if this field needed preserving the full-form submit may blank it")
             }
             fullMap[name] = ""
@@ -20219,8 +20223,13 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
         // submit (stale version token, auth, malformed envelope, etc.) instead
         // of just a bare status code.
         def bodyPreview = resp?.data?.toString()?.take(200)
-        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}")
+        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The submit was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via get_app_config(appId=${appId}) and retry). The page may be left in trash-confirmation mode; on this hard-fail path the tool backs it out automatically via cancelTrash. Do NOT treat this as a partial delete.")
     }
+    // Surface any non-button inputs the wholesale-replace blanked (absent from
+    // currentSettings AND not in extraSettings) so a caller can refuse a
+    // silently-blanked write. Empty/absent on the trashActs delete path, where
+    // nothing load-bearing is blanked.
+    if (blankedInputs && resp instanceof Map) resp.blankedInputs = blankedInputs
     return resp
 }
 

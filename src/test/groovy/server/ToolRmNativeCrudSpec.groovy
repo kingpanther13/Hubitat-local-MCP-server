@@ -1768,6 +1768,142 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         } == 0
     }
 
+    // S2-fullform-hub-400-surfaces-as-error: a >=400 from the full-form submit
+    // throws and surfaces as success:false with the status + body preview in the
+    // error, and is NOT promoted to the asyncCommitLikely envelope -- a rejected
+    // submit committed nothing, so it must not read as a delayed/partial success.
+    def "clearActions hub-400 on the full-form submit surfaces success:false (not asyncCommitLikely)"() {
+        given:
+        enableHubAdminWrite()
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // The trashActs full-form submit is rejected by the hub (e.g. stale
+            // version token). Other POSTs (the cancelTrash hard-fail backout) succeed.
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                return [status: 400, location: null, data: '{"error":"stale version token"}']
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "hard failure -- NOT promoted to the asyncCommitLikely envelope"
+        result.success == false
+        result.asyncCommitLikely != true
+        result.stage == null
+
+        and: "the error surfaces the rejecting status and the truncated body preview"
+        result.error?.contains("status=400")
+        result.error?.contains("stale version token")
+
+        and: "the internal marker is not leaked into the error"
+        !result.error?.contains("[asyncCommitLikely]")
+    }
+
+    // S2-fullform-version-token-absent: when the selectActions configPage carries
+    // no app.version, the full-form submit OMITS the version field entirely (the
+    // `if (v != null) body.version` branch) rather than sending "null". The delete
+    // still commits. Pins the only full-form envelope field with conditional emission.
+    def "full-form submit omits the version token when configPage has no app.version"() {
+        given:
+        enableHubAdminWrite()
+        def trashActsWritten = false
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                // app present but NO version field -- exercises the omit branch.
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, trashActsWritten ? [] : [[name: "actType.1", value: "switchActs"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                trashActsWritten = true
+            }
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+
+        then: "the clear still succeeds without a version token"
+        result.success == true
+        result.asyncCommitLikely != true
+
+        and: "the full-form submit body omits the version field entirely (not 'null'/empty)"
+        def trashPost = posts.find { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+        trashPost != null
+        !trashPost.body.containsKey("version")
+
+        and: "the rest of the form-action envelope is still present"
+        trashPost.body["formAction"] == "update"
+        trashPost.body["currentPage"] == "selectActions"
+    }
+
+    // S2-fullform-blankedInputs-return: the wholesale-replace surfaces any
+    // non-button input it blanked (absent from currentSettings AND not in
+    // extraSettings) in the returned `blankedInputs` list, so a caller can refuse
+    // a silently-blanked write. Buttons and extraSettings keys are NOT reported,
+    // and the key is absent entirely when nothing was blanked.
+    def "full-form submit returns blankedInputs naming non-button inputs it blanked"() {
+        given:
+        enableHubAdminWrite()
+        def schema = [
+            "actType.1": [type: "enum"],
+            "cancelTrash": [type: "button"],
+            "trashActs": [type: "enum", multiple: true]
+        ]
+        def cfg = [app: [label: "r", version: 7]]
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "actType.1 is absent from currentSettings and not in extraSettings -> blanked"
+        def resp = script._rmSubmitFullPageForm(100, "selectActions", cfg, schema, [:], ["trashActs": ["1"]])
+
+        then: "blankedInputs names the absent non-button input only"
+        resp.blankedInputs == ["actType.1"]
+        !resp.blankedInputs.contains("cancelTrash")
+        !resp.blankedInputs.contains("trashActs")
+
+        when: "every non-button input is supplied -> nothing blanked"
+        def resp2 = script._rmSubmitFullPageForm(100, "selectActions", cfg, schema, ["actType.1": "switchActs"], ["trashActs": ["1"]])
+
+        then: "no blankedInputs key when nothing was blanked"
+        !resp2.containsKey("blankedInputs")
+    }
+
     // S2-replaceActions-empty-normalizes-to-clear: `replaceActions: []` is
     // semantically "clear and add nothing" == clearActions. The dispatcher-top
     // normalization rewrites it to the clearActions path so the response reports
