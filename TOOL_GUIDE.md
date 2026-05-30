@@ -575,18 +575,27 @@ Reference for the `update_native_app` structured shortcuts (`addTrigger`, `addAc
 - **Periodic Schedule** (`capability='Periodic Schedule'`): recurring schedule via the dedicated periodic sub-page. Spec:
   ```
   periodic={
-    frequency: 'Hourly'|'Daily'|'Cron String'|...,
-    everyN: <int>,                 // for "every N <unit>" mode (Hourly/Daily)
-    startingTime: 'HH:mm',         // start-time for everyN modes
+    frequency: 'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String',
+    everyN: <int>,                 // "every N <unit>" mode (Seconds/Minutes/Hourly/Daily)
+                                   //   REQUIRED even when =1 for Daily AND Hourly (omitting renders null)
+                                   //   Seconds/Minutes: whole number from [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer; fractional truncates, 5.5->5)
+    startingTime: 'HH:mm',         // start-time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none); for Hourly-everyN, pass it (omitting renders a cosmetic trailing "starting at " blank)
     weekdaysOnly: <bool>,          // Daily-only
     selectedHours: [9,12],         // Hourly-only, alternative to everyN
+    selectedMinutes: [0,30],       // Minutes-only, "at specific minutes", alternative to everyN
     selectedDaysOfMonth: [1,15],   // Daily-only, alternative to everyN/weekdays
+    daysOfWeek: ['Monday','Friday'], // Weekly-only, MULTI day-of-week
+    dayOfWeek: 'Monday',           // Monthly/Yearly nth-weekday, SINGLE day-of-week (distinct from daysOfWeek)
+    dayOfMonth: <int>,             // Monthly by-day "on day number" (pair with everyNMonths; exclusive with weekOfMonth)
+    everyNMonths: <int>,           // "of every N months" (Monthly, both modes; free integer)
+    months: 'December',            // Yearly only -- single nth-weekday month (String); Monthly does NOT take months
+    weekOfMonth: 'First',          // Monthly/Yearly nth-weekday: First|Second|Third|Fourth|Last (presence selects nth-weekday)
     minutesOffset: <int>,          // Hourly-only, when not using everyN (startingHCX1)
     cronString: '0 * * * *',       // Cron String mode
     rawSettings: {…}               // escape hatch for periodic-page fields not yet mapped
   }
   ```
-  Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod1` → `everyN`/select → time → Done) so the trigger description bakes correctly.
+  **Monthly has two mutually-exclusive modes:** *by-day* (`dayOfMonth` + `everyNMonths` -- BOTH required or the row renders `null`) and *nth-weekday* (`weekOfMonth` + `dayOfWeek` + `everyNMonths` -- e.g. "the Second Monday of every month"). Passing both `dayOfMonth` and `weekOfMonth` is rejected. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use `rawSettings`. **Yearly is ALWAYS nth-weekday:** `weekOfMonth` + `dayOfWeek` + single `months` (e.g. "the First Monday of December"); the month alone never completes, because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. **Seconds** exposes only the count enum -- no toggle, no `startingTime`. The Seconds/Minutes restricted enum is firmware-imposed; Hourly/Daily `everyN` accept any positive integer. Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod<N>` → `everyN`/select → time → Done, where `<N>` is the per-trigger sub-page index) so the trigger description bakes correctly. A Seconds/Minutes `everyN` outside the restricted enum, or a Monthly `dayOfMonth`+`weekOfMonth` combo, is rejected with `success=false` and a structured error (the whole-tool backup-and-catch envelope surfaces the validation failure as a structured map, not a thrown -32602).
 
 - **Inline conditional trigger** (`trigger.condition` Map): `{capability, deviceIds?, state?, comparator?, value?, attribute?, variable?, compareToVariable?, not?, rawSettings?}`. Drives the conditional-trigger sub-wizard inline (sets `isCondTrig.<N>=true` + `condTrig.<N>=a` + the condition fields + clicks hasAll). Convenience: pass singular `deviceId: N` (integer) instead of `deviceIds: [N]` (array) -- the dispatcher normalizes before writing. If both `deviceId` and `deviceIds` are supplied, `deviceIds` wins.
   - The following per-capability extended shapes work on `trigger.condition`: Variable (incl. `compareToVariable`), Custom Attribute (`attribute` + `comparator` + `state`/`value`), and enum/numeric device-state conditions. **Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps are NOT yet supported on `trigger.condition`** -- `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker. For those shapes use `addRequiredExpression.conditions[]` or `addAction.expression.conditions[]` instead.

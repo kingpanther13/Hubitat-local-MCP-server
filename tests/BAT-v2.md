@@ -2320,7 +2320,7 @@ All 103 tools are covered by at least one test, excluding the destructive operat
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 217 test scenarios** (113 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset) plus 13 excluded destructive operations documented for manual testing
+**Total: 227 test scenarios** (113 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3242,6 +3242,166 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ---
 
+### T623 — addTrigger Periodic Seconds: single count-enum field (no toggle)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Seconds'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Seconds' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Seconds', everyN:5}}. Inspect the trigger paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Periodic Seconds'."
+}
+```
+
+**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph bakes to "Every 5 seconds" (not "?"/"null"). `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises the Seconds single-enum path (`everyNSecs1`) which has NO toggle -- the count enum IS the mode.
+
+**Failure modes**: paragraph renders "?" or "null" (the `everyNSecs1` write was silently rejected). `partial=true` with a `silent_rejection` sentinel on `everyNSecs1`. A two-step toggle->count was attempted (Seconds has no toggle, so writing one would land nothing).
+
+---
+
+### T624 — addTrigger Periodic Minutes: toggle-before-count two-step
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Minutes'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Minutes' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:15}}. Inspect the trigger paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Periodic Minutes'."
+}
+```
+
+**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph bakes to "Every 15 minutes". `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises the toggle-before-count two-step: `everyNMinutesC1=true` must land FIRST, then the count goes into `everyNC1` (a separate field), NOT into the bool toggle.
+
+**Failure modes**: paragraph renders "?"/"null" because the count was written into the bool `everyNMinutesC1` (the original bug) and the real count field `everyNC1` never got the value. `partial=true` with a sentinel on `everyNC1`.
+
+---
+
+### T625 — addTrigger Periodic Weekly: day-of-week multi-picker + starting time
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Weekly'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Weekly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Weekly', daysOfWeek:['Monday','Friday'], startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Periodic Weekly'."
+}
+```
+
+**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph names Monday and Friday and the 8:00 AM start. `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises `selectDoWC1` (day-of-week multi-enum) + `startingWC1` (time).
+
+**Failure modes**: paragraph renders "?"/"null" or omits the day list (the `selectDoWC1` multi-enum was sent in the wrong serialization). `partial=true` with a sentinel on `selectDoWC1` or `startingWC1`.
+
+---
+
+### T626 — addTrigger Periodic Monthly by-day: day number + every-N-months + starting time
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Monthly'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Monthly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', dayOfMonth:15, everyNMonths:2, startingTime:'09:30'}}. Inspect the trigger paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Periodic Monthly'."
+}
+```
+
+**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph reflects day 15 of every 2 months, starting 9:30 AM. `result.brokenMarkers` is empty AND `result.health.ok=true`. by-day mode (no `weekOfMonth`) exercises `dayMC1` + `everyNMC1` + `startingMC1`. (nth-weekday mode is the mutually-exclusive alternative, covered by T630/T631. The "on day N of selected months" specific-months sub-mode is order-sensitive on the live hub and NOT yet supported.)
+
+**Failure modes**: paragraph renders "?"/"null" (one of the numeric fields silently rejected). `partial=true` with a sentinel on `dayMC1`, `everyNMC1`, or `startingMC1`.
+
+---
+
+### T627 — addTrigger Periodic Yearly: nth-weekday (always) -- weekOfMonth + dayOfWeek + month
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Yearly'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Yearly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Yearly', months:'December', weekOfMonth:'First', dayOfWeek:'Monday', startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Periodic Yearly'."
+}
+```
+
+**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph renders "On the First Monday of December at 8:00 AM". `result.brokenMarkers` is empty AND `result.health.ok=true`. Yearly is ALWAYS nth-weekday: exercises `yearlyMonthCX1` (the X-suffixed reveal month field -- `yearlyMonthC1` alone never completes) + `weeklyYC1` (week-of-month) + `dailyYC1` (single day-of-week, from `dayOfWeek`) + `startingYC1`. Note `months` is a single String here (Yearly), `dayOfWeek` is singular (vs Weekly's multi `daysOfWeek`).
+
+**Failure modes**: paragraph renders "?"/"null" or omits the month/day (a regression to the dead `yearlyMonthC1`, or the `dailyYC1` day write was dropped). `partial=true` with a sentinel on `yearlyMonthCX1`, `weeklyYC1`, or `dailyYC1`.
+
+---
+
+### T628 — addTrigger Periodic Cron String: field-name fix (cronStr1)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Cron'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Cron' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Cron String', cronString:'0 0 12 * * ?'}}. Inspect the trigger paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Periodic Cron'."
+}
+```
+
+**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph renders the cron expression (not "?"/"null"). `result.brokenMarkers` is empty AND `result.health.ok=true`. Pins the Cron field-name fix: the value lands in `cronStr1` (the live field) -- the prior code wrote `cronString1`, a field that does not exist, so the value was silently dropped and the trigger rendered "null".
+
+**Failure modes**: paragraph renders "?"/"null" (the cron value was written to the non-existent `cronString1` and silently dropped -- the typo regression). `partial=true` with a sentinel on the cron field.
+
+---
+
+### T629 — addTrigger Periodic Minutes everyN outside restricted enum: validation rejection
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Enum'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Enum' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:7}}. Observe the tool's response.",
+  "teardown_prompt": "Delete 'BAT Periodic Enum'."
+}
+```
+
+**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field names the allowed set `[1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]` and the rejected value (7), and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602) -- consistent with the sibling compareToDevice missing-comparator guard on this same addTrigger path. This is fail-loud: RM restricts the Seconds/Minutes count to a fixed enum, and 7 is not in it, so the tool surfaces a recoverable structured error instead of silently rendering "null".
+
+**Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (validation was skipped and the out-of-enum count was silently rejected by the hub). The `error` omits the valid-options list (less actionable for the LLM).
+
+---
+
+### T630 — addTrigger Periodic Monthly nth-weekday mode: weekOfMonth + dayOfWeek + everyNMonths
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Monthly Nth'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Monthly Nth' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', weekOfMonth:'Second', dayOfWeek:'Monday', everyNMonths:1, startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
+  "teardown_prompt": "Delete 'BAT Periodic Monthly Nth'."
+}
+```
+
+**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph renders "On the Second Monday of every month at 8:00 AM". `result.brokenMarkers` is empty AND `result.health.ok=true`. nth-weekday mode (selected by `weekOfMonth` presence) hides the by-day fields and exercises `weeklyMC1` + `dailyMC1` (single day-of-week from `dayOfWeek`) + `everyNMCX1` (the X-suffixed cadence, NOT the by-day `everyNMC1`) + `startingMC1`. `dayOfWeek` is singular here (vs Weekly's multi `daysOfWeek`).
+
+**Failure modes**: paragraph renders "?"/"null" (a regression that wrote the by-day `everyNMC1` instead of `everyNMCX1`, or dropped `dailyMC1`). `partial=true` with a sentinel on `dailyMC1` or `everyNMCX1`. The by-day fields (`dayMC1`/`everyNMC1`) being written would corrupt the mutually-exclusive mode.
+
+---
+
+### T631 — addTrigger Periodic Monthly dayOfMonth + weekOfMonth: mutually-exclusive rejection
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Monthly Excl'.",
+  "test_prompt": "Add a trigger to 'BAT Periodic Monthly Excl' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', dayOfMonth:15, weekOfMonth:'Second'}}. Observe the tool's response.",
+  "teardown_prompt": "Delete 'BAT Periodic Monthly Excl'."
+}
+```
+
+**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field states the two modes are mutually exclusive and names both `dayOfMonth` and `weekOfMonth`, and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602), consistent with the Seconds/Minutes everyN guard and the sibling compareToDevice guard. Monthly by-day (calendar day) and nth-weekday (Nth weekday) are distinct RM modes whose field sets hide each other; mixing them is unrenderable.
+
+**Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (the guard was skipped and both field sets were written, leaving an ambiguous/incomplete sub-page). The `error` names only one of the two conflicting fields (less actionable).
+
+---
+
+### T632 — two Periodic Schedule triggers in one rule: no sub-page collision
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Two Periodic'.",
+  "test_prompt": "Add TWO triggers to 'BAT Two Periodic': first addTrigger {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:5}}, then addTrigger {capability:'Periodic Schedule', periodic:{frequency:'Daily', everyN:1, startingTime:'07:00'}}. Inspect both trigger paragraphs on mainPage.",
+  "teardown_prompt": "Delete 'BAT Two Periodic'."
+}
+```
+
+**Expected**: both addTrigger calls return `success=true` and `partial!=true`. mainPage renders BOTH periodic rows intact -- e.g. "Every 5 minutes" OR "Every day at 7:00 AM" -- with neither rendering "null". `result.brokenMarkers` is empty AND `result.health.ok=true`. The 2nd trigger navigates to its OWN periodic sub-page (RM exposes a `periodic2` href with params n:2 and suffix-2 fields `whichPeriod2`/`everyNDoMC2`/`everyNDC2`/`startingDC2`); the tool discovers the per-trigger index from the live schema and writes the n-suffixed field names, so trigger 1's suffix-1 fields are untouched. This is the regression scenario for the multi-periodic-trigger fix.
+
+**Failure modes**: trigger 1 renders "null" while trigger 2's frequency wins (the classic collision -- the 2nd trigger wrote suffix-1 fields, clobbering `whichPeriod1`/`everyN*C1`). The 2nd addTrigger's `settingsSkipped` shows silent_rejection with `available:["whichPeriod2"]` (the tool navigated correctly but wrote suffix-1 names the sub-page does not expose). Both rows render the same frequency (one trigger's config overwrote the other's slot).
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
@@ -3255,7 +3415,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice fallback adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total). Note: `Total: 217 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 188) reflects only sequentially-numbered tests in the explicit-coverage section.
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice fallback adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total). Note: `Total: 227 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 198) reflects only sequentially-numbered tests in the explicit-coverage section.
 11. **Spec-only coverage by necessity**: the trailing-updateRule failure paths on `addTrigger`, `addRequiredExpression`, `addLocalVariable`, `addTriggers`/`addActions` (bulk), `patches`, and the action-mutation/trigger-mutation dispatchers (`removeAction`, `clearActions`, `replaceActions`, `moveAction`, `removeTrigger`, `modifyTrigger`) -- response slots `updateRuleFailed`, `subscriptionsNotLive` / `expressionNotLive` / `variableNotLive` / `patchesNotLive`, `updateRuleError`, and the recovery `repairHints` line -- are covered exclusively by Spock specs in `src/test/groovy/server/ToolRmNativeCrudSpec.groovy` (the single-path failure/SUCCESS pairs for `addTrigger` / `addRequiredExpression` / `addLocalVariable`, the three-row `@Unroll` failure/SUCCESS pairs for the bulk path covering `addTriggers`-only / `addActions`-only / both, and the corresponding patches and action-mutation envelope specs). The defensive `asyncCommitLikely` path on `clearActions` / `replaceActions` -- response slots `asyncCommitLikely`, `stage`, `actionsRequestedForRemoval`, `actionsStillPresent`, `pendingActionsToAdd`, `clearActionsResult`, `safeRecovery` -- is also spec-only: with the synchronous full-form trashActs submit the delete commits in-band, so this rare residual path (stuck `state.editAct` or a firmware commit lag still showing the actions present after the verify-retry) is not reproducible from an agent prompt against a live hub. Live-hub BAT coverage was considered but skipped: deterministically forcing the trailing `_rmClickAppButton(updateRule)` to throw against a real hub requires hub-side disruption (firmware downgrade / network partition mid-call / hub-config corruption) that is not realistically scriptable from an agent prompt. The Spock specs exercise the production response-shape contract directly via stub injection and constitute the regression gate.
 
 ---
