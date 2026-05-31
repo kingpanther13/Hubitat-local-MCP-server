@@ -15492,21 +15492,37 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // caller should address — surface as partial so the LLM sees it immediately.
     // Filter informational/cosmetic skips out of the skip-driven partial computation,
     // mirroring the exemption that _rmAddAction and _rmAddRequiredExpression apply via
-    // _rmInformationalSkippedReasons(). Two classes are cosmetic on a baked trigger:
-    //   - the shared walker sentinels from _rmInformationalSkippedReasons()
-    //   - not_in_schema: a field the trigger wizard never exposed for this shape (e.g. a
-    //     Custom-Attribute '*changed*' trigger needs no comparator RHS, so ReltDev_<N> /
-    //     tCustomAttr_<N> are legitimately absent and skip with not_in_schema). These do
-    //     NOT indicate a rejected value. not_in_schema is filtered here -- in the trigger
-    //     path only -- rather than added to the shared list, because the walker pages
-    //     (STPage/doActPage) treat not_in_schema as genuine degradation per their contract.
-    // GENUINE degradation (silent_rejection of a real value, verification_fetch_failed,
-    // etc.) is NOT in either set and continues to flip partial. triggerNotBaked and
-    // brokenMarkers flip partial independently below, so a field that was genuinely
-    // needed but missing still surfaces via the not-baked check.
-    def triggerInformationalReasons = _rmInformationalSkippedReasons() + ["not_in_schema"]
+    // _rmInformationalSkippedReasons(). Only the shared walker sentinels (e.g.
+    // reveal_fallback_to_existing_field) are exempt by reason code -- a field the walker
+    // matched after it was already visible is not a degraded write.
+    // not_in_schema is NOT exempt as a reason code. Like silent_rejection it is GENUINE
+    // degradation: a field the helper tried to write was absent from the live page schema, so
+    // the value did not land. A state-change comparator such as '*changed*' is itself written
+    // into the comparator field (ReltDev_<N>) as a value -- it is not an absent RHS -- so a
+    // clean '*changed*' trigger does NOT skip its comparator. The only way the comparator (or
+    // attribute, device, state) skips with not_in_schema is a real schema-timing failure where
+    // the value never wrote, which must surface as partial rather than be masked. This matches
+    // how the walker pages (STPage/doActPage) and _rmAddAction treat not_in_schema, and how
+    // _rmModifyTrigger hard-throws on it.
+    // The single narrow exception is the (isCondTrig.<N>, not_in_schema, value=false) tuple:
+    // after the trigger commits, the helper writes isCondTrig.<N>=false best-effort to dismiss
+    // the residual "Conditional Trigger?" prompt that RM only sometimes exposes post-hasAll. On
+    // firmware/timing where the prompt already closed, that field is legitimately gone and the
+    // write no-ops with not_in_schema -- a clean exit, not a lost trigger value. The value MUST
+    // be false: the construction write isCondTrig.<N>=true (binding a conditional trigger to its
+    // condition) is load-bearing, and a skip there means the trigger was not made conditional --
+    // that must still flip partial. Exempt only that exact field+reason+value so a non-conditional
+    // trigger does not spuriously report partial, while every other not_in_schema skip flips it.
+    // triggerNotBaked and brokenMarkers flip partial independently below, so a genuinely
+    // needed-but-missing field also surfaces via the not-baked check.
+    def triggerInformationalReasons = _rmInformationalSkippedReasons()
     def genuineSkipped = (skipped ?: []).findAll {
-        !(it instanceof Map) || it.reason == null || !(it.reason in triggerInformationalReasons)
+        if (!(it instanceof Map) || it.reason == null) return true
+        if (it.reason in triggerInformationalReasons) return false
+        // The post-commit finalize toggle's absence (isCondTrig.<N>=false) is a clean exit, not
+        // a degraded write. The =true construction write is load-bearing and is NOT exempt.
+        if (it.reason == "not_in_schema" && it.key?.toString()?.matches(/isCondTrig\.\d+/) && it.value?.toString() == "false") return false
+        return true
     }
     def partial = !genuineSkipped.isEmpty() || triggerNotBaked ||
                   ((health?.brokenMarkers as List)?.size() > 0)
@@ -15517,9 +15533,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         repairHints << "Trigger did not bake — mainPage still shows 'Define Triggers' placeholder. Common causes: state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), capability/state mismatch, or unknown deviceIds. Verify state value matches the capability's domain (Switch: 'on'/'off'/'*changed*', Motion: 'active'/'inactive', Contact: 'open'/'closed', etc.) and run list_devices to verify deviceIds. Then call removeAction or rebuild the rule."
     }
     if (partial || hasBrokenLabel) {
-        // Name only genuinely-degraded fields (exclude informational/not_in_schema
-        // cosmetic skips) so the hint doesn't tell callers to repair a field that the
-        // wizard never needed for this trigger shape.
+        // Name only genuinely-degraded fields (exclude the informational walker
+        // sentinels) so the hint doesn't tell callers to repair a field that the
+        // walker merely matched after it was already visible.
         if (!genuineSkipped.isEmpty()) {
             def skippedKeys = genuineSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = genuineSkipped.size() == 1 ? "setting" : "settings"
@@ -25000,7 +25016,8 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 `settingsSkipped[]` sentinel reasons callers may see:
 - `rhs_type_not_revealed` -- compareToDevice RHS-type toggle absent on firmware. Entry also carries `fallbackApplied: true|false` (literal state_<N> fallback applied vs none available).
 - `offset_field_not_revealed` -- compareToDevice optional offset field absent. Flips `partial:true`.
-- `api_unavailable` paired with `key: "variable-validation"` -- Variable picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
+- `api_unavailable` paired with `key: "variable-validation"` (LHS Variable picker) OR `key: "compareToVariable-validation"` (RHS variable picker for `compareToVariable`) -- the picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
+- `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. Genuine degradation on ALL paths (addTrigger AND the walker pages); flips `partial:true`. A state-change comparator like `*changed*` is written as a value into the comparator field, so a clean trigger produces no `not_in_schema` skip on a real field. Sole exempt case: the cosmetic `isCondTrig.<N>` post-commit finalize toggle on addTrigger, whose absence is a clean exit and does NOT flip `partial`.
 - `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
 
 Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):

@@ -7856,6 +7856,270 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" && (it.body["settings[xVarR_1]"]?.toString() ?: "") != "" }
     }
 
+    def "addAction ifThen Variable compareToVariable: RHS picker never revealed after isVar_N throws IllegalStateException"() {
+        // LOAD-BEARING guard for the RHS-picker-not-revealed throw. After the walker toggles
+        // isVar_<N>=true the right-hand variable picker must appear; if it never does (firmware
+        // that does not expose a variable RHS, or a probe-timing failure) writing the variable
+        // name silently would render the condition as a numeric default. The walker must fail
+        // loud rather than commit a misleading "A > 0".
+        given:
+        enableHubAdminWrite()
+        def daSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        // isVar_1 is present and writable, but the right-hand variable picker NEVER appears
+        // (no xVarR/rVarR field is ever added to the schema regardless of isVar_1).
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                                 [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                                 [name: "RelrDev_1", type: "enum", options: ["=", "≠", "<", ">"]],
+                                 [name: "isVar_1", type: "bool"],
+                                 [name: "state_1", type: "number"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["IF A > B THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF A > B THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Variable",
+                    variable: "A",
+                    comparator: ">",
+                    compareToVariable: "B"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the IllegalStateException is caught by the backup-and-catch wrapper -- success=false naming the un-revealed RHS picker"
+        result.success == false
+        result.error.toString().toLowerCase().contains("right-hand variable picker not revealed")
+
+        and: "the RHS variable name was never written -- the throw fired before the picker write"
+        !posts.any { it.path == "/installedapp/update/json" && (it.body["settings[xVarR_1]"]?.toString() ?: "") == "B" }
+    }
+
+    def "addAction ifThen Variable compareToVariable: RHS name not in the revealed picker throws IllegalArgumentException"() {
+        // LOAD-BEARING guard for the RHS-name-validation throw. When the right-hand picker
+        // reveals with a non-empty option list that does NOT contain the caller's
+        // compareToVariable name, the walker must reject before writing -- a name not in the
+        // enum would not resolve on the hub and the condition would render broken.
+        given:
+        enableHubAdminWrite()
+        def isVarWritten = false
+        def daSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        // xVarR_1 reveals after isVar_1=true but its options do NOT include "B" -- only
+        // "A" and "C" are available, so the caller's compareToVariable="B" must be rejected.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "≠", "<", ">"]],
+                [name: "isVar_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"]
+            ]
+            if (isVarWritten) {
+                inputs = inputs + [[name: "xVarR_1", type: "enum", options: ["A": "A", "C": "C"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF A > B THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF A > B THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Variable",
+                    variable: "A",
+                    comparator: ">",
+                    compareToVariable: "B"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the IllegalArgumentException is caught and surfaced -- success=false naming the missing RHS variable"
+        result.success == false
+        result.error.toString().toLowerCase().contains("compareToVariable 'b' not in the revealed right-hand picker".toLowerCase())
+
+        and: "the available options are named (sorted, joined) so the caller can correct the input"
+        result.error.toString().contains("Available: A, C")
+
+        and: "the out-of-range name was never written"
+        !posts.any { it.path == "/installedapp/update/json" && it.body["settings[xVarR_1]"]?.toString() == "B" }
+    }
+
+    def "addRequiredExpression Variable compareToVariable: RHS picker reveals with empty options degrades to a sentinel and proceeds on STPage (partial)"() {
+        // LOAD-BEARING guard for the empty-option-list degradation on the STPage walker.
+        // The doActPage variant is covered above; this pins the same compareToVariable RHS
+        // empty-options path on the required-expression walker, where the right-hand picker
+        // reveals but its option list is empty (a hub with no variables, a lazily-populated
+        // enum, or a probe-timing race). The walker cannot validate the name, so it records
+        // an api_unavailable / compareToVariable-validation sentinel (genuine degradation ->
+        // partial=true) and proceeds with the best-effort write rather than failing loud or
+        // writing silently-unvalidated. (The LHS variable-validation empty-options path on
+        // STPage is pinned separately; this is the RHS compareToVariable picker.)
+        given:
+        enableHubAdminWrite()
+        def isVarWritten = false
+        def stSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def m = k.toString() =~ /^settings\[(.+)\]$/
+                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "A > B"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // xVarR_1 reveals after isVar_1=true but with an EMPTY option list -- the walker
+        // cannot validate the name, so it degrades (sentinel) and proceeds with the write.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stSeq++
+            def inputs = [
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                [name: "lVar_1", type: "enum", options: ["A": "A", "B": "B"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "≠", "<", ">"]],
+                [name: "isVar_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"],
+                [name: "doneST", type: "button"]
+            ]
+            if (isVarWritten) {
+                inputs = inputs + [[name: "xVarR_1", type: "enum", options: [:]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["A > B (seq ${stSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Variable",
+                variable: "A",
+                comparator: ">",
+                compareToVariable: "B"
+            ]]],
+            confirm: true
+        ])
+
+        then: "a compareToVariable-validation / api_unavailable sentinel is recorded on STPage"
+        (result.settingsSkipped ?: []).any {
+            it instanceof Map && it.key?.toString() == "compareToVariable-validation" && it.reason == "api_unavailable"
+        }
+
+        and: "the empty-option degradation flips partial"
+        result.partial == true
+
+        and: "the write still proceeds best-effort -- the RHS name is written despite the unvalidated picker"
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[xVarR_1]"]?.toString() == "B" }
+    }
+
     def "addAction ifThen Variable: compareToVariable combined with value is rejected (mutually exclusive)"() {
         // Negative guard: supplying both a variable RHS (compareToVariable) and a
         // constant RHS (value) is ambiguous -- the walker must reject it before any write.
@@ -7991,25 +8255,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[rDev_1]") }
     }
 
-    // ---------- _rmAddTrigger informational-skipped partial filter ----------
+    // ---------- _rmAddTrigger not_in_schema partial filter ----------
 
-    def "addTrigger Custom Attribute changed: informational not_in_schema skip does NOT flip partial"() {
-        // POSITIVE guard for the cosmetic-partial fix. A Custom-Attribute '*changed*'
-        // trigger needs no comparator RHS, so ReltDev_1 / tCustomAttr_1 are legitimately
-        // absent from the trigger schema and skip with not_in_schema. The trigger bakes
-        // correctly; not_in_schema must NOT flip partial.
+    def "addTrigger Custom Attribute changed: ReltDev carries *changed*, no not_in_schema skip, partial=false"() {
+        // POSITIVE guard, real behavior. A Custom-Attribute '*changed*' trigger writes the
+        // comparator value '*changed*' INTO ReltDev_<N> (it is a value, not an absent RHS),
+        // plus tCustomAttr_<N> for the attribute. ReltDev1 is PRESENT in the schema with
+        // '*changed*' in its options (matching the live fixtures elsewhere in this file).
+        // Both fields land in settingsApplied, settingsSkipped is empty (no not_in_schema),
+        // and partial is false BECAUSE there is no skip -- not because one was suppressed.
         given:
         enableHubAdminWrite()
         def trigSeq = 0
+        def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        // selectTriggers: tCapab1 + tDev1 + tCustomAttr1 (attribute picker) present and
-        // landing (incrementing seq -> renderShifted -> applied); but ReltDev1 (comparator)
-        // is NOT in schema -- a '*changed*' trigger has no RHS comparator, so writing it
-        // skips with not_in_schema. That cosmetic skip must NOT flip partial.
+        // selectTriggers: tCapab1 + tDev1 + tCustomAttr1 + ReltDev1 (comparator) ALL present.
+        // Incrementing seq -> every write observes a render shift -> routes to applied.
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             trigSeq++
             JsonOutput.toJson([
@@ -8020,6 +8286,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                  [name: "tCapab1", type: "enum", options: ["Custom Attribute", "Switch"]],
                                  [name: "tDev1", type: "capability.sensor", multiple: true],
                                  [name: "tCustomAttr1", type: "enum", options: ["water"]],
+                                 [name: "ReltDev1", type: "enum", options: ["=", "≠", "<", ">", "<=", ">=", "in", "*changed*"]],
+                                 [name: "isCondTrig.1", type: "bool"],
                                  [name: "moreCond", type: "button"],
                                  [name: "hasAll", type: "button"]
                              ], paragraphs: ["seq ${trigSeq}".toString()]]]],
@@ -8052,16 +8320,102 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "trigger committed and partial is NOT set -- the not_in_schema skip is cosmetic"
+        then: "ReltDev1 carries the '*changed*' comparator value"
         result.success == true
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[ReltDev1]"]?.toString() == "*changed*"
+        }
+
+        and: "the attribute picker tCustomAttr1 lands"
+        posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body["settings[tCustomAttr1]"]?.toString() == "water"
+        }
+
+        and: "no not_in_schema skip was produced -- every field the trigger needs is in schema (matches the live empty-settingsSkipped shape)"
+        !(result.settingsSkipped ?: []).any { it instanceof Map && it.reason == "not_in_schema" }
+
+        and: "partial is false because there is NO skip, not because one was suppressed"
         result.partial == false
+    }
+
+    def "addTrigger genuine not_in_schema skip flips partial (inverse pin)"() {
+        // INVERSE pin. When a field a real trigger genuinely needs falls out of the live
+        // page schema, the write does not land and the helper records a not_in_schema skip.
+        // not_in_schema is genuine degradation -- exactly like silent_rejection -- so it MUST
+        // flip partial. This guard goes RED if the not_in_schema exemption is re-added to the
+        // trigger's informational-reasons list. tCustomAttr1 (the attribute picker the
+        // Custom-Attribute trigger needs) is absent from the schema, so writing 'water' to it
+        // skips with not_in_schema; mainPage still renders so triggerNotBaked stays false,
+        // isolating the not_in_schema skip as the sole driver of partial.
+        given:
+        enableHubAdminWrite()
+        def trigSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // tCustomAttr1 is NOT in the schema -- the attribute picker the trigger needs is
+        // missing, so the 'water' write skips with not_in_schema (genuine degradation).
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            trigSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Custom Attribute", "Switch"]],
+                                 [name: "tDev1", type: "capability.sensor", multiple: true],
+                                 [name: "ReltDev1", type: "enum", options: ["=", "≠", "*changed*"]],
+                                 [name: "moreCond", type: "button"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${trigSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // mainPage renders (no "Define Triggers" placeholder) so triggerNotBaked is false --
+        // the not_in_schema skip is the only thing that can flip partial here.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["Custom Attr changed"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "water",
+                comparator: "*changed*"
+            ],
+            confirm: true
+        ])
+
+        then: "a not_in_schema skip is present for the needed-but-missing attribute picker (tCustomAttr1), not just the cosmetic isCondTrig toggle"
+        (result.settingsSkipped ?: []).any {
+            it instanceof Map && it.reason == "not_in_schema" && it.key?.toString() == "tCustomAttr1"
+        }
+
+        and: "the genuine not_in_schema skip flips partial -- goes RED if the blanket not_in_schema exemption is re-added"
+        result.partial == true
     }
 
     def "addTrigger genuine silent_rejection still flips partial (negative pin)"() {
         // NEGATIVE pin: a real value that the schema accepts but the hub silently rejects
         // (schema unchanged on re-fetch, value not echoed) produces silent_rejection, which
-        // is genuine degradation and MUST continue to flip partial even after the
-        // not_in_schema/informational filter is applied.
+        // is genuine degradation and MUST flip partial -- only the shared walker
+        // informational sentinels are exempt from the trigger partial gate.
         given:
         enableHubAdminWrite()
         // tDev1 stays in the schema and never reflects the written value, and the schema
@@ -8112,6 +8466,142 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "a genuine silent_rejection skip flips partial=true"
         (result.settingsSkipped ?: []).any { it.reason == "silent_rejection" }
+        result.partial == true
+    }
+
+    def "addTrigger cosmetic isCondTrig not_in_schema skip does NOT flip partial (narrow exemption)"() {
+        // NARROW exemption pin. After a non-conditional trigger commits, the helper writes
+        // isCondTrig.<N>=false best-effort to dismiss the residual "Conditional Trigger?"
+        // prompt RM only sometimes exposes post-hasAll. When the prompt already closed, that
+        // field is gone and the write no-ops with not_in_schema -- a clean exit, not a lost
+        // value. Only the (isCondTrig.<N>, not_in_schema) tuple is exempt; every other field's
+        // not_in_schema still flips partial (see the inverse pin above). Here isCondTrig.1 is
+        // absent so its finalize write skips, but the trigger otherwise bakes cleanly.
+        given:
+        enableHubAdminWrite()
+        def trigSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // tCapab1 + tDev1 + tstate1 all present and landing; isCondTrig.1 is NOT in schema, so
+        // the post-hasAll isCondTrig.1=false finalize skips with not_in_schema (cosmetic).
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            trigSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Switch", "Motion"]],
+                                 [name: "tDev1", type: "capability.switch", multiple: true],
+                                 [name: "tstate1", type: "enum", options: ["on", "off"]],
+                                 [name: "moreCond", type: "button"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${trigSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["Switch1 on"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [8],
+                state: "on"
+            ],
+            confirm: true
+        ])
+
+        then: "the only not_in_schema skip is the cosmetic isCondTrig finalize toggle"
+        def schemaSkips = (result.settingsSkipped ?: []).findAll { it instanceof Map && it.reason == "not_in_schema" }
+        schemaSkips.every { it.key?.toString()?.matches(/isCondTrig\.\d+/) }
+
+        and: "the cosmetic isCondTrig skip does NOT flip partial"
+        result.success == true
+        result.partial == false
+    }
+
+    def "addTrigger conditional: isCondTrig=true construction skip (not_in_schema) DOES flip partial (value-discriminated)"() {
+        // INVERSE of the narrow exemption. The isCondTrig.<N> exemption is scoped to the
+        // post-commit finalize write (value=false). For a conditional trigger the helper writes
+        // isCondTrig.<N>=true pre-hasAll to bind the trigger to its condition -- a load-bearing
+        // write. If that field is absent from the schema, the =true write skips with
+        // not_in_schema and the trigger was NOT made conditional; that degradation MUST flip
+        // partial. This guard goes RED if the exemption drops its value==false discriminator
+        // (i.e. reverts to a by-key match that would wrongly exempt the =true construction skip).
+        given:
+        enableHubAdminWrite()
+        def trigSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // tCapab1 + tDev1 + tstate1 present and landing; isCondTrig.1 is NOT in schema, so the
+        // pre-hasAll isCondTrig.1=true construction write skips with not_in_schema (value=true).
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            trigSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Switch", "Motion"]],
+                                 [name: "tDev1", type: "capability.switch", multiple: true],
+                                 [name: "tstate1", type: "enum", options: ["on", "off"]],
+                                 [name: "moreCond", type: "button"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${trigSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["Switch1 on"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [
+                capability: "Switch",
+                deviceIds: [8],
+                state: "on",
+                conditional: true
+            ],
+            confirm: true
+        ])
+
+        then: "the isCondTrig.1 skip carries value=true (the load-bearing construction write), not the cosmetic false finalize"
+        (result.settingsSkipped ?: []).any {
+            it instanceof Map && it.reason == "not_in_schema" &&
+            it.key?.toString() == "isCondTrig.1" && it.value?.toString() == "true"
+        }
+
+        and: "the load-bearing =true construction skip flips partial -- goes RED if the value==false discriminator is dropped"
         result.partial == true
     }
 
