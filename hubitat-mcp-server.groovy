@@ -2951,7 +2951,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "visual_rule"], description: "Which native app class to create. Default: rule_machine. Add more types by populating _appTypeRegistry."],
+                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "visual_rule"], description: "Which native app class to create. Default: rule_machine (creates a Rule Machine 5.1 rule; RM 5.0 is not selectable). Add more types by populating _appTypeRegistry."],
                     name: [type: "string", description: "Human-readable label for the new app (shown in the hub's app list). Required."],
                     triggers: [
                         type: "array",
@@ -3047,7 +3047,7 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) is currently only available on `addTrigger.condition` **because** the `selectTriggers` sub-wizard exposes the `xVarR_<N>` field for variable-vs-variable comparison, while the STPage and doActPage wizard schemas do not expose an equivalent field in tested firmware versions. `addRequiredExpression` and `addAction` IF-expressions support a Variable LHS with a literal numeric RHS via `value` only.[[/FLAT_TRIM]]
+  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) works on `addTrigger.condition`, `addRequiredExpression`, AND `addAction` IF-expressions: on this row the `selectTriggers` sub-wizard writes the fixed `xVarR_<N>` field, while the walker pages (STPage/doActPage) toggle `isVar_<N>=true` and discover the firmware-assigned right-hand picker from the live schema. On Variable conditions, for value-comparison comparators supply exactly one of `value`/`compareToVariable` (they are mutually exclusive; passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`).[[/FLAT_TRIM]]
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
@@ -3104,8 +3104,17 @@ Between two times: {capability:'Between two times',
   Precondition: hub timezone must be configured (Settings > Location and Modes). If location.timeZone is null, the walker throws before touching the wizard -- set hub timezone first.[[/FLAT_TRIM]]
 
 Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
+  (constant RHS), OR {capability:'Variable', variable:'<hubVarName>', comparator:'=',
+  compareToVariable:'<otherHubVarName>'} (variable-vs-variable RHS). For value-comparison
+  comparators supply exactly one of value/compareToVariable -- they are mutually exclusive
+  (passing both is rejected); omit the RHS entirely for state-change comparators
+  (*changed*/*became*).
   Writes the firmware-assigned variable-name picker discovered from the live schema.
-  Fail-loud if the variable name is not in the revealed enum.
+  For the variable RHS the walker toggles isVar_<N>=true and discovers the right-hand
+  picker from the live schema (does NOT hardcode xVarR_<N> -- discovers whatever the page
+  reveals; the walker pages can use a differently-suffixed field than selectTriggers).
+  Fail-loud if the variable name is not in the revealed enum; an empty RHS option list
+  degrades with a compareToVariable-validation / api_unavailable sentinel (partial=true).
 
 Device-relative comparison: {capability:'Temperature', deviceIds:[N], comparator:'>',
   compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
@@ -15481,17 +15490,56 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // health.brokenMarkers non-empty means a PRIOR trigger is already broken;
     // the new trigger committed but the rule is in a known-bad state the
     // caller should address — surface as partial so the LLM sees it immediately.
-    def partial = (skipped != null && !skipped.isEmpty()) || triggerNotBaked ||
+    // Filter informational/cosmetic skips out of the skip-driven partial computation,
+    // mirroring the exemption that _rmAddAction and _rmAddRequiredExpression apply via
+    // _rmInformationalSkippedReasons(). Only the shared walker sentinels (e.g.
+    // reveal_fallback_to_existing_field) are exempt by reason code -- a field the walker
+    // matched after it was already visible is not a degraded write.
+    // not_in_schema is NOT exempt as a reason code. Like silent_rejection it is GENUINE
+    // degradation: a field the helper tried to write was absent from the live page schema, so
+    // the value did not land. A state-change comparator such as '*changed*' is itself written
+    // into the comparator field (ReltDev_<N>) as a value -- it is not an absent RHS -- so a
+    // clean '*changed*' trigger does NOT skip its comparator. The only way the comparator (or
+    // attribute, device, state) skips with not_in_schema is a real schema-timing failure where
+    // the value never wrote, which must surface as partial rather than be masked. This matches
+    // how the walker pages (STPage/doActPage) and _rmAddAction treat not_in_schema, and how
+    // _rmModifyTrigger hard-throws on it.
+    // The single narrow exception is the (isCondTrig.<N>, not_in_schema, value=false) tuple:
+    // after the trigger commits, the helper writes isCondTrig.<N>=false best-effort to dismiss
+    // the residual "Conditional Trigger?" prompt that RM only sometimes exposes post-hasAll. On
+    // firmware/timing where the prompt already closed, that field is legitimately gone and the
+    // write no-ops with not_in_schema -- a clean exit, not a lost trigger value. The value MUST
+    // be false: the construction write isCondTrig.<N>=true (binding a conditional trigger to its
+    // condition) is load-bearing, and a skip there means the trigger was not made conditional --
+    // that must still flip partial. Exempt only that exact field+reason+value so a non-conditional
+    // trigger does not spuriously report partial, while every other not_in_schema skip flips it.
+    // triggerNotBaked and brokenMarkers flip partial independently below, so a genuinely
+    // needed-but-missing field also surfaces via the not-baked check.
+    def triggerInformationalReasons = _rmInformationalSkippedReasons()
+    def genuineSkipped = (skipped ?: []).findAll {
+        if (!(it instanceof Map) || it.reason == null) return true
+        if (it.reason in triggerInformationalReasons) return false
+        // The post-commit finalize toggle's absence (isCondTrig.<N>=false) is a clean exit, not
+        // a degraded write. The =true construction write is load-bearing and is NOT exempt.
+        if (it.reason == "not_in_schema" && it.key?.toString()?.matches(/isCondTrig\.\d+/) && it.value?.toString() == "false") return false
+        return true
+    }
+    def partial = !genuineSkipped.isEmpty() || triggerNotBaked ||
                   ((health?.brokenMarkers as List)?.size() > 0)
-    def hubRenderError = err != null || (skipped?.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || triggerNotBaked
+    def hubRenderError = err != null || (genuineSkipped.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || triggerNotBaked
     def repairHints = []
     def hasBrokenLabel = health?.label?.toString()?.contains("*BROKEN*") as Boolean
     if (triggerNotBaked) {
         repairHints << "Trigger did not bake — mainPage still shows 'Define Triggers' placeholder. Common causes: state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), capability/state mismatch, or unknown deviceIds. Verify state value matches the capability's domain (Switch: 'on'/'off'/'*changed*', Motion: 'active'/'inactive', Contact: 'open'/'closed', etc.) and run list_devices to verify deviceIds. Then call removeAction or rebuild the rule."
     }
     if (partial || hasBrokenLabel) {
-        if (skipped != null && !skipped.isEmpty()) {
-            repairHints << "Some trigger settings didn't land: ${skipped*.key.join(', ')}. Use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
+        // Name only genuinely-degraded fields (exclude the informational walker
+        // sentinels) so the hint doesn't tell callers to repair a field that the
+        // walker merely matched after it was already visible.
+        if (!genuineSkipped.isEmpty()) {
+            def skippedKeys = genuineSkipped*.key.findAll { it != null }.join(', ')
+            def settingWord = genuineSkipped.size() == 1 ? "setting" : "settings"
+            repairHints << "Some trigger ${settingWord} didn't land: ${skippedKeys}. Use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
         }
         if (hasBrokenLabel) {
             repairHints << "Trigger row has *BROKEN* marker -- capability '${cap}' likely needs a capability-specific field (Mode: pass state='ModeName' or modeIds=['id'], NOT rawSettings.tstate; Periodic: pass periodic={} sub-spec). Re-add the trigger with the correct fields."
@@ -18902,7 +18950,9 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         // fallback entry would otherwise be reported as "didn't land" when in
         // fact the field was written via the already-revealed path.
         if (!genuineSkipped.isEmpty()) {
-            repairHints << "Some settings didn't land: ${genuineSkipped*.key.join(', ')}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
+            def skippedKeys = genuineSkipped*.key.findAll { it != null }.join(', ')
+            def settingWord = genuineSkipped.size() == 1 ? "setting" : "settings"
+            repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
             if (hubRenderError) {
                 repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
             }
@@ -18994,6 +19044,13 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     if (condCap == "Variable") {
         if (condSpec.rawSettings != null && !(condSpec.rawSettings instanceof Map)) {
             throw new IllegalArgumentException("condition.rawSettings must be a Map, got ${condSpec.rawSettings.class?.name}.")
+        }
+        // compareToVariable (variable RHS) and value/state (constant RHS) are mutually
+        // exclusive -- RM renders one OR the other. Reject the ambiguous combination before
+        // any write so a doc-invalid input fails loud instead of writing both xVar_<N> and
+        // state_<N>. Matches the walker's guard on the STPage/doActPage paths.
+        if (condSpec.compareToVariable != null && (condSpec.value != null || condSpec.state != null)) {
+            throw new IllegalArgumentException("condition.capability='Variable' cannot combine 'compareToVariable' (variable RHS) with 'value'/'state' (constant RHS) -- they are mutually exclusive. Supply exactly one.")
         }
         def hasRawXVar = condSpec.rawSettings instanceof Map &&
             ((condSpec.rawSettings as Map).any { k, _v -> k.toString().replace("@N", idx.toString()) == "xVar_${idx}".toString() })
@@ -21162,6 +21219,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: Variable condition requires 'comparator' (e.g. '=', '!=', '<', '>'). Got: ${cond}")
         }
+        // compareToVariable (variable-vs-variable RHS) and value/state (constant RHS)
+        // are mutually exclusive -- RM renders one OR the other, never both. Reject the
+        // ambiguous combination up front so the caller picks a single RHS shape.
+        if (cond.compareToVariable != null && (cond.value != null || cond.state != null)) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable condition cannot combine 'compareToVariable' (variable RHS) with 'value'/'state' (constant RHS) -- they are mutually exclusive. Supply exactly one.")
+        }
         def varName = cond.variable.toString()
         def capKey = "rCapab_${cIdx}".toString()
 
@@ -21217,6 +21281,61 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         // Use the firmware-assigned field name discovered from the live schema.
         def relrField = relrReveal.input.name.toString()
+
+        // Variable-vs-variable RHS path. When the caller supplies compareToVariable,
+        // the RHS is another hub variable rather than a numeric constant. RM exposes a
+        // boolean toggle (isVar_<N>) that, once true, reveals a second variable picker
+        // for the right-hand side. The static _rmBuildCondition (selectTriggers) writes
+        // isVar_<N>=true then xVarR_<N>=<name>; the walker pages (STPage/doActPage) use
+        // the same isVar reveal but the RHS-picker field name is firmware-assigned and
+        // may differ from xVarR_<N>, so discover it from the live schema after the
+        // reveal rather than hardcoding the slot.
+        if (cond.compareToVariable != null) {
+            def rhsVarName = cond.compareToVariable.toString()
+            def isVarKey = "isVar_${cIdx}".toString()
+            // Write RelrDev (comparator) first so the wizard advances, then toggle
+            // isVar_<N>=true to reveal the right-hand variable picker.
+            writeST(hrefParams, relrField, normalizedComparator)
+            def rhsVarReveal = revealStep(appId, page, /xVarR_\d+|[a-zA-Z]+VarR[a-zA-Z]*_\d+|rVarR_\d+/, {
+                writeST(hrefParams, isVarKey, true)
+            })
+            if (!rhsVarReveal.input) {
+                cancelInFlightCond()
+                def visible = rhsVarReveal.visibleNames?.join(', ') ?: "(none)"
+                throw new IllegalStateException("conditions[${condIdx}]: Variable: right-hand variable picker not revealed after isVar_<N>=true (compareToVariable='${rhsVarName}'). Without it the condition would render '${varName} ${cond.comparator} 0' (numeric default) instead of variable-vs-variable. Visible fields: ${visible}")
+            }
+            def rhsVarField = rhsVarReveal.input.name.toString()
+            // Validate the RHS variable name against the revealed picker's options.
+            def rhsOptsRaw = rhsVarReveal.input.options
+            def rhsOpts = (rhsOptsRaw instanceof Map)
+                ? (rhsOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
+                : (rhsOptsRaw ?: []).collect { it?.toString() }.findAll { it }
+            if (!rhsOpts) {
+                // Empty option list -- same ambiguity as the LHS variable picker: a hub with
+                // no variables, a lazily-populated enum, or a probe-timing race. The walker
+                // cannot validate, so it signals degradation (api_unavailable sentinel ->
+                // settingsSkipped -> partial=true) rather than writing unvalidated and
+                // silently. The write still proceeds because the caller-supplied name is the
+                // only signal we have. Mirrors the LHS variable-validation fallback above.
+                mcpLog("warn", "rm-native", "conditions[${condIdx}]: Variable: right-hand picker '${rhsVarField}' returned an empty option list -- compareToVariable name validation skipped; write will proceed unvalidated")
+                if (skippedAccum != null) {
+                    skippedAccum << [key: "compareToVariable-validation", reason: "api_unavailable", condIdx: condIdx, varName: rhsVarName, pickerField: rhsVarField]
+                }
+            } else if (!rhsOpts.any { it == rhsVarName }) {
+                cancelInFlightCond()
+                throw new IllegalArgumentException("conditions[${condIdx}]: Variable: compareToVariable '${rhsVarName}' not in the revealed right-hand picker for '${rhsVarField}'. Available: ${rhsOpts.sort().join(', ')}")
+            }
+            writeST(hrefParams, rhsVarField, rhsVarName)
+
+            if (cond.not == true) {
+                writeST(hrefParams, "not${cIdx}".toString(), true)
+            }
+            if (cond.rawSettings instanceof Map) {
+                (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+            }
+            _rmClickAppButton(appId, "hasAll", null, page)
+            return
+        }
 
         // Reveal 3: write RelrDev as the trigger -> state_<N> value appears
         def condStateOrValue = cond.state != null ? cond.state : cond.value
@@ -21344,6 +21463,16 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (!ctd.attribute) {
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'attribute' (the attribute to compare to, e.g. 'temperature'). Got: ${ctd}")
+        }
+        // A device RHS is only meaningful with a comparator -- it is the operator between
+        // the LHS device attribute and the reference device's attribute. Without it the
+        // RelrDev/RHS-type reveal below is gated on `cond.comparator != null` and skipped,
+        // leaving rCapab/rDev written but no comparator and no RHS -- a half-written
+        // condition that silently passes through hasAll and renders incomplete. Fail loud
+        // before any hub write, mirroring the other pre-write capability validators.
+        if (cond.comparator == null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'comparator' (e.g. '>', '<', '=') -- a device RHS needs an operator. Without it the condition writes the capability and device but no comparison and renders incomplete.")
         }
         // Write rCapab and rDev as plain writes (no progressive-disclosure on these for numeric caps).
         writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
@@ -24876,7 +25005,7 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 
 - **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema.
 - **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
-- **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}`. Fail-loud when name is not in the schema enum AND the option list is non-empty; degrades with `variable-validation` / `api_unavailable` sentinel when the enum is empty.
+- **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}` for a constant RHS, OR `{capability:'Variable', variable:'<hubVarName>', comparator:'=', compareToVariable:'<otherHubVarName>'}` for a variable-vs-variable RHS. For value-comparison comparators supply exactly one of `value`/`compareToVariable` -- they are mutually exclusive (passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`). For the variable RHS the walker toggles `isVar_<N>=true` and discovers the firmware-assigned right-hand picker from the live schema -- it does NOT hardcode `xVarR_<N>` because `selectTriggers` consistently exposes `xVarR` but the walker pages (STPage/doActPage) can expose a differently-suffixed field, so the walker resolves whatever the live schema reveals. Fail-loud when a variable name is not in the schema enum AND the option list is non-empty; degrades with an `api_unavailable` sentinel (`variable-validation` for the LHS picker, `compareToVariable-validation` for the RHS picker) when the enum is empty, flipping `partial`.
 - **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}`. Firmware-variant field names: `rDev2_<N>`/`refDev_<N>`/`compareDevId_<N>`, `rCustomAttr2_<N>`/`refAttr_<N>`/`compareAttr_<N>`, `offset_<N>`/`devOffset_<N>`.
 - **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
 
@@ -24887,7 +25016,8 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 `settingsSkipped[]` sentinel reasons callers may see:
 - `rhs_type_not_revealed` -- compareToDevice RHS-type toggle absent on firmware. Entry also carries `fallbackApplied: true|false` (literal state_<N> fallback applied vs none available).
 - `offset_field_not_revealed` -- compareToDevice optional offset field absent. Flips `partial:true`.
-- `api_unavailable` paired with `key: "variable-validation"` -- Variable picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
+- `api_unavailable` paired with `key: "variable-validation"` (LHS Variable picker) OR `key: "compareToVariable-validation"` (RHS variable picker for `compareToVariable`) -- the picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
+- `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. Genuine degradation on ALL paths (addTrigger AND the walker pages); flips `partial:true`. A state-change comparator like `*changed*` is written as a value into the comparator field, so a clean trigger produces no `not_in_schema` skip on a real field. Sole exempt case: the cosmetic `isCondTrig.<N>` post-commit finalize toggle on addTrigger, whose absence is a clean exit and does NOT flip `partial`.
 - `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
 
 Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):
