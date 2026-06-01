@@ -94,7 +94,7 @@ dependencies {
     // Required by Spock to Mock/Spy non-interface types (TestDevice, TestChildApp).
     // Spock 2.x can use either byte-buddy or cglib-nodep as its class-gen
     // backend; neither is a transitive dep of spock-core.
-    testImplementation 'net.bytebuddy:byte-buddy:1.18.8'
+    testImplementation 'net.bytebuddy:byte-buddy:1.18.9'
 
     // Security pin: commons-collections 3.2.x carries the InvokeTransformer
     // deserialization RCE (CVE-2015-7501, CVE-2015-6420). 3.2.2 is a drop-in
