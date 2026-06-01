@@ -3032,17 +3032,25 @@ Capability families and the spec fields each accepts:
     OR modeIds=['3'] OR modeIds=['3','5'] (IDs directly, from get_modes).
     IMPORTANT: writes modesX<N> internally -- do NOT pass tstate or rawSettings.tstate for Mode triggers (silently ignored; trigger renders as Broken Trigger). Use get_modes to list valid mode names/IDs.
   - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
-    capability='Periodic Schedule', periodic={frequency: 'Hourly'|'Daily'|'Cron String'|...,
-      everyN: <int>,           // for "every N <unit>" mode (Hourly/Daily)
-      startingTime: 'HH:mm',   // start-time for everyN modes
+    capability='Periodic Schedule', periodic={frequency: 'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String',
+      everyN: <int>,           // "every N <unit>" mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily AND Hourly (omitting it renders null). Seconds/Minutes: whole number from restricted enum [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer). Fractional truncates (5.5->5).
+      startingTime: 'HH:mm',   // start-time (Hourly/Daily/Weekly/Monthly/Yearly). For Hourly-everyN, pass it: omitting renders a cosmetic trailing "starting at " blank. (Seconds exposes no startingTime.)
       weekdaysOnly: <bool>,    // Daily-only
       selectedHours: [9,12],   // Hourly-only, alternative to everyN
+      selectedMinutes: [0,30], // Minutes-only, "at specific minutes", alternative to everyN
       selectedDaysOfMonth: [1,15], // Daily-only, alternative to everyN/weekdays
-      minutesOffset: <int>,    // Hourly-only, when not using everyN (startingHCX1)
+      daysOfWeek: ['Monday','Friday'], // Weekly-only, MULTI day-of-week
+      dayOfWeek: 'Monday',     // Monthly/Yearly nth-weekday mode, SINGLE day-of-week (distinct from Weekly's daysOfWeek)
+      dayOfMonth: <int>,       // Monthly by-day "on day number" (pair with everyNMonths; exclusive with weekOfMonth)
+      everyNMonths: <int>,     // "of every N months" (Monthly, both modes; free integer)
+      months: 'December',      // Yearly only -- single month String (the nth-weekday month)
+      weekOfMonth: 'First',    // Monthly/Yearly nth-weekday: First|Second|Third|Fourth|Last (presence selects nth-weekday mode)
+      minutesOffset: <int>,    // Hourly-only, when not using everyN (startingHCX<n>)
       cronString: '0 * * * *', // Cron String mode
       rawSettings: {…}         // escape hatch for periodic-page fields not yet mapped
     }
-    Without `periodic`, RM commits a phantom row with description="?". The tool walks the periodic sub-page (whichPeriod1 → everyN/select → time → Done) so the trigger description bakes correctly.
+    Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths -- BOTH required or it renders null) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths). Passing both dayOfMonth and weekOfMonth is rejected. Yearly is ALWAYS nth-weekday (weekOfMonth + dayOfWeek + months-single) because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed.
+    Without `periodic`, RM commits a phantom row with description="?". The tool walks the periodic sub-page (whichPeriod<N> -> everyN/select -> time -> Done, where <N> is the per-trigger sub-page index) so the trigger description bakes correctly.
 [[/FLAT_TRIM]]
 
 Optional fields on every spec:
@@ -15030,6 +15038,44 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds)
     }
 
+    // Periodic argument validation, run before the moreCond click opens the
+    // wizard so a bad spec surfaces a structured failure without leaving an
+    // in-flight trigger editor half-open. NOTE: this half-open guarantee is
+    // PER-SPEC -- it protects the single trigger being added here. The bulk
+    // addTriggers/patches paths share one pre-batch backup, so a mid-batch reject
+    // leaves earlier triggers in the batch already committed; batch callers should
+    // verify rule state and restore from the batch backup if needed. The full
+    // per-frequency field map lives in the periodic block further down; these are
+    // just the arg guards.
+    if (cap.equalsIgnoreCase("Periodic Schedule") && triggerSpec.periodic instanceof Map) {
+        def perEarly = triggerSpec.periodic as Map
+        def freqEarly = perEarly.frequency?.toString()
+        // Seconds/Minutes count is a restricted RM enum, not a free integer.
+        // Fractional values truncate toward zero (5.5 -> 5) and are then
+        // range-checked against the enum. Normalize everyN to the truncated
+        // integer in place so the downstream write sends the enum-valid value,
+        // not the raw fractional (RM's enum field would silent-reject "5.5").
+        if ((freqEarly == "Seconds" || freqEarly == "Minutes") && perEarly.everyN != null) {
+            def allowedCounts = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
+            def reqCount = null
+            // Broad catch: everyN may arrive as a non-numeric String
+            // (NumberFormatException) or a Map/List (GroovyCastException);
+            // both mean "not a usable count" and route to the throw below.
+            try { reqCount = perEarly.everyN as Integer } catch (Exception ignored) { reqCount = null }
+            if (reqCount == null || !(reqCount in allowedCounts)) {
+                throw new IllegalArgumentException("Periodic ${freqEarly} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${perEarly.everyN}'.")
+            }
+            perEarly.everyN = reqCount
+        }
+        // Monthly has two mutually-exclusive modes whose field sets hide each
+        // other: by-day (dayOfMonth) and nth-weekday (weekOfMonth). Reject a
+        // spec that mixes them so the caller gets a clear error instead of an
+        // unrenderable half-written sub-page.
+        if (freqEarly == "Monthly" && perEarly.dayOfMonth != null && perEarly.weekOfMonth != null) {
+            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both.")
+        }
+    }
+
     // Snapshot committed trigger indices (settings) BEFORE clicking moreCond.
     // The actual in-flight trigger idx is discovered from the schema after
     // the click — see "schema-aware index discovery" block below. We do not
@@ -15299,38 +15345,172 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // Without this dance, hasAll commits a phantom row with description="?"
     // because the parent's renderer can't reach the sub-page state.
     //
-    // Verified field-name suffixes per frequency live 2026-04-25:
-    //   Hourly  → everyNHoursC1, everyNHC1, startingHC1, selectHoursC1, startingHCX1
-    //   Daily   → everyNDoMC1, everyNDC1, everyWeekDay1, selectDoMC1, startingDC1
-    // Other frequencies (Seconds/Minutes/Weekly/Monthly/Yearly/Cron String)
-    // share the suffix pattern; caller can pass extra fields via rawSettings
-    // until each is verified.
+    // Field BASE names are IRREGULAR across frequencies (everyNHC vs everyNDC
+    // vs everyNSecs -- no shared stem to extract), so freqFieldMap below carries
+    // the exact RM 5.1 base name for each role of each frequency, captured live
+    // against fw 5.1.8. The per-trigger SUFFIX, by contrast, is uniform: every
+    // field ends in the resolved sub-page index pn (interpolated below).
     if (capCanonical == "Periodic Schedule" && triggerSpec.periodic instanceof Map) {
         def per = triggerSpec.periodic as Map
         def freq = per.frequency?.toString()
         if (!freq) {
             throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String')")
         }
-        // Field-name maps. Keys are LLM-friendly aliases; values are the
-        // RM 5.1 setting names. Trigger index is always 1 for the in-flight
-        // trigger row (RM uses idx 1 inside the periodic sub-page regardless
-        // of the parent trigger index — verified live).
+        // Monthly mode detection: weekOfMonth present selects nth-weekday mode,
+        // which hides the by-day fields. (A by-day+weekOfMonth mix was already
+        // rejected up front, so here weekOfMonth presence unambiguously means
+        // nth-weekday.)
+        def monthlyNthWeekday = (freq == "Monthly" && per.weekOfMonth != null)
+        // Resolve the periodic sub-page navigation from the LIVE selectTriggers
+        // schema rather than hardcoding it. RM renders the periodic href once
+        // the in-flight trigger's capability is Periodic Schedule; the href
+        // carries params={n: <trigger index>} keyed to THIS trigger, and the
+        // sub-page's field names are suffixed by that same n (whichPeriod<n>,
+        // everyNDoMC<n>, ...). For a single periodic trigger n=1 -- byte-identical
+        // to suffix-1. For a 2nd periodic trigger RM renders a periodic<n> sub-page
+        // with whichPeriod<n>/everyN*C<n>/etc.; routing to the right n AND writing
+        // the n-suffixed field names is what keeps the two triggers from colliding.
+        // Mirrors the walkStep navigate href-discovery.
+        def periodicHrefName = "periodic1"
+        def periodicHrefParams = [n: 1]
+        def periodicHrefFound = false
+        def periodicHrefDiscoveryError = null
+        try {
+            def stCfg = _rmFetchConfigJson(appId, "selectTriggers")
+            def periodicHref = (stCfg?.configPage?.sections ?: []).collectMany { sect ->
+                (sect?.body ?: []).findAll { b -> b instanceof Map && b.element == "href" && b.page?.toString() == "periodic" }
+            }.find { it != null }
+            if (periodicHref != null) {
+                periodicHrefFound = true
+                if (periodicHref.name != null) periodicHrefName = periodicHref.name.toString()
+                if (periodicHref.params instanceof Map) periodicHrefParams = periodicHref.params as Map
+            }
+        } catch (Exception hrefExc) {
+            periodicHrefDiscoveryError = "${hrefExc.class.simpleName}: ${hrefExc.message}".toString()
+            mcpLog("warn", "rm-native", "_rmAddTrigger: periodic href discovery on selectTriggers failed for app ${appId} (in-flight trigger idx ${idx}) (${periodicHrefDiscoveryError}) -- falling back to periodic1/n=1; a non-first periodic trigger may collide with the first")
+        }
+        // Href absent (not an exception, but still a discovery failure): warn the
+        // same way, because suffix-1 fallback is only safe for the FIRST periodic
+        // trigger. RM keys the periodic sub-page by trigger index, so without the
+        // discovered href a later periodic trigger would write suffix-1 fields and
+        // clobber the first trigger's schedule.
+        if (!periodicHrefFound) {
+            mcpLog("warn", "rm-native", "_rmAddTrigger: no periodic href found in selectTriggers schema for app ${appId} (in-flight trigger idx ${idx}) -- falling back to periodic1/n=1")
+        }
+        // The marker form-index suffix uses params.n (matches walkStep navigate).
+        // Guard the cast: a malformed params.n (non-integer) would otherwise escape
+        // to the outer catch as a raw context-less JVM message; fall back to 1 and
+        // flag it so the fallback decision below treats a discovered-but-malformed
+        // href the same as an absent one (both leave us unable to target the right
+        // sub-page index, which is unsafe for a non-first trigger).
+        def periodicHrefIndex = 1
+        def periodicNMalformed = false
+        if (periodicHrefParams?.n != null) {
+            try {
+                periodicHrefIndex = periodicHrefParams.n as Integer
+            } catch (Exception nCastExc) {
+                periodicNMalformed = true
+                mcpLog("warn", "rm-native", "_rmAddTrigger: periodic href params.n='${periodicHrefParams.n}' is not an integer for app ${appId} (in-flight trigger idx ${idx}) (${nCastExc.class.simpleName}: ${nCastExc.message}) -- falling back to n=1")
+                periodicHrefIndex = 1
+            }
+        }
+        // Normalize params.n to the resolved integer index. Downstream re-casts
+        // (_rmSubmitSubPageDone re-reads hrefParams.n as Integer) must operate on a
+        // clean Integer so a malformed value the cast guard above already absorbed
+        // can't re-throw past this point. Build a fresh map -- never mutate the
+        // discovered params.
+        def hrefParams = (periodicHrefParams instanceof Map ? (periodicHrefParams as Map) : [:]) + [n: periodicHrefIndex]
+        // If we cannot reliably target this trigger's own sub-page index -- the href
+        // was NOT discovered OR its params.n was malformed -- AND this is not the
+        // first trigger slot, suffix-1 fallback would silently overwrite an earlier
+        // periodic trigger. Refuse to write a guaranteed clobber: record a skip so
+        // the row surfaces partial=true with an actionable repair hint, and leave
+        // the periodic sub-page writes unattempted for this trigger. (idx is provably
+        // Integer here -- assigned from the resolved trigger index -- so its cast is
+        // unguarded, unlike the hub-supplied params.n above.)
+        def periodicUnsafeFallback = ((!periodicHrefFound || periodicNMalformed) && (idx as Integer) > 1)
+        if (periodicUnsafeFallback) {
+            def unsafeReason = periodicHrefDiscoveryError != null ? "periodic href discovery failed (${periodicHrefDiscoveryError})"
+                             : !periodicHrefFound ? "periodic href absent from selectTriggers schema"
+                             : "periodic href params.n malformed"
+            skipped << [key: "periodic", reason: "periodic_href_unresolved_nonfirst_trigger", value: freq,
+                        note: "Cannot resolve the periodic sub-page index for trigger idx ${idx} (${unsafeReason}); writing suffix-1 fields would overwrite an earlier periodic trigger. Periodic sub-page not written."]
+            mcpLog("warn", "rm-native", "_rmAddTrigger: skipping periodic sub-page writes for app ${appId} trigger idx ${idx} -- ${unsafeReason} and idx>1, suffix-1 fallback would clobber the first periodic trigger")
+        } else if (periodicNMalformed || periodicHrefDiscoveryError != null) {
+            // Safe path (idx==1, suffix-1 is correct) but a discovery anomaly still
+            // occurred. Surface a breadcrumb in the response so a hub systematically
+            // emitting bad periodic hrefs shows up as more than scattered hub logs.
+            def anomaly = periodicNMalformed ? "periodic href params.n malformed (resolved to 1)" : "periodic href discovery threw (${periodicHrefDiscoveryError})"
+            skipped << [key: "periodic", reason: "periodic_href_anomaly_firsttrigger", value: freq,
+                        note: "${anomaly}; suffix-1 was used and is correct for the first periodic trigger, but verify the schedule rendered via get_app_config."]
+        }
+        // Periodic field names are suffixed by the per-trigger sub-page index
+        // (pn). For pn=1 the field names end in ...C1; for a later periodic
+        // trigger pn follows the discovered sub-page index, so the names become
+        // ...C<pn> and target that trigger's own sub-page slots.
+        def pn = periodicHrefIndex
+
+        // Field-name maps. Keys are role aliases; values are the RM 5.1 setting
+        // names with the per-trigger suffix interpolated.
+        //
+        // Role keys (not all frequencies have all roles):
+        //   everyNToggle  -- bool, "every n <unit>?"; must land BEFORE everyNCount
+        //   everyNCount   -- the count; for Hourly/Daily a free integer, for
+        //                    Minutes a restricted enum (validated up front). Seconds
+        //                    is equally restricted, via secondsCount below.
+        //   secondsCount  -- Seconds has NO toggle; the count enum IS the mode
+        //                    (restricted enum, same allowed set as Minutes)
+        //   selectMulti   -- multi-enum picker (hours / days-of-month / days-of-week / minutes)
+        //   weekdayToggle -- Daily-only "weekdays only"
+        //   dayOfMonth    -- Monthly by-day "on day number"
+        //   everyNMonths  -- Monthly by-day "of every n months"
+        //   weekOfMonth   -- Monthly/Yearly nth-weekday "in the week of month" (First..Last)
+        //   dayOfWeek     -- Monthly/Yearly nth-weekday SINGLE day-of-week (Sunday..Saturday)
+        //   everyNMonthsNth -- Monthly nth-weekday cadence (everyNMCX<n>, the X-suffixed field)
+        //   monthEnum     -- Yearly nth-weekday single month (yearlyMonthCX<n>, the X-suffixed field)
+        //   time          -- "starting at" time field
+        //   offset        -- Hourly-only minute offset
+        //   cron          -- Cron String text field
+        //
+        // Monthly and Yearly are MODE-PROGRESSIVE: writing the week-of-month
+        // field swaps the visible field set (mutually exclusive with the by-day
+        // fields). The dispatch below routes by whether weekOfMonth is present.
         def freqFieldMap = [
-            "Hourly": [everyNToggle: "everyNHoursC1", everyNCount: "everyNHC1", time: "startingHC1", selectMulti: "selectHoursC1", offset: "startingHCX1"],
-            "Daily":  [everyNToggle: "everyNDoMC1",   everyNCount: "everyNDC1", time: "startingDC1", weekdayToggle: "everyWeekDay1", selectMulti: "selectDoMC1"],
-            "Cron String": [cron: "cronString1"]
+            "Seconds": [secondsCount: "everyNSecs${pn}"],
+            "Minutes": [everyNToggle: "everyNMinutesC${pn}", everyNCount: "everyNC${pn}", selectMulti: "selectMinutesC${pn}"],
+            "Hourly":  [everyNToggle: "everyNHoursC${pn}", everyNCount: "everyNHC${pn}", time: "startingHC${pn}", selectMulti: "selectHoursC${pn}", offset: "startingHCX${pn}"],
+            "Daily":   [everyNToggle: "everyNDoMC${pn}",   everyNCount: "everyNDC${pn}", time: "startingDC${pn}", weekdayToggle: "everyWeekDay${pn}", selectMulti: "selectDoMC${pn}"],
+            "Weekly":  [selectMulti: "selectDoWC${pn}", time: "startingWC${pn}"],
+            // Monthly carries BOTH mode field sets; dispatch picks one by weekOfMonth presence.
+            // (Specific-months "on day N of selected months" is a THIRD, order-sensitive
+            // sub-mode that the flat routing can't satisfy -- not supported here.)
+            "Monthly": [dayOfMonth: "dayMC${pn}", everyNMonths: "everyNMC${pn}",
+                        weekOfMonth: "weeklyMC${pn}", dayOfWeek: "dailyMC${pn}", everyNMonthsNth: "everyNMCX${pn}",
+                        time: "startingMC${pn}"],
+            // Yearly is ALWAYS nth-weekday; yearlyMonthC<n> alone never completes,
+            // so the month lives in yearlyMonthCX<n> (the X-suffixed reveal field).
+            "Yearly":  [weekOfMonth: "weeklyYC${pn}", dayOfWeek: "dailyYC${pn}", monthEnum: "yearlyMonthCX${pn}", time: "startingYC${pn}"],
+            "Cron String": [cron: "cronStr${pn}"]
         ]
         def fields = freqFieldMap[freq] ?: [:]
-        // Navigate forward into periodic sub-page. n=1 is RM's per-trigger
-        // sub-page param.
-        def hrefParams = [n: 1]
-        _rmNavigateToPage(appId, "selectTriggers", "periodic", 1, "periodic1", hrefParams)
+        // (Periodic arg validation -- Seconds/Minutes restricted-enum count and
+        // the Monthly dayOfMonth/weekOfMonth mutual-exclusivity -- already ran
+        // up front, before the trigger editor opened.)
+        // Skip the entire periodic sub-page dance when the suffix-1 fallback
+        // would clobber an earlier periodic trigger (see periodicUnsafeFallback).
+        if (!periodicUnsafeFallback) {
+        // Forward-nav into the periodic sub-page. Its return is intentionally NOT
+        // folded into skipped: _rmNavigateToPage returns null on BOTH a POST failure
+        // AND a non-JSON response (the latter is benign -- the caller plain-fetches),
+        // so null is ambiguous here. A genuine nav failure surfaces deterministically
+        // anyway via the writePeriodic persistence checks below (every field skips).
+        _rmNavigateToPage(appId, "selectTriggers", "periodic", periodicHrefIndex, periodicHrefName, hrefParams)
         // Closure that wraps _rmWriteSubPageField with applied/skipped routing
         // based on the helper's persistence verification (Map return). Use this
         // for every periodic-sub-page field write so silent rejections are
         // caught and surfaced rather than optimistically claimed as applied.
         def writePeriodic = { String fieldKey, Object fieldValue ->
-            def wr = _rmWriteSubPageField(appId, "periodic", "selectTriggers", "periodic1", 1, hrefParams, fieldKey, fieldValue)
+            def wr = _rmWriteSubPageField(appId, "periodic", "selectTriggers", periodicHrefName, periodicHrefIndex, hrefParams, fieldKey, fieldValue)
             if (wr?.persisted) {
                 applied << fieldKey
             } else if (wr?.verifyFetchFailed) {
@@ -15339,17 +15519,24 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                 skipped << [key: fieldKey, reason: "silent_rejection", value: fieldValue, schemaUnchanged: true, available: wr?.afterKeys]
             }
         }
-        // Write frequency first — schema-progressive, so subsequent fields
-        // only appear after this lands.
-        writePeriodic("whichPeriod1", freq)
-        // Cron String mode: just one text field.
+        // Write frequency first -- schema-progressive, so subsequent fields
+        // only appear after this lands. whichPeriod<pn> is the per-trigger
+        // mode selector (whichPeriod1 for the 1st periodic trigger).
+        writePeriodic("whichPeriod${pn}".toString(), freq)
         if (freq == "Cron String") {
+            // Cron String mode: just one text field.
             if (per.cronString != null && fields.cron) {
                 writePeriodic(fields.cron, per.cronString.toString())
             }
         } else {
-            // everyN toggle + count. Order matters: toggle must land first
-            // because the count field only appears after the toggle is true.
+            // Seconds: single count enum, no toggle.
+            if (per.everyN != null && fields.secondsCount) {
+                writePeriodic(fields.secondsCount, per.everyN)
+            }
+            // everyN toggle + count (Minutes / Hourly / Daily). Order matters:
+            // the toggle must land first because the count field only appears
+            // (and only accepts a value) after the toggle is true. Writing the
+            // count into the toggle field is the original "rendered null" bug.
             if (per.everyN != null && fields.everyNToggle) {
                 writePeriodic(fields.everyNToggle, true)
                 if (fields.everyNCount) {
@@ -15360,12 +15547,57 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             if (per.weekdaysOnly == true && fields.weekdayToggle) {
                 writePeriodic(fields.weekdayToggle, true)
             }
-            // Multi-enum selection (selectedHours / selectedDaysOfMonth).
-            def selectVals = per.selectedHours ?: per.selectedDaysOfMonth
+            // nth-weekday mode (Monthly with weekOfMonth, OR Yearly which is
+            // always nth-weekday). Writing the week-of-month field HIDES the
+            // by-day fields and reveals the day-of-week + X-suffixed cadence/
+            // month fields, so the by-day branch below must NOT also run.
+            def nthWeekday = (freq == "Yearly") || monthlyNthWeekday
+            if (nthWeekday) {
+                if (per.weekOfMonth != null && fields.weekOfMonth) {
+                    writePeriodic(fields.weekOfMonth, per.weekOfMonth)
+                }
+                // Single day-of-week enum (dailyMC<n> / dailyYC<n>). The dayOfWeek
+                // alias is SINGULAR -- distinct from Weekly's daysOfWeek multi.
+                if (per.dayOfWeek != null && fields.dayOfWeek) {
+                    writePeriodic(fields.dayOfWeek, per.dayOfWeek)
+                }
+                // Monthly nth-weekday cadence is a FREE number in everyNMCX<n>
+                // (NOT the by-day everyNMC<n>, and NOT the restricted enum).
+                if (per.everyNMonths != null && fields.everyNMonthsNth) {
+                    writePeriodic(fields.everyNMonthsNth, per.everyNMonths)
+                }
+                // Yearly nth-weekday month is a single enum in yearlyMonthCX<n>.
+                if (per.months != null && fields.monthEnum) {
+                    writePeriodic(fields.monthEnum, per.months)
+                }
+            } else {
+                // by-day mode (Monthly without weekOfMonth). dayMC<n> + everyNMC<n>;
+                // an incomplete combo (e.g. dayOfMonth without everyNMonths)
+                // renders "null" -- documented in the arg shape.
+                if (per.dayOfMonth != null && fields.dayOfMonth) {
+                    writePeriodic(fields.dayOfMonth, per.dayOfMonth)
+                }
+                if (per.everyNMonths != null && fields.everyNMonths) {
+                    writePeriodic(fields.everyNMonths, per.everyNMonths)
+                }
+            }
+            // Multi-enum selection. Each frequency exposes ONE selectMulti
+            // field but under a different alias; route the matching one.
+            //   Hourly  selectedHours        -> selectHoursC<n>
+            //   Daily   selectedDaysOfMonth  -> selectDoMC<n>
+            //   Weekly  daysOfWeek           -> selectDoWC<n>
+            //   Minutes selectedMinutes      -> selectMinutesC<n> (alt to everyN)
+            // CONTRACT for the Elvis chain below: it relies on (a) each frequency
+            // exposing AT MOST ONE selectMulti alias, so no two of these are set at
+            // once, and (b) empty-list falsiness -- an empty [] for one alias falls
+            // through to the next. If a future frequency exposes two multi-pickers,
+            // this collapses them to one and must be reworked into per-frequency routing.
+            def selectVals = per.selectedHours ?: per.selectedDaysOfMonth ?: per.daysOfWeek ?:
+                             per.selectedMinutes
             if (selectVals != null && fields.selectMulti) {
                 writePeriodic(fields.selectMulti, selectVals)
             }
-            // Time field (startingHC1 / startingDC1 etc.).
+            // Time field (startingHC<n> / startingDC<n> / startingWC<n> / ...).
             if (per.startingTime != null && fields.time) {
                 writePeriodic(fields.time, per.startingTime.toString())
             }
@@ -15374,15 +15606,26 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                 writePeriodic(fields.offset, per.minutesOffset)
             }
         }
-        // Caller escape hatch for periodic-page fields not yet mapped above
-        // (Weekly/Monthly/Yearly suffix patterns, future fields).
+        // Caller escape hatch for periodic-page fields not yet mapped above.
         if (per.rawSettings instanceof Map) {
             (per.rawSettings as Map).each { rk, rv ->
                 writePeriodic(rk.toString(), rv)
             }
         }
-        // Submit Done — bakes the description into the trigger row.
-        _rmSubmitSubPageDone(appId, "periodic", "selectTriggers", "periodic1", hrefParams)
+        // Submit Done -- bakes the description into the trigger row. _rmSubmitSubPageDone
+        // lets a Done-POST failure throw (so its other callers surface it as success:false);
+        // here we catch it locally and fold it into skipped, because the periodic sub-page is
+        // write-after-commit (the trigger row already exists) so a Done failure is a repairable
+        // partial -- not the full success:false the abort-style callers want.
+        try {
+            _rmSubmitSubPageDone(appId, "periodic", "selectTriggers", periodicHrefName, hrefParams)
+        } catch (Exception periodicDoneExc) {
+            def doneErr = "${periodicDoneExc.class.simpleName}: ${periodicDoneExc.message}".toString()
+            mcpLog("warn", "rm-native", "_rmAddTrigger: periodic sub-page Done submit failed for app ${appId} (in-flight trigger idx ${idx}) (${doneErr})")
+            skipped << [key: "periodic", reason: "subpage_done_failed", value: freq,
+                        note: "Periodic sub-page Done submit failed (${doneErr}); the trigger row description may not have baked. Verify via get_app_config and re-add if the row shows '?'."]
+        }
+        } // end if (!periodicUnsafeFallback)
     }
 
     // Conditional-trigger binding MUST be written BEFORE hasAll while the
@@ -15546,6 +15789,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
         if ((health?.brokenMarkers as List)?.size() > 0 && !hasBrokenLabel) {
             repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new trigger committed, but run check_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
+        }
+        if (skipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }) {
+            repairHints << "The periodic sub-page index could not be resolved for this (non-first) trigger -- its href was absent from the trigger schema, or the href's params.n was malformed -- so its schedule was NOT written, because writing it would have overwritten an earlier periodic trigger's schedule. Retry the add: re-fetch with update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to confirm the periodic href is present with an integer params.n, or rebuild the rule's triggers in order. If the rule has only one periodic trigger, this should not recur."
         }
         if (hubRenderError) {
             repairHints << "WARNING: selectTriggers may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue. Consider deleting the trigger and trying with different deviceIds or trigger shape."
@@ -15797,16 +16043,23 @@ private Map _rmTriggerSchemaForDiscover() {
                 name: "Periodic Schedule",
                 family: "time",
                 requiredFields: [
-                    [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedDaysOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
+                    [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedMinutes?, selectedDaysOfMonth?, daysOfWeek?, dayOfWeek?, dayOfMonth?, everyNMonths?, months?, weekOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
                 ],
-                notes: "frequency values: 'Hourly', 'Daily', 'Cron String'. Without periodic the trigger renders as description='?'. The helper walks the periodic sub-page automatically.",
+                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily AND Hourly -- omitting it renders 'null'. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. Without periodic the trigger renders as description='?'. The helper walks the periodic sub-page automatically.",
                 periodicShape: [
-                    frequency: "Hourly | Daily | Cron String",
-                    everyN: "Integer -- for 'every N <unit>' mode",
-                    startingTime: "HH:mm -- start time for everyN modes",
+                    frequency: "Seconds | Minutes | Hourly | Daily | Weekly | Monthly | Yearly | Cron String",
+                    everyN: "Integer -- 'every N <unit>' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily AND Hourly (omitting renders null). For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5).",
+                    startingTime: "HH:mm -- start time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none). For Hourly-everyN, pass it -- omitting renders a cosmetic trailing 'starting at ' blank.",
                     weekdaysOnly: "Boolean -- Daily only",
                     selectedHours: "List<Integer> -- Hourly only, alternative to everyN",
-                    selectedDaysOfMonth: "List<Integer> -- Daily only",
+                    selectedMinutes: "List<Integer> -- Minutes only, 'at specific minutes' mode, alternative to everyN",
+                    selectedDaysOfMonth: "List<Integer> -- Daily only, alternative to everyN/weekdays",
+                    daysOfWeek: "List<String> -- Weekly only, MULTI day-of-week (e.g. ['Monday','Friday'])",
+                    dayOfWeek: "String -- Monthly/Yearly nth-weekday mode, SINGLE day-of-week (e.g. 'Monday'). Distinct from Weekly's daysOfWeek (multi).",
+                    dayOfMonth: "Integer -- Monthly by-day 'on day number' (pair with everyNMonths; mutually exclusive with weekOfMonth)",
+                    everyNMonths: "Integer -- 'of every N months' (Monthly, both modes; free integer)",
+                    months: "String -- Yearly only; the single nth-weekday month (e.g. 'December'). Yearly exposes a single-month picker. (Monthly does NOT take months -- its specific-months sub-mode is unsupported.)",
+                    weekOfMonth: "String -- Monthly/Yearly nth-weekday 'in the week of month' (First | Second | Third | Fourth | Last). Its presence selects nth-weekday mode.",
                     minutesOffset: "Integer -- Hourly only, when not using everyN",
                     cronString: "String -- Cron String mode (e.g. '0 * * * *')",
                     rawSettings: "Map -- escape hatch for periodic-page fields not yet mapped"
@@ -17052,6 +17305,16 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+    // Let a Done-POST failure PROPAGATE (hubInternalPostForm throws on a real failure).
+    // Callers handle that throw three ways, by intent -- this is why the catch is scoped at
+    // each call site, not here:
+    //   - addRequiredExpression STPage Done, walkStep done: UNGUARDED -- the throw bubbles to
+    //     the dispatcher's backup-and-catch and surfaces as success:false (abort the op).
+    //   - addTrigger periodic Done: wraps THIS call and folds the failure into skipped as a
+    //     repairable partial (the trigger row already committed).
+    //   - create_native_app trailing Done: wraps THIS call but discards the exception
+    //     (log-only) -- best-effort cleanup, the following updateRule handles the commit.
+    // Catching inside the helper would erase all three distinctions, so it does not.
     hubInternalPostForm("/installedapp/update/json", body)
 }
 
@@ -24718,6 +24981,8 @@ MCP-managed virtual devices:
 
         rules: '''## Rule Structure Reference
 
+NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* tools). For native Rule Machine rules built via create_native_app / update_native_app (addTrigger), the periodic shape is DIFFERENT -- use periodic={frequency, everyN, ...}, NOT {type, interval, unit}. See get_tool_guide section "update_native_app_reference" for the native addTrigger periodic field shape.
+
 ### Rule JSON Structure
 {"name": "Rule name", "description": "Optional", "enabled": true, "triggers": [...], "conditions": [...], "conditionLogic": "all|any", "actions": [...]}
 
@@ -24918,18 +25183,27 @@ Reference for the three `update_native_app` structured shortcuts (`addTrigger`, 
 - **Periodic Schedule** (`capability='Periodic Schedule'`): recurring schedule via the dedicated periodic sub-page. Spec:
   ```
   periodic={
-    frequency: 'Hourly'|'Daily'|'Cron String'|...,
-    everyN: <int>,                 // for "every N <unit>" mode (Hourly/Daily)
-    startingTime: 'HH:mm',         // start-time for everyN modes
+    frequency: 'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String',
+    everyN: <int>,                 // "every N <unit>" mode (Seconds/Minutes/Hourly/Daily)
+                                   //   REQUIRED even when =1 for Daily AND Hourly (omitting renders null)
+                                   //   Seconds/Minutes: whole number from [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer; fractional truncates, 5.5->5)
+    startingTime: 'HH:mm',         // start-time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none); for Hourly-everyN, pass it (omitting renders a cosmetic trailing "starting at " blank)
     weekdaysOnly: <bool>,          // Daily-only
     selectedHours: [9,12],         // Hourly-only, alternative to everyN
+    selectedMinutes: [0,30],       // Minutes-only, "at specific minutes", alternative to everyN
     selectedDaysOfMonth: [1,15],   // Daily-only, alternative to everyN/weekdays
-    minutesOffset: <int>,          // Hourly-only, when not using everyN (startingHCX1)
+    daysOfWeek: ['Monday','Friday'], // Weekly-only, MULTI day-of-week
+    dayOfWeek: 'Monday',           // Monthly/Yearly nth-weekday, SINGLE day-of-week (distinct from daysOfWeek)
+    dayOfMonth: <int>,             // Monthly by-day "on day number" (pair with everyNMonths; exclusive with weekOfMonth)
+    everyNMonths: <int>,           // "of every N months" (Monthly, both modes; free integer)
+    months: 'December',            // Yearly only -- single nth-weekday month (String); Monthly does NOT take months
+    weekOfMonth: 'First',          // Monthly/Yearly nth-weekday: First|Second|Third|Fourth|Last (presence selects nth-weekday)
+    minutesOffset: <int>,          // Hourly-only, when not using everyN (startingHCX<n>)
     cronString: '0 * * * *',       // Cron String mode
     rawSettings: {…}               // escape hatch for periodic-page fields not yet mapped
   }
   ```
-  Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod1` → `everyN`/select → time → Done) so the trigger description bakes correctly.
+  Monthly has TWO mutually-exclusive modes: by-day (`dayOfMonth` + `everyNMonths` -- BOTH required or renders null) and nth-weekday (`weekOfMonth` + `dayOfWeek` + `everyNMonths`). Passing both `dayOfMonth` and `weekOfMonth` is rejected. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use `rawSettings`. Yearly is ALWAYS nth-weekday (`weekOfMonth` + `dayOfWeek` + single `months`) because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. Without `periodic`, RM commits a phantom row with description `?`. The tool walks the periodic sub-page (`whichPeriod<N>` → `everyN`/select → time → Done, where `<N>` is the per-trigger sub-page index) so the trigger description bakes correctly. Seconds/Minutes `everyN` outside the restricted enum (and Monthly dayOfMonth+weekOfMonth) is rejected with `success=false` and a structured error.
 
 ### `addAction` capability families
 

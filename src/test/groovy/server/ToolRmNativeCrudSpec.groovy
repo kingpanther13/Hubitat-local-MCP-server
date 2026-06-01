@@ -4024,6 +4024,59 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.opResult?.done?.parent == "selectTriggers"
     }
 
+    def "walkStep done Done-POST failure propagates as success:false (unguarded sibling caller of _rmSubmitSubPageDone)"() {
+        // SIBLING guard, walkStep variant. Like addRequiredExpression STPage Done, the
+        // walkStep 'done' op is an UNGUARDED caller of _rmSubmitSubPageDone -- a Done-POST
+        // failure must propagate to the dispatcher's backup-and-catch and surface as
+        // success:false, NOT be swallowed. Goes RED if _rmSubmitSubPageDone reverts to
+        // wrapping its Done POST in an internal try/catch (the swallow regression).
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, version: 7],
+                configPage: [name: "periodic", title: "Periodic", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "whichPeriod1", type: "enum", options: ["Hourly"], value: "Hourly"]
+                             ]]]],
+                settings: [:]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "periodic1", type: "href", page: "periodic", params: [n: 1]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "whichPeriod1", type: "enum", value: "Hourly"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // Fail ONLY the periodic Done submit; let the nav round-trip succeed.
+            if (body?.currentPage == "periodic" && body?._action_previous == "Done") {
+                throw new RuntimeException("simulated walkStep periodic Done POST failure")
+            }
+            [status: 200, location: null, data: JsonOutput.toJson([
+                app: [id: 100, version: 7],
+                configPage: [name: "periodic", sections: [[input: [[name: "whichPeriod1", type: "enum", value: "Hourly"]]]]]
+            ])]
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            walkStep: [
+                page: "periodic",
+                operation: "done",
+                hrefContext: [fromPage: "selectTriggers", hrefName: "periodic1", hrefParams: [n: 1]]
+            ],
+            confirm: true
+        ])
+
+        then: "the Done throw propagated to the dispatcher backup-and-catch -- success:false naming the failure, not a swallowed success"
+        result.success == false
+        result.error?.toString()?.contains("simulated walkStep periodic Done POST failure")
+    }
+
     def "walkStep done on a top-level page (no hrefContext) submits Done with no paramsForPage and root-only breadcrumbs"() {
         // Coverage for the top-level branch of walkStep done. When the caller
         // does NOT supply hrefContext, _rmSubmitSubPageDone is invoked with
@@ -5579,6 +5632,1063 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "hard failure -- nothing landed in applied, so success=false"
         result.success == false
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
+    }
+
+    // ---------- addTrigger Periodic Schedule frequency completeness ----------
+    //
+    // These specs pin the exact RM 5.1 setting names each periodic frequency
+    // writes, and the toggle-before-count ordering. They drive the real
+    // _rmAddTrigger through the sandbox and capture the field writes off the
+    // /installedapp/update/json POST bodies (settings[<field>]). The
+    // load-bearing assertion is WHICH field carries the value -- a regression
+    // that wrote the count into the bool toggle (the original "renders null"
+    // bug) or used the wrong field name (cronString1 vs cronStr1) flips these.
+
+    /**
+     * Periodic sub-page schema fixture. Exposes whichPeriod1 plus every
+     * frequency's settable fields so _rmBuildSettingsBody can marshal each
+     * write (multi-enum fields carry multiple:true so they serialize as JSON
+     * arrays). The schema is intentionally STATIC across fetches: because the
+     * render never shifts on the periodic sub-page, _rmWriteSubPageField's
+     * persistence-hash check never discriminates here and every periodic write
+     * routes to `applied`. So these specs prove the WIRE FORMAT (which field
+     * name carries which value, off the POST bodies) -- they are NOT proof of
+     * live persistence; that is covered by the BAT-v2 periodic scenarios against
+     * a real hub. Do not read a green spec here as "the value persisted."
+     */
+    private String periodicSchemaJson(int ruleId) {
+        JsonOutput.toJson([
+            app: [id: ruleId, version: 7],
+            configPage: [name: "periodic", title: "Periodic", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "whichPeriod1", type: "enum", options: ["Seconds", "Minutes", "Hourly", "Daily", "Weekly", "Monthly", "Yearly", "Cron String"]],
+                             [name: "everyNSecs1", type: "enum", options: ["1", "5", "30"]],
+                             [name: "everyNMinutesC1", type: "bool"],
+                             [name: "everyNC1", type: "enum", options: ["1", "5", "15"]],
+                             [name: "selectMinutesC1", type: "enum", multiple: true, options: ["0", "30"]],
+                             // Hourly fields.
+                             [name: "everyNHoursC1", type: "bool"],
+                             [name: "everyNHC1", type: "enum", options: ["1", "2", "3"]],
+                             [name: "startingHC1", type: "time"],
+                             [name: "selectHoursC1", type: "enum", multiple: true, options: ["9", "12"]],
+                             [name: "startingHCX1", type: "number"],
+                             // Daily fields.
+                             [name: "everyNDoMC1", type: "bool"],
+                             [name: "everyNDC1", type: "enum", options: ["1", "2"]],
+                             [name: "startingDC1", type: "time"],
+                             [name: "everyWeekDay1", type: "bool"],
+                             [name: "selectDoMC1", type: "enum", multiple: true, options: ["1", "15"]],
+                             [name: "selectDoWC1", type: "enum", multiple: true, options: ["Monday", "Friday"]],
+                             [name: "startingWC1", type: "time"],
+                             [name: "dayMC1", type: "number"],
+                             [name: "everyNMC1", type: "number"],
+                             [name: "selectMonthC1", type: "enum", multiple: true, options: ["January", "July"]],
+                             [name: "weeklyMC1", type: "enum", options: ["First", "Last"]],
+                             [name: "startingMC1", type: "time"],
+                             [name: "yearlyMonthC1", type: "enum", options: ["December"]],
+                             [name: "weeklyYC1", type: "enum", options: ["First", "Last"]],
+                             [name: "startingYC1", type: "time"],
+                             // nth-weekday reveal fields (Monthly dailyMC1/everyNMCX1, Yearly dailyYC1/yearlyMonthCX1).
+                             [name: "dailyMC1", type: "enum", options: ["Sunday", "Monday", "Saturday"]],
+                             [name: "everyNMCX1", type: "number"],
+                             [name: "dailyYC1", type: "enum", options: ["Sunday", "Monday", "Saturday"]],
+                             [name: "yearlyMonthCX1", type: "enum", options: ["January", "December"]],
+                             [name: "cronStr1", type: "text"]
+                         ], paragraphs: []]]],
+            settings: [:]
+        ])
+    }
+
+    /**
+     * selectTriggers schema for a Periodic Schedule trigger. tCapab1 options
+     * include "Periodic Schedule" so capability normalization passes; the seq
+     * paragraph shifts the render between fetches so tCapab1 routes to applied
+     * (giving success=true). No tDev/tstate -- Periodic takes no deviceIds.
+     */
+    private String periodicSelectTriggersJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "tCapab1", type: "enum", options: ["Periodic Schedule"]],
+                             [name: "isCondTrig.1", type: "bool"],
+                             [name: "hasAll", type: "button"]
+                         ],
+                         // The periodic sub-page link renders as a body href
+                         // carrying params={n:<triggerIdx>} -- this is what the
+                         // dispatcher's schema-driven nav discovery reads.
+                         body: [[element: "href", name: "periodic1", page: "periodic", params: [n: 1]]],
+                         paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    /**
+     * Register the standard hub-GET surface for a periodic addTrigger spec and
+     * return the captured POST list. mainPage reports the trigger as baked.
+     */
+    private List registerPeriodicHubSurface(int ruleId) {
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: periodicSchemaJson(ruleId)]
+        }
+        hubGet.register("/installedapp/configure/json/${ruleId}".toString()) { params -> ruleConfigJson(ruleId, "r", []) }
+        hubGet.register("/installedapp/configure/json/${ruleId}/selectTriggers".toString()) { params ->
+            fetchSeq++
+            periodicSelectTriggersJson(ruleId, fetchSeq)
+        }
+        hubGet.register("/installedapp/configure/json/${ruleId}/periodic".toString()) { params -> periodicSchemaJson(ruleId) }
+        hubGet.register("/installedapp/configure/json/${ruleId}/mainPage".toString()) { params -> mainPageJson(ruleId, "r", true) }
+        hubGet.register("/installedapp/statusJson/${ruleId}".toString()) { params -> statusJson(ruleId) }
+        return posts
+    }
+
+    // Helper: pull the value of a genuine per-field write off the POST list.
+    // The Done-submit POST (carries _action_previous) echoes EVERY periodic
+    // schema field as an empty string; it is not a real write, so it is
+    // excluded here. Returns the value written by the field-write POST, or null
+    // if the field was never written by one.
+    private static String periodicWrite(List posts, String field) {
+        def hit = posts.find {
+            it.path == "/installedapp/update/json" &&
+            !it.body?.containsKey("_action_previous") &&
+            it.body?.containsKey("settings[${field}]".toString())
+        }
+        return hit?.body?."settings[${field}]"?.toString()
+    }
+
+    // Helper for negative pins: true when the field was written with a
+    // NON-EMPTY value by a genuine field-write POST (not the Done-clear). A
+    // negative pin asserting "this field was never written with a value" uses
+    // !periodicWroteValue(...) so the empty-string Done echo cannot satisfy it.
+    private static boolean periodicWroteValue(List posts, String field) {
+        def v = periodicWrite(posts, field)
+        return v != null && !v.isEmpty()
+    }
+
+    // Helper for the href-absent skip path: true when the field appears in ANY
+    // /installedapp/update/json POST (field-write OR Done-clear). When the whole
+    // periodic dance is skipped there is no nav, no write, and no Done, so
+    // !periodicWriteAny(...) proves the field was never touched at all.
+    private static boolean periodicWriteAny(List posts, String field) {
+        return posts.any {
+            it.path == "/installedapp/update/json" &&
+            it.body?.containsKey("settings[${field}]".toString())
+        }
+    }
+
+    def "addTrigger Periodic Seconds writes everyNSecs1 count enum directly (no toggle)"() {
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Seconds", everyN: 5]],
+            confirm: true
+        ])
+
+        then: "whichPeriod1 selects Seconds and the count lands in everyNSecs1 -- no toggle field is written"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Seconds"
+        periodicWrite(posts, "everyNSecs1") == "5"
+        // Seconds has NO toggle -- the Minutes-style toggle field must not be
+        // written with a value (the Done-clear echoes it as empty; that does
+        // not count).
+        !periodicWroteValue(posts, "everyNMinutesC1")
+    }
+
+    def "addTrigger Periodic Minutes writes toggle=true BEFORE count, count into everyNC1 not the toggle"() {
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 15]],
+            confirm: true
+        ])
+
+        then: "the bool toggle lands true and the count goes into the separate everyNC1 field"
+        result.success == true
+        periodicWrite(posts, "everyNMinutesC1") == "true"
+        periodicWrite(posts, "everyNC1") == "15"
+
+        and: "toggle write precedes count write (count field only appears after toggle is true)"
+        // Match only genuine field-write POSTs, never the Done-clear (which
+        // carries _action_previous and echoes both fields as empty strings).
+        def togIdx = posts.findIndexOf {
+            !it.body?.containsKey("_action_previous") && it.body?.containsKey("settings[everyNMinutesC1]")
+        }
+        def cntIdx = posts.findIndexOf {
+            !it.body?.containsKey("_action_previous") && it.body?.containsKey("settings[everyNC1]")
+        }
+        togIdx >= 0 && cntIdx >= 0 && togIdx < cntIdx
+
+        and: "the count was NOT written into the bool toggle (the original renders-null bug)"
+        periodicWrite(posts, "everyNMinutesC1") != "15"
+    }
+
+    def "addTrigger Periodic Weekly writes selectDoWC1 day-of-week multi-enum and startingWC1 time"() {
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Weekly", daysOfWeek: ["Monday", "Friday"], startingTime: "08:00"]],
+            confirm: true
+        ])
+
+        then: "the day list serializes as a JSON array into selectDoWC1 and the time into startingWC1"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Weekly"
+        periodicWrite(posts, "selectDoWC1") == '["Monday","Friday"]'
+        periodicWrite(posts, "startingWC1") == "08:00"
+    }
+
+    def "addTrigger Periodic Monthly by-day writes dayMC1/everyNMC1/startingMC1"() {
+        // by-day mode (no weekOfMonth): the numeric fields + time land. The
+        // specific-months sub-mode is NOT supported (order-sensitive on the live
+        // hub), so months is not routed and selectMonthC1 is not written.
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", dayOfMonth: 15, everyNMonths: 2, startingTime: "09:30"]],
+            confirm: true
+        ])
+
+        then: "the Monthly by-day fields land under their irregular names"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Monthly"
+        periodicWrite(posts, "dayMC1") == "15"
+        periodicWrite(posts, "everyNMC1") == "2"
+        periodicWrite(posts, "startingMC1") == "09:30"
+
+        and: "by-day mode must NOT touch the nth-weekday fields"
+        !periodicWroteValue(posts, "weeklyMC1")
+        !periodicWroteValue(posts, "dailyMC1")
+    }
+
+    def "addTrigger Periodic Monthly does NOT route months to selectMonthC1 (specific-months sub-mode unsupported)"() {
+        // Pin the removal: passing months on a Monthly by-day spec must not write
+        // selectMonthC1 -- the order-sensitive specific-months sub-mode was
+        // deferred. selectMonthC1 IS in the periodic fixture schema, so a
+        // regression that re-added the routing would write a real value here.
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", dayOfMonth: 15, everyNMonths: 1, months: ["January", "July"], startingTime: "09:30"]],
+            confirm: true
+        ])
+
+        then: "the by-day fields land but months is silently ignored (not written to selectMonthC1)"
+        result.success == true
+        periodicWrite(posts, "dayMC1") == "15"
+        !periodicWroteValue(posts, "selectMonthC1")
+    }
+
+    def "addTrigger Periodic Monthly nth-weekday writes weeklyMC1/dailyMC1/everyNMCX1, NOT the by-day fields"() {
+        // nth-weekday mode (weekOfMonth present) hides the by-day fields and
+        // reveals the day-of-week + X-suffixed cadence. "On the Second Monday
+        // of every month at 8:00 AM".
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", weekOfMonth: "Second", dayOfWeek: "Monday", everyNMonths: 1, startingTime: "08:00"]],
+            confirm: true
+        ])
+
+        then: "the nth-weekday field set lands under its irregular names"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Monthly"
+        periodicWrite(posts, "weeklyMC1") == "Second"
+        periodicWrite(posts, "dailyMC1") == "Monday"
+        // nth-weekday cadence is the X-suffixed field, NOT the by-day everyNMC1.
+        periodicWrite(posts, "everyNMCX1") == "1"
+        periodicWrite(posts, "startingMC1") == "08:00"
+
+        and: "the by-day fields (which ARE in the Monthly map) are NOT written -- the modes are mutually exclusive"
+        !periodicWroteValue(posts, "dayMC1")
+        !periodicWroteValue(posts, "everyNMC1")
+    }
+
+    def "addTrigger Periodic Monthly dayOfMonth + weekOfMonth is rejected as success=false (mutually exclusive)"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // Only the backup-snapshot GETs are needed: the mutual-exclusivity
+        // guard fires before the trigger editor opens.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", dayOfMonth: 15, weekOfMonth: "Second"]],
+            confirm: true
+        ])
+
+        then: "structured failure naming both modes; no wizard write POST fired"
+        result.success == false
+        result.error.toString().toLowerCase().contains("mutually exclusive")
+        result.error.toString().contains("dayOfMonth")
+        result.error.toString().contains("weekOfMonth")
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    def "addTrigger Periodic Yearly writes yearlyMonthCX1/weeklyYC1/dailyYC1, NOT the dead yearlyMonthC1"() {
+        // Yearly is ALWAYS nth-weekday. The month lives in yearlyMonthCX1 (the
+        // X-suffixed reveal field); yearlyMonthC1 alone never completes.
+        // "On the First Monday of December at 8:00 AM".
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Yearly", months: "December", weekOfMonth: "First", dayOfWeek: "Monday", startingTime: "08:00"]],
+            confirm: true
+        ])
+
+        then: "the Yearly nth-weekday field set lands under the X-suffixed month/day names"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Yearly"
+        periodicWrite(posts, "yearlyMonthCX1") == "December"
+        periodicWrite(posts, "weeklyYC1") == "First"
+        periodicWrite(posts, "dailyYC1") == "Monday"
+        periodicWrite(posts, "startingYC1") == "08:00"
+
+        and: "the dead non-X month field (present in the schema) is never written -- months routes to yearlyMonthCX1, not the suffix-less yearlyMonthC1 that never completes"
+        !periodicWroteValue(posts, "yearlyMonthC1")
+    }
+
+    def "addTrigger Periodic Yearly drops everyNMonths (Yearly map has no every-N-months role)"() {
+        // De-tautologize the Yearly pin: the Yearly field map carries NO everyNMonths
+        // or everyNMonthsNth role (Yearly is once-a-year nth-weekday). Passing
+        // everyNMonths must NOT write either Monthly cadence field. everyNMC1 AND
+        // everyNMCX1 are BOTH present in the periodic fixture schema, so a regression
+        // that added an every-N-months entry to the Yearly map (routing to either
+        // field) would write a real value here and fail this guard.
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Yearly", months: "December", weekOfMonth: "First", dayOfWeek: "Monday", everyNMonths: 3, startingTime: "08:00"]],
+            confirm: true
+        ])
+
+        then: "the Yearly nth-weekday fields still land"
+        result.success == true
+        periodicWrite(posts, "yearlyMonthCX1") == "December"
+        periodicWrite(posts, "weeklyYC1") == "First"
+
+        and: "neither Monthly every-N-months cadence field is written -- everyNMonths is dropped for Yearly"
+        !periodicWroteValue(posts, "everyNMC1")
+        !periodicWroteValue(posts, "everyNMCX1")
+    }
+
+    def "addTrigger Periodic Cron String writes cronStr1 (not the non-existent cronString1)"() {
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Cron String", cronString: "0 0 12 * * ?"]],
+            confirm: true
+        ])
+
+        then: "the cron value lands in the live cronStr1 field (the pre-fix code wrote the non-existent cronString1, which silently dropped the value)"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Cron String"
+        periodicWrite(posts, "cronStr1") == "0 0 12 * * ?"
+
+        and: "a clean first-trigger discovery (well-formed href, integer n) does NOT emit the anomaly breadcrumb -- it must fire only on a malformed/exception discovery, not unconditionally"
+        !(result.settingsSkipped ?: []).any { it instanceof Map && it.reason == "periodic_href_anomaly_firsttrigger" }
+    }
+
+    def "addTrigger Periodic #freq everyN outside the restricted enum is rejected as success=false before opening the wizard"() {
+        // The up-front IllegalArgumentException is caught by the whole-tool
+        // backup-and-catch envelope in toolUpdateNativeApp and surfaced as a
+        // structured success=false map (consistent with the sibling
+        // compareToDevice missing-comparator guard on this same addTrigger
+        // path), NOT a propagated -32602. The validation still fires before the
+        // trigger editor opens, so no wizard write POST is sent.
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // Base config + statusJson are needed only for the pre-write backup
+        // snapshot. selectTriggers/periodic are intentionally NOT registered:
+        // the validation fires before the trigger editor opens (before
+        // moreCond), so no selectTriggers GET should occur.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: freq, everyN: 7]],
+            confirm: true
+        ])
+
+        then: "structured failure naming the bad value and the allowed set"
+        result.success == false
+        result.error.toString().toLowerCase().contains("everyn")
+        result.error.toString().contains("10, 12, 15, 20, 30")
+        result.error.toString().contains("'7'")
+
+        and: "no moreCond click / wizard write POST fired -- the editor never opened"
+        !posts.any { it.path == "/installedapp/update/json" }
+
+        where:
+        freq << ["Seconds", "Minutes"]
+    }
+
+    def "addTrigger Periodic Minutes accepts a count that IS in the restricted enum"() {
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when: "30 is in the allowed set"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 30]],
+            confirm: true
+        ])
+
+        then: "no validation rejection; the count lands in everyNC1"
+        result.success == true
+        periodicWrite(posts, "everyNC1") == "30"
+    }
+
+    def "addTrigger Periodic Minutes selectedMinutes routes to selectMinutesC1 (at-specific-minutes mode)"() {
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when: "the alternative 'at specific minutes' mode is used instead of everyN"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", selectedMinutes: [0, 30]]],
+            confirm: true
+        ])
+
+        then: "the minute list serializes as a JSON array into selectMinutesC1"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Minutes"
+        periodicWrite(posts, "selectMinutesC1") == '["0","30"]'
+        // No everyN was passed, so the toggle must not be written with a value.
+        !periodicWroteValue(posts, "everyNMinutesC1")
+    }
+
+    def "addTrigger Periodic Minutes fractional everyN #everyN truncates to the in-enum integer and is accepted"() {
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when: "a fractional everyN whose floor IS in the restricted enum"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: everyN]],
+            confirm: true
+        ])
+
+        then: "the value truncates toward zero and lands in everyNC1 as the integer"
+        result.success == true
+        periodicWrite(posts, "everyNC1") == expected
+
+        where:
+        everyN | expected
+        5.5    | "5"
+        15.9   | "15"
+    }
+
+    def "addTrigger Periodic #freq non-numeric everyN is rejected as success=false naming the allowed set"() {
+        given:
+        enableHubAdminWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // Only the backup-snapshot GETs are needed: the unparseable-everyN guard
+        // fires before the trigger editor opens.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "everyN is a non-numeric string"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: freq, everyN: "abc"]],
+            confirm: true
+        ])
+
+        then: "structured failure naming the bad value and the allowed set; no wizard write POST"
+        result.success == false
+        result.error.toString().toLowerCase().contains("everyn")
+        result.error.toString().contains("10, 12, 15, 20, 30")
+        result.error.toString().contains("abc")
+        !posts.any { it.path == "/installedapp/update/json" }
+
+        where:
+        freq << ["Seconds", "Minutes"]
+    }
+
+    def "addTrigger Periodic Hourly everyN writes toggle/count/time, Hourly alt-mode writes selectHoursC1 + startingHCX1"() {
+        // Covers the Hourly ${pn}-suffixed fields (everyNHoursC1/everyNHC1/
+        // startingHC1 for everyN mode; selectHoursC1/startingHCX1 for the
+        // alternative specific-hours mode). pn=1 here, so these pin the
+        // byte-identical single-trigger names.
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when: "Hourly everyN mode with a start time"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", everyN: 2, startingTime: "06:15"]],
+            confirm: true
+        ])
+
+        then: "toggle lands true, count into everyNHC1, time into startingHC1"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Hourly"
+        periodicWrite(posts, "everyNHoursC1") == "true"
+        periodicWrite(posts, "everyNHC1") == "2"
+        periodicWrite(posts, "startingHC1") == "06:15"
+
+        and: "toggle write precedes count write (Hourly shares the toggle-before-count path)"
+        def hTogIdx = posts.findIndexOf {
+            !it.body?.containsKey("_action_previous") && it.body?.containsKey("settings[everyNHoursC1]")
+        }
+        def hCntIdx = posts.findIndexOf {
+            !it.body?.containsKey("_action_previous") && it.body?.containsKey("settings[everyNHC1]")
+        }
+        hTogIdx >= 0 && hCntIdx >= 0 && hTogIdx < hCntIdx
+
+        when: "Hourly specific-hours alt mode (selectedHours) with a minute offset"
+        def posts2 = registerPeriodicHubSurface(101)
+        def result2 = script.toolUpdateNativeApp([
+            appId: 101,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", selectedHours: [9, 12], minutesOffset: 15]],
+            confirm: true
+        ])
+
+        then: "the hour list serializes into selectHoursC1 and the offset into startingHCX1"
+        result2.success == true
+        periodicWrite(posts2, "selectHoursC1") == '["9","12"]'
+        periodicWrite(posts2, "startingHCX1") == "15"
+    }
+
+    def "addTrigger Periodic Hourly everyN is a FREE integer -- 7 (outside the Seconds/Minutes enum) is accepted"() {
+        // The restricted-enum [1,2,3,4,5,6,10,12,15,20,30] applies ONLY to Seconds and
+        // Minutes (validated up front). Hourly/Daily take a free integer. 7 is NOT in
+        // the restricted set, so this guards against a regression that widened the
+        // Seconds/Minutes restriction onto Hourly -- which would reject everyN:7 with
+        // success=false instead of writing it.
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", everyN: 7, startingTime: "06:00"]],
+            confirm: true
+        ])
+
+        then: "the free integer 7 is accepted and lands in everyNHC1 (no up-front enum rejection)"
+        result.success == true
+        periodicWrite(posts, "everyNHoursC1") == "true"
+        periodicWrite(posts, "everyNHC1") == "7"
+    }
+
+    def "addTrigger Periodic Daily weekdaysOnly writes everyWeekDay1, selectedDaysOfMonth writes selectDoMC1"() {
+        // Covers the Daily ${pn}-suffixed alt-mode fields. pn=1.
+        given:
+        enableHubAdminWrite()
+        def posts = registerPeriodicHubSurface(100)
+
+        when: "Daily everyN with weekdaysOnly toggle"
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, weekdaysOnly: true, startingTime: "07:00"]],
+            confirm: true
+        ])
+
+        then: "the weekdays-only toggle lands and the everyN/time fields write under Daily names"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Daily"
+        periodicWrite(posts, "everyNDoMC1") == "true"
+        periodicWrite(posts, "everyNDC1") == "1"
+        periodicWrite(posts, "everyWeekDay1") == "true"
+        periodicWrite(posts, "startingDC1") == "07:00"
+
+        and: "the everyN toggle write precedes the count write (Daily shares the toggle-before-count path)"
+        def dTogIdx = posts.findIndexOf {
+            !it.body?.containsKey("_action_previous") && it.body?.containsKey("settings[everyNDoMC1]")
+        }
+        def dCntIdx = posts.findIndexOf {
+            !it.body?.containsKey("_action_previous") && it.body?.containsKey("settings[everyNDC1]")
+        }
+        dTogIdx >= 0 && dCntIdx >= 0 && dTogIdx < dCntIdx
+
+        when: "Daily specific-days alt mode (selectedDaysOfMonth)"
+        def posts2 = registerPeriodicHubSurface(101)
+        def result2 = script.toolUpdateNativeApp([
+            appId: 101,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", selectedDaysOfMonth: [1, 15]]],
+            confirm: true
+        ])
+
+        then: "the day list serializes into selectDoMC1"
+        result2.success == true
+        periodicWrite(posts2, "selectDoMC1") == '["1","15"]'
+    }
+
+    // ---------- addTrigger Periodic Schedule index!=1 regression pin ----------
+
+    def "addTrigger Periodic at trigger index 2 writes tCapab2 / isCondTrig.2 cleanly (no self-deadlock)"() {
+        // Regression pin for the historical "2nd periodic trigger self-deadlocks"
+        // bug. The fix lives in the shared reveal-walker; this spec asserts a
+        // periodic trigger added when index 1 is already committed writes its
+        // capability and conditional-toggle at suffix 2 -- not stomping suffix 1
+        // and not deadlocking on a stale wizard accumulator.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: periodicSchemaJson(100)]
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectTriggers already has a committed trigger at index 1 (tCapab1 +
+        // settings), so index discovery picks 2 for the in-flight periodic row.
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"],
+                                 [name: "tCapab2", type: "enum", options: ["Periodic Schedule"]],
+                                 [name: "periodic1", type: "href", page: "periodic", params: [n: 2]],
+                                 [name: "isCondTrig.2", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                // settings carry the committed index-1 trigger so _rmCollectTriggerIndices
+                // returns [1] and the in-flight row lands at 2.
+                settings: ["tCapab1": "Switch", "tDev1": ["8"]],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params -> periodicSchemaJson(100) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Switch"]])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", everyN: 1]],
+            confirm: true
+        ])
+
+        then: "the in-flight periodic row writes capability and conditional-toggle at suffix 2, not 1"
+        result.triggerIndex == 2
+        posts.any { it.body?.containsKey("settings[tCapab2]") }
+        posts.any { it.body?.keySet()?.any { k -> k.toString().startsWith("settings[isCondTrig.2]") } }
+        // index-1's committed capability is never overwritten by this add.
+        !posts.any { it.body?."settings[tCapab1]"?.toString() == "Periodic Schedule" }
+    }
+
+    def "addTrigger 2nd periodic trigger routes to periodic2 sub-page and writes suffix-2 fields, not suffix-1"() {
+        // Regression guard for the multi-periodic-trigger fix. The
+        // rule already has periodic trigger 1; adding a 2nd periodic (Daily)
+        // trigger must navigate to ITS periodic sub-page (href periodic2,
+        // params n:2) and write the n-suffixed field names (whichPeriod2,
+        // everyNDoMC2, everyNDC2, startingDC2). Writing suffix-1 names would
+        // clobber trigger 1's periodic config (the original collision bug).
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        // The periodic sub-page for trigger 2 exposes suffix-2 fields. Returned
+        // as the nav-POST data so href discovery + field writes resolve to n=2.
+        def periodic2SchemaJson = JsonOutput.toJson([
+            app: [id: 100, version: 7],
+            configPage: [name: "periodic", title: "Periodic", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "whichPeriod2", type: "enum", options: ["Daily"]],
+                             [name: "everyNDoMC2", type: "bool"],
+                             [name: "everyNDC2", type: "enum", options: ["1", "2"]],
+                             [name: "startingDC2", type: "time"]
+                         ], paragraphs: []]]],
+            settings: [:]
+        ])
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: periodic2SchemaJson]
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // selectTriggers: trigger 1 committed (Periodic), trigger 2 in-flight
+        // (Periodic). The periodic body href carries params n:2 for trigger 2.
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Periodic Schedule"], value: "Periodic Schedule"],
+                                 [name: "tCapab2", type: "enum", options: ["Periodic Schedule"]],
+                                 [name: "isCondTrig.2", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ],
+                             body: [[element: "href", name: "periodic2", page: "periodic", params: [n: 2]]],
+                             paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: ["tCapab1": "Periodic Schedule"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params -> periodic2SchemaJson }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Periodic Schedule"]])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
+            confirm: true
+        ])
+
+        then: "trigger 2's periodic writes target the suffix-2 field set"
+        result.triggerIndex == 2
+        periodicWrite(posts, "whichPeriod2") == "Daily"
+        periodicWrite(posts, "everyNDoMC2") == "true"
+        periodicWrite(posts, "everyNDC2") == "1"
+        periodicWrite(posts, "startingDC2") == "07:00"
+
+        and: "no suffix-1 periodic field is written with a value (trigger 1 is not clobbered)"
+        !periodicWroteValue(posts, "whichPeriod1")
+        !periodicWroteValue(posts, "everyNDoMC1")
+        !periodicWroteValue(posts, "everyNDC1")
+        !periodicWroteValue(posts, "startingDC1")
+
+        and: "the navigation used the discovered n=2 href (periodic2)"
+        posts.any { it.body?.keySet()?.any { k -> k.toString().contains("_action_href_periodic2|periodic|2") } }
+    }
+
+    def "addTrigger 2nd periodic trigger with NO periodic href in schema refuses suffix-1 fallback (no clobber)"() {
+        // When the periodic href is ABSENT from the discovered
+        // selectTriggers schema AND this is not the first trigger slot (idx>1),
+        // suffix-1 fallback would silently overwrite trigger 1's schedule. The
+        // dispatcher must refuse to write the periodic sub-page and surface a
+        // partial with a repair hint, NOT a guaranteed clobber.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // trigger 1 committed (Periodic), trigger 2 in-flight (Periodic), but the
+        // schema has NO periodic body href -- discovery returns nothing.
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Periodic Schedule"], value: "Periodic Schedule"],
+                                 [name: "tCapab2", type: "enum", options: ["Periodic Schedule"]],
+                                 [name: "isCondTrig.2", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ],
+                             // NO body href for periodic -- discovery fails.
+                             paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: ["tCapab1": "Periodic Schedule"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Periodic Schedule"]])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
+            confirm: true
+        ])
+
+        then: "the periodic sub-page is NOT written -- no suffix-1 field carries a value"
+        result.triggerIndex == 2
+        !periodicWriteAny(posts, "whichPeriod1")
+        !periodicWriteAny(posts, "everyNDoMC1")
+        !periodicWriteAny(posts, "everyNDC1")
+        !periodicWriteAny(posts, "startingDC1")
+        // Also no suffix-2 writes -- the whole periodic dance is skipped.
+        !periodicWriteAny(posts, "whichPeriod2")
+
+        and: "the result surfaces the refusal as partial with an actionable repair hint"
+        result.partial == true
+        result.settingsSkipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }
+        result.repairHints?.any { it?.toString()?.contains("periodic sub-page index could not be resolved") }
+    }
+
+    def "addTrigger 2nd periodic trigger with a MALFORMED href params.n refuses suffix-1 fallback (no clobber)"() {
+        // Completes the malformed-params.n guard. The periodic href IS discovered for
+        // trigger 2, but its params.n is non-integer ("2x"). The dispatcher cannot
+        // resolve the sub-page index, so -- exactly as for an absent href -- a non-first
+        // trigger must refuse the suffix-1 fallback rather than clobber trigger 1. This
+        // guard goes RED if the malformed-n catch does not feed periodicUnsafeFallback
+        // (the half-applied-guard regression).
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // trigger 1 committed (Periodic), trigger 2 in-flight (Periodic). The periodic
+        // body href IS present, but its params.n is a non-integer string -- the n-cast
+        // guard absorbs it and must treat the href as unresolved for fallback purposes.
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Periodic Schedule"], value: "Periodic Schedule"],
+                                 [name: "tCapab2", type: "enum", options: ["Periodic Schedule"]],
+                                 [name: "isCondTrig.2", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ],
+                             // href present but params.n is malformed (non-integer).
+                             body: [[element: "href", name: "periodic2", page: "periodic", params: [n: "2x"]]],
+                             paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: ["tCapab1": "Periodic Schedule"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Periodic Schedule"]])
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
+            confirm: true
+        ])
+
+        then: "no suffix-1 field is written -- trigger 1 is not clobbered"
+        result.triggerIndex == 2
+        !periodicWriteAny(posts, "whichPeriod1")
+        !periodicWriteAny(posts, "everyNDoMC1")
+        !periodicWriteAny(posts, "everyNDC1")
+        !periodicWriteAny(posts, "startingDC1")
+
+        and: "the malformed-n refusal surfaces as partial with the unresolved-href reason"
+        result.partial == true
+        result.settingsSkipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }
+        result.repairHints?.any { it?.toString()?.contains("periodic sub-page index could not be resolved") }
+    }
+
+    def "addTrigger FIRST periodic trigger with a malformed href params.n proceeds on suffix-1 without throwing (n normalized)"() {
+        // Pins the OTHER half of the malformed-n guard: index normalization. For the
+        // FIRST periodic trigger (idx==1) a malformed params.n is NOT a clobber risk --
+        // suffix-1 is correct -- so the dance proceeds. But hrefParams.n must be
+        // normalized to the resolved integer (1) before the Done submit, or
+        // _rmSubmitSubPageDone's `hrefParams.n as Integer` re-cast throws on "1x" and
+        // surfaces as success=false. This guard goes RED if the normalization is dropped.
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: periodicSchemaJson(100)]
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // Single in-flight Periodic trigger; the periodic href params.n is malformed.
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "tCapab1", type: "enum", options: ["Periodic Schedule"]],
+                                 [name: "isCondTrig.1", type: "bool"],
+                                 [name: "hasAll", type: "button"]
+                             ],
+                             body: [[element: "href", name: "periodic1", page: "periodic", params: [n: "1x"]]],
+                             paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params -> periodicSchemaJson(100) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
+            confirm: true
+        ])
+
+        then: "the trigger commits -- the Done re-cast did not throw on the malformed n (it was normalized to 1)"
+        result.success == true
+        periodicWrite(posts, "whichPeriod1") == "Daily"
+        periodicWrite(posts, "everyNDC1") == "1"
+
+        and: "the first-trigger anomaly is surfaced as a breadcrumb (suffix-1 was correct, but the malformed n is noted)"
+        result.settingsSkipped?.any { it?.reason == "periodic_href_anomaly_firsttrigger" }
+    }
+
+    def "addTrigger periodic Done-POST failure is caught at the call site and folded into skipped (not a hard fail)"() {
+        // _rmSubmitSubPageDone lets a Done-POST failure THROW. The periodic path catches that
+        // throw LOCALLY and folds it into skipped as subpage_done_failed (partial=true) -- the
+        // trigger still commits via hasAll. Goes RED if the periodic try/catch is removed (the
+        // throw would then propagate and hard-fail the add as success:false).
+        given:
+        enableHubAdminWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Fail ONLY the periodic sub-page Done submit (back-nav to selectTriggers).
+            if (body?.currentPage == "periodic" && body?._action_previous == "Done") {
+                throw new RuntimeException("simulated periodic Done POST failure")
+            }
+            [status: 200, location: null, data: periodicSchemaJson(100)]
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            periodicSelectTriggersJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params -> periodicSchemaJson(100) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
+            confirm: true
+        ])
+
+        then: "the periodic Done back-nav was actually attempted (so the throw fired there)"
+        posts.any { it.body?.currentPage == "periodic" && it.body?._action_previous == "Done" }
+
+        and: "the Done failure is folded into skipped as subpage_done_failed -- caught locally, not propagated"
+        (result.settingsSkipped ?: []).any { it instanceof Map && it.reason == "subpage_done_failed" }
+
+        and: "it flips partial but the trigger still committed (success stays true)"
+        result.partial == true
+        result.success == true
+    }
+
+    def "addRequiredExpression STPage Done-POST failure propagates as success:false (shared helper still throws for unguarded callers)"() {
+        // SIBLING guard. Unlike the periodic path, addRequiredExpression does NOT wrap its
+        // _rmSubmitSubPageDone call -- a Done-POST failure must PROPAGATE to the dispatcher's
+        // backup-and-catch and surface as success:false, not be swallowed as a silent success.
+        // This pins that scoping the periodic try/catch to the call site did not regress the
+        // shared helper's throw-on-failure for the STPage/walkStep callers. Goes RED if the
+        // helper reverts to wrapping the Done POST in its own try/catch (the swallow bug).
+        given:
+        enableHubAdminWrite()
+        def stPageInputs = [
+            [name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
+            [name: "rCapab_1", type: "enum", options: ["Switch"]],
+            [name: "RelrDev_1", type: "enum", options: ["="]],
+            [name: "state_1", type: "enum", options: ["on", "off"]],
+            [name: "doneST", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params -> ruleConfigJson(100, "r", stPageInputs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // Fail ONLY the STPage Done back-nav submit.
+            if (body?.currentPage == "STPage" && body?._action_previous == "Done") {
+                throw new RuntimeException("simulated STPage Done POST failure")
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "the Done throw propagated to the backup-and-catch -- success:false naming the Done failure, not a swallowed success"
+        result.success == false
+        result.error?.toString()?.contains("simulated STPage Done POST failure")
     }
 
     // ---------- addTrigger auto-updateRule parity with addAction ----------
