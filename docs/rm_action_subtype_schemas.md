@@ -294,6 +294,8 @@ Note: `pR.<N>` field -- `true`=RESUME, `false`=Pause (inverted relative to field
 | `ruleIds` | List\<Integer\> | Required |
 | `rawSettings` | Map | |
 
+**Activating a Scene / Room Lighting group is NOT a dedicated action here.** RM 5.1 has no activate-scene subtype. Each Scene / Room Lighting instance spawns an activator device that carries the `switch` capability -- activate it with the Switch action: `capability='switch'` + `action='on'` + `deviceIds=[<activatorDeviceId>]` (use `action='off'` to send an off/deactivate command, whose effect is configuration-dependent). The `activate_scene` action exists only on the legacy custom rule engine (the `hub_*_custom_rule` tools), not on this native addAction surface.
+
 ---
 
 ## Device-control capabilities

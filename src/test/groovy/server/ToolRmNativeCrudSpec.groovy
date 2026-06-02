@@ -5980,6 +5980,237 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
     }
 
+    // ---------- addTrigger Custom Attribute enum-vs-free comparator routing ----------
+    //
+    // A Custom Attribute trigger picks the attribute (tCustomAttr<N>) first.
+    // For an attribute the hub recognizes as an ENUM (switch, motion, contact,
+    // lock, ...) the re-rendered page reveals the enum value picker tstate<N>
+    // and HIDES the free comparator ReltDev<N>; the value lands in tstate<N> and
+    // there is no comparator field to write. For a genuinely free-valued
+    // attribute the page reveals ReltDev<N> (the comparator) instead. The fix
+    // writes ReltDev<N> only when the live schema still exposes it, so the
+    // enum path no longer emits a spurious not_in_schema skip on ReltDev<N>.
+
+    // exposeComparator=true reveals ReltDev1 (free attribute); false omits it (enum attribute reveals tstate1 instead).
+    private String customAttrSchemaJson(int ruleId, int seqNum, boolean exposeComparator) {
+        def inputs = [
+            [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
+            [name: "tDev1", type: "capability.*", multiple: true],
+            [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
+            [name: "tstate1", type: "enum", options: ["on", "off"]],
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        if (exposeComparator) {
+            inputs << [name: "ReltDev1", type: "enum", options: ["=", "!=", ">", "<"]]
+        }
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addTrigger Custom Attribute on an enum attribute lands the value in tstate and stays partial=false"() {
+        // Regression guard for the enum-attribute false-positive partial: the hub
+        // hides ReltDev<N> and reveals tstate<N>, so the value lands in tstate1
+        // and no comparator field exists to write. The fix suppresses the
+        // ReltDev1 write, so no not_in_schema skip is produced and partial stays
+        // false. Reverting the fix re-introduces the unconditional ReltDev1 write
+        // -> not_in_schema skip -> partial flips true, failing this spec.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrSchemaJson(100, fetchSeq, false)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "=", state: "on"],
+            confirm: true
+        ])
+
+        then: "value lands in tstate1 and the trigger is not falsely flagged partial"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("tstate1")
+        !(result.settingsApplied as List).contains("ReltDev1")
+
+        and: "no ReltDev1 not_in_schema skip was produced"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" }
+    }
+
+    def "addTrigger Custom Attribute on a free attribute still writes the ReltDev comparator"() {
+        // Preserve the free-comparator path: a genuinely free-valued attribute
+        // reveals ReltDev<N>, and the fix must still write the comparator there.
+        // This spec pins ONLY that ReltDev1 is written (and not skipped) -- it does
+        // NOT assert partial, because the tstate1 value-landed semantics for a free
+        // attribute depend on live hub behaviour the static stub cannot honestly
+        // model; partial in this fixture would rest on the render-hash artifact.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrSchemaJson(100, fetchSeq, true)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "=", state: "bright"],
+            confirm: true
+        ])
+
+        then: "the comparator field is written to ReltDev1 and is not skipped"
+        result.success == true
+        (result.settingsApplied as List).contains("ReltDev1")
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" }
+    }
+
+    // ---------- addTrigger.condition (conditional-trigger) Custom Attribute routing ----------
+    //
+    // The conditional-trigger sub-wizard (_rmBuildCondition) uses underscore
+    // field names: rCustomAttr_<N> / RelrDev_<N> / state_<N> (vs the trigger
+    // row's tCustomAttr<N> / ReltDev<N> / tstate<N>). It has the same enum
+    // routing: an enum attribute reveals state_<N> and hides RelrDev_<N>, so the
+    // unconditional RelrDev_<N> write produced a false-positive not_in_schema
+    // skip. The fix writes RelrDev_<N> only when the schema still exposes it.
+
+    // exposeComparator=true reveals RelrDev_1 (free condition attribute); false omits it
+    // (enum attribute reveals state_1 instead). The condition is built at idx 1; the outer
+    // Switch trigger is built at idx 2, so both index families share this one schema.
+    private String customAttrConditionSchemaJson(int ruleId, int seqNum, boolean exposeComparator) {
+        def inputs = [
+            // Condition (idx 1) fields.
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "condTrig.1", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
+            [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
+            [name: "rDev_1", type: "capability.*", multiple: true],
+            [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+            [name: "state_1", type: "enum", options: ["on", "off"]],
+            [name: "not1", type: "bool"],
+            // Outer Switch trigger (idx 2) fields.
+            [name: "tCapab2", type: "enum", options: ["Switch"]],
+            [name: "tDev2", type: "capability.switch", multiple: true],
+            [name: "tstate2", type: "enum", options: ["on", "off"]],
+            [name: "isCondTrig.2", type: "bool"],
+            [name: "condTrig.2", type: "enum", options: ["": "Click to set"]],
+            [name: "hasAll", type: "button"]
+        ]
+        if (exposeComparator) {
+            inputs << [name: "RelrDev_1", type: "enum", options: ["=", "!=", ">", "<"]]
+        }
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addTrigger conditional Custom Attribute on an enum attribute lands the value in state_<N> and stays partial=false"() {
+        // Regression guard for the conditional-trigger sibling of the enum bug:
+        // the condition wizard hides RelrDev_1 and reveals state_1, so the value
+        // lands in state_1 and there is no comparator field to write. The fix
+        // suppresses the RelrDev_1 write, so no not_in_schema skip is produced and
+        // partial stays false. Reverting the fix re-introduces the unconditional
+        // RelrDev_1 write -> not_in_schema skip -> partial flips true.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJson(100, fetchSeq, false)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "=", state: "on"]],
+            confirm: true
+        ])
+
+        then: "the condition value lands in state_1 and no RelrDev_1 skip flags partial"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("state_1")
+        !(result.settingsApplied as List).contains("RelrDev_1")
+
+        and: "no RelrDev_1 not_in_schema skip was produced"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" }
+    }
+
+    def "addTrigger conditional Custom Attribute on a free attribute still writes the RelrDev_<N> comparator"() {
+        // Preserve the free-comparator condition path: a genuinely free-valued
+        // attribute reveals RelrDev_1, and the fix must still write the comparator
+        // there. Pins ONLY that RelrDev_1 is written (and not skipped) -- it does
+        // NOT assert partial, because the state_1 value-landed semantics for a free
+        // attribute depend on live hub behaviour the static stub cannot honestly
+        // model.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJson(100, fetchSeq, true)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "=", state: "bright"]],
+            confirm: true
+        ])
+
+        then: "the condition comparator is written to RelrDev_1 and is not skipped"
+        result.success == true
+        (result.settingsApplied as List).contains("RelrDev_1")
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" }
+    }
+
     // ---------- addTrigger Periodic Schedule frequency completeness ----------
     //
     // These specs pin the exact RM 5.1 setting names each periodic frequency

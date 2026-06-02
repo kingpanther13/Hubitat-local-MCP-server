@@ -858,6 +858,45 @@ class TestRunner:
         self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_custom_attribute_enum_no_false_partial(self) -> None:
+        # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
+        # attribute. A virtual switch's 'switch' attribute is the canonical enum
+        # case: picking it reveals the enum value picker (tstate<N>) and HIDES the
+        # free comparator field (ReltDev<N>). The value must land in tstate<N>, and
+        # the now-absent ReltDev<N> must NOT be written -- an unconditional comparator
+        # write there is rejected not_in_schema and spuriously flips partial=true even
+        # though the trigger built correctly. This pins the no-false-partial contract
+        # the Spock regression specs guard, end-to-end against a live hub.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("CustEnum")
+        result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {
+                "appId": app_id,
+                "addTrigger": {"capability": "Custom Attribute", "deviceIds": [sw],
+                               "attribute": "switch", "comparator": "=", "state": "on"},
+                "confirm": True,
+            },
+        })
+        assert result.get("success") is not False, f"addTrigger reported failure: {result}"
+        # The enum value landed in the value picker (tstate<N>) ...
+        applied = result.get("settingsApplied") or []
+        assert any(str(k).startswith("tstate") for k in applied), \
+            f"enum value did not land in a tstate field; settingsApplied={applied}"
+        # ... and the hidden comparator was NOT written, so no ReltDev not_in_schema
+        # skip was produced -- the exact false-positive the fix guards.
+        skipped = result.get("settingsSkipped") or []
+        bad = [s for s in skipped if isinstance(s, dict)
+               and str(s.get("key", "")).startswith("ReltDev")
+               and s.get("reason") == "not_in_schema"]
+        assert not bad, f"unexpected ReltDev not_in_schema skip (the #199 bug): {bad}"
+        # The contract discriminator: partial stays falsy.
+        assert not result.get("partial"), \
+            f"trigger falsely flagged partial despite building correctly: {result}"
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_required_expression_and_local_var(self) -> None:
         # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
         sw = int(self.get_test_switch_id())

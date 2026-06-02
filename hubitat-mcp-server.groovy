@@ -17457,11 +17457,26 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // wizard are Unicode (e.g. '≠' for not-equal). Normalize common
     // ASCII aliases so callers can pass "!=" / "==" / "<>".
     if (triggerSpec.comparator != null) {
-        // Custom Attribute requires picking the attribute first.
+        // Custom Attribute requires picking the attribute first. Picking it
+        // re-renders the page, because RM 5.1 rebuilds the field set from the
+        // attribute's resolved type: a free-valued attribute reveals the
+        // comparator field ReltDev<N>, while an attribute the hub recognizes as
+        // an ENUM (e.g. 'switch', 'motion', 'contact', 'lock') reveals the enum
+        // value picker tstate<N> INSTEAD and hides ReltDev<N>. In the enum case
+        // the value lands via tstate<N> (the generic tstate path below), and an
+        // unconditional ReltDev<N> write would be rejected not_in_schema --
+        // a false-positive lost-value signal. Write the comparator only when
+        // the live schema still exposes it.
+        boolean comparatorFieldExposed = true
         if (triggerSpec.attribute != null) {
             writeIfPresent("tCustomAttr${idx}", triggerSpec.attribute)
+            def afterAttr = _rmFetchConfigJson(appId, "selectTriggers")
+            def afterAttrInputs = (afterAttr?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+            comparatorFieldExposed = afterAttrInputs.any { it?.name == "ReltDev${idx}".toString() }
         }
-        writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
+        if (comparatorFieldExposed) {
+            writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
+        }
     }
 
     // Button capability has its own button-number field.
@@ -21708,9 +21723,6 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
         }
     }
     if (condSpec.comparator != null) {
-        if (condSpec.attribute != null) {
-            _rmWriteSettingOnPage(appId, "selectTriggers", "rCustomAttr_${idx}", condSpec.attribute, applied, null, skipped)
-        }
         // RM 5.1's condition wizard exposes RelrDev_<N> (with underscore,
         // 'Relr') as the comparator field on every condition-wizard page
         // (selectTriggers, doActPage's ifThen, STPage's required-expression)
@@ -21718,7 +21730,27 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
         // already used by _rmAddAction (doActPage) and
         // _rmAddRequiredExpression (STPage) for Custom Attribute. The
         // previous compareCond_<N> name silently skipped on all three pages.
-        _rmWriteSettingOnPage(appId, "selectTriggers", "RelrDev_${idx}", _rmNormalizeComparator(condSpec.comparator), applied, null, skipped)
+        //
+        // Custom Attribute picks the attribute (rCustomAttr_<N>) first, which
+        // re-renders the page, because RM rebuilds the field set from the
+        // attribute's resolved type: an attribute the hub recognizes as an
+        // ENUM (switch, motion, contact, lock, ...) reveals the enum value
+        // picker state_<N> and hides the free comparator RelrDev_<N>; a
+        // free-valued attribute reveals RelrDev_<N> instead. In the enum case
+        // the value lands via state_<N> (the generic path below), so writing
+        // RelrDev_<N> unconditionally would be rejected not_in_schema -- a
+        // false-positive lost-value signal. Write the comparator only when the
+        // live schema still exposes it.
+        boolean compFieldExposed = true
+        if (condSpec.attribute != null) {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "rCustomAttr_${idx}", condSpec.attribute, applied, null, skipped)
+            def afterAttr = _rmFetchConfigJson(appId, "selectTriggers")
+            def afterAttrInputs = (afterAttr?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+            compFieldExposed = afterAttrInputs.any { it?.name == "RelrDev_${idx}".toString() }
+        }
+        if (compFieldExposed) {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "RelrDev_${idx}", _rmNormalizeComparator(condSpec.comparator), applied, null, skipped)
+        }
     }
     if (condSpec.buttonNumber != null) {
         _rmWriteSettingOnPage(appId, "selectTriggers", "ButtontDev_${idx}", condSpec.buttonNumber, applied, null, skipped)
@@ -27821,6 +27853,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
 - **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`.
+- **Activate a Scene / Room Lighting group**: RM 5.1 has no dedicated activate-scene action subtype. Each Scene / Room Lighting instance spawns an activator device with the switch capability -- activate it via the Switch action: `capability='switch' + action='on' + deviceIds=[<activatorDeviceId>]` (use `action='off'` to send an off/deactivate command, whose effect is configuration-dependent). The `activate_scene` action lives ONLY on the legacy custom rule engine (the `hub_*_custom_rule` tools / `hub_get_tool_guide(section='rules')`), not on this native addAction surface.
 - **Device control**: `capability='capture' + deviceIds`. `capability='restore'` (no fields). `capability='refresh' + deviceIds`. `capability='poll' + deviceIds`. `capability='disableDevice' + action='disable'/'enable' + deviceIds`.
 - **Flow control** (delay/wait/repeat/exit/comment/conditional):
   - `delay` + `hours`/`minutes`/`seconds` + optional `cancelable`/`random` OR `variable=<varName>` (variable-sourced seconds)
