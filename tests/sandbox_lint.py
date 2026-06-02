@@ -144,6 +144,20 @@ RULES = [
         "message": "GroovyShell blocked in Hubitat sandbox",
         "severity": "error",
     },
+    {
+        # The hub runs Groovy 2.4 (antlr2 parser), which rejects a bare `{ ... }`
+        # block immediately after a `case X:` label as an ambiguous
+        # parameterless-closure-vs-open-block. hubitat_ci's Groovy 3.0 (Parrot)
+        # parser accepts it, so the Spock suite compiles clean while the real hub
+        # refuses to save the app ("Ambiguous expression could be either a
+        # parameterless closure expression or an isolated open code block").
+        # Extract the case body into a helper method (or drop the wrapping braces
+        # and declare no locals) so dispatch cases stay plain statements.
+        "id": "SANDBOX-014",
+        "pattern": r"\bcase\b[^:]*:\s*\{",
+        "message": "Bare '{ }' block right after 'case X:' is rejected by the hub's Groovy 2.4 parser (ambiguous closure vs open block) even though hubitat_ci's Groovy 3.0 accepts it -- extract the case body to a method or remove the braces",
+        "severity": "error",
+    },
 ]
 
 # ---------------------------------------------------------------------------
