@@ -1037,7 +1037,7 @@ def getGatewayConfig() {
             description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, Z-Wave repair, and state snapshots. (Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
             tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_call_zwave_repair", "hub_list_captured_states", "hub_delete_captured_state"],
             summaries: [
-                hub_get_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
+                hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history. Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
                 hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
@@ -1532,8 +1532,8 @@ def getToolDefinitions() {
     def hideByName = [] as Set
 
     if (!builtinAppOn) {
-        // All 13 of these tools require enableBuiltinApp.
-        //   hub_manage_native_rules_and_apps: ALL 12 sub-tools require it → that
+        // All 12 of these tools require enableBuiltinApp.
+        //   hub_manage_native_rules_and_apps: ALL 11 of its sub-tools require it → that
         //     gateway empties out and drops entirely.
         //   hub_read_apps_code: hub_list_device_dependents requires it; the
         //     others (hub_list_apps, hub_get_app_config, hub_list_app_pages) only need
@@ -1547,7 +1547,7 @@ def getToolDefinitions() {
     }
     if (customEngineMode == "off") {
         // Both toggles off: hide all custom_* tools everywhere they could appear
-        // (base tools in flat mode, sub-tools of hub_manage_rules and hub_manage_diagnostics
+        // (base tools in flat mode, sub-tools of hub_manage_custom_rules and hub_read_rules
         // in gateway mode).
         ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each {
             hideByName << it
@@ -24723,6 +24723,17 @@ def toolSearchTools(args) {
         if (score > 0) ranked << [index: idx, score: score]
     }
     ranked.sort { -it.score }
+    // Dedup by tool name: a tool listed in more than one gateway (multi-gateway
+    // membership) yields one corpus entry per membership and would otherwise
+    // occupy several result slots for the same tool. Keep the highest-scoring
+    // entry per tool (ranked is already sorted by descending score).
+    def seenSearchNames = [] as Set
+    ranked = ranked.findAll { r ->
+        def nm = visibleCorpus[r.index].name
+        if (seenSearchNames.contains(nm)) return false
+        seenSearchNames << nm
+        return true
+    }
     if (ranked.size() > maxResults) ranked = ranked.take(maxResults)
 
     def results = ranked.collect { r ->
